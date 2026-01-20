@@ -1,0 +1,12 @@
+pip install channels-redis paypalrestsdk reportlab pyclamd pytesseract Pillow django_countries django_filter dj_rest_auth django-cors-headers django-allauth channels psycopg2-binary pytz stripe twilio holidays razorpay num2words djangorestframework Django qrcode django_redis django-axes captcha django_crontab 
+
+
+for ai installation
+
+pip install SQLAlchemy ollama dotenv httpx fastapi psycopg2-binary pydantic-settings uvicorn sqlalchemy[asyncio] asyncpg airllm langdetect python-multipart
+
+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
+
+git access token:
+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
+
