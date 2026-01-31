@@ -3,12 +3,11 @@ pipeline {
 
     environment {
         WORKSPACE_DIR = "${WORKSPACE}"
-
-        SERVER_DIR   = "/var/www/ay-lms-python-L/Aryu"
-        VENV_PY      = "/var/www/ay-lms-python-L/venv/bin/python"
-        VENV_PIP     = "/var/www/ay-lms-python-L/venv/bin/pip"
-
-        SERVICE_NAME = "aylms.service"
+        SERVER_ROOT   = "/var/www/ay-lms-python-L"
+        SERVER_DIR    = "/var/www/ay-lms-python-L/Aryu"
+        VENV_PIP      = "/var/www/ay-lms-python-L/venv/bin/pip"
+        VENV_PY       = "/var/www/ay-lms-python-L/venv/bin/python"
+        SERVICE_NAME  = "aylms.service"
     }
 
     stages {
@@ -17,18 +16,18 @@ pipeline {
             steps {
                 sh '''
                 rsync -rlDvz --delete \
-                  --exclude "media/" \
-                  --exclude "static/" \
-                  --exclude "*.log" \
-                  --exclude "__pycache__/" \
-                  ${WORKSPACE_DIR}/Aryu/ ${SERVER_DIR}/
+                --exclude "media/" \
+                --exclude "static/" \
+                --exclude "*.log" \
+                --exclude "__pycache__/" \
+                ${WORKSPACE_DIR}/Aryu/ ${SERVER_DIR}/
                 '''
             }
         }
 
         stage("Install dependencies") {
             steps {
-                sh "${VENV_PIP} install -r ${SERVER_DIR}/requirements.txt"
+                sh "${VENV_PIP} install -r ${SERVER_ROOT}/requirements.txt"
             }
         }
 
@@ -54,15 +53,6 @@ pipeline {
             steps {
                 sh "sudo systemctl restart ${SERVICE_NAME}"
             }
-        }
-    }
-
-    post {
-        success {
-            echo "LIVE deploy success"
-        }
-        failure {
-            echo "LIVE deploy failed"
         }
     }
 }
