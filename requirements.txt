@@ -36,3 +36,4 @@ asyncpg
 
 langdetect
 python-multipart
+gunicorn

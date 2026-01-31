@@ -29,7 +29,7 @@ pipeline {
 
         stage("Install dependencies") {
             steps {
-                sh "${VENV_PIP} install -r ${SERVER_ROOT}/requirements.txt"
+                sh "${VENV_PIP} install -r ${WORKSPACE_DIR}/requirements.txt"
             }
         }
 
