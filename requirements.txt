@@ -33,6 +33,6 @@ fastapi
 pydantic-settings
 uvicorn
 asyncpg
-airllm
+
 langdetect
 python-multipart
