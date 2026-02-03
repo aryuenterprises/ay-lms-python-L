@@ -342,7 +342,6 @@ class WebinarViewSet(
             "data": WebinarSerializer(webinar, context={"request": request}).data
         }, status=201)
 
-
     def update(self, request, uuid=None):
         webinar = get_object_or_404(Webinar, uuid=uuid)
         serializer = WebinarSerializer(webinar, data=request.data, partial=True)
