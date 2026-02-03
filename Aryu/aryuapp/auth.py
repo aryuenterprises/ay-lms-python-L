@@ -35,19 +35,28 @@ class CustomJWTAuthentication(BaseAuthentication):
                 if self.user_type == "student":
                     self.registration_id = payload.get("registration_id")
                     self.student_id = payload.get("student_id")
+                    self.first_name = payload.get("first_name")
                     
                 elif self.user_type == "tutor":
                     self.trainer_id = payload.get("trainer_id")
                     self.employee_id = payload.get("employee_id")
+                    self.full_name = payload.get("full_name")
+
                 elif self.user_type == "admin":
                     self.admin_id = payload.get("employee_id")
                     self.trainer_id = payload.get("trainer_id")
+                    self.full_name = payload.get("full_name")
+
                 elif self.user_type == "employer":
                     self.employer_id = payload.get("employer_id")
+                    self.company_name = payload.get("company_name")
+                    self.full_name = payload.get("full_name")
+
                 elif self.user_type == "superadmin":
                     self.admin_id = payload.get("admin_id")
                     self.username = payload.get("username")
                     self.user_id = payload.get("user_id")
+                    self.full_name = payload.get("full_name")
 
         user = JWTUser(payload)
         # store raw payload in request if you want

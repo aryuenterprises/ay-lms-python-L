@@ -1,6 +1,6 @@
 import secrets
 from django.utils import timezone
-from django.db.models import Sum
+from django.db.models import Sum, Count
 from datetime import timedelta
 from django.conf import settings
 from rest_framework import viewsets, status
@@ -311,9 +311,6 @@ class JoinRoomView(APIView):
     def post(self, request, room_id):
         room = Room.objects.get(id=room_id)
 
-        if room.started:
-            return Response({"error": "Quiz already started"}, status=400)
-
         if timezone.now() < room.start_at:
             return Response({"error": "Quiz not started yet"}, status=400)
 
@@ -327,8 +324,58 @@ class JoinRoomView(APIView):
         participant.generate_token()
         participant.save()
 
-        return Response({"token": participant.token})
+        return Response({
+            "success": True,
+            "token": participant.token
+        })
+    
+class RoomSummaryAPIView(APIView):
 
+    def get(self, request, room_id):
+        room = (
+            Room.objects
+            .filter(id=room_id)
+            .annotate(
+                total_questions=Count("questions", distinct=True),
+                total_marks=Sum("questions__mark")
+            )
+            .values(
+                "id",
+                "title",
+                "description",
+                "total_questions",
+                "total_marks",
+                "max_participants",
+                "start_at",
+                "started"
+            )
+            .first()
+        )
+
+        if not room:
+            return Response(
+                {"success": False, "message": "Room not found"},
+                status=404
+            )
+
+        # Handle NULL Sum when no questions exist
+        room["total_marks"] = room["total_marks"] or 0
+
+        response_data = {
+            "room_id": room["id"],
+            "title": room["title"],
+            "description": room["description"],
+            "total_questions": room["total_questions"],
+            "total_marks": room["total_marks"],
+            "max_participants": room["max_participants"],
+            "start_at": room["start_at"],
+            "started": room["started"]
+        }
+
+        return Response({
+            "success": True,
+            "data": response_data
+        })
 
 class FinalLeaderboardView(APIView):
     def get(self, request, room_id):

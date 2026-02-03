@@ -59,10 +59,10 @@ def push_realtime_notification(sender, instance, created, **kwargs):
     )
 
 
-@receiver(post_save, sender=Student)
-def send_student_welcome(sender, instance, created, **kwargs):
-    if created:
-        send_welcome_email(instance)
+# @receiver(post_save, sender=Student)
+# def send_student_welcome(sender, instance, created, **kwargs):
+#     if created:
+#         send_welcome_email(instance)
 
 @receiver(post_save, sender=Submission)
 def notify_trainer_on_submission(sender, instance, created, **kwargs):

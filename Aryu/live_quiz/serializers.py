@@ -71,6 +71,15 @@ class ParticipantCreateSerializer(serializers.ModelSerializer):
         model = Participant
         fields = ["name", "email", 'phone', 'city','country']
 
+class RoomSummarySerializer(serializers.Serializer):
+    room_id = serializers.UUIDField()
+    title = serializers.CharField()
+    description = serializers.CharField()
+    total_questions = serializers.IntegerField()
+    total_marks = serializers.IntegerField()
+    max_participants = serializers.IntegerField()
+    start_at = serializers.DateTimeField()
+    started = serializers.BooleanField()
 
 class ParticipantSerializer(serializers.ModelSerializer):
     class Meta:

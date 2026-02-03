@@ -20,18 +20,70 @@ class RoomConsumer(JsonWebsocketConsumer):
     def connect(self):
         self.room_id = self.scope["url_route"]["kwargs"]["room_id"]
         self.group = f"room_{self.room_id}"
+
+        query = self.scope["query_string"].decode()
+        params = dict(x.split("=") for x in query.split("&") if "=" in x)
+
+        self.role = params.get("role")
+        self.token = params.get("token")
+
+        if self.role == "participant":
+            try:
+                self.participant = Participant.objects.get(
+                    token=self.token, room_id=self.room_id
+                )
+            except Participant.DoesNotExist:
+                self.close()
+                return
+
         async_to_sync(self.channel_layer.group_add)(self.group, self.channel_name)
         self.accept()
+        self.send_current_state()
 
     def disconnect(self, code):
         async_to_sync(self.channel_layer.group_discard)(self.group, self.channel_name)
+
+    def send_current_state(self):
+        cur = redis_client.hgetall(f"room:{self.room_id}:current")
+        if not cur:
+            return
+
+        qid = cur[b"qid"].decode()
+        start = float(cur[b"start"])
+        timeout = float(cur[b"timeout"])
+
+        q = Question.objects.only("text", "config", "question_type").get(id=qid)
+
+        remaining = max(0, timeout - (time.time() - start))
+
+        answered_key = f"room:{self.room_id}:answered:{qid}"
+        already_answered = False
+
+        self.send_json({
+            "type": "resume_question",
+            "id": qid,
+            "text": q.text,
+            "config": q.config,
+            "timer_remaining": int(remaining)
+        })
+
+        if self.role == "participant":
+            already_answered = redis_client.sismember(
+                answered_key, str(self.participant.id)
+            )
+            self.send_json({
+                "type": "answer_status",
+                "already_answered": already_answered
+            })
 
     def receive_json(self, msg):
         if msg["type"] == "start_question":
             self.start_question(msg["question_id"])
 
         elif msg["type"] == "submit_answer":
-            self.submit_answer(msg["token"], msg["response"])
+            if self.role != "participant":
+                return
+            self.submit_answer(msg["response"])
 
     def start_question(self, question_id):
         q = Question.objects.only(
@@ -67,40 +119,51 @@ class RoomConsumer(JsonWebsocketConsumer):
     def broadcast_question(self, event):
         self.send_json({"type": "question", **event["data"]})
 
-    def submit_answer(self, token, response):
-        participant = Participant.objects.only("id").get(token=token)
+    def submit_answer(self, response):
+        participant = self.participant
 
         cur = redis_client.hgetall(f"room:{self.room_id}:current")
-        qid = cur[b"qid"].decode()
-
-        answered_key = f"room:{self.room_id}:answered:{qid}"
-        if redis_client.sismember(answered_key, participant.id):
+        if not cur:
             return
 
-        redis_client.sadd(answered_key, participant.id)
+        qid = cur[b"qid"].decode()
+        start_time = float(cur[b"start"])
+        timeout = float(cur[b"timeout"])
 
-        time_taken = time.time() - float(cur[b"start"])
+        answered_key = f"room:{self.room_id}:answered:{qid}"
+        if redis_client.sismember(answered_key, str(participant.id)):
+            return
+
+        redis_client.sadd(answered_key, str(participant.id))
+
+        time_taken = time.time() - start_time
 
         q = Question.objects.only("config", "question_type").get(id=qid)
+        correct_answer = None
         is_correct = False
 
         if q.question_type in ["mcq", "radio"]:
-            is_correct = response == q.config["correct"]
+            correct_answer = q.config["correct"]
+            is_correct = response == correct_answer
 
         elif q.question_type == "tf":
-            is_correct = response == q.config["correct"]
+            correct_answer = q.config["correct"]
+            is_correct = response == correct_answer
 
         elif q.question_type == "match":
-            is_correct = response == q.config["pairs"]
+            correct_answer = q.config["pairs"]
+            is_correct = response == correct_answer
 
-        elif q.question_type == "poll":
-            is_correct = False  # no score
 
-        if is_correct:
-            score = compute_score(time_taken)
+        # Time over = auto wrong
+        if time_taken > timeout:
+            is_correct = False
+
+        # Simple scoring: 1 or 0
+        score = 1 if is_correct else 0
 
         redis_client.zincrby(
-            f"room:{self.room_id}:board", score, participant.id
+            f"room:{self.room_id}:board", score, str(participant.id)
         )
 
         Answer.objects.create(
@@ -111,14 +174,16 @@ class RoomConsumer(JsonWebsocketConsumer):
             time_taken=time_taken,
             score=score
         )
-
-        redis_client.zincrby(
-            f"room:{self.room_id}:board",
-            score,
-            participant.id
-        )
+        self.send_json({
+            "type": "answer_result",
+            "is_correct": is_correct,
+            "correct_answer": correct_answer,
+            "your_answer": response,
+            "score_awarded": score
+        })
 
         self.send_leaderboard()
+
 
     def send_leaderboard(self):
         top = redis_client.zrevrange(

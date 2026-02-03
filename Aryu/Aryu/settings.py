@@ -69,6 +69,11 @@ RECAPTCHA_PUBLIC_KEY = '6Ld5EyEsAAAAAMsQJ-ioz2ZRzgAsgbfjFIHcT3Hl'
 RECAPTCHA_PRIVATE_KEY = '6Ld5EyEsAAAAAPhz1O4n51_Ee9P6IyyRfLkHBTVQ'
 RECAPTCHA_REQUIRED_SCORE = 0.5
 
+ZOOM_ACCOUNT_ID="qbm5JdFXT5Kd6vQS3q-bBA"
+ZOOM_CLIENT_ID="sNGZ9uK7QNa8zOQOjHpeHg"
+ZOOM_CLIENT_SECRET="XjdXCI6uS8R9e2Qr903HrA28TpZe55V4"
+ZOOM_TOKEN="7oD_nvdHT3Cia3ChbahPLw"
+
 # CACHES = {
 #     "default": {
 #         "BACKEND": "django.core.cache.backends.redis.RedisCache",
@@ -201,34 +206,19 @@ CRONJOBS = [
 # CORS_ALLOW_ALL_ORIGINS = True
 
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:8000",
     "https://portal.aryuacademy.com",
-    "https://aylms.aryuprojects.com",
-    "https://aylms.aryuprojects.com",
     "https://workshop.aryuacademy.com",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:8000",
-    "https://aylms.aryuprojects.com",
     "https://portal.aryuacademy.com",
-    "https://aylms.aryuprojects.com",
     "https://workshop.aryuacademy.com",
-    
 ]
 
 ALLOWED_HOSTS = [
     "portal.aryuacademy.com",
     "workshop.aryuacademy.com",
-    "aylms.aryuprojects.com",
-    "127.0.0.1",
-    "localhost",
-    "0.0.0.0",
-]
-
- # Allow all hosts for development; change in production
+]  # Allow all hosts for development; change in production
 
 
 ACCOUNT_LOGOUT_ON_PASSWORD_CHANGE = True
@@ -319,18 +309,18 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api"
 
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': 'academy_management',  
-#         'USER': 'postgres',
-#         'PASSWORD':'w9S1Es8',
-#         'HOST': '69.62.78.109',   
-#         'PORT': '5432',  
-#         'AUTOCOMMIT': True,
-#         'CONN_MAX_AGE': 60,
-#     },
-# }
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'aylms_live',  
+        'USER': 'aylms_live',
+        'PASSWORD':'KfdW543FDdfg',
+        'HOST': '69.62.78.109',   
+        'PORT': '5432',  
+        'AUTOCOMMIT': True,
+        'CONN_MAX_AGE': 60,
+    },
+}
 
 
 # DATABASES = {
@@ -349,21 +339,21 @@ MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api"
 #     },
 # }
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'academy_staging',
-        'USER': 'aryu_user',
-        'PASSWORD':'YUra@2025',
-        'HOST': '49.207.178.161',
-        'PORT': '5432',
-        'AUTOCOMMIT': True,
-        'CONN_MAX_AGE': 60,
-        'OPTIONS': {
-            'options': '-c search_path=livequiz,public'
-        }
-    },
-}
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': 'academy_staging',
+#         'USER': 'aryu_user',
+#         'PASSWORD':'YUra@2025',
+#         'HOST': '49.207.178.161',
+#         'PORT': '5432',
+#         'AUTOCOMMIT': True,
+#         'CONN_MAX_AGE': 60,
+#         'OPTIONS': {
+#             'options': '-c search_path=livequiz,public'
+#         }
+#     },
+# }
 
 # DATABASES = {
 #     'default': {
@@ -379,6 +369,8 @@ DATABASES = {
 #         }
 #     }
 # }
+
+
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators

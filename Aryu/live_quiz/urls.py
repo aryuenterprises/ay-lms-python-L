@@ -13,4 +13,5 @@ urlpatterns = [
     path("", include(router.urls)),
     path("join/<uuid:room_id>/", JoinRoomView.as_view()),
     path("leaderboard/<uuid:room_id>/", FinalLeaderboardView.as_view()),
+    path("room/<uuid:room_id>/summary/", RoomSummaryAPIView.as_view()),
 ]

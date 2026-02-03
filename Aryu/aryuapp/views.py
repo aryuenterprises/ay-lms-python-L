@@ -396,6 +396,7 @@ class Login(LoggingMixin, APIView):
                 payload = {
                     "user_id": user.id,
                     "username": user.username,
+                    "name": user.full_name,
                     "user_type": user.user_type,
                     "attendance_type": system_settings.attendance_options if system_settings else None,
                     "role_id": role.role_id if role else None,
@@ -412,6 +413,7 @@ class Login(LoggingMixin, APIView):
                     "user": {
                         "user_id": user.id,
                         "username": user.username,
+                        "name": user.full_name,
                         "user_type": user.user_type,
                         "attendance_type": system_settings .attendance_options if system_settings  else None,
                         "role_id": role.role_id if role else None,
@@ -436,6 +438,7 @@ class Login(LoggingMixin, APIView):
                     'registration_id': student.registration_id,
                     'student_id': student.student_id,
                     'username': student.username,
+                    "name": student.first_name,
                     'user_type': 'student',
                     "attendance_type": system_settings .attendance_options if system_settings  else None,
                     'student_type': student.student_type,
@@ -450,6 +453,7 @@ class Login(LoggingMixin, APIView):
                         'registration_id': student.registration_id,
                         'student_id': student.student_id,
                         'username': student.username,
+                        "name": student.first_name,
                         'user_type': 'student',
                         "attendance_type": system_settings .attendance_options if system_settings  else None,
                         'student_type': student.student_type,
@@ -492,6 +496,7 @@ class Login(LoggingMixin, APIView):
                         'employee_id': trainer.employee_id,
                         'username': trainer.username,
                         'trainer_id': trainer.trainer_id,
+                        'name': trainer.full_name,
                         "attendance_type": system_settings .attendance_options if system_settings  else None,
                         'role_id': role.role_id if role else None,
                         'role_name': role.name if role else None,
@@ -511,6 +516,7 @@ class Login(LoggingMixin, APIView):
                             'employee_id': trainer.employee_id,
                             'trainer_id': trainer.trainer_id,
                             'username': trainer.username,
+                            'name': trainer.full_name,
                             'user_type': trainer.user_type,
                             "attendance_type": system_settings .attendance_options if system_settings  else None,
                             'role_id': role.role_id if role else None,
@@ -3506,14 +3512,13 @@ class SubAdminViewSet(viewsets.ModelViewSet):
         user = self.request.user
         qs = super().get_queryset().filter(is_archived=False)
 
-        # Identify user created id
         user_created_id = None
         if user.user_type == "super_admin":
             user_created_id = getattr(user, "user_id", None)
         elif user.user_type == "admin":
             user_created_id = getattr(user, "trainer_id", None)
 
-        # --- Get admin IDs for this super admin ---
+        # --- Admin IDs for this super admin ---
         admin_ids = []
         if user.user_type == "super_admin" and user_created_id:
             admin_ids = list(
@@ -3524,14 +3529,26 @@ class SubAdminViewSet(viewsets.ModelViewSet):
                 ).values_list("trainer_id", flat=True)
             )
 
-        # --- Filter subadmins based on role ---
+        # --- Super Admin view ---
         if user.user_type == "super_admin" and user_created_id:
             qs = qs.filter(
                 Q(created_by_type="super_admin", created_by=user_created_id) |
                 Q(created_by_type="admin", created_by__in=admin_ids)
             )
+
+        # --- Admin view (FIXED) ---
         elif user.user_type == "admin" and user_created_id:
-            qs = qs.filter(created_by_type="admin", created_by=user_created_id)
+
+            # Find super admin who created this admin
+            super_admin_id = Trainer.objects.filter(
+                trainer_id=user_created_id,
+                created_by_type="super_admin"
+            ).values_list("created_by", flat=True).first()
+
+            qs = qs.filter(
+                Q(created_by_type="super_admin", created_by=super_admin_id) |
+                Q(created_by_type="admin", created_by=user_created_id)
+            )
 
         return qs.order_by('-employer_id')
 
@@ -3565,15 +3582,25 @@ class SubAdminViewSet(viewsets.ModelViewSet):
                 Q(created_by_type="admin", created_by__in=admin_ids)
             )
         elif user.user_type == "admin" and user_created_id:
-            companies = companies.filter(created_by_type="admin", created_by=user_created_id)
 
-        company_serializer = EmployerSerializer(companies, many=True)
+            # Find the super admin who created this admin
+            super_admin_id = Trainer.objects.filter(
+                trainer_id=user_created_id,
+                created_by_type="super_admin"
+            ).values_list("created_by", flat=True).first()
+
+            companies = companies.filter(
+                Q(created_by_type="super_admin", created_by=super_admin_id) |
+                Q(created_by_type="admin", created_by=user_created_id)
+            )
+
+        company_data = companies.values("company_id", "company_name")
 
         return Response({
             "success": True,
             "message": "SubAdmins retrieved successfully",
             "data": serializer.data,
-            "companies": company_serializer.data
+            "companies": company_data
         }, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
@@ -3675,9 +3702,11 @@ class SubAdminViewSet(viewsets.ModelViewSet):
                 return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
 
             # Ensure only admin can reset
-            if not hasattr(user, 'user_type') or user.user_type.lower() != 'admin':
-                return Response({"success": False, "message": "Only admin users can reset Sub admin passwords."},
-                                status=status.HTTP_200_OK)
+            if not hasattr(user, 'user_type') or user.user_type.lower() not in ['admin', 'super_admin']:
+                return Response(
+                    {"success": False, "message": "Only admin or super admin users can reset Sub admin passwords."},
+                    status=status.HTTP_200_OK
+                )
 
             # Get new password
             new_password = request.data.get('new_password')
@@ -4036,7 +4065,7 @@ class StudentRegistration(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-    
+
     def perform_create(self, serializer):
 
         user = self.request.user  # this is JWTUser from your CustomJWTAuthentication
@@ -4633,14 +4662,52 @@ class StudentTicketViewSet(APIView):
     # Admin scope
     def get_admin_scope(self, user):
         ut = getattr(user, "user_type", None)
+
+        # ---------------- SUPER ADMIN ----------------
         if ut == "super_admin":
-            admin_ids = Trainer.objects.filter(created_by=user.id, created_by_type="super_admin", user_type="admin").values_list("trainer_id", flat=True)
-            return Q(student__created_by=user.id, student__created_by_type="super_admin") | Q(student__created_by__in=admin_ids, student__created_by_type="admin")
+            user_id = getattr(user, "user_id", None)
+            if not user_id:
+                return Q(pk__isnull=True)
+
+            user_id_str = str(user_id)   # 🔧 CAST TO STRING
+
+            admin_ids = list(
+                Trainer.objects.filter(
+                    created_by=user_id_str,
+                    created_by_type="super_admin",
+                    user_type="admin",
+                    is_archived=False
+                ).values_list("trainer_id", flat=True)
+            )
+
+            admin_ids_str = [str(i) for i in admin_ids]  # 🔧 CAST TO STRING
+
+            return (
+                Q(student__created_by=user_id_str, student__created_by_type="super_admin") |
+                Q(student__created_by__in=admin_ids_str, student__created_by_type="admin")
+            )
+
+        # ---------------- ADMIN ----------------
         elif ut == "admin":
-            trainer = Trainer.objects.filter(username=user.username).first()
-            super_id = trainer.created_by if trainer and getattr(trainer, "created_by_type", None) == "super_admin" else None
-            return Q(student__created_by=getattr(user, "trainer_id", None), student__created_by_type="admin") | Q(student__created_by=super_id, student__created_by_type="super_admin")
-        return Q()
+            trainer_id = getattr(user, "trainer_id", None)
+            if not trainer_id:
+                return Q(pk__isnull=True)
+
+            trainer_id_str = str(trainer_id)  # 🔧 CAST TO STRING
+
+            super_admin_id = Trainer.objects.filter(
+                trainer_id=trainer_id,
+                created_by_type="super_admin"
+            ).values_list("created_by", flat=True).first()
+
+            super_admin_id_str = str(super_admin_id) if super_admin_id else None  # 🔧 CAST TO STRING
+
+            return (
+                Q(student__created_by=trainer_id_str, student__created_by_type="admin") |
+                Q(student__created_by=super_admin_id_str, student__created_by_type="super_admin")
+            )
+
+        return Q(pk__isnull=True)
     
     def patch(self, request):
         if request.query_params.get("wanda"):
@@ -5252,9 +5319,16 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
     
     def partial_update(self, request, *args, **kwargs):
         try:
-            student = self.get_object()
-            serializer = self.get_serializer(student, data=request.data, partial=True)
+            student = kwargs.get('student_id')
+            if not student:
+                return Response({"success": False, "message": "Student ID missing"}, status=200)
 
+            try:
+                student = Student.objects.get(student_id=student)
+            except Student.DoesNotExist:
+                return Response({"success": False, "message": "Student not found"}, status=200)
+
+            serializer = self.get_serializer(student, data=request.data, partial=True)
             user = request.user
 
             # Ensure module_id points to Students
@@ -8066,19 +8140,58 @@ class AnnouncementViewSet(LoggingMixin, viewsets.ModelViewSet):
     
     def get_queryset(self):
         user = self.request.user
-        admin_trainer_id = getattr(user, "trainer_id", None)
+        qs = Announcement.objects.filter(is_archived=False)
 
-        # Start with announcements created by this admin
-        qs = Announcement.objects.filter(is_archived=False, created_by=admin_trainer_id)
+        # -------- SUPER ADMIN --------
+        if user.user_type == "super_admin":
+            super_admin_id = str(user.user_id)
 
-        # Filter audience based on user type
-        if user.user_type == "student":
-            qs = qs.filter(Q(audience="all") | Q(audience="students"))
-        elif user.user_type == "tutor":  # trainer
-            qs = qs.filter(Q(audience="all") | Q(audience="trainers"))
-        # admin sees all their announcements, so no further filter needed
+            admin_ids = Trainer.objects.filter(
+                created_by=super_admin_id,
+                created_by_type="super_admin",
+                is_archived=False
+            ).values_list("trainer_id", flat=True)
 
-        return qs.order_by('-created_at')
+            allowed_creators = list(admin_ids) + [super_admin_id]
+
+            return qs.filter(created_by__in=allowed_creators).order_by("-created_at")
+
+        # -------- ADMIN --------
+        if user.user_type == "admin" and getattr(user, "trainer_id", None):
+            admin_trainer_id = str(user.trainer_id)
+
+            super_admin_id = Trainer.objects.filter(
+                trainer_id=admin_trainer_id,
+                created_by_type="super_admin",
+                is_archived=False
+            ).values_list("created_by", flat=True).first()
+
+            allowed_creators = [admin_trainer_id]
+            if super_admin_id:
+                allowed_creators.append(str(super_admin_id))
+
+            return qs.filter(created_by__in=allowed_creators).order_by("-created_at")
+
+        return qs.none()
+
+    def list(self, request, *args, **kwargs):
+        user = request.user
+
+        queryset = self.get_queryset()
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(
+            {
+                "success": True,
+                "count": queryset.count(),
+                "data": serializer.data
+            }
+        )
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -8363,25 +8476,54 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
             category_filter = Q(is_archived=False)
 
             if user_type == "super_admin":
+                user_id_str = str(user_id)
+
                 admin_ids = list(
                     Trainer.objects.filter(
-                        created_by=user_id,
+                        created_by=user_id_str,
                         created_by_type="super_admin",
                         is_archived=False
                     ).values_list("trainer_id", flat=True)
                 )
-                batch_filter &= Q(created_by=user_id, created_by_type="super_admin") | Q(created_by__in=admin_ids, created_by_type="admin")
-                course_filter &= Q(created_by=user_id, created_by_type="super_admin") | Q(created_by__in=admin_ids, created_by_type="admin")
-                category_filter &= Q(created_by=user_id, created_by_type="super_admin") | Q(created_by__in=admin_ids, created_by_type="admin")
+
+                admin_ids_str = [str(i) for i in admin_ids]
+
+                ownership_q = (
+                    Q(created_by=user_id_str, created_by_type="super_admin") |
+                    Q(created_by__in=admin_ids_str, created_by_type="admin")
+                )
+
+                batch_filter &= ownership_q
+                course_filter &= ownership_q
+                category_filter &= ownership_q
+
 
             elif user_type == "admin":
-                super_admin_id = Trainer.objects.filter(trainer_id=trainer_id).values_list("created_by", flat=True).first()
-                batch_filter &= Q(created_by=trainer_id, created_by_type="admin") | Q(created_by=super_admin_id, created_by_type="super_admin")
-                course_filter &= Q(created_by=trainer_id, created_by_type="admin") | Q(created_by=super_admin_id, created_by_type="super_admin")
-                category_filter &= Q(created_by=trainer_id, created_by_type="admin") | Q(created_by=super_admin_id, created_by_type="super_admin")
+                trainer_id_str = str(trainer_id)
+
+                super_admin_id = Trainer.objects.filter(
+                    trainer_id=trainer_id
+                ).values_list("created_by", flat=True).first()
+
+                super_admin_id_str = str(super_admin_id) if super_admin_id else None
+
+                ownership_q = (
+                    Q(created_by=trainer_id_str, created_by_type="admin") |
+                    Q(created_by=super_admin_id_str, created_by_type="super_admin")
+                )
+
+                batch_filter &= ownership_q
+                course_filter &= ownership_q
+                category_filter &= ownership_q
+
 
             # ------------------- Fetch batches -------------------
-            batch_qs = NewBatch.objects.filter(batch_filter).select_related("course", "course__course_category", "trainer")
+            batch_qs = NewBatch.objects.filter(batch_filter).select_related(
+                "course", "course__course_category", "trainer"
+            )
+
+            print("Batch QS Count:", batch_qs.count())
+
             batch_data = [
                 {
                     "batch_id": b.batch_id,
@@ -8398,6 +8540,7 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 }
                 for b in batch_qs
             ]
+
 
             # ------------------- Fetch courses with batches -------------------
             course_qs = Course.objects.filter(course_filter).select_related("course_category")
@@ -9363,7 +9506,10 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     for n in notes_qs
                 ]
 
-                schedules = ClassSchedule.objects.filter(batch__batch_id=nb.batch_id).annotate(
+                schedules = ClassSchedule.objects.filter(
+                    new_batch=nb,
+                    is_archived=False
+                ).annotate(
                     course_name=F("course__course_name"),
                     trainer_name=F("trainer__full_name")
                 ).values(

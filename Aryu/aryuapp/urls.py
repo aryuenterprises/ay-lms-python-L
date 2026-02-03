@@ -43,22 +43,10 @@ urlpatterns = [
    path('attendance/<int:student_id>/adumneoie', AttendanceViewSet.as_view({'post': 'admin_mark_attendance'})),
    path('attendance/<int:student_id>/full_logs', AttendanceViewSet.as_view({'get': 'full_logs'})),
    path('attendance/<int:student_id>/status', AttendanceViewSet.as_view({'get': 'attendance_status'})),
-   path(
-      'student_profile/<str:student_id>/archive',
-      StudentProfileViewSet.as_view({'patch': 'archive_student'})
-   ),
-   path(
-      'student_profile/<str:student_id>',
-      StudentProfileViewSet.as_view({'get': 'retrieve', 'patch': 'update'})
-   ),
-   path(
-      'student_profile/<str:student_id>/courses',
-      StudentProfileViewSet.as_view({'get': 'get_courses_taken'})
-   ),
-   path(
-      'student_profile/<str:student_id>/courses/<str:course_id>',
-      StudentProfileViewSet.as_view({'get': 'get_courses'})
-   ),
+   path('student_profile/<str:student_id>/archive',StudentProfileViewSet.as_view({'patch': 'archive_student'})),
+   path('student_profile/<str:student_id>',StudentProfileViewSet.as_view({'get': 'retrieve', 'patch': 'partial_update'})),
+   path('student_profile/<str:student_id>/courses',StudentProfileViewSet.as_view({'get': 'get_courses_taken'})),
+   path('student_profile/<str:student_id>/courses/<str:course_id>', StudentProfileViewSet.as_view({'get': 'get_courses'})),
    path('student_profile/<str:student_id>/admin_reset_password', StudentProfileViewSet.as_view({'patch': 'admin_reset_password'})),
    path('forgot-password/', ForgotPasswordView.as_view(), name='forgot-password'),
    path('verify-otp/', VerifyOTPView.as_view(), name='verify-otp'),

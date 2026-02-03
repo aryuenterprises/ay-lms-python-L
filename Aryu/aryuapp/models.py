@@ -754,12 +754,20 @@ class Certificate(models.Model):
     student = models.ForeignKey(
         Student,
         on_delete=models.CASCADE,
-        to_field='student_id',
-        db_column='student_id', null=False
+        to_field='student_id',  
+        db_column='student_id', null=True, blank=True
     )
+    webinar_registration = models.OneToOneField(
+        'webinar.WebinarRegistration',
+        on_delete=models.CASCADE,   
+        null=True, blank=True,
+        related_name='certificate'
+    )
+    # on_delete=models.CASCADE, 
+    # related_name='certificate',null=True,blank=True
     certificate_number = models.CharField(max_length=100, unique=True)
     issued_date = models.DateField(auto_now_add=True)
-    certificate_file = models.FileField(upload_to='certificates/', blank=True, null=True)
+    certificate_file = models.ImageField(upload_to='certificates/', blank=True, null=True)
     student_name = models.CharField(max_length=255)
     course_name = models.CharField(max_length=255)
     course_duration = models.CharField(max_length=255)

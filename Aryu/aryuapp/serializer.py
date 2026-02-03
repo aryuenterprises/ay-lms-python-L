@@ -716,28 +716,42 @@ class EmployerSerializer(serializers.ModelSerializer, NotesMixin):
         read_only_fields = ['company_id']
 
     def get_notes(self, obj):
-    
-        from .models import Note  
 
         notes_qs = Note.objects.filter(
             object_id=obj.pk,
             content_type__model=obj.__class__.__name__.lower()
         ).order_by('-created_at')
 
-        def convert_status(value):
+        def resolve_name(created_by, created_by_type):
+            if not created_by:
+                return None
 
-            if isinstance(value, str):
-                if value.lower() == "true":
-                    return True
-                if value.lower() == "false":
-                    return False
-            return value
+            # created_by is CHAR → cast to INT for FK lookup
+            try:
+                creator_id = int(created_by)
+            except (TypeError, ValueError):
+                return str(created_by)
+
+            role = (created_by_type or "").lower()
+
+            # 🔹 super_admin → users.id
+            if role == "super_admin":
+                user = User.objects.filter(id=creator_id).first()
+                return user.full_name if user else str(created_by)
+
+            # 🔹 admin → trainer.trainer_id
+            if role == "admin":
+                trainer = Trainer.objects.filter(trainer_id=creator_id).first()
+                return trainer.full_name if trainer else str(created_by)
+
+            # 🔹 fallback
+            return str(created_by)
 
         return [
             {
                 "note_id": note.id,
                 "reason": note.reason,
-                "created_by": note.created_by,
+                "created_by": resolve_name(note.created_by, note.created_by_type),
                 "status": note.status,
                 "created_at": note.created_at.strftime("%Y-%m-%d %H:%M"),
             }
@@ -792,31 +806,50 @@ class SubAdminSerializer(serializers.ModelSerializer, NotesMixin):
 
     class Meta:
         model = SubAdmin
-        fields = ['employer_id', 'role', 'full_name', 'username', 'email', 'company', 'company_name', 'phone_no',  'password', 'designation', 'status', 'is_archived', 'created_by', 'created_at', 'notes']
+        fields = ['employer_id', 'role', 'full_name', 'username', 'email', 
+                  'company', 'company_name', 'phone_no',  'password', 'designation', 'status', 'is_archived', 'created_by', 'created_at', 'notes']
 
     def get_notes(self, obj):
-        
-        from .models import Note  
 
         notes_qs = Note.objects.filter(
             object_id=obj.pk,
             content_type__model=obj.__class__.__name__.lower()
         ).order_by('-created_at')
 
-        def convert_status(value):
+        def resolve_name(created_by, created_by_type):
+            if not created_by:
+                return None
 
-            if isinstance(value, str):
-                if value.lower() == "true":
-                    return True
-                if value.lower() == "false":
-                    return False
-            return value
+            # created_by is CHAR → cast to INT for FK lookup
+            try:
+                creator_id = int(created_by)
+            except (TypeError, ValueError):
+                return str(created_by)
+
+            role = (created_by_type or "").lower()
+            print("Role:", role)
+            print("Creator ID:", creator_id)
+
+            # super_admin → users.id
+            if role == "super_admin":
+                user = User.objects.filter(id=creator_id).first()
+                return user.full_name if user else str(created_by)
+
+            # admin → trainer.trainer_id
+            if role == "admin":
+
+                trainer = Trainer.objects.filter(trainer_id=creator_id).first()
+                print("Trainer:", trainer)
+                return trainer.full_name if trainer else str(created_by)
+
+            # fallback
+            return str(created_by)
 
         return [
             {
                 "note_id": note.id,
                 "reason": note.reason,
-                "created_by": note.created_by,
+                "created_by": resolve_name(note.created_by, note.created_by_type),
                 "status": note.status,
                 "created_at": note.created_at.strftime("%Y-%m-%d %H:%M"),
             }
@@ -882,7 +915,7 @@ class SubAdminSerializer(serializers.ModelSerializer, NotesMixin):
         # Check trainers (excluding archived ones)
         trainer_qs = Trainer.objects.filter(contact_no__iexact=value, is_archived=False)
         #check employer (exclude archived ones)
-        employer_qs = SubAdmin.objects.filter(phone=value, is_archived=False)
+        employer_qs = SubAdmin.objects.filter(phone__iexact=value, is_archived=False)
 
         # Exclude current instance from check
         if instance:
@@ -1923,21 +1956,9 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         return final_batches
 
     def get_profile_pic(self, obj):
-        try:
-            if not obj.profile_pic:
-                return None
-
-            file_path = obj.profile_pic.path
-
-            # File missing on disk
-            if not os.path.exists(file_path):
-                return None
-
-            return f"{settings.MEDIA_BASE_URL}{obj.profile_pic.url}"
-
-        except Exception:
-            # Absolute safety net — API must NEVER crash
-            return None
+        if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
+            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
+        return None
 
     def get_course(self, obj):
         courses = Course.objects.filter(
@@ -2428,7 +2449,6 @@ class TrainerSerializer(serializers.ModelSerializer):
         new_batches = NewBatch.objects.filter(
             trainer=obj,
             is_archived=False,
-            status=True
         ).prefetch_related('students', 'course')
 
         batch_data = []
@@ -2482,7 +2502,7 @@ class TrainerSerializer(serializers.ModelSerializer):
         if not re.match(r'^[A-Za-z ]+$', value):
             raise serializers.ValidationError("Name must contain only letters and spaces.")
         return value
-        
+
     def validate_username(self, value):
         value = value
         instance = getattr(self, 'instance', None)

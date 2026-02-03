@@ -105,3 +105,110 @@ def send_webinar_registration_email(registration):
     email_msg.attach_alternative(html_content, "text/html")
     return email_msg.send()
 
+
+def send_webinar_certificate_email(registration, certificate_file):
+    webinar = registration.webinar
+
+    subject = f"🎓 Certificate of Completion – {webinar.title}"
+    from_email = settings.DEFAULT_FROM_EMAIL
+    to = [registration.email]
+
+    background_url = "https://aylms.aryuprojects.com/api/media/email/banner.svg"
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <body style="margin:0; padding:0; font-family:Arial, Helvetica, sans-serif;">
+
+      <!-- FULL BACKGROUND -->
+      <table width="100%" cellpadding="0" cellspacing="0"
+        style="background:url('{background_url}') no-repeat center top;
+               background-size:cover; padding:70px 0;">
+
+        <tr>
+          <td align="right" style="padding-right:10vw;">
+
+            <!-- FLOATING CERTIFICATE CARD -->
+            <table width="460" cellpadding="0" cellspacing="0"
+              style="background:#0c0c0c;
+                     border-radius:18px;
+                     box-shadow:0 0 35px rgba(255,0,0,0.45);
+                     overflow:hidden;">
+
+              <!-- BODY -->
+              <tr>
+                <td style="padding:40px 40px; text-align:center;">
+
+                  <h2 style="margin:0; color:#ffffff; font-size:26px;">
+                    🎉 Thank You for Joining!
+                  </h2>
+
+                  <p style="color:#cccccc; margin-top:14px; font-size:14px;">
+                    We’re glad you attended our webinar
+                  </p>
+
+                  <!-- WEBINAR TITLE -->
+                  <div style="
+                    margin-top:24px;
+                    background:linear-gradient(135deg, #4a0000, #b30000);
+                    padding:18px 24px;
+                    border-radius:14px;
+                    color:#ffffff;
+                    font-size:18px;
+                    font-weight:700;
+                    box-shadow:0 0 18px rgba(255,0,0,0.65);
+                  ">
+                    {webinar.title}
+                  </div>
+
+                  <!-- MESSAGE -->
+                  <p style="margin-top:24px; font-size:14px; color:#dddddd; line-height:24px;">
+                    Hi <b>{registration.name or "Participant"}</b>,<br><br>
+                    Thank you for actively participating in our webinar.<br>
+                    We appreciate the time and effort you invested in learning with us.
+                  </p>
+
+                  <p style="margin-top:16px; font-size:14px; color:#bbbbbb;">
+                    📄 Your <b>Certificate of Completion</b> is attached to this email as a PDF.
+                  </p>
+
+                  <p style="margin-top:20px; font-size:13px; color:#aaaaaa;">
+                    Keep learning. Keep growing. 🚀
+                  </p>
+
+                </td>
+              </tr>
+
+              <!-- FOOTER -->
+              <tr>
+                <td style="background:#0c0c0c; padding:16px; text-align:center;
+                           font-size:12px; color:#888;">
+                  © {datetime.now().year} Aryu Academy. All rights reserved.
+                </td>
+              </tr>
+
+            </table>
+
+          </td>
+        </tr>
+
+      </table>
+
+    </body>
+    </html>
+    """
+
+    email_msg = EmailMultiAlternatives(
+        subject,
+        "Thank you for joining the webinar. Your certificate is attached.",
+        from_email,
+        to
+    )
+
+    # Attach HTML
+    email_msg.attach_alternative(html_content, "text/html")
+
+    # Attach Certificate PDF
+    email_msg.attach_file(certificate_file.path)
+
+    return email_msg.send()
