@@ -29,9 +29,10 @@ pipeline {
 
         stage("Install dependencies") {
             steps {
-                sh "${VENV_PIP} install -r ${WORKSPACE_DIR}/requirements.txt"
+                sh "${VENV_PIP} install -r ${WORKSPACE_DIR}/Aryu/requirements.txt"
             }
         }
+
 
         stage("Django check") {
             steps {
