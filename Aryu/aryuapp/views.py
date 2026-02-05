@@ -8472,6 +8472,7 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
 
             # ------------------ Hierarchy-based Active Data ------------------
             batch_filter = Q(is_archived=False, status=True)
+            print(f"batch filter before: {batch_filter}")
             course_filter = Q(is_archived=False, status__iexact="Active")
             category_filter = Q(is_archived=False)
 
@@ -8516,7 +8517,7 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 course_filter &= ownership_q
                 category_filter &= ownership_q
 
-
+            print(f"batch filter after: {batch_filter}")
             # ------------------- Fetch batches -------------------
             batch_qs = NewBatch.objects.filter(batch_filter).select_related(
                 "course", "course__course_category", "trainer"
@@ -9550,6 +9551,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                 })
             
             unified_batches = sorted(unified_batches, key=lambda x: x['created_at'], reverse=True)
+            print(f"Unified batches count: {len(unified_batches)}")
 
             # ------------------ Hierarchy-based Active Data ------------------
             user_created_id = getattr(user, "trainer_id", None)  # For admin

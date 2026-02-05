@@ -3491,14 +3491,14 @@ class NewBatchSerializer(serializers.ModelSerializer):
                 validated_data["created_by"] = str(getattr(request.user, "trainer_id", None))
 
             elif role == "super_admin":
-                validated_data["created_by"] = str(getattr(request.user, "id", None))
+                validated_data["created_by"] = str(getattr(request.user, "user_id", None))
 
             elif role == "student":
                 validated_data["created_by"] = str(getattr(request.user, "student_id", None))
 
             else:
                 # fallback to user.id always
-                validated_data["created_by"] = str(getattr(request.user, "id", None))
+                validated_data["created_by"] = str(getattr(request.user, "user_id", None))
 
             validated_data["created_by_type"] = role
         # --------------------------------------------------------------
