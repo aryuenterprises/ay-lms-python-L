@@ -9057,6 +9057,7 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 "message": f"{str(e)}"
             }, status=status.HTTP_200_OK)
 
+
 class RecurringScheduleView(viewsets.ModelViewSet, LoggingMixin):
     queryset = RecurringSchedule.objects.all().order_by('-recurring_id')
     permission_classes = [IsAuthenticated]
