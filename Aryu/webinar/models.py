@@ -22,9 +22,10 @@ class Webinar(models.Model):
         null=True,
         help_text="YouTube/Vimeo embed URL"
     )
-
+    waba_link = models.URLField(blank=True, null=True, help_text="whatsapp redirect url")
     created_by = models.CharField(max_length=50)
     created_by_type = models.CharField(max_length=20,)
+    mode = models.BooleanField(default=True, help_text="True for online, False for offline")
 
     scheduled_start = models.DateTimeField()
     registration_link = models.URLField(blank=True, null=True)
@@ -35,6 +36,7 @@ class Webinar(models.Model):
     regular_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
     status = models.CharField(max_length=20,default='DRAFT')
+    webinar_status = models.BooleanField(default=True, help_text="True for active, False for inactive")
     is_paid = models.BooleanField(default=False)
     is_registration_open = models.BooleanField(default=True)
     is_completed = models.BooleanField(default=False)
@@ -42,12 +44,11 @@ class Webinar(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_deleted = models.BooleanField(default=False)
-
-    def can_register(self):
-        return (
-            self.status in ['DRAFT', 'SCHEDULED']
-            and self.is_registration_open
-        )
+    
+    def get_image_url(self):
+        if self.webinar_image:
+            return f"https://aylms.aryuprojects.com/api{self.webinar_image.url}"
+        return None
 
     def __str__(self):
         return self.title
@@ -61,6 +62,7 @@ class WebinarTool(models.Model):
 
     tools_title = models.CharField(max_length=100)
     tools_image = models.ImageField(upload_to="tool_images/")
+    is_deleted = models.BooleanField(default=False)
 
     def __str__(self):
         return self.tools_title
@@ -75,9 +77,24 @@ class webinar_metadata(models.Model):
     meta_title = models.CharField(max_length=100)
     meta_description = models.TextField()
     meta_image = models.ImageField(upload_to="webinar_meta_images/")
+    is_deleted = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.meta_title} → {self.webinar.title}"
+
+class Webinar_FAQ(models.Model):
+    webinar = models.ForeignKey(
+        Webinar,
+        related_name="faqs",
+        on_delete=models.CASCADE
+    )
+
+    question = models.CharField(max_length=255)
+    answer = models.TextField()
+    is_deleted = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"FAQ: {self.question} → {self.webinar.title}"
 
 class WebinarRegistration(models.Model):
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
@@ -97,7 +114,7 @@ class WebinarRegistration(models.Model):
     profession = models.CharField(max_length=100, blank=True, null=True)
     state = models.CharField(max_length=100, blank=True, null=True)
     city = models.CharField(max_length=100, blank=True, null=True)
-    wants_reminder = models.BooleanField(default=False)
+    wants_reminder = models.BooleanField(default=True)
     is_paid = models.BooleanField(default=False)
     payment_transaction = models.ForeignKey(
         'aryuapp.PaymentTransaction',
@@ -219,6 +236,7 @@ class WebinarFeedback(models.Model):
 
      # Overall experience
     overall_rating = models.PositiveSmallIntegerField()  # 1–5
+    name = models.CharField(max_length=100, blank=True, null=True)
 
     # Content & delivery
     content_quality = models.PositiveSmallIntegerField()  # 1–5

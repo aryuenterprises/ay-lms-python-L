@@ -1,6 +1,11 @@
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
+from django.core.files import File
 from django.conf import settings
+import logging
+from .webinar_emails import send_webinar_certificate_email
+logger = logging.getLogger(__name__)
+from .whatsapp import send_webinar_certificate_whatsapp
 
 
 def center_x(draw, text, font, img_width):
@@ -20,7 +25,7 @@ def fit_font(draw, text, font_path, max_width, start_size):
 
 def generate_certificate_image_and_save(certificate):
 
-    template_path = Path(settings.MEDIA_ROOT) / "certificates" / "4016369-ai (1).png"
+    template_path = Path(settings.MEDIA_ROOT) / "certificates" / "AK.png"
     output_dir = Path(settings.MEDIA_ROOT) / "certificates"
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -33,33 +38,27 @@ def generate_certificate_image_and_save(certificate):
     img_width, img_height = img.size
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-    name = certificate.student_name
+    name = certificate.student_name.title()
     course = certificate.course_name
 
     name_font = fit_font(draw, name, font_path, img_width * 0.45, 54)
     course_font = fit_font(draw, course, font_path, img_width * 0.5, 36)
-    small_font = ImageFont.truetype(str(font_path), 18)
+    small_font = ImageFont.truetype(str(font_path), 20)
 
-    draw.text((int(img_width * 0.865), int(img_height * 0.055)),
+    draw.text((int(img_width * 0.850), int(img_height * 0.077)),
               certificate.certificate_number, fill="black", font=small_font)
 
     name_y = int(img_height * 0.45)
-    draw.text((center_x(draw, name, name_font, img_width), name_y),
-              name, fill="black", font=name_font)
+    draw.text((center_x(draw, name, name_font, img_width), name_y),name,fill="black",font=name_font)
 
-    course_y = name_y + 140
-    draw.text((center_x(draw, course, course_font, img_width), course_y),
+    course_y = name_y + 205
+    draw.text((int(img_width * 0.375), course_y),
               course, fill="black", font=course_font)
     
-    date_y = 0.79
-    duration_y = 0.83
+    date_y = 0.827
 
-    draw.text((int(img_width * 0.14), int(img_height * date_y)),
+    draw.text((int(img_width * 0.250), int(img_height * date_y)),
               certificate.issued_date.strftime("%d-%m-%Y"),
-              fill="black", font=small_font)
-
-    draw.text((int(img_width * 0.14), int(img_height * duration_y)),
-              certificate.course_duration,
               fill="black", font=small_font)
 
     img.save(output_path)
@@ -84,4 +83,52 @@ def fit_font(draw, text, font_path, max_width, start_size):
         font = ImageFont.truetype(str(font_path), size)
     return font
 
+
+def convert_certificate_image_to_pdf(image_path: Path):
+    """
+    Takes a PNG certificate image and converts it to PDF
+    """
+    pdf_path = image_path.with_suffix(".pdf")
+
+    image = Image.open(image_path).convert("RGB")
+    image.save(pdf_path, "PDF", resolution=300.0)
+
+    return pdf_path
+
+def generate_and_send_certificate_pdf(certificate, phone):
+    """
+    Uses existing Certificate model fields only
+    """
+    registration = certificate.webinar_registration
+    # Generate image
+    image_path = generate_certificate_image_and_save(certificate)
+
+    # Convert image → PDF
+    pdf_path = convert_certificate_image_to_pdf(Path(image_path))
+
+    # Save PDF into certificate_file
+    with open(pdf_path, "rb") as f:
+        certificate.certificate_file.save(
+            pdf_path.name,
+            File(f),
+            save=True
+        )
+    
+    #send email with PDF attachment
+    email_sent = False
+    try:
+        send_webinar_certificate_email(
+            registration=registration,
+            certificate_file=certificate.certificate_file
+        )
+        logger.info("Certificate email sent to %s for registration ID %s", registration.email, registration.id)
+        email_sent = True
+    except Exception as e:
+        logger.exception("Email certificate sending failed: %s", e)
+
+    # Send WhatsApp PDF
+    send_webinar_certificate_whatsapp(
+        certificate=certificate,
+        phone=phone
+    )
 

@@ -41,13 +41,32 @@ def sync_zoom_attendance(session: WebinarSession):
 
     _update_attendance_summary(session.webinar)
 
+MIN_ATTENDANCE_PERCENTAGE = 60
+
 def _update_attendance_summary(webinar):
+    session = getattr(webinar, "session", None)
+
+    # Webinar must have started and ended
+    if not session or not session.started_at or not session.ended_at:
+        return
+
+    webinar_total_seconds = int(
+        (session.ended_at - session.started_at).total_seconds()
+    )
+
+    if webinar_total_seconds <= 0:
+        return
+
     for reg in webinar.registrations.all():
         logs = reg.attendance_logs.all()
         if not logs.exists():
             continue
 
         total_seconds = sum(l.duration_seconds for l in logs)
+
+        attendance_percentage = (
+            (total_seconds / webinar_total_seconds) * 100
+        )
 
         summary, _ = WebinarAttendanceSummary.objects.get_or_create(
             registration=reg
@@ -57,10 +76,12 @@ def _update_attendance_summary(webinar):
         summary.join_count = logs.count()
         summary.first_join_at = logs.first().join_time
         summary.last_leave_at = logs.last().leave_time
+
         summary.eligible_for_certificate = (
-            total_seconds >= MIN_CERTIFICATE_SECONDS
+            attendance_percentage >= MIN_ATTENDANCE_PERCENTAGE
         )
+
         summary.save()
 
-        reg.attended = True
+        reg.attended = total_seconds > 0
         reg.save(update_fields=["attended"])

@@ -767,7 +767,7 @@ class Certificate(models.Model):
     # related_name='certificate',null=True,blank=True
     certificate_number = models.CharField(max_length=100, unique=True)
     issued_date = models.DateField(auto_now_add=True)
-    certificate_file = models.ImageField(upload_to='certificates/', blank=True, null=True)
+    certificate_file = models.FileField(upload_to='certificates/', blank=True, null=True)
     student_name = models.CharField(max_length=255)
     course_name = models.CharField(max_length=255)
     course_duration = models.CharField(max_length=255)
@@ -1286,6 +1286,7 @@ class Message(models.Model):
 class StudentTicket(models.Model):
     ticket_id = models.AutoField(primary_key=True)
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="tickets")
+    ticket_type = models.CharField(max_length=30,default="support") # support / course enquiry / etc....(ithukumela therila later will add)
     subject = models.CharField(max_length=255)
     message = models.TextField()
     priority = models.CharField(max_length=10, default="Low")

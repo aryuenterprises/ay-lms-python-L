@@ -467,14 +467,14 @@ def create_ticket_notifications(sender, instance, created, **kwargs):
     if super_admin:
         Notification.objects.create(
             super_admin=super_admin,
-            message=f"ticket:new: Ticket #{ticket.ticket_id} created by {student.first_name}",
+            message=f"ticket:new: Ticket created by {student.first_name}",
         )
 
     # Admin notification
     if admin:
         Notification.objects.create(
             trainer=admin,
-            message=f"ticket:new: Ticket #{ticket.ticket_id} created by {student.first_name}",
+            message=f"ticket:new: Ticket created by {student.first_name}",
         )
 
 

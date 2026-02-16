@@ -8,6 +8,7 @@ urlpatterns = [
     path('web', WebinarViewSet.as_view({'get': 'list','post': 'create'}), name='webinar-list'),
     path("webhooks/whatsapp/", whatsapp_webhook),
     path('web/<str:uuid>/', WebinarViewSet.as_view({'get': 'retrieve','put': 'update','patch': 'update','delete': 'delete'}), name='webinar-detail'),
+    path("<uuid:uuid>/tools/<int:pk>/", WebinarToolUpdateDeleteView.as_view(), name="webinar-tool-update-delete"),
     
     # Webinar Registration
     path('<slug:slug>/register/',WebinarRegistrationViewSet.as_view({'post': 'create'}),name='webinar-register'),
@@ -26,6 +27,7 @@ urlpatterns = [
     # Webinar Feedback
     path("feedback/",WebinarFeedbackViewSet.as_view({"get": "list","post": "create",}),name="webinar-feedback-list"),
     path("feedback/<uuid:pk>/",WebinarFeedbackViewSet.as_view({"get": "retrieve",}),name="webinar-feedback-detail"),
+    path("certificates/send/",WebinarCertificateViewSet.as_view({"post": "send"}),name="webinar-certificate-send"),
 
     # Webinar Session Management
     path('<str:uuid>/session/',WebinarSessionViewSet.as_view({'get': 'retrieve'}),name='webinar-session'),

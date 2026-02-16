@@ -827,8 +827,6 @@ class SubAdminSerializer(serializers.ModelSerializer, NotesMixin):
                 return str(created_by)
 
             role = (created_by_type or "").lower()
-            print("Role:", role)
-            print("Creator ID:", creator_id)
 
             # super_admin → users.id
             if role == "super_admin":
@@ -4139,7 +4137,7 @@ class StudentTicketSerializer(serializers.ModelSerializer):
     class Meta:
         model = StudentTicket
         fields = [
-            "ticket_id", "subject", "message", "status", "priority", "student_id",
+            "ticket_id", "subject", "message", "ticket_type","status", "priority", "student_id",
             "student_name", 'contact_no', "email", "created_at", "updated_at",
             "updated_by_name", "updated_by_type", "attachments", "replies"
         ]

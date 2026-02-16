@@ -82,6 +82,7 @@ class SettingsViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        
         qs = Settings.objects.filter(is_archived=False)
 
         if user.user_type == "super_admin":
@@ -115,6 +116,15 @@ class SettingsViewSet(viewsets.ModelViewSet):
         return qs
 
     def list(self, request, *args, **kwargs):
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "You are not authorized to access this resource."
+            }, status=403)
         queryset = self.get_queryset()
         serializer = self.get_serializer(queryset, many=True)
         datas = serializer.data
@@ -1905,30 +1915,29 @@ class UserDashboardView(APIView):
         return Response({
             "success": True,
             "message": "Admin dashboard loaded.",
-            "data": {
-                "total_students": total_students,
-                "active_students": active_students,
-                "inactive_students": inactive_students,
-                "total_trainers": total_trainers,
-                "active_trainers": active_trainers,
-                "inactive_trainers": inactive_trainers,
-                "trainer_login_trend": trainer_login_trend_final,
-                "attendance_trend": attendance_trend_final,
-                "total_courses": total_courses,
-                "active_courses": total_active_courses,
-                "total_batches": total_batches,
-                "active_batches": total_active_batches,
-                "batchwise_student_count": list(batchwise_student_count),
-                "todays_classes": {
-                    "total": total_classes,
-                    "ongoing": ongoing,
-                    "upcoming": upcoming,
-                    "completed": done,
-                    "missed": missed
-                },
-                "attendance_today_percent": round(attendance_today_percent, 2),
-                "announcements": announcement_data
-            }
+            "total_students": total_students,
+            "active_students": active_students,
+            "inactive_students": inactive_students,
+            "total_trainers": total_trainers,
+            "active_trainers": active_trainers,
+            "inactive_trainers": inactive_trainers,
+            "trainer_login_trend": trainer_login_trend_final,
+            "attendance_trend": attendance_trend_final,
+            "total_courses": total_courses,
+            "active_courses": total_active_courses,
+            "total_batches": total_batches,
+            "active_batches": total_active_batches,
+            "batchwise_student_count": list(batchwise_student_count),
+            "todays_classes": {
+                "total": total_classes,
+                "ongoing": ongoing,
+                "upcoming": upcoming,
+                "completed": done,
+                "missed": missed
+            },
+            "attendance_today_percent": round(attendance_today_percent, 2),
+            "announcements": announcement_data
+
         }, status=200)
     
     
@@ -1978,7 +1987,7 @@ class UserDashboardView(APIView):
             for course in student_courses:
                 scheduled_qs = ClassSchedule.objects.filter(
                     course=course,
-                    batch__batchcoursetrainer__student=student,
+                    new_batch__students=student,
                     is_archived=False
                 ).distinct()
 
@@ -2014,7 +2023,7 @@ class UserDashboardView(APIView):
 
         # --- Attendance Logs (Today) ---
         today_scheduled_classes = ClassSchedule.objects.filter(
-            batch__batchcoursetrainer__student__in=students_qs,
+            new_batch__students__in=students_qs,
             scheduled_date=date.today(),
             is_archived=False
         ).distinct()
@@ -2201,7 +2210,9 @@ class UserDashboardView(APIView):
             "message": f"Dashboard for Company {company_name}",
             "data": data
         }, status=200)
-        
+import traceback
+import logging     
+logger = logging.getLogger(__name__)  
 class ReportsViewSet(ViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
@@ -2297,7 +2308,7 @@ class ReportsViewSet(ViewSet):
             return self._trainer_report(trainer_id)
         else:
             return Response({"success": False, "message": "Provide student_id, organization_id, or trainer_id"}, status=200)
-
+    
     # ---------------- Admin / Organization / Student Report ----------------
     def _admin_report(self, organization_id=None, student_id=None, admin_trainer_id=None,
                       user_type=None, user_created_id=None, admin_ids=None):
@@ -2345,19 +2356,17 @@ class ReportsViewSet(ViewSet):
                 
                 # Fetch schedules the student is enrolled in (past or ongoing only)
                 now = timezone.localtime()
-                scheduled_qs = ClassSchedule.objects.filter(
-                    schedule_filter,
-                    is_archived=False
-                ).filter(
-                    Q(scheduled_date__lt=date.today()) |
-                    Q(scheduled_date=date.today(), start_time__lte=now.time())
-                ).distinct().order_by('scheduled_date', 'start_time')
+                schedule_qs = ClassSchedule.objects.filter(
+                    new_batch__students__in=students_qs,
+                    is_archived=False,
+                    scheduled_date__lte=date.today()
+                ).select_related("course", "batch").order_by("scheduled_date").distinct()
                 
-                total_classes = scheduled_qs.count()
+                total_classes = schedule_qs.count()
                 attended_classes = 0
                 class_cancelled = 0
 
-                for sched in scheduled_qs:
+                for sched in schedule_qs:
                     start_time = getattr(sched, 'start_time', time(9, 0))
                     end_time = getattr(sched, 'end_time', None) or (start_time + timedelta(hours=1))
 
@@ -2403,21 +2412,21 @@ class ReportsViewSet(ViewSet):
 
             # Get all schedules for all students
             schedule_qs = ClassSchedule.objects.filter(
-                new_batch__student__in=students_qs,
+                new_batch__students__in=students_qs,
                 is_archived=False,
                 scheduled_date__lte=date.today()
-            ).select_related("course", "batch").order_by("scheduled_date").distinct()
+            ).select_related("course", "batch").distinct()
 
             # Group by (date, course, batch)
             for sched in schedule_qs:
                 class_date = sched.scheduled_date
                 course = sched.course
-                batch = sched.batch
+                batch = sched.new_batch
 
                 # Students enrolled in this batch & course
                 enrolled_students = Student.objects.filter(
-                    new_batch=batch,
-                    new_batch__course=course,
+                    new_batches=batch,
+                    new_batches__course=course,
                     is_archived=False
                 ).distinct()
 
@@ -2446,7 +2455,6 @@ class ReportsViewSet(ViewSet):
                     "course_name": course.course_name,
                     "date": class_date.strftime("%Y-%m-%d"),
                     "batch_id": batch.batch_id,
-                    "batch_name": batch.batch_name,
                     "title": batch.title,
                     "present_count": present_count,
                     "absent_count": absent_count,
@@ -2455,7 +2463,7 @@ class ReportsViewSet(ViewSet):
                 })
             student = students_qs.first() if students_qs.exists() else None
             # Get all courses the student is enrolled in
-            student_courses = Course.objects.filter(newbatch__student=student, is_archived=False).distinct()
+            student_courses = Course.objects.filter(new_batches__students=student).distinct()
 
             # Get all assignments for those courses
             all_assignments = Assignment.objects.filter(
@@ -2481,9 +2489,7 @@ class ReportsViewSet(ViewSet):
 
             for student in students_qs:
                 # Get student's courses
-                student_courses = Course.objects.filter(
-                    new_batch__student=student
-                )
+                student_courses = Course.objects.filter(new_batches__students=student)
 
                 # Tests in those courses
                 tests_qs = Test.objects.filter(
@@ -2540,7 +2546,7 @@ class ReportsViewSet(ViewSet):
                     "pending_tests": pending_count,
                 })
             # Get all courses the student is enrolled in
-            student_courses = Course.objects.filter(new_batch__student=student).distinct()
+            student_courses = Course.objects.filter(new_batches__student=student).distinct()
 
             # Get all active tests for those courses
             all_tests = Test.objects.filter(
@@ -2561,7 +2567,7 @@ class ReportsViewSet(ViewSet):
             pending_tests = max(total_tests - completed_tests, 0)
 
             # Courses stats
-            courses = Course.objects.filter(new_batch__student__in=students_qs).distinct()
+            courses = Course.objects.filter(new_batches__students__in=students_qs).distinct()
             course_stats_list = []
 
             for course in courses:
@@ -2623,8 +2629,13 @@ class ReportsViewSet(ViewSet):
 
             # Step 2: Get enrollments for these students
             enrollments_qs = NewBatch.objects.filter(
-                students__in=student_ids
-            ).values_list("batch_id", "course_id", "trainer_id", "student_id")
+                students__in=students_qs
+            ).values_list(
+                "batch_id",
+                "course_id",
+                "trainer_id",
+                "students__student_id"
+            )
 
             # Build mapping: student -> (batch, course) -> trainers
             student_enrollment_map = {}
@@ -2810,7 +2821,13 @@ class ReportsViewSet(ViewSet):
                 "test_summary": test_summary
             })
         except Exception as e:
-            return Response({"success": False, "message": str(e)})
+            logger.error("ADMIN REPORT ERROR")
+            logger.error(str(e))
+            logger.error(traceback.format_exc())   # ← FULL STACK TRACE
+            return Response({
+                "success": False,
+                "message": str(e)
+            })
 
     # ---------------- Trainer Report ----------------
     def _trainer_report(self, trainer_id):
@@ -8472,7 +8489,6 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
 
             # ------------------ Hierarchy-based Active Data ------------------
             batch_filter = Q(is_archived=False, status=True)
-            print(f"batch filter before: {batch_filter}")
             course_filter = Q(is_archived=False, status__iexact="Active")
             category_filter = Q(is_archived=False)
 
@@ -8517,7 +8533,7 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 course_filter &= ownership_q
                 category_filter &= ownership_q
 
-            print(f"batch filter after: {batch_filter}")
+
             # ------------------- Fetch batches -------------------
             batch_qs = NewBatch.objects.filter(batch_filter).select_related(
                 "course", "course__course_category", "trainer"
@@ -9058,7 +9074,6 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 "message": f"{str(e)}"
             }, status=status.HTTP_200_OK)
 
-
 class RecurringScheduleView(viewsets.ModelViewSet, LoggingMixin):
     queryset = RecurringSchedule.objects.all().order_by('-recurring_id')
     permission_classes = [IsAuthenticated]
@@ -9551,7 +9566,6 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                 })
             
             unified_batches = sorted(unified_batches, key=lambda x: x['created_at'], reverse=True)
-            print(f"Unified batches count: {len(unified_batches)}")
 
             # ------------------ Hierarchy-based Active Data ------------------
             user_created_id = getattr(user, "trainer_id", None)  # For admin

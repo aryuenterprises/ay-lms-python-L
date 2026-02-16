@@ -5,8 +5,11 @@ from django.shortcuts import render
 from django.db import transaction as db_transaction
 from requests import request
 import requests
-from rest_framework import viewsets, permissions, status, mixins, generics
-from webinar.utils import generate_and_send_certificates
+from rest_framework import viewsets, permissions, status, mixins
+from rest_framework.views import APIView
+from .tasks import send_certificate_task
+from .services.scheduler import schedule_webinar_messages
+from .services.certificate_generation import generate_and_send_certificate_pdf
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .services.whatsapp import send_webinar_reminder, send_webinar_welcome_whatsapp, send_webinar_joining_whatsapp
 from aryuapp.models import PaymentGateway, PaymentTransaction
@@ -25,13 +28,16 @@ import hmac
 import hashlib
 from django.conf import settings
 from django.http import HttpResponse
+from aryuapp.models import Certificate
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import AllowAny
 from aryuapp.auth import CustomJWTAuthentication
 from django.db.models import Prefetch
 from .models import *
 from .serializers import *
+import logging
 
+logger = logging.getLogger(__name__)
 
 @csrf_exempt
 @api_view(["POST"])
@@ -59,10 +65,8 @@ def razorpay_webhook(request):
     data = request.data
     event = data.get("event")
 
-    # PAYMENT SUCCESS
     if event == "payment.captured":
         entity = data["payload"]["payment"]["entity"]
-        payment_id = entity["id"]
         order_id = entity.get("order_id")
 
         with db_transaction.atomic():
@@ -72,40 +76,14 @@ def razorpay_webhook(request):
             ).first()
 
             if not txn:
-                return HttpResponse(status=200)  # idempotent
+                return HttpResponse(status=200)
 
             txn.payment_status = "done"
-            txn.transaction_id = payment_id
+            txn.transaction_id = entity["id"]
             txn.save()
 
-            meta = txn.metadata
-            webinar_id = meta.get("webinar_id")
+            WebinarRegistrationViewSet.create_registration_from_transaction(txn)
 
-            webinar = Webinar.objects.get(uuid=webinar_id)
-
-            # CREATE REGISTRATION HERE
-            registration, created = WebinarRegistration.objects.get_or_create(
-                webinar=webinar,
-                phone=meta.get("phone"),
-                defaults={
-                    "name": meta.get("name"),
-                    "email": meta.get("email"),
-                    "profession": meta.get("profession"),
-                    "state": meta.get("state"),
-                    "city": meta.get("city"),
-                    "is_paid": True,
-                    "payment_transaction": txn
-                }
-            )
-
-            if created:
-                send_webinar_registration_email(registration)
-                try:
-                    send_webinar_welcome_whatsapp(registration)
-                except Exception as e:
-                    print("WhatsApp error:", e) 
-
-    # PAYMENT FAILED
     elif event == "payment.failed":
         entity = data["payload"]["payment"]["entity"]
         order_id = entity.get("order_id")
@@ -115,6 +93,7 @@ def razorpay_webhook(request):
         ).update(payment_status="failed")
 
     return HttpResponse(status=200)
+
 
 class RazorpayPaymentViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
@@ -250,7 +229,7 @@ class PublicWebinarViewSet(
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet
 ):
-    queryset = Webinar.objects.filter(is_deleted=False).order_by("-created_at")
+    queryset = Webinar.objects.filter(is_deleted=False, webinar_status=True).order_by("-created_at")
     serializer_class = PublicWebinarListSerializer
 
     permission_classes = []
@@ -288,8 +267,18 @@ class WebinarViewSet(
         return (
             Webinar.objects
             .prefetch_related(
-                "tools",
-                "metadata",
+                Prefetch(
+                    "tools",
+                    queryset=WebinarTool.objects.filter(is_deleted=False)
+                ),
+                Prefetch(
+                    "metadata",
+                    queryset=webinar_metadata.objects.filter(is_deleted=False)
+                ),
+                Prefetch(
+                    "faqs",
+                    queryset=Webinar_FAQ.objects.filter(is_deleted=False)
+                ),
                 "registrations__feedback"
             )
             .filter(is_deleted=False)
@@ -336,46 +325,228 @@ class WebinarViewSet(
             )
             j += 1
 
+        # --------- FAQ ----------
+        k = 0
+        while f"faqs[{k}][question]" in request.data:
+            Webinar_FAQ.objects.create(
+                webinar=webinar,
+                question=request.data.get(f"faqs[{k}][question]"),
+                answer=request.data.get(f"faqs[{k}][answer]")
+            )
+            k += 1
+
         return Response({
             "status": True,
             "message": "Webinar created successfully",
             "data": WebinarSerializer(webinar, context={"request": request}).data
         }, status=201)
 
+
     def update(self, request, uuid=None):
-        webinar = get_object_or_404(Webinar, uuid=uuid)
-        serializer = WebinarSerializer(webinar, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response({"status": True, "message": "Webinar updated successfully", "data": serializer.data})
-    
-    @action(
-        detail=True,
-        methods=["post"],        
-    )
-    def send_certificates(self, request, uuid=None):
-        webinar = self.get_object()
+        try:
+            with transaction.atomic():
 
-        if webinar.status != "COMPLETED":
-            return Response(
-                {"message": "Webinar must be completed first"},
-                status=400
-            )
+                webinar = get_object_or_404(Webinar, uuid=uuid)
 
-        sent = 0
-        for registration in webinar.registrations.select_related(
-            "webinarcertificate"
-        ):
-            if hasattr(registration, "webinarcertificate"):
-                send_webinar_certificate_email(
-                    registration,
-                    registration.webinarcertificate.certificate_file
-                )
-                sent += 1
+                serializer = WebinarSerializer(webinar, data=request.data, partial=True)
+                serializer.is_valid(raise_exception=True)
+                serializer.save()
 
-        return Response({
-            "message": f"Certificates sent to {sent} participants"
-        })
+                # =====================================================
+                # TOOLS (PARTIAL PATCH STYLE)
+                # =====================================================
+                i = 0
+
+                while (
+                    f"tools[{i}][id]" in request.data or
+                    f"tools[{i}][tools_title]" in request.data or
+                    f"tools[{i}][is_deleted]" in request.data or
+                    f"tools[{i}][tools_image]" in request.FILES
+                ):
+
+                    tool_id = request.data.get(f"tools[{i}][id]")
+                    title = request.data.get(f"tools[{i}][tools_title]")
+                    image = request.FILES.get(f"tools[{i}][tools_image]")
+                    is_deleted = request.data.get(f"tools[{i}][is_deleted]")
+
+                    # =================================================
+                    # DELETE
+                    # =================================================
+                    if tool_id and str(is_deleted).lower() == "true":
+                        WebinarTool.objects.filter(
+                            id=tool_id,
+                            webinar=webinar
+                        ).delete()
+
+                        i += 1
+                        continue
+
+                    # =================================================
+                    # UPDATE
+                    # =================================================
+                    if tool_id:
+                        obj = WebinarTool.objects.filter(
+                            id=tool_id,
+                            webinar=webinar
+                        ).first()
+
+                        if not obj:
+                            return Response({
+                                "status": False,
+                                "message": f"Tool id {tool_id} not found"
+                            }, status=400)
+
+                        # update only provided fields
+                        if title is not None:
+                            obj.tools_title = title
+
+                        if image:
+                            obj.tools_image = image
+
+                        obj.save()
+
+                    # =================================================
+                    # CREATE
+                    # =================================================
+                    else:
+                        if not title:
+                            return Response({
+                                "status": False,
+                                "message": "tools_title is required for new tool"
+                            }, status=400)
+
+                        WebinarTool.objects.create(
+                            webinar=webinar,
+                            tools_title=title,
+                            tools_image=image
+                        )
+
+                    i += 1
+
+
+                # =====================================================
+                # METADATA
+                # =====================================================
+                j = 0
+                meta_ids = []
+
+                while f"metadata[{j}][meta_title]" in request.data:
+                    meta_id = request.data.get(f"metadata[{j}][id]")
+                    title = request.data.get(f"metadata[{j}][meta_title]")
+                    desc = request.data.get(f"metadata[{j}][meta_description]")
+                    image = request.FILES.get(f"metadata[{j}][meta_image]")
+
+                    if meta_id:
+                        obj = webinar_metadata.objects.filter(id=meta_id, webinar=webinar).first()
+                        if not obj:
+                            return Response({"status": False, "message": f"Metadata id {meta_id} not found"}, status=400)
+
+                        obj.meta_title = title
+                        obj.meta_description = desc
+                        if image:
+                            obj.meta_image = image
+                        obj.save()
+                        meta_ids.append(obj.id)
+
+                    else:
+                        obj = webinar_metadata.objects.create(
+                            webinar=webinar,
+                            meta_title=title,
+                            meta_description=desc,
+                            meta_image=image
+                        )
+                        meta_ids.append(obj.id)
+
+                    j += 1
+
+                webinar_metadata.objects.filter(webinar=webinar).exclude(id__in=meta_ids).delete()
+
+
+                # =====================================================
+                # FAQ
+                # =====================================================
+                faq_payload = request.data.get("faqs", None)
+
+                if faq_payload is not None:
+
+                    # fix: convert string → list
+                    if isinstance(faq_payload, str):
+                        try:
+                            faq_payload = json.loads(faq_payload)
+                        except json.JSONDecodeError:
+                            return Response({
+                                "status": False,
+                                "message": "Invalid faqs format. Must be valid JSON array."
+                            }, status=400)
+
+                    if not isinstance(faq_payload, list):
+                        return Response({
+                            "status": False,
+                            "message": "faqs must be a list"
+                        }, status=400)
+
+                    faq_ids = []
+
+                    for faq in faq_payload:
+
+                        faq_id = faq.get("id")
+                        question = faq.get("question")
+                        answer = faq.get("answer")
+
+                        # ---------------- DELETE ----------------
+                        if faq.get("is_deleted") is True and faq_id:
+                            Webinar_FAQ.objects.filter(
+                                id=faq_id,
+                                webinar=webinar
+                            ).delete()
+                            continue
+
+                        # ---------------- UPDATE ----------------
+                        if faq_id:
+                            obj = Webinar_FAQ.objects.filter(
+                                id=faq_id,
+                                webinar=webinar
+                            ).first()
+
+                            if not obj:
+                                return Response({
+                                    "status": False,
+                                    "message": f"FAQ id {faq_id} not found"
+                                }, status=400)
+
+                            if question is not None:
+                                obj.question = question
+                            if answer is not None:
+                                obj.answer = answer
+
+                            obj.save()
+                            faq_ids.append(obj.id)
+
+                        # ---------------- CREATE ----------------
+                        else:
+                            obj = Webinar_FAQ.objects.create(
+                                webinar=webinar,
+                                question=question,
+                                answer=answer
+                            )
+                            faq_ids.append(obj.id)
+
+                    # optional: delete removed ones (sync style)
+                    Webinar_FAQ.objects.filter(webinar=webinar).exclude(id__in=faq_ids).delete()
+
+                # =====================================================
+
+                return Response({
+                    "status": True,
+                    "message": "Webinar updated successfully",
+                    "data": WebinarSerializer(webinar, context={"request": request}).data
+                }, status=200)
+
+        except Exception as e:
+            return Response({
+                "status": False,
+                "message": str(e)
+            }, status=400)
     
     def delete(self, request, uuid):
         webinar = get_object_or_404(
@@ -394,15 +565,39 @@ class WebinarViewSet(
             status=status.HTTP_200_OK
         )
 
+class WebinarToolUpdateDeleteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, uuid, pk):
+        tool = get_object_or_404(WebinarTool, id=pk, webinar__uuid=uuid)
+
+        if "tools_title" in request.data:
+            tool.tools_title = request.data["tools_title"]
+
+        if "tools_image" in request.FILES:
+            tool.tools_image = request.FILES["tools_image"]
+
+        tool.save()
+
+        return Response({"status": True, "message": "Tool updated successfully"})
+
+    def delete(self, request, uuid, pk):
+        tool = get_object_or_404(WebinarTool, id=pk, webinar__uuid=uuid)
+        tool.delete()
+        return Response({"status": True, "message": "Tool deleted successfully"})
 
 class WebinarRegistrationViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
 
-    def _create_payment(self, request, webinar):
+    # -----------------------------
+    # PAYMENT CREATION
+    # -----------------------------
+    def _create_payment(self, request, webinar, txn):
         data = request.data.copy()
 
         data["amount"] = float(webinar.price)
         data["webinar_id"] = str(webinar.uuid)
+        data["transaction_id"] = str(txn.id)
 
         data["success_url"] = request.data.get(
             "success_url",
@@ -414,46 +609,111 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
         )
 
         request._full_data = data
-
         return RazorpayPaymentViewSet().create(request)
 
+    # -----------------------------
+    # REGISTRATION CREATION (SINGLE SOURCE)
+    # -----------------------------
+    @classmethod
+    def create_registration_from_transaction(cls, txn):
+        meta = txn.metadata
+
+        webinar = Webinar.objects.get(uuid=meta["webinar_id"])
+
+        registration, created = WebinarRegistration.objects.get_or_create(
+            webinar=webinar,
+            phone=meta["phone"],
+            defaults={
+                "name": meta.get("name"),
+                "email": meta.get("email"),
+                "profession": meta.get("profession"),
+                "state": meta.get("state"),
+                "city": meta.get("city"),
+                "is_paid": True,
+                "payment_transaction": txn
+            }
+        )
+
+        if created:
+            try:
+                send_webinar_welcome_whatsapp(registration)
+            except Exception as e:
+                print("Error sending welcome task:", str(e))
+            try:
+                send_webinar_registration_email(registration)
+            except Exception as e:
+                print("Error sending registration email:", str(e))
+            try:
+
+                schedule_webinar_messages(registration)
+            except Exception as e:
+                print("Error scheduling webinar messages:", str(e))
+            
+
+        return registration
+
+    # -----------------------------
+    # CREATE API
+    # -----------------------------
     def create(self, request, slug=None):
         webinar = get_object_or_404(Webinar, slug=slug)
 
-        if not webinar.can_register():
-            return Response(
-                {"message": "Registration closed"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
         phone = request.data.get("phone")
+
         if WebinarRegistration.objects.filter(webinar=webinar, phone=phone).exists():
             return Response(
                 {"message": "Already registered"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # PAID WEBINAR → INITIATE PAYMENT
-        if webinar.is_paid:
-            return self._create_payment(request, webinar)
+        # -----------------------------------
+        # FREE WEBINAR → DIRECT REGISTRATION
+        # -----------------------------------
+        if not webinar.is_paid:
+            serializer = WebinarRegistrationSerializer(
+                data=request.data,
+                context={"webinar": webinar}
+            )
 
-        # FREE WEBINAR → DIRECT REGISTER
-        data = request.data.copy()
-        data["webinar"] = webinar.id
-        data["is_paid"] = False
+            serializer.is_valid(raise_exception=True)
+            registration = serializer.save()
 
-        serializer = WebinarRegistrationSerializer(data=data)
-        serializer.is_valid(raise_exception=True)
-        registration = serializer.save()
+            try:
+                send_webinar_welcome_whatsapp(registration)
+            except Exception as e:
+                print("Error sending welcome task:", str(e))
+                
+            try:
+                send_webinar_registration_email(registration)
+            except Exception as e:
+                print("Error sending registration email:", str(e))
+            try:
 
-        send_webinar_registration_email(registration)
+                schedule_webinar_messages(registration)
+            except Exception as e:
+                print("Error scheduling webinar messages:", str(e))
+            
 
-        # try:
-        #     send_webinar_welcome_whatsapp(registration)
-        # except Exception as e:
-        #     print("WhatsApp error:", e)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        # -----------------------------------
+        # PAID WEBINAR → PAYMENT ONLY
+        # -----------------------------------
+        txn = PaymentTransaction.objects.create(
+            amount=webinar.price,
+            payment_status="pending",
+            metadata={
+                "webinar_id": str(webinar.uuid),
+                "name": request.data.get("name"),
+                "email": request.data.get("email"),
+                "phone": phone,
+                "profession": request.data.get("profession"),
+                "state": request.data.get("state"),
+                "city": request.data.get("city"),
+            }
+        )
+
+        return self._create_payment(request, webinar, txn)
 
     def get_queryset(self):
         return (
@@ -692,7 +952,10 @@ VERIFY_TOKEN = "akzworld"  # same token you give Meta
 
 @csrf_exempt
 def whatsapp_webhook(request):
-    # 🔹 STEP 1: Verification (GET)
+
+    # =================================
+    # META VERIFICATION (GET)
+    # =================================
     if request.method == "GET":
         mode = request.GET.get("hub.mode")
         token = request.GET.get("hub.verify_token")
@@ -700,168 +963,69 @@ def whatsapp_webhook(request):
 
         if mode == "subscribe" and token == VERIFY_TOKEN:
             return HttpResponse(challenge)
+
         return HttpResponse("Invalid token", status=403)
 
-    # 🔹 STEP 2: Receive events (POST)
-    if request.method == "POST":
-        payload = json.loads(request.body)
-        print("WhatsApp Webhook:", payload)  # log or process
-        return JsonResponse({"status": "ok"})
 
-# @csrf_exempt
-# def whatsapp_webhook(request):
-#     payload = json.loads(request.body)
+    # =================================
+    # EVENTS (POST)
+    # =================================
+    payload = json.loads(request.body.decode("utf-8"))
 
-#     try:
-#         message = payload["entry"][0]["changes"][0]["value"]["messages"][0]
-#     except (KeyError, IndexError):
-#         return JsonResponse({"status": "ignored"})
+    print("===== WHATSAPP WEBHOOK RECEIVED =====")
+    print(json.dumps(payload, indent=2))
+    print("===================================")
 
-#     phone = message["from"]
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
 
-#     if message["type"] == "button":
-#         button_text = message["button"]["text"]
+            # =================================
+            # A) DELIVERY STATUS (IMPORTANT)
+            # =================================
+            for status in value.get("statuses", []):
+                print(
+                    "STATUS:",
+                    status.get("status"),           # sent/delivered/read/failed
+                    "TIME:",
+                    status.get("timestamp"),
+                    "PHONE:",
+                    status.get("recipient_id"),
+                    "MESSAGE_ID:",
+                    status.get("id")
+                )
 
-#         registration = WebinarRegistration.objects.filter(
-#             phone=phone
-#         ).last()
+            # =================================
+            # B) USER MESSAGES (buttons etc.)
+            # =================================
+            for message in value.get("messages", []):
 
-#         if not registration:
-#             return JsonResponse({"status": "no_registration"})
+                phone = message["from"]
 
-#         if button_text == "Yes, remind me":
-#             registration.wants_reminder = True
-#             registration.save()
+                if message["type"] == "button":
+                    button_text = message["button"]["text"].strip().lower()
 
-#             send_webinar_reminder(registration)
+                    registration = WebinarRegistration.objects.filter(
+                        phone=phone[-10:]
+                    ).last()
 
-#         return JsonResponse({"status": "ok"})
+                    if not registration:
+                        continue
 
-#     return JsonResponse({"status": "ignored"})
+                    if button_text in ["remaind me", "remind me"]:
+                        registration.wants_reminder = True
+                        registration.save()
+
+                        send_webinar_reminder.delay(
+                            registration.id,
+                            time_left="15 mins"
+                        )
+
+                        print(f"Reminder opted by {phone}")
+
+    return JsonResponse({"status": "ok"})
 
 
-# def send_webinar_reminder_email(registration):
-#     webinar = registration.webinar
-
-#     subject = f"⏰ Reminder: {webinar.title} starts soon!"
-#     from_email = settings.DEFAULT_FROM_EMAIL
-#     to = [registration.email]
-
-#     background_url = "https://aylms.aryuprojects.com/api/media/email/banner.svg"
-
-#     html_content = f"""
-#     <!DOCTYPE html>
-#     <html>
-#     <body style="margin:0; padding:0; font-family:Arial, Helvetica, sans-serif;">
-
-#       <!-- FULL BACKGROUND -->
-#       <table width="100%" cellpadding="0" cellspacing="0"
-#         style="background:url('{background_url}') no-repeat center top;
-#                background-size:cover; padding:70px 0;">
-
-#         <tr>
-#           <td align="right" style="padding-right:10vw;">
-
-#             <!-- FLOATING CARD -->
-#             <table width="440" cellpadding="0" cellspacing="0"
-#               style="background:#0c0c0c;
-#                      border-radius:16px;
-#                      box-shadow:0 0 30px rgba(255,0,0,0.45);
-#                      overflow:hidden;">
-
-#               <!-- BODY -->
-#               <tr>
-#                 <td style="padding:38px 38px; text-align:center;">
-
-#                   <h2 style="margin:0; color:#ffffff; font-size:26px;">
-#                     Webinar Reminder ⏰
-#                   </h2>
-
-#                   <p style="color:#cccccc; margin-top:12px; font-size:14px;">
-#                     Your webinar is about to start
-#                   </p>
-
-#                   <!-- WEBINAR TITLE -->
-#                   <div style="
-#                     margin-top:22px;
-#                     background:linear-gradient(135deg, #4a0000, #b30000);
-#                     padding:16px 22px;
-#                     border-radius:12px;
-#                     color:#ffffff;
-#                     font-size:18px;
-#                     font-weight:700;
-#                     box-shadow:0 0 14px rgba(255,0,0,0.6);
-#                   ">
-#                     {webinar.title}
-#                   </div>
-
-#                   <!-- DETAILS -->
-#                   <p style="margin-top:22px; font-size:14px; color:#dddddd; line-height:22px;">
-#                     📅 <b>Date:</b> {webinar.scheduled_start.strftime('%d %b %Y')}<br>
-#                     ⏰ <b>Time:</b> {webinar.scheduled_start.strftime('%I:%M %p')}
-#                   </p>
-
-#                   <!-- JOIN BUTTON -->
-#                   <div style="margin-top:28px;">
-#                     <a href="{webinar.zoom_link or '#'}"
-#                        style="
-#                         display:inline-block;
-#                         background:linear-gradient(135deg,#b30000,#ff1a1a);
-#                         color:#ffffff;
-#                         padding:12px 26px;
-#                         font-size:15px;
-#                         font-weight:bold;
-#                         border-radius:8px;
-#                         text-decoration:none;
-#                         box-shadow:0 0 16px rgba(255,0,0,0.7);
-#                        ">
-#                       🔗 Join Webinar
-#                     </a>
-#                   </div>
-
-#                   <p style="margin-top:22px; font-size:13px; color:#aaaaaa;">
-#                     Please join 5 minutes early for best experience.
-#                   </p>
-
-#                 </td>
-#               </tr>
-
-#               <!-- FOOTER -->
-#               <tr>
-#                 <td style="background:#0c0c0c; padding:15px; text-align:center;
-#                            font-size:12px; color:#888;">
-#                   © {datetime.now().year} Aryu Academy. All rights reserved.
-#                 </td>
-#               </tr>
-
-#             </table>
-
-#           </td>
-#         </tr>
-
-#       </table>
-
-#     </body>
-#     </html>
-#     """
-
-#     email_msg = EmailMultiAlternatives(
-#         subject,
-#         "",
-#         from_email,
-#         to
-#     )
-#     email_msg.attach_alternative(html_content, "text/html")
-#     return email_msg.send()
-
-# @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated])
-# def send_reminder(self, request, uuid=None):
-#     webinar = Webinar.objects.get(uuid=uuid)
-
-#     for reg in webinar.registrations.all():
-#         send_webinar_reminder_email(reg)
-
-#     return Response({"message": "Webinar reminder emails sent"})
 
 def _create_payment(self, request, webinar):
     razorpay_view = RazorpayPaymentViewSet()
@@ -987,11 +1151,77 @@ class WebinarFeedbackViewSet(viewsets.ViewSet):
         return Response(serializer.data)
 
     def create(self, request):
-        serializer = WebinarFeedbackSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
+        try:
+            serializer = WebinarFeedbackSerializer(data=request.data)
+
+            if not serializer.is_valid():
+                return Response({
+                    "success": False,
+                    "message": serializer.errors
+                }, status=200)
+
+            feedback = serializer.save()
+
+            reg = feedback.registration
+            webinar = reg.webinar
+
+            certificate, _ = Certificate.objects.get_or_create(
+                webinar_registration=reg,
+                defaults={
+                    "student": getattr(reg, "student", None),
+                    "student_name": feedback.name.strip(),
+                    "course_name": webinar.title,
+                    "course_duration": "3 Hours",
+                    "created_by": "system",
+                    "created_by_type": "auto"
+                }
+            )
+
+            generate_and_send_certificate_pdf(
+                certificate=certificate,
+                phone=reg.phone
+            )
+            reg.certificate_sent = True
+            reg.save(update_fields=["certificate_sent"])
+
+            return Response({
+                "success": True,
+                "message": "Feedback submitted and certificate sent",
+                "data": serializer.data
+            }, status=201)
+        except Exception as e:
+            return Response({
+                "success": False,
+                "message": str(e)
+            }, status=400)
+    
+class WebinarCertificateViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=["post"])
+    def send(self, request):
+
+        webinar_uuid = request.data["webinar_uuid"]
+        participant_ids = request.data["participant_ids"]
+
+        webinar = Webinar.objects.get(uuid=webinar_uuid)
+
+        regs = WebinarRegistration.objects.filter(
+            id__in=participant_ids,
+            webinar=webinar
+        )
+
+        for reg in regs:
+            send_certificate_task.delay(
+                reg.id,
+                request.user.user_id,
+                request.user.username
+            )
+    
         return Response({
             "success": True,
-            "data": serializer.data}, 
-            status=status.HTTP_201_CREATED)
+            "message": "Certificates are being sent in background",
+            "count": len(regs)
+        })
+
     

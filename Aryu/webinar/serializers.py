@@ -1,4 +1,5 @@
 from asyncio.log import logger
+from decimal import ROUND_HALF_UP, Decimal
 from rest_framework import serializers
 from .models import *
 from rest_framework import serializers
@@ -32,16 +33,19 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
     join_count = serializers.SerializerMethodField()
     eligible_for_certificate = serializers.SerializerMethodField()
     feedback = serializers.SerializerMethodField()
+    payment_status = serializers.SerializerMethodField()
 
     class Meta:
         model = WebinarRegistration
         fields = (
+            "id",
             "uuid",
             "email",
             "name",
             "phone",
             "course",
             "profession",
+            "payment_status",
             "state",
             "city",
             "feedback",
@@ -65,6 +69,11 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
             return WebinarFeedbackSerializer(obj.feedback).data
         return None
 
+    def get_payment_status(self, obj):
+        txn = getattr(obj, "payment_transaction", None)
+        if not txn:
+            return "free"
+        return txn.payment_status
 
     def get_total_duration_minutes(self, obj):
         summary = getattr(obj, "attendance_summary", None)
@@ -86,21 +95,17 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
         summary = getattr(obj, "attendance_summary", None)
         return summary.eligible_for_certificate if summary else False
 
-    def validate(self, data):
-        webinar = data['webinar']
-
-        if not webinar.can_register():
-            raise serializers.ValidationError(
-                "Registration is closed for this webinar."
-            )
-        return data
-
     @transaction.atomic
     def create(self, validated_data):
+        webinar = self.context.get("webinar")
+
+        if not webinar:
+            raise serializers.ValidationError("Webinar is required.")
+
         phone = validated_data.get('phone')
         email = validated_data.get('email')
 
-        # 🔹 Step 1: Create or fetch Lead
+        # Create or fetch Lead
         lead, created = Lead.objects.get_or_create(
             phone=phone,
             defaults={
@@ -111,10 +116,11 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
             }
         )
 
-        # Step 2: Create Webinar Registration (snapshot stored)
         registration = WebinarRegistration.objects.create(
-            **validated_data,
-            lead=lead
+            webinar=webinar,   # explicitly assign
+            lead=lead,
+            is_paid=False,
+            **validated_data
         )
 
         return registration
@@ -134,10 +140,15 @@ class WebinarFeedbackSerializer(serializers.ModelSerializer):
         webinar = attrs.get("webinar")
         phone = attrs.get("phone")
 
-        registration = WebinarRegistration.objects.get(
-            webinar=webinar,
-            phone=phone
-        )
+        try:
+            registration = WebinarRegistration.objects.get(
+                webinar=webinar,
+                phone=phone
+            )
+        except WebinarRegistration.DoesNotExist:
+            raise serializers.ValidationError({
+                "phone": "This phone number is not registered for this webinar."
+            })
 
         attrs["registration"] = registration
         return attrs
@@ -147,7 +158,7 @@ class WebinarToolSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = WebinarTool
-        fields = ["id", "tools_title", "tools_image", "image_url"]
+        fields = "__all__"
 
     def get_image_url(self, obj):
         if obj.tools_image:
@@ -159,12 +170,17 @@ class WebinarMetadataSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = webinar_metadata
-        fields = ["id", "meta_title", "meta_description", "meta_image", "image_url"]
+        fields = "__all__"
 
     def get_image_url(self, obj):
         if obj.meta_image:
             return f"{settings.MEDIA_BASE_URL}{obj.meta_image.url}"
         return None
+
+class WebinarFAQSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Webinar_FAQ
+        fields = "__all__"
 
 class WebinarSerializer(serializers.ModelSerializer):
     scheduled_start = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
@@ -177,8 +193,10 @@ class WebinarSerializer(serializers.ModelSerializer):
         source="registrations"
     )
     participants_count = serializers.SerializerMethodField()
+    total_amount_received = serializers.SerializerMethodField()
     tools = WebinarToolSerializer(many=True, read_only=True)
     metadata = WebinarMetadataSerializer(many=True, read_only=True)
+    faqs = WebinarFAQSerializer(many=True, read_only=True)
 
     class Meta:
         model = Webinar
@@ -189,6 +207,17 @@ class WebinarSerializer(serializers.ModelSerializer):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
             return 'https://aylms.aryuprojects.com/api' + obj.webinar_image.url
         return None
+    
+    def get_total_amount_received(self, obj):
+        from aryuapp.models import PaymentTransaction
+        from django.db.models import Sum
+
+        total = PaymentTransaction.objects.filter(
+            metadata__webinar_id=str(obj.uuid),
+            payment_status="done"
+        ).aggregate(total=Sum("amount"))["total"]
+
+        return float(total or 0)
 
     def get_participants_count(self, obj):
         return obj.registrations.count()
@@ -197,6 +226,8 @@ class WebinarSerializer(serializers.ModelSerializer):
     logger = logging.getLogger(__name__)
 
     def create(self, validated_data):
+        price = validated_data.get("price")
+        regular_price = validated_data.get("regular_price")
         request = self.context.get("request")
         user = request.user
 
@@ -216,6 +247,15 @@ class WebinarSerializer(serializers.ModelSerializer):
 
         validated_data["created_by"] = str(creator_id)
         validated_data["created_by_type"] = role
+        if price is not None:
+            validated_data["price"] = Decimal(str(price)).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+
+        if regular_price is not None:
+            validated_data["regular_price"] = Decimal(str(regular_price)).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
 
         # 1) Create webinar in DB
         webinar = super().create(validated_data)
@@ -251,6 +291,20 @@ class WebinarSerializer(serializers.ModelSerializer):
         ])
 
         return webinar
+    
+    def update(self, instance, validated_data):
+
+        if "price" in validated_data and validated_data["price"] is not None:
+            validated_data["price"] = Decimal(str(validated_data["price"])).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+
+        if "regular_price" in validated_data and validated_data["regular_price"] is not None:
+            validated_data["regular_price"] = Decimal(str(validated_data["regular_price"])).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+
+        return super().update(instance, validated_data)
 
 class PublicWebinarListSerializer(serializers.ModelSerializer):
     
@@ -260,7 +314,7 @@ class PublicWebinarListSerializer(serializers.ModelSerializer):
         fields = "__all__"
     tools = WebinarToolSerializer(many=True, read_only=True)
     metadata = WebinarMetadataSerializer(many=True, read_only=True)
-    
+    faqs = WebinarFAQSerializer(many=True, read_only=True)
 
     def get_webinar_image(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):

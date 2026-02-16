@@ -1,83 +1,94 @@
 import requests
 from celery import shared_task
 from webinar.models import WebinarRegistration
+import logging
 
-WHATSAPP_TOKEN = "EAAVj7xx32k0BQRgGkqV0vBAMoBm4m4sGkchg2BbZBoe7Ou6OdFopBYoNhipYqURs0HJTrxpAUIYdZBcItdZBZASwSmFYFQcVJyZApXDrZB6E2iVbZBOsV68hO7AcAbZBqZCDAaNRnZBGjvHuWcb7MSQVpnrMMReQT6XHicAtUMMSKcymZCPjwgdzty3iiRMtImuNQuqSGl4LHbFSrl2nyO28JsZCIZBCnAyFXKSZCYACNZBnV5CyFJ24RUDZCsWjQMTZBCqZAkjy6EnEbwduUdNcDUiT8nZADUZBohRj"
-WHATSAPP_LIVE_TOKEN = "EAAVj7xx32k0BQsQqKdAz7cekGfckEZCSdEz6fL8YdVVSrTnRzjQnbWs78hRlqIxPJSb8r4uhjlI9crpNayZCV7VLLez2QNv5ZBljuDZBP3zWEZBOC1XNVk9FgqIamiKFZCFROV9s5Ycysj3NkNxBw5fqPyzkYMEFqOA3pgFHncOCYMkAeT5pc6m5azBcGZCafM44AZDZD"
-PHONE_NUMBER_ID = "878484755357545" #"876623908875525" 
+logger = logging.getLogger(__name__)
+
+WHATSAPP_TOKEN = "EAAWb62rlXVIBQth57cavJe1nEElv5fioVrCfThXRHnJDhOlNxriYZAI4Eq3y6QLNPtSac2ZAfHqNzqko27nQ22XSX87RUnsTr9PkqTOJod6dZAFswHUApOClZAMCWrhsZBsATaYtYCvvIs10dXDwjStSlvTCU59T3XrkuQ3VJBwIHf4VLHj7t9uTg8GLZAKPbxhhkIigctCGZC8hZAHBl9hEjy10h7IastzJ4cBCHN3JjAiqiIWZCgAndlTZChXGghK6JvGmD5DiZBuJKRvZA1qTusJOYCTzOQZDZD"
+WHATSAPP_LIVE_TOKEN = "EAAVj7xx32k0BQtEwZBSDBuJZAkKReDvK4DJzlzoU8yoVC1WofQyF0OlGj74QizH7ml6mNWSk6FeH2ZAAq9ZCliZBiedxdFYPHJ8F9jddOShhtTFRZCR9NamcPYetv8k8BmGZA6Dd2qFdTtqWOr1Jqs5YtMSGSMmUZCFZC0dK98DgpZBLpkn2lYUwqAcv2KDh02egZDZD"
+PHONE_NUMBER_ID = "878484755357545" #"878484755357545" #"876623908875525" 
 WABA_ID= "1430646228583413"  #"4298067283844773"
+"""
+{
+  "id": "26469123152676267",
+  "name": "Yuvaraj T"
+}
+"""
+AISENSY_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5ODlkMjRmYTA4M2Q2NWQ4NmUyNmRjNSIsIm5hbWUiOiJBcnl1IEFjYWRlbXkgUHJpdmF0ZSBMaW1pdGVkIiwiYXBwTmFtZSI6IkFpU2Vuc3kiLCJjbGllbnRJZCI6IjY5ODlkMjRmYTA4M2Q2NWQ4NmUyNmRjMCIsImFjdGl2ZVBsYW4iOiJGUkVFX0ZPUkVWRVIiLCJpYXQiOjE3NzA3MjQ0MjN9.kp-EwaczYRcTGAcsufhNO2XD-WVqqtKzQ7elQ4Bt35o"
+AISENSY_API_URL = "https://backend.aisensy.com/campaign/t1/api/v2"
 
-def send_whatsapp_message(phone, template_name, components):
-    url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
-
+def send_whatsapp_message(phone, template_name, parameters, media_url=None):
     payload = {
-        "messaging_product": "whatsapp",
-        "to": phone,
-        "type": "template",
-        "template": {
-            "name": template_name,
-            "language": {"code": "en"},
-            "components": components
+        "apiKey": AISENSY_API_KEY,
+        "campaignName": template_name,
+        "destination": phone,
+        "userName": "Aryu Academy",
+        "templateParams": parameters,
+        "source": "webinar-system",
+        "media": {},
+        "buttons": [],
+        "carouselCards": [],
+        "location": {},
+        "attributes": {},
+        "paramsFallbackValue": {
+            "FirstName": "User"
         }
     }
 
-    headers = {
-        "Authorization": f"Bearer {WHATSAPP_LIVE_TOKEN}",
-        "Content-Type": "application/json"
-    }
+    if media_url:
+        # Detect document vs image
+        if media_url.lower().endswith(".pdf"):
+            payload["media"] = {
+                "url": media_url,
+                "filename": "certificate.pdf"
+            }
+        else:
+            payload["media"] = {
+                "url": media_url,
+                "filename": "media.jpg"
+            }
 
-    response = requests.post(url, json=payload, headers=headers)
+    headers = {"Content-Type": "application/json"}
+
+    response = requests.post(AISENSY_API_URL, json=payload, headers=headers)
+
+    print(f"AiSensy template: {template_name}, to: {phone}")
+    print("Status:", response.status_code)
+    print("Response:", response.text)
+
     return response.json()
 
 
 def send_webinar_welcome_whatsapp(registration):
     webinar = registration.webinar
     start_dt = webinar.scheduled_start
-    print("Sending webinar welcome whatsapp to", registration.phone)
-    return send_whatsapp_message(
-        phone=f"91{registration.phone}",
-        template_name="webinar_welcome",
-        components=[
-            {
-                "type": "header",
-                "parameters": [
-                    {
-                        "type": "text",
-                        "text": registration.name
-                    }
-                ]
-            },
 
-            {
-                "type": "body",
-                "parameters": [
-                    {
-                        "type": "text",
-                        "text": webinar.title
-                    },
-                    {
-                        "type": "text",
-                        "text": start_dt.strftime("%d %b %Y")
-                    },
-                    {
-                        "type": "text",
-                        "text": start_dt.strftime("%I:%M %p")
-                    }
-                ]
-            }
-            
-        ]
-        
+    print("Sending webinar welcome whatsapp to", registration.phone)
+
+    res = send_whatsapp_message(
+        phone=f"91{registration.phone}",
+        template_name="Webinar",
+        parameters=[
+            webinar.title,
+            start_dt.strftime("%d %b %Y"),
+            start_dt.strftime("%I:%M %p")
+        ],
+        media_url=webinar.get_image_url()  # header image
     )
 
+    print("WhatsApp API response:", res)
+    return res
+
 @shared_task
-def send_webinar_reminder(registration_id, time_left, instruction):
+def send_webinar_reminder(registration_id, time_left):
     reg = WebinarRegistration.objects.get(id=registration_id)
     webinar = reg.webinar
     start_dt = webinar.scheduled_start
 
-    # Ensure phone format: 91XXXXXXXXXX
     phone = reg.phone.strip()
+
+    # Normalize phone
     if phone.startswith("+"):
         phone = phone[1:]
     if not phone.startswith("91"):
@@ -87,25 +98,15 @@ def send_webinar_reminder(registration_id, time_left, instruction):
 
     resp = send_whatsapp_message(
         phone=phone,
-        template_name="webinar_reminder",
-        components=[
-            {
-                "type": "header",
-                "parameters": [
-                    {"type": "text", "text": reg.name or ""}
-                ]
-            },
-            {
-                "type": "body",
-                "parameters": [
-                    {"type": "text", "text": webinar.title},
-                    {"type": "text", "text": time_left},
-                    {"type": "text", "text": start_dt.strftime("%d %b %Y")},
-                    {"type": "text", "text": start_dt.strftime("%I:%M %p")},
-                    {"type": "text", "text": instruction},
-                ]
-            }
-        ]
+        template_name="webinar_reminder",  # MUST match AiSensy campaign name exactly
+        parameters=[
+            webinar.title,                          # {{1}}
+            time_left,                              # {{2}}
+            start_dt.strftime("%d/%m/%Y"),          # {{3}}
+            start_dt.strftime("%I:%M %p"),          # {{4}}
+            reg.name                                # {{5}}
+        ],
+        media_url=webinar.get_image_url()          # Header Image
     )
 
     print("WhatsApp API response:", resp)
@@ -115,85 +116,91 @@ def send_webinar_reminder(registration_id, time_left, instruction):
 def send_webinar_joining_whatsapp(registration, join_url):
     webinar = registration.webinar
     start_dt = webinar.scheduled_start
-    return send_whatsapp_message(
-        phone=f"91{registration.phone}",  # format: 91XXXXXXXXXX
-        template_name="webinar_joining",
-        components=[
-            # HEADER
-            {
-                "type": "header",
-                "parameters": [
-                    {
-                        "type": "text",
-                        "text": registration.name
-                    }
-                ]
-            },
 
-            # BODY
-            {
-                "type": "body",
-                "parameters": [
-                    {
-                        "type": "text",
-                        "text": webinar.title
-                    },
-                    {
-                        "type": "text",
-                        "text": start_dt.strftime("%d %b %Y")
-                    },
-                    {
-                        "type": "text",
-                        "text": start_dt.strftime("%I:%M %p")
-                    },
-                    {
-                        "type": "text",
-                        "text": join_url
-                    }
-                ]
-            },
+    phone = registration.phone.strip()
 
-            # CTA BUTTONS (STATIC)
-            {
-                "type": "button",
-                "sub_type": "url",
-                "index": "0",
-                "parameters": [
-                    {"type": "text", "text": "something"}
-                ]
-            },
-        ]
+    # Normalize phone
+    if phone.startswith("+"):
+        phone = phone[1:]
+    if not phone.startswith("91"):
+        phone = "91" + phone
+
+    print("Sending webinar joining WhatsApp to", phone)
+
+    response = send_whatsapp_message(
+        phone=phone,
+        template_name="webinar joining",  # MUST match AiSensy campaign name EXACTLY
+        parameters=[
+            webinar.title,                          # {{1}}
+            start_dt.strftime("%d/%m/%Y"),          # {{2}}
+            start_dt.strftime("%I:%M %p"),          # {{3}}
+            join_url                                # {{4}}
+        ],
+        media_url=webinar.get_image_url()          # Header image
     )
 
+    print("WhatsApp API response:", response)
+    return response
 
-def send_webinar_live_whatsapp(registration, join_url):
+
+def send_webinar_live_whatsapp(registration):
     webinar = registration.webinar
     start_dt = webinar.scheduled_start
 
-    return send_whatsapp_message(
-        phone=f"91{registration.phone}",
-        template_name="webinar_live_now",
-        components=[
-            # HEADER
-            {
-                "type": "header",
-                "parameters": [
-                    
-                ]
-            },
+    phone = registration.phone.strip()
 
-            # BODY
-            {
-                "type": "body",
-                "parameters": [
-                    {"type": "text","text": registration.name},
-                    {"type": "text", "text": webinar.title},
-                    {"type": "text", "text": start_dt.strftime("%d %b %Y")},
-                    {"type": "text", "text": start_dt.strftime("%I:%M %p")},
-                    {"type": "text", "text": webinar.zoom_join_url},
-                    
-                ]
-            }
-        ]
+    # Normalize phone
+    if phone.startswith("+"):
+        phone = phone[1:]
+    if not phone.startswith("91"):
+        phone = "91" + phone
+
+    return send_whatsapp_message(
+        phone=phone,
+        template_name="webinar_live_now",  # Must match AiSensy campaign name exactly
+        parameters=[
+            registration.name,                     # {{1}}
+            webinar.title,                         # {{2}}
+            start_dt.strftime("%d/%m/%Y"),         # {{3}}
+            start_dt.strftime("%I:%M %p"),         # {{4}}
+            webinar.zoom_join_url                  # {{5}}
+        ],
+        media_url=webinar.get_image_url()         # Header image
     )
+
+
+def send_webinar_certificate_whatsapp(certificate, phone):
+    """
+    Send certificate PDF via WhatsApp template (AiSensy)
+    """
+
+    logger.info("Sending webinar certificate WhatsApp to %s", phone)
+
+    # Normalize phone
+    phone = phone.strip()
+    if phone.startswith("+"):
+        phone = phone[1:]
+    if not phone.startswith("91"):
+        phone = "91" + phone
+
+    pdf_url = certificate.certificate_file.url
+    if not pdf_url.startswith("http"):
+        pdf_url = f"https://aylms.aryuprojects.com/api{pdf_url}"
+
+    print(f"Certificate PDF URL: {pdf_url}")
+
+    res = send_whatsapp_message(
+        phone=phone,
+        template_name="Webinar certificates",  # Must match AiSensy campaign name EXACTLY
+        parameters=[
+            certificate.student_name,   # {{1}}
+            certificate.course_name     # {{2}}
+        ],
+        media_url=pdf_url   # Document header
+    )
+
+    print("WhatsApp API response:", res)
+    logger.info("WhatsApp API response: %s", res)
+
+    return res
 

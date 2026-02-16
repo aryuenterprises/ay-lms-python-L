@@ -1,64 +1,127 @@
-from Aryu.celery import shared_task
+from celery import shared_task
 from django.db import close_old_connections
+from .services.certificate_generation import generate_and_send_certificate_pdf
 from webinar.models import Webinar, WebinarRegistration
+from datetime import timedelta
 from aryuapp.models import Certificate
+from .services.whatsapp import send_webinar_live_whatsapp, send_webinar_reminder, send_webinar_joining_whatsapp, send_webinar_welcome_whatsapp
+from django.utils.timezone import now
 from webinar.services.webinar_emails import send_webinar_certificate_email
-from webinar.utils import generate_certificate_image  
 from pathlib import Path
 from django.conf import settings
 
 
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=30)
+def send_webinar_welcome_task(self, registration_id):
+    reg = WebinarRegistration.objects.select_related("webinar").get(id=registration_id)
+    print("📱 Sending WhatsApp welcome message for registration ID:", registration_id)
+    send_webinar_welcome_whatsapp(reg)
+
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=30, retry_kwargs={"max_retries": 3})
+def send_webinar_reminder_task(self, registration_id, time_left, instruction):
+    send_webinar_reminder(
+        registration_id=registration_id,
+        time_left=time_left,
+        instruction=instruction
+    )
+
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=30, retry_kwargs={'max_retries': 3})
+def send_webinar_joining_task(self, registration_id):
+    from webinar.models import WebinarRegistration
+
+    registration = WebinarRegistration.objects.select_related("webinar").get(id=registration_id)
+    webinar = registration.webinar
+
+    # Pick correct join URL
+    join_url = webinar.zoom_join_url or webinar.zoom_link
+
+    if not join_url:
+        print("❌ No join URL found for webinar", webinar.id)
+        return
+
+    send_webinar_joining_whatsapp(registration, join_url)
+
 @shared_task
-def send_webinar_reminder(registration_id, label, instruction):
-    reg = WebinarRegistration.objects.get(id=registration_id)
-    if not reg.wants_reminder:
-        return             
+def send_certificate_task(reg_id, user_id, user_type):
+    reg = WebinarRegistration.objects.get(id=reg_id)
 
-    send_webinar_reminder(reg, label, instruction)
-    
-def generate_and_send_certificates(webinar):
-    close_old_connections()
+    certificate, _ = Certificate.objects.get_or_create(
+        webinar_registration=reg,
+        defaults={
+            "student": getattr(reg, "student", None),
+            "student_name": reg.name,
+            "course_name": reg.webinar.title,
+            "course_duration": "3 Hours",
+            "created_by": user_id,
+            "created_by_type": user_type
+        }
+    )
 
-    registrations = WebinarRegistration.objects.filter(
-        webinar=webinar,
-        attended=True,
-        certificate_sent=False,
-    ).iterator(chunk_size=5)
+    generate_and_send_certificate_pdf(
+        certificate=certificate,
+        phone=reg.phone
+    )
 
-    sent_count = 0
+    reg.certificate_sent = True
+    reg.save(update_fields=["certificate_sent"])
+
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=30, retry_kwargs={"max_retries": 3})
+def daily_webinar_reminder_scheduler(self):
+    """
+    Runs DAILY at 10:00 AM IST via celery-beat
+    """
+
+    current_time = now()
+
+    registrations = WebinarRegistration.objects.select_related("webinar").filter(
+        wants_reminder=True,
+        webinar__is_completed=False,
+    )
 
     for reg in registrations:
-        close_old_connections()
+        webinar = reg.webinar
+        start = webinar.scheduled_start
+        diff = start - current_time
 
-        # Skip if certificate already exists
-        if hasattr(reg, "certificate"):
+        # Webinar already over
+        if diff.total_seconds() <= 0:
             continue
 
-        # Create Certificate object
-        certificate = Certificate.objects.create(
-            webinar_registration=reg,
-            student_name=reg.name,
-            course_name=webinar.title,
-        )
+        # 15 minutes reminder
+        if timedelta(minutes=14) <= diff <= timedelta(minutes=16):
+            send_webinar_reminder.delay(
+                reg.id,
+                "15 mins",
+                "Please keep your laptop ready and join on time."
+            )
 
-        # Use your existing certificate image generator
-        certificate_file_path = generate_certificate_image(
-            registration=reg,
-            template_path=Path(settings.BASE_DIR) / "media/certificates/40106369-ai.png",
-            certificate_number=certificate.certificate_number,
-        )
+        # Same day reminder (morning)
+        elif start.date() == current_time.date():
+            send_webinar_reminder.delay(
+                reg.id,
+                "today",
+                "Make sure you are in a calm place with a stable internet connection."
+            )
 
-        certificate.certificate_file = f"certificates/{certificate_file_path.name}"
-        certificate.save(update_fields=["certificate_file"])
+        # Tomorrow reminder
+        elif start.date() == (current_time + timedelta(days=1)).date():
+            send_webinar_reminder.delay(
+                reg.id,
+                "24 hours",
+                "Please block your calendar and prepare in advance."
+            )
+    
 
-        # Send email
-        if reg.email:
-            send_webinar_certificate_email(reg, certificate_file_path)
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=30, retry_kwargs={'max_retries': 3})
+def send_webinar_live_task(self, registration_id):
+    reg = WebinarRegistration.objects.select_related("webinar").get(id=registration_id)
 
-        # Mark as sent
-        reg.certificate_sent = True
-        reg.save(update_fields=["certificate_sent"])
+    if not reg.webinar.zoom_join_url:
+        return "No join URL"
 
-        sent_count += 1
+    send_webinar_live_whatsapp(reg)
+    return "LIVE message sent"
 
-    return f"Certificates sent for {sent_count} attendees"
+@shared_task
+def celery_health_check():
+    return "Celery is running fine!"
