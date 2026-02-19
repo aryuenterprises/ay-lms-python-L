@@ -53,7 +53,6 @@ def send_whatsapp_message(phone, template_name, parameters, media_url=None):
 
     response = requests.post(AISENSY_API_URL, json=payload, headers=headers)
 
-    print(f"AiSensy template: {template_name}, to: {phone}")
     print("Status:", response.status_code)
     print("Response:", response.text)
 
@@ -68,11 +67,12 @@ def send_webinar_welcome_whatsapp(registration):
 
     res = send_whatsapp_message(
         phone=f"91{registration.phone}",
-        template_name="Webinar",
+        template_name="welcome message",
         parameters=[
             webinar.title,
             start_dt.strftime("%d %b %Y"),
-            start_dt.strftime("%I:%M %p")
+            start_dt.strftime("%I:%M %p"),
+            webinar.waba_link
         ],
         media_url=webinar.get_image_url()  # header image
     )
@@ -98,13 +98,12 @@ def send_webinar_reminder(registration_id, time_left):
 
     resp = send_whatsapp_message(
         phone=phone,
-        template_name="webinar_reminder",  # MUST match AiSensy campaign name exactly
+        template_name="remainder",  # MUST match AiSensy campaign name exactly
         parameters=[
             webinar.title,                          # {{1}}
             time_left,                              # {{2}}
             start_dt.strftime("%d/%m/%Y"),          # {{3}}
             start_dt.strftime("%I:%M %p"),          # {{4}}
-            reg.name                                # {{5}}
         ],
         media_url=webinar.get_image_url()          # Header Image
     )
@@ -157,13 +156,11 @@ def send_webinar_live_whatsapp(registration):
 
     return send_whatsapp_message(
         phone=phone,
-        template_name="webinar_live_now",  # Must match AiSensy campaign name exactly
+        template_name="Webinar Live Mess",  # Must match AiSensy campaign name exactly
         parameters=[
-            registration.name,                     # {{1}}
             webinar.title,                         # {{2}}
             start_dt.strftime("%d/%m/%Y"),         # {{3}}
             start_dt.strftime("%I:%M %p"),         # {{4}}
-            webinar.zoom_join_url                  # {{5}}
         ],
         media_url=webinar.get_image_url()         # Header image
     )

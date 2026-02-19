@@ -34,6 +34,14 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
     eligible_for_certificate = serializers.SerializerMethodField()
     feedback = serializers.SerializerMethodField()
     payment_status = serializers.SerializerMethodField()
+    webinar_title = serializers.CharField(
+        source="webinar.title",
+        read_only=True
+    )
+    waba_link = serializers.URLField(
+        source="webinar.waba_link",
+        read_only=True
+    )
 
     class Meta:
         model = WebinarRegistration
@@ -43,6 +51,8 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
             "email",
             "name",
             "phone",
+            "waba_link",
+            "webinar_title",
             "course",
             "profession",
             "payment_status",

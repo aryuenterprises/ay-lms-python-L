@@ -11,7 +11,7 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 
 
 """
-pip install channels-redis paypalrestsdk reportlab pyclamd pytesseract Pillow django_countries django_filter dj_rest_auth django-cors-headers django-allauth channels psycopg2-binary pytz stripe twilio holidays razorpay num2words djangorestframework Django qrcode django_redis django-axes captcha django_crontab 
+pip install channels-redis paypalrestsdk reportlab pyclamd pytesseract Pillow django_countries django_filter dj_rest_auth django-cors-headers django-allauth channels psycopg2-binary pytz stripe twilio holidays razorpay num2words djangorestframework Django qrcode django_redis django-axes captcha django_crontab celery daphne
 """
 
 
@@ -22,7 +22,7 @@ pip install channels-redis paypalrestsdk reportlab pyclamd pytesseract Pillow dj
 SECRET_KEY = 'django-insecure-e-ar=#hq&(q0ujnwofc!%8#in(2z1osso65+(8i+&elo=cn4$k'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -151,31 +151,6 @@ REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'aryuapp.exceptions.custom_exception_handler',
 }
 
-SOCIALACCOUNT_PROVIDERS = {
-    "github": {
-        "SCOPE": ["user:email"],
-        "VERIFIED_EMAIL": True,
-        "APP": {
-            "client_id": "Ov23liv2hQNjYO3xLdwn",
-            "secret": "c022f82b1ba78bff67ea1ceafb623a9c3b6afd82",
-            "key": "",
-        }
-    },
-    "google": {
-        "SCOPE": [
-            "profile",
-            "email",
-        ],
-        "AUTH_PARAMS": {
-            "access_type": "online",
-        },
-        "APP": {
-            "client_id": "454548779156-ntr8e0vv52001oiejk0ee3knggtula8m.apps.googleusercontent.com",
-            "secret": "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",
-            "key": "",
-        },
-    },
-}
 
 AUTHENTICATION_BACKENDS = [
     "axes.backends.AxesStandaloneBackend",
@@ -271,11 +246,6 @@ CSRF_COOKIE_SAMESITE = "Lax"
 
 SESSION_COOKIE_AGE = 1800  # 30 minutes in seconds
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
-
-GOOGLE_CLIENT_ID = "1004056077681-qfeuc4edcpob49o1gk4168a3ap7lrnqs.apps.googleusercontent.com"
-GOOGLE_CLIENT_SECRET = "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"
-GOOGLE_REDIRECT_URI = "http://127.0.0.1:8000/api/oauth2callback/"
-
 
 ACCOUNT_LOGIN_METHODS = {'email'}
 ACCOUNT_SIGNUP_FIELDS = ['email*', 'password1*', 'password2*']

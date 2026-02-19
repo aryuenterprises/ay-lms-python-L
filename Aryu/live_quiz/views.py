@@ -14,6 +14,8 @@ from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404
 from .common.utils import get_actor_from_request
 from .common.base import BaseViewSet
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from.authentication import LiveQuizJWTAuthentication
 from .permissions import IsLiveQuizAdmin
 from .models import *
@@ -172,7 +174,7 @@ class RoomViewSet(BaseViewSet):
             status_code=status.HTTP_201_CREATED
         )
 
-    # ✅ PUT (FULL UPDATE)
+    # PUT (FULL UPDATE)
     def update(self, request, pk=None):
         room = get_object_or_404(Room, pk=pk)
         serializer = RoomSerializer(room, data=request.data)  # full update
@@ -187,7 +189,7 @@ class RoomViewSet(BaseViewSet):
             data=serializer.data
         )
 
-    # ✅ PATCH (PARTIAL UPDATE — EVEN IF ALL FIELDS PASSED)
+    # PATCH (PARTIAL UPDATE — EVEN IF ALL FIELDS PASSED)
     def partial_update(self, request, pk=None):
         room = get_object_or_404(Room, pk=pk)
         serializer = RoomSerializer(
@@ -308,11 +310,9 @@ class ParticipantViewSet(viewsets.ModelViewSet):
 
 
 class JoinRoomView(APIView):
+    permission_classes = []
     def post(self, request, room_id):
         room = Room.objects.get(id=room_id)
-
-        if timezone.now() < room.start_at:
-            return Response({"error": "Quiz not started yet"}, status=400)
 
         if room.participants.count() >= room.max_participants:
             return Response({"error": "Room full"}, status=400)
@@ -323,6 +323,13 @@ class JoinRoomView(APIView):
         participant = Participant(room=room, **serializer.validated_data)
         participant.generate_token()
         participant.save()
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"room_{room_id}",
+            {
+                "type": "leaderboard_refresh"
+            }
+        )
 
         return Response({
             "success": True,

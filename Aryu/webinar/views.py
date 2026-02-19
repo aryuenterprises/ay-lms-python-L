@@ -164,14 +164,18 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 "city": city,
             },
             description="Webinar payment via Razorpay Checkout",
-        )
+        )   
+
+        webinar = get_object_or_404(Webinar, uuid=webinar_id)
 
         return Response({
             "success": True,
             "order_id": order["id"],
             "key": gateway.public_key,
             "amount": int(float(amount) * 100),
-            "currency": "INR"
+            "currency": "INR",
+            "webinar_title": webinar.title,
+            "waba_link": webinar.waba_link
         })
 
         
@@ -326,14 +330,19 @@ class WebinarViewSet(
             j += 1
 
         # --------- FAQ ----------
-        k = 0
-        while f"faqs[{k}][question]" in request.data:
-            Webinar_FAQ.objects.create(
-                webinar=webinar,
-                question=request.data.get(f"faqs[{k}][question]"),
-                answer=request.data.get(f"faqs[{k}][answer]")
-            )
-            k += 1
+        faqs_data = request.data.get("faqs")
+
+        if faqs_data:
+            try:
+                faqs_data = json.loads(faqs_data)
+                for faq in faqs_data:
+                    Webinar_FAQ.objects.create(
+                        webinar=webinar,
+                        question=faq.get("question"),
+                        answer=faq.get("answer")
+                    )
+            except json.JSONDecodeError:
+                pass
 
         return Response({
             "status": True,
