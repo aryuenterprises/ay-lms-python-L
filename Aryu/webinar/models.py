@@ -34,7 +34,7 @@ class Webinar(models.Model):
     zoom_join_url = models.URLField(blank=True, null=True)
     price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     regular_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-
+    seats_available = models.PositiveIntegerField(default=10)
     status = models.CharField(max_length=20,default='DRAFT')
     webinar_status = models.BooleanField(default=True, help_text="True for active, False for inactive")
     is_paid = models.BooleanField(default=False)

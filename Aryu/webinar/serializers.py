@@ -207,6 +207,8 @@ class WebinarSerializer(serializers.ModelSerializer):
     tools = WebinarToolSerializer(many=True, read_only=True)
     metadata = WebinarMetadataSerializer(many=True, read_only=True)
     faqs = WebinarFAQSerializer(many=True, read_only=True)
+    pending_seats = serializers.SerializerMethodField()
+    is_full = serializers.SerializerMethodField() 
 
     class Meta:
         model = Webinar
@@ -215,7 +217,7 @@ class WebinarSerializer(serializers.ModelSerializer):
 
     def get_webinar_image_url(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.webinar_image.url
+            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
         return None
     
     def get_total_amount_received(self, obj):
@@ -232,6 +234,13 @@ class WebinarSerializer(serializers.ModelSerializer):
     def get_participants_count(self, obj):
         return obj.registrations.count()
 
+    def get_pending_seats(self, obj):
+        registered = obj.registrations.count()
+        return max(obj.seats_available - registered, 0)
+
+    def get_is_full(self, obj):
+        return obj.registrations.count() >= obj.seats_available
+    
     import logging
     logger = logging.getLogger(__name__)
 
@@ -317,19 +326,56 @@ class WebinarSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 class PublicWebinarListSerializer(serializers.ModelSerializer):
-    
+    registered_count = serializers.SerializerMethodField()
+    pending_seats = serializers.SerializerMethodField()
     webinar_image = serializers.SerializerMethodField()
+    
     class Meta:
         model = Webinar
-        fields = "__all__"
+        fields = [
+            "id",
+            "uuid",
+            "title",
+            "description",
+            "scheduled_start",
+            "webinar_image",
+            "slug",
+            "waba_link",
+            "mentor",
+            "language",
+            "video_url",
+            "mode",
+            "registration_link",
+            "price",
+            "regular_price",
+            "status",
+            "webinar_status",
+            "seats_available",
+            "registered_count",
+            "pending_seats",
+            "is_paid",
+            "is_registration_open",
+            "is_completed",
+            "tools",
+            "metadata",
+            "faqs",
+        ]
     tools = WebinarToolSerializer(many=True, read_only=True)
     metadata = WebinarMetadataSerializer(many=True, read_only=True)
     faqs = WebinarFAQSerializer(many=True, read_only=True)
 
     def get_webinar_image(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.webinar_image.url
+            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
         return None
+    
+    def get_registered_count(self, obj):
+        # change "registrations" if your related_name differs
+        return obj.registrations.count()
+
+    def get_pending_seats(self, obj):
+        registered = obj.registrations.count()
+        return max(obj.seats_available - registered, 0)
 
 class WebinarSessionSerializer(serializers.ModelSerializer):
 
