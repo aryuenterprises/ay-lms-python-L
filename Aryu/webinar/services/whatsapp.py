@@ -67,7 +67,7 @@ def send_webinar_welcome_whatsapp(registration):
 
     res = send_whatsapp_message(
         phone=f"91{registration.phone}",
-        template_name="welcome message",
+        template_name="Webinar Welcome Message",
         parameters=[
             webinar.title,
             start_dt.strftime("%d %b %Y"),
