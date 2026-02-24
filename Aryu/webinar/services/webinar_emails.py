@@ -20,7 +20,7 @@ def send_webinar_registration_email(registration):
 
               <!-- Header -->
               <tr>
-                <td style="background:#0d6efd; padding:20px; border-radius:10px 10px 0 0; text-align:center;">
+                <td style="background:#852121; padding:20px; border-radius:10px 10px 0 0; text-align:center;">
                   <h2 style="color:#ffffff; margin:0; font-size:20px;">
                     Webinar Registration Confirmed
                   </h2>
@@ -47,12 +47,14 @@ def send_webinar_registration_email(registration):
                     </p>
                   </div>
 
-                  <p style="margin:0 0 10px;">
-                    <strong>Join Link:</strong>
+                  <p style="margin:0 0 10px; font-size:14px; color:#555;">
+                    Join our WhatsApp group to receive important updates, reminders, and session materials related to the webinar.
                   </p>
 
-                  <p style="word-break:break-all; color:#0d6efd;">
-                    {webinar.zoom_link or "The session link will be shared before the webinar begins."}
+                  <p style="word-break:break-all; color:#2b9627;">
+                    <a href="{ webinar.waba_link }" style="color:#44a65c; text-decoration:none;">
+                      { webinar.waba_link }
+                    </a>
                   </p>
 
                   <p style="margin-top:25px;">
@@ -80,11 +82,11 @@ def send_webinar_registration_email(registration):
 
                 <p style="font-size:12px; color:#777777; line-height:1.5;">
                   By participating in this webinar, you agree to our
-                  <a href="https://aylms.aryuprojects.com/terms-and-conditions" style="color:#0d6efd; text-decoration:none;">
+                  <a href="https://portal.aryuprojects.com/terms-and-conditions" style="color:#0d6efd; text-decoration:none;">
                     Terms & Conditions
                   </a>
                   and
-                  <a href="https://aylms.aryuprojects.com/privacy-policy" style="color:#0d6efd; text-decoration:none;">
+                  <a href="https://portal.aryuprojects.com/privacy-policy" style="color:#0d6efd; text-decoration:none;">
                     Privacy Policy
                   </a>.
                 </p>
@@ -202,11 +204,11 @@ Aryu Academy
 
                   <p style="font-size:12px; color:#777777; line-height:1.5;">
                     By accepting this certificate, you agree to our
-                    <a href="https://aylms.aryuprojects.com/terms-and-conditions" style="color:#781b0d; text-decoration:none;">
+                    <a href="https://portal.aryuprojects.com/terms-and-conditions" style="color:#781b0d; text-decoration:none;">
                       Terms & Conditions
                     </a>
                     and
-                    <a href="https://aylms.aryuprojects.com/privacy-policy" style="color:#781b0d; text-decoration:none;">
+                    <a href="https://portal.aryuprojects.com/privacy-policy" style="color:#781b0d; text-decoration:none;">
                       Privacy Policy
                     </a>.
                   </p>
@@ -235,3 +237,4 @@ Aryu Academy
         email_msg.attach_file(certificate_file.path)
 
     email_msg.send(fail_silently=False)
+
