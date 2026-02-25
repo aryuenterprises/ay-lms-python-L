@@ -112,12 +112,14 @@ def daily_webinar_reminder_scheduler(self):
             )
     
 
-@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=30, retry_kwargs={'max_retries': 3})
+@shared_task(bind=True, retry_kwargs={'max_retries': 3})
 def send_webinar_live_task(self, registration_id):
-    reg = WebinarRegistration.objects.select_related("webinar").get(id=registration_id)
 
-    if not reg.webinar.zoom_join_url:
-        return "No join URL"
+    try:
+        reg = WebinarRegistration.objects.select_related("webinar").get(id=registration_id)
+    except WebinarRegistration.DoesNotExist:
+        print(f"[LIVE TASK] Registration {registration_id} not found. Skipping.")
+        return
 
     send_webinar_live_whatsapp(reg)
     return "LIVE message sent"

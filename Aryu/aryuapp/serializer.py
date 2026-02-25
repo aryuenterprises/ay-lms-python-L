@@ -32,12 +32,12 @@ class SettingsPicsSerializer(serializers.ModelSerializer):
 
     def get_general_logo_url(self, obj):
         if obj.general_logo and hasattr(obj.general_logo, "url"):
-            return "https://aylms.aryuprojects.com/api" + obj.general_logo.url
+            return "https://portal.aryuacademy.com/api" + obj.general_logo.url
         return None
 
     def get_secondary_logo_url(self, obj):
         if obj.secondary_logo and hasattr(obj.secondary_logo, "url"):
-            return "https://aylms.aryuprojects.com/api" + obj.secondary_logo.url
+            return "https://portal.aryuacademy.com/api" + obj.secondary_logo.url
         return None
 
 class SettingsSerializer(serializers.ModelSerializer):
@@ -51,17 +51,17 @@ class SettingsSerializer(serializers.ModelSerializer):
 
     def get_general_logo_url(self, obj):
         if obj.general_logo and hasattr(obj.general_logo, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.general_logo.url
+            return 'https://portal.aryuacademy.com/api' + obj.general_logo.url
         return None
 
     def get_secondary_logo_url(self, obj):
         if obj.secondary_logo and hasattr(obj.secondary_logo, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.secondary_logo.url
+            return 'https://portal.aryuacademy.com/api' + obj.secondary_logo.url
         return None
 
     def get_signature_url(self, obj):
         if obj.signature and hasattr(obj.signature, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.signature.url
+            return 'https://portal.aryuacademy.com/api' + obj.signature.url
         return None
 
     def create(self, validated_data):
@@ -611,7 +611,7 @@ class College_StudentSerializer(serializers.ModelSerializer):
 
     def get_resume_url(self, obj):
         if obj.resume and hasattr(obj.resume, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.resume.url
+            return 'https://portal.aryuacademy.com/api' + obj.resume.url
         return None
 
 class JobSeekerSerializer(serializers.ModelSerializer):
@@ -626,7 +626,7 @@ class JobSeekerSerializer(serializers.ModelSerializer):
     
     def get_resume_url(self, obj):
         if obj.resume and hasattr(obj.resume, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.resume.url
+            return 'https://portal.aryuacademy.com/api' + obj.resume.url
         return None
     
 class EmployeeSerializer(serializers.ModelSerializer):
@@ -1171,7 +1171,7 @@ class CourseSerializer(serializers.ModelSerializer):
     
     def get_course_pic_url(self, obj):
         if obj.course_pic and hasattr(obj.course_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.course_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.course_pic.url
         return None
     
     def get_syllabus(self, obj):
@@ -1180,7 +1180,7 @@ class CourseSerializer(serializers.ModelSerializer):
 
         try:
             if os.path.exists(obj.syllabus.path):
-                return 'https://aylms.aryuprojects.com/api' + obj.syllabus.url
+                return 'https://portal.aryuacademy.com/api' + obj.syllabus.url
         except Exception:
             pass
 
@@ -1221,7 +1221,7 @@ class CourseSerializer(serializers.ModelSerializer):
                     "name": filename,
                     "type": mimetype or "application/octet-stream",
                     "size": os.path.getsize(file_path),
-                    "url": 'https://aylms.aryuprojects.com/api' + obj.syllabus.url,
+                    "url": 'https://portal.aryuacademy.com/api' + obj.syllabus.url,
                     "missing": False
                 }
             }]
@@ -1955,7 +1955,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
 
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
 
     def get_course(self, obj):
@@ -2145,7 +2145,7 @@ class StudentUpdateSerializer(serializers.ModelSerializer):
 
     def get_profile_pic_url(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
 
     def validate_contact_no(self, value):
@@ -2319,7 +2319,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
     def get_pdf_url(self, obj):
         if obj.pdf_file and hasattr(obj.pdf_file, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.pdf_file.url
+            return 'https://portal.aryuacademy.com/api' + obj.pdf_file.url
         return None
      
 class CertificateSerializer(serializers.ModelSerializer):
@@ -2526,7 +2526,7 @@ class TrainerSerializer(serializers.ModelSerializer):
 
     def get_profile_pic_url(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
     
     def create(self, validated_data):
@@ -2583,7 +2583,7 @@ class TrainerTravelExpenseImageSerializer(serializers.ModelSerializer):
 
     def get_image(self, obj):
         if obj.image and hasattr(obj.image, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.image.url
+            return 'https://portal.aryuacademy.com/api' + obj.image.url
         return None
 
 
@@ -2737,12 +2737,12 @@ class AnnouncementSerializer(serializers.ModelSerializer):
 
     def get_content_pic_url(self, obj):
         if obj.content_pic and hasattr(obj.content_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.content_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.content_pic.url
         return None
     
     def get_background_pic_url(self, obj):
         if obj.background_pic and hasattr(obj.background_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.background_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.background_pic.url
         return None
     
     def create(self, validated_data):
@@ -3556,7 +3556,7 @@ class StudentDetailSerializer(serializers.ModelSerializer):
     
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
 
 class TrainerForStudentSerializer(serializers.ModelSerializer):
@@ -3581,7 +3581,7 @@ class TrainerForStudentSerializer(serializers.ModelSerializer):
     
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
 
 class TrainerSimpleSerializer(serializers.ModelSerializer):
@@ -3592,7 +3592,7 @@ class TrainerSimpleSerializer(serializers.ModelSerializer):
         
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
 
 class SubmissionStudentSerializer(serializers.ModelSerializer):
@@ -3604,7 +3604,7 @@ class SubmissionStudentSerializer(serializers.ModelSerializer):
         
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
     
     def get_student_name(self, obj):
@@ -3632,7 +3632,7 @@ class SubmissionSerializer(serializers.ModelSerializer):
 
     def get_file_url(self, obj):
         if obj.file and hasattr(obj.file, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.file.url
+            return 'https://portal.aryuacademy.com/api' + obj.file.url
         return None
     
     def validate(self, data):
@@ -4051,12 +4051,12 @@ class ChatRoomSerializer(serializers.ModelSerializer):
 
     def get_student_profile_pic(self, obj):
         if obj.student and obj.student.profile_pic:
-            return 'https://aylms.aryuprojects.com/api' + obj.student.profile_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.student.profile_pic.url
         return None
 
     def get_trainer_profile_pic(self, obj):
         if obj.trainer and obj.trainer.profile_pic:
-            return 'https://aylms.aryuprojects.com/api' + obj.trainer.profile_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.trainer.profile_pic.url
         return None
 
     def get_student_name(self, obj):
@@ -4079,12 +4079,12 @@ class MessageSerializer(serializers.ModelSerializer):
 
     def get_upload_url(self, obj):
         if obj.upload:
-            return 'https://aylms.aryuprojects.com/api' + obj.upload.url
+            return 'https://portal.aryuacademy.com/api' + obj.upload.url
         return None
 
     def get_audio_file_url(self, obj):
         if obj.audio_file:
-            return 'https://aylms.aryuprojects.com/api' + obj.audio_file.url
+            return 'https://portal.aryuacademy.com/api' + obj.audio_file.url
         return None
 
 class TicketAttachmentSerializer(serializers.ModelSerializer):
@@ -4096,7 +4096,7 @@ class TicketAttachmentSerializer(serializers.ModelSerializer):
 
     def get_file(self, obj):
         if obj.file and hasattr(obj.file, 'url'):
-            return'https://aylms.aryuprojects.com/api' +obj.file.url
+            return'https://portal.aryuacademy.com/api' +obj.file.url
         return None
 
 

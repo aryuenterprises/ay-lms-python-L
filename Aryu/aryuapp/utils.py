@@ -91,7 +91,7 @@ def generate_complex_otp(length=6):
 def send_otp_email(email, otp):
     subject = "Aryu Academy – Password Reset OTP"
 
-    background_url = "https://aylms.aryuprojects.com/api/media/email/banner.svg"
+    background_url = "https://portal.aryuacademy.com/api/media/email/banner.svg"
 
     html_content = f"""
     <!DOCTYPE html>

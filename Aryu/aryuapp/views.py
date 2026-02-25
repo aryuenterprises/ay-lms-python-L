@@ -4317,7 +4317,7 @@ class StudentListAPIView(viewsets.ViewSet):
                     "category_id": category_id_list,
                     "category_name": category_name_list,
                     "profile_pic": (
-                        f"https://aylms.aryuprojects.com/api{s.profile_pic.url}"
+                        f"https://portal.aryuacademy.com/api{s.profile_pic.url}"
                         if s.profile_pic else None
                     ),
 
@@ -7863,15 +7863,14 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     "success": False,
                     "message": "Invalid datetime format. Use ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."
                 }, status=200)
-
+            status = request.data.get("status")
             # ---------- Prevent Duplicate Attendance ----------
             if TrainerAttendance.objects.filter(
                 trainer=trainer,
                 batch_id=batch_id,
                 course=course,
                 date__date=scheduled_date.date(),
-            ).filter(
-                Q(status="Login") | Q(status="Logout")
+                status=status
             ).exists():
                 return Response({"success": False, "message": "Attendance already marked."}, status=200)
 
