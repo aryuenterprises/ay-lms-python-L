@@ -2,6 +2,8 @@ import requests
 from celery import shared_task
 from webinar.models import WebinarRegistration
 import logging
+from django.utils import timezone
+
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +63,7 @@ def send_whatsapp_message(phone, template_name, parameters, media_url=None):
 
 def send_webinar_welcome_whatsapp(registration):
     webinar = registration.webinar
-    start_dt = webinar.scheduled_start
+    start_dt = timezone.localtime(webinar.scheduled_start)
 
     print("Sending webinar welcome whatsapp to", registration.phone)
 
@@ -76,7 +78,7 @@ def send_webinar_welcome_whatsapp(registration):
         ],
         media_url=webinar.get_image_url()  # header image
     )
-
+    print("IST:", timezone.localtime(webinar.scheduled_start))
     print("WhatsApp API response:", res)
     return res
 
@@ -84,7 +86,7 @@ def send_webinar_welcome_whatsapp(registration):
 def send_webinar_reminder(registration_id, time_left):
     reg = WebinarRegistration.objects.get(id=registration_id)
     webinar = reg.webinar
-    start_dt = webinar.scheduled_start
+    start_dt = timezone.localtime(webinar.scheduled_start)
 
     phone = reg.phone.strip()
 
@@ -114,8 +116,8 @@ def send_webinar_reminder(registration_id, time_left):
 
 def send_webinar_joining_whatsapp(registration, join_url):
     webinar = registration.webinar
-    start_dt = webinar.scheduled_start
-
+    start_dt = timezone.localtime(webinar.scheduled_start)
+    
     phone = registration.phone.strip()
 
     # Normalize phone
@@ -144,7 +146,7 @@ def send_webinar_joining_whatsapp(registration, join_url):
 
 def send_webinar_live_whatsapp(registration):
     webinar = registration.webinar
-    start_dt = webinar.scheduled_start
+    start_dt = timezone.localtime(webinar.scheduled_start)
 
     phone = registration.phone.strip()
 
@@ -182,7 +184,7 @@ def send_webinar_certificate_whatsapp(certificate, phone):
 
     pdf_url = certificate.certificate_file.url
     if not pdf_url.startswith("http"):
-        pdf_url = f"https://portal.aryuacademy.com/api{pdf_url}"
+        pdf_url = f"https://aylms.aryuprojects.com/api{pdf_url}"
 
     print(f"Certificate PDF URL: {pdf_url}")
 
