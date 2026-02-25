@@ -340,7 +340,6 @@ class PublicWebinarListSerializer(serializers.ModelSerializer):
             "scheduled_start",
             "webinar_image",
             "slug",
-            "waba_link",
             "mentor",
             "language",
             "video_url",
