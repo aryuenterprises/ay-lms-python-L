@@ -271,6 +271,7 @@ class WebinarViewSet(
     def get_queryset(self):
         return (
             Webinar.objects
+            .select_related("session")  # OneToOne → valid
             .prefetch_related(
                 Prefetch(
                     "tools",
@@ -284,16 +285,26 @@ class WebinarViewSet(
                     "faqs",
                     queryset=Webinar_FAQ.objects.filter(is_deleted=False)
                 ),
-                "registrations__feedback"
+                Prefetch(
+                    "registrations",
+                    queryset=WebinarRegistration.objects.select_related(
+                        "feedback",         # OneToOne
+                        "attendance_summary",
+                        "payment_transaction",
+                        "lead"
+                    )
+                ),
+                "feedbacks"  # reverse FK
             )
             .filter(is_deleted=False)
             .order_by("-created_at")
         )
 
     def list(self, request):
-        qs = self.get_queryset()
-        serializer = WebinarSerializer(qs, many=True, context={"request": request})
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+    
 
     def retrieve(self, request, uuid=None):
         queryset = self.get_queryset()
