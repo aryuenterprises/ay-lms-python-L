@@ -395,7 +395,10 @@ class Login(LoggingMixin, APIView):
 
                 if role:
                     # Prefetch related module permissions
-                    role_modules = RoleModulePermission.objects.filter(role=role).select_related("module_permission")
+                    role_modules = RoleModulePermission.objects.filter(
+                        role=role
+                    ).exclude(allowed_actions=[]).select_related("module_permission")
+
                     for rm in role_modules:
                         role_permissions.append({
                             "module_id": rm.module_permission.module_id,
@@ -492,14 +495,17 @@ class Login(LoggingMixin, APIView):
                     role_permissions = []
 
                     if role:
-                        # Prefetch related module permissions
-                        role_modules = RoleModulePermission.objects.filter(role=role).select_related("module_permission")
+                        role_modules = RoleModulePermission.objects.filter(
+                            role=role
+                        ).exclude(allowed_actions=[]).select_related("module_permission")
+
                         for rm in role_modules:
-                            role_permissions.append({
-                                "module_id": rm.module_permission.module_id,
-                                "module_name": rm.module_permission.module,
-                                "allowed_actions": rm.allowed_actions
-                            })
+                            if rm.allowed_actions:
+                                role_permissions.append({
+                                    "module_id": rm.module_permission.module_id,
+                                    "module_name": rm.module_permission.module,
+                                    "allowed_actions": rm.allowed_actions
+                                })
                             
                     # Prepare token
                     payload = {
