@@ -197,11 +197,7 @@ class WebinarSerializer(serializers.ModelSerializer):
     created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", read_only=True)
     updated_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", read_only=True)
     webinar_image_url = serializers.SerializerMethodField()
-    participants = WebinarRegistrationSerializer(
-        many=True,
-        read_only=True,
-        source="registrations"
-    )
+    participants = serializers.SerializerMethodField()
     participants_count = serializers.SerializerMethodField()
     total_amount_received = serializers.SerializerMethodField()
     tools = WebinarToolSerializer(many=True, read_only=True)
@@ -230,6 +226,14 @@ class WebinarSerializer(serializers.ModelSerializer):
         ).aggregate(total=Sum("amount"))["total"]
 
         return float(total or 0)
+    
+    def get_participants(self, obj):
+        registrations = obj.registrations.order_by("-registered_at")  # or "-id"
+        return WebinarRegistrationSerializer(
+            registrations,
+            many=True,
+            context=self.context
+        ).data
 
     def get_participants_count(self, obj):
         return obj.registrations.count()

@@ -142,6 +142,10 @@ class WebinarRegistration(models.Model):
 
     class Meta:
         unique_together = ('webinar', 'phone')
+        indexes = [
+            models.Index(fields=["-registered_at"]),
+            models.Index(fields=["webinar"]),
+        ]
 
     def __str__(self):
         return f"{self.name or 'Unknown'} ({self.phone}) → {self.webinar}"
