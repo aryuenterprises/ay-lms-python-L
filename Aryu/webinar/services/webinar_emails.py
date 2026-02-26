@@ -1,11 +1,12 @@
 from django.core.mail import EmailMultiAlternatives
 from django.conf import settings
 from datetime import datetime
+from django.utils import timezone
 
 
 def send_webinar_registration_email(registration):
     webinar = registration.webinar
-
+    ist_time = timezone.localtime(webinar.scheduled_start)
     subject = f"Registration Confirmed: {webinar.title}"
 
     html_content = f"""
@@ -42,8 +43,8 @@ def send_webinar_registration_email(registration):
                   <div style="background:#f8f9fa; padding:15px; border-radius:6px; margin-bottom:20px;">
                     <p style="margin:0 0 8px;"><strong>{webinar.title}</strong></p>
                     <p style="margin:0;">
-                      <strong>Date:</strong> {webinar.scheduled_start.strftime('%d %b %Y')}<br>
-                      <strong>Time:</strong> {webinar.scheduled_start.strftime('%I:%M %p')}
+                      <strong>Date:</strong> {ist_time.strftime('%d %b %Y')}<br>
+                      <strong>Time:</strong> {ist_time.strftime('%I:%M %p')}
                     </p>
                   </div>
 
