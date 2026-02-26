@@ -287,12 +287,14 @@ class WebinarViewSet(
                 ),
                 Prefetch(
                     "registrations",
-                    queryset=WebinarRegistration.objects.select_related(
-                        "feedback",         # OneToOne
-                        "attendance_summary",
-                        "payment_transaction",
-                        "lead"
-                    )
+                    queryset=WebinarRegistration.objects
+                        .select_related(
+                            "feedback",
+                            "attendance_summary",
+                            "payment_transaction",
+                            "lead"
+                        )
+                        .order_by("-registered_at")  # or "-registered_at"
                 ),
                 "feedbacks"  # reverse FK
             )
