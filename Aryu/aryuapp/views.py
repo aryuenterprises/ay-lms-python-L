@@ -27,7 +27,7 @@ from collections import defaultdict
 from datetime import datetime, time, timedelta, date
 from rest_framework.decorators import action, api_view, permission_classes
 from twilio.twiml.voice_response import VoiceResponse, Dial
-from django.db.models.functions import TruncDate, Cast, TruncMonth
+from django.db.models.functions import TruncDate, Cast, TruncMonth, TruncDay
 from django.core.mail import send_mail, BadHeaderError
 from django.db import IntegrityError, transaction
 import time
@@ -36,7 +36,7 @@ from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
 import jwt
 from django.http import HttpResponse
 from django.db import IntegrityError
-from django.utils.timezone import localtime
+from django.utils.timezone import localtime, now
 from django.conf import settings
 from django.contrib.auth.hashers import *
 from django.db.models import Q, Count, F, Max, ExpressionWrapper, Prefetch, DateField, Case, When, IntegerField, Sum, Avg
@@ -1721,7 +1721,19 @@ class UserDashboardView(APIView):
             .values('title', 'batch_id', 'student_count')
             .order_by('title')
         )
+        now = timezone.now()
+        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
+        overall_monthly_revenue = (
+            PaymentTransaction.objects.filter(
+                payment_status="done"
+            )
+            .annotate(month=TruncMonth("created_at"))
+            .values("month")
+            .annotate(total=Sum("amount"))
+            .order_by("month")
+        )
+        
         webinar_qs = Webinar.objects.filter(
             creator_filter,
             is_deleted=False
@@ -1800,6 +1812,29 @@ class UserDashboardView(APIView):
                 "avg_rating": round(w["avg_rating"] or 0, 2)
             })
 
+        daily_revenue = (
+            PaymentTransaction.objects.filter(
+                metadata__webinar_id__in=webinar_uuid_str_list,
+                payment_status="done",
+                created_at__gte=start_of_month
+            )
+            .annotate(day=TruncDay("created_at"))
+            .values("day")
+            .annotate(total=Sum("amount"))
+            .order_by("day")
+        )
+        
+        daily_registrations = (
+            WebinarRegistration.objects.filter(
+                webinar__in=webinar_qs,
+                registered_at__gte=start_of_month
+            )
+            .annotate(day=TruncDay("registered_at"))
+            .values("day")
+            .annotate(total=Count("id"))
+            .order_by("day")
+        )
+        
         monthly_revenue = (
             PaymentTransaction.objects.filter(
                 metadata__webinar_id__in=webinar_uuid_str_list,
@@ -1854,6 +1889,7 @@ class UserDashboardView(APIView):
                 "total_batches": total_batches,
                 "active_batches": total_active_batches,
                 "batchwise_student_count": list(batchwise_student_count),
+                "overall_monthly_revenue": list(overall_monthly_revenue),
                 "webinar_analytics": {
                     "overview": {
                         "total_webinars": total_webinars,
@@ -1862,6 +1898,8 @@ class UserDashboardView(APIView):
                         "total_registrations": total_registrations,
                         "total_revenue": float(total_revenue)
                     },
+                    "daily_revenue": list(daily_revenue),
+                    "daily_registrations": list(daily_registrations),
                     "webinar_performance": webinar_analytics,
                     "monthly_revenue": list(monthly_revenue),
                     "monthly_registrations": list(monthly_registrations),
