@@ -4660,82 +4660,60 @@ class StudentTicketViewSet(APIView):
 
     # Optimized base queryset with prefetch
     def get_queryset(self):
-        return StudentTicket.objects.select_related(
-            "student", 
-            "handled_by_trainer", 
-            "handled_by_superadmin"
-        ).prefetch_related(
-            "attachments",
-            Prefetch(
-                "replies",
-                queryset=TicketReply.objects.select_related(
-                    "student", "trainer", "super_admin"
-                ).order_by("created_at")
+        return (
+            StudentTicket.objects
+            .select_related(
+                "student",
+                "webinar_participant",
+                "handled_by_trainer",
+                "handled_by_superadmin"
             )
-        ).annotate(replies_count=Count("replies"))
+            .prefetch_related(
+                "attachments",
+                Prefetch(
+                    "replies",
+                    queryset=TicketReply.objects.select_related(
+                        "student",
+                        "trainer",
+                        "super_admin"
+                    ).order_by("created_at")
+                )
+            )
+            .annotate(
+                replies_count=Count("replies", distinct=True)
+            )
+        )
 
     # GET: List or Detail
-
     def get(self, request):
-        user_type = getattr(request.user, "user_type", None)
+        user = request.user
+        user_type = getattr(user, "user_type", None)
 
-        # My Tickets (Student)
+        queryset = self.get_queryset()
+
+        # ---------------- STUDENT VIEW ----------------
         if request.query_params.get("type") == "iron_man":
             if user_type != "student":
                 return Response({"success": False, "message": "Access denied"}, status=403)
 
-            queryset = self.get_queryset().filter(student__student_id=request.user.student_id)
+            queryset = queryset.filter(student__student_id=user.student_id)
 
-            # Get counts in ONE query
-            counts = queryset.aggregate(
-                new=Count(Case(When(status="new", then=1), output_field=IntegerField())),
-                in_progress=Count(Case(When(status="in_progress", then=1), output_field=IntegerField())),
-                closed=Count(Case(When(status="closed", then=1), output_field=IntegerField())),
-            )
-
-            tickets = queryset.order_by("-ticket_id")
-
-            return Response({
-                "success": True,
-                "new": counts["new"] or 0,
-                "in_progress": counts["in_progress"] or 0,
-                "closed": counts["closed"] or 0,
-                "tickets": StudentTicketSerializer(tickets, many=True, context={'request': request}).data
-            })
-
-        # All Tickets (Admin / SuperAdmin)
-        if request.query_params.get("type") == "wonder_women":
+        # ---------------- ADMIN / SUPER ADMIN VIEW ----------------
+        elif request.query_params.get("type") == "wonder_women":
             if user_type not in ("admin", "super_admin"):
                 return Response({"success": False, "message": "Access denied"}, status=403)
 
-            scope = self.get_admin_scope(request.user)
-            queryset = self.get_queryset().filter(scope)
+            scope = self.get_admin_scope(user)
+            queryset = queryset.filter(scope)
 
-            # Get counts
-            counts = queryset.aggregate(
-                new=Count(Case(When(status="new", then=1), output_field=IntegerField())),
-                in_progress=Count(Case(When(status="in_progress", then=1), output_field=IntegerField())),
-                closed=Count(Case(When(status="closed", then=1), output_field=IntegerField())),
-            )
-
-            tickets = queryset.order_by("-ticket_id")
-
-            return Response({
-                "success": True,
-                "new": counts["new"] or 0,
-                "in_progress": counts["in_progress"] or 0,
-                "closed": counts["closed"] or 0,
-                "tickets": StudentTicketSerializer(tickets, many=True, context={'request': request}).data
-            })
-
-        # Ticket Detail (unchanged)
-        if request.query_params.get("natasha"):
+        # ---------------- DETAIL VIEW ----------------
+        elif request.query_params.get("natasha"):
             try:
                 ticket_id = int(request.query_params["natasha"])
             except ValueError:
                 return Response({"success": False, "message": "Invalid ticket_id"}, status=400)
 
-            ticket = self.get_queryset().filter(ticket_id=ticket_id).first()
+            ticket = queryset.filter(ticket_id=ticket_id).first()
             if not ticket:
                 return Response({"success": False, "message": "Ticket not found"}, status=404)
 
@@ -4744,7 +4722,29 @@ class StudentTicketViewSet(APIView):
                 "data": TicketDetailSerializer(ticket, context={'request': request}).data
             })
 
-        return Response({"success": False, "message": "Invalid request"}, status=400)
+        else:
+            return Response({"success": False, "message": "Invalid request"}, status=400)
+
+        # ----------- STATUS COUNTS (Single Aggregation) -----------
+        counts = queryset.aggregate(
+            new=Count(Case(When(status="new", then=1), output_field=IntegerField())),
+            in_progress=Count(Case(When(status="in_progress", then=1), output_field=IntegerField())),
+            closed=Count(Case(When(status="closed", then=1), output_field=IntegerField())),
+        )
+
+        tickets = queryset.order_by("-ticket_id")
+
+        return Response({
+            "success": True,
+            "new": counts["new"] or 0,
+            "in_progress": counts["in_progress"] or 0,
+            "closed": counts["closed"] or 0,
+            "tickets": StudentTicketSerializer(
+                tickets,
+                many=True,
+                context={'request': request}
+            ).data
+        })
 
     # POST: Create, Reply, or Close
     def post(self, request):
@@ -4818,30 +4818,46 @@ class StudentTicketViewSet(APIView):
         user = request.user
         ut = getattr(user, "user_type", None)
 
+        # Convert JWTUser → Real DB User
+        real_user = self.get_real_user(user)
+        if not real_user:
+            return Response({"success": False, "message": "User not found"}, status=status.HTTP_400_BAD_REQUEST)
+
         # Permission check for student
-        if ut == "student" and ticket.student.student_id != getattr(user, "student_id", None):
-            return Response({"success": False, "message": "You can only reply to your own tickets"}, status=status.HTTP_403_FORBIDDEN)
+        if ut == "student":
+            if not ticket.student or ticket.student.student_id != getattr(user, "student_id", None):
+                return Response({"success": False, "message": "You can only reply to your own tickets"}, status=status.HTTP_403_FORBIDDEN)
 
-        reply_data = {"ticket": ticket, "message": message}
+        reply_data = {
+            "ticket": ticket,
+            "message": message
+        }
 
+        # ---------------- STUDENT ----------------
         if ut == "student":
             reply_data["student"] = ticket.student
+
+        # ---------------- ADMIN ----------------
         elif ut == "admin":
-            trainer = Trainer.objects.filter(username=user.username).first()
+            trainer = Trainer.objects.filter(username=real_user.username).first()
             if not trainer:
                 return Response({"success": False, "message": "Trainer profile not found"}, status=status.HTTP_400_BAD_REQUEST)
+
             reply_data["trainer"] = trainer
             ticket.handled_by_trainer = trainer
+
+        # ---------------- SUPER ADMIN ----------------
         elif ut == "super_admin":
-            reply_data["super_admin"] = user
-            ticket.handled_by_superadmin = user
+            reply_data["super_admin"] = real_user
+            ticket.handled_by_superadmin = real_user
+
         else:
             return Response({"success": False, "message": "Invalid user type"}, status=status.HTTP_403_FORBIDDEN)
 
         # Create reply
         reply = TicketReply.objects.create(**reply_data)
-        real_user = self.get_real_user(request.user)
-        # Update ticket status
+
+        # Update ticket
         ticket.status = "in_progress"
         ticket.updated_by = real_user
         ticket.save(update_fields=[
@@ -4850,15 +4866,12 @@ class StudentTicketViewSet(APIView):
             "handled_by_superadmin",
         ])
 
-        # Serialize and return the new reply
-        serialized_reply = TicketReplySerializer(reply, context={'request': request}).data
-
         return Response({
             "success": True,
             "message": "Reply added successfully",
-            "reply": serialized_reply
+            "reply": TicketReplySerializer(reply, context={'request': request}).data
         }, status=status.HTTP_201_CREATED)
-
+    
     # Close ticket
     def close_ticket(self, request):
         try:
@@ -4877,51 +4890,34 @@ class StudentTicketViewSet(APIView):
         return Response({"success": True, "message": "Ticket closed successfully"}, status=status.HTTP_200_OK)
 
     # Admin scope
+    from .utils import get_real_user
     def get_admin_scope(self, user):
-        ut = getattr(user, "user_type", None)
+        user_type = getattr(user, "user_type", None)
+
+        # IMPORTANT: Convert JWTUser → Real DB User
+        real_user = self.get_real_user(user)
+
+        if not real_user:
+            return Q(pk__isnull=True)
 
         # ---------------- SUPER ADMIN ----------------
-        if ut == "super_admin":
-            user_id = getattr(user, "user_id", None)
-            if not user_id:
-                return Q(pk__isnull=True)
-
-            user_id_str = str(user_id)   # 🔧 CAST TO STRING
-
-            admin_ids = list(
-                Trainer.objects.filter(
-                    created_by=user_id_str,
-                    created_by_type="super_admin",
-                    user_type="admin",
-                    is_archived=False
-                ).values_list("trainer_id", flat=True)
-            )
-
-            admin_ids_str = [str(i) for i in admin_ids]  # 🔧 CAST TO STRING
-
+        if user_type == "super_admin":
             return (
-                Q(student__created_by=user_id_str, student__created_by_type="super_admin") |
-                Q(student__created_by__in=admin_ids_str, student__created_by_type="admin")
+                Q(handled_by_superadmin=real_user) |
+                Q(webinar_participant__isnull=False)
             )
 
         # ---------------- ADMIN ----------------
-        elif ut == "admin":
-            trainer_id = getattr(user, "trainer_id", None)
-            if not trainer_id:
+        if user_type == "admin":
+            trainer = Trainer.objects.filter(username=real_user.username).first()
+
+            if not trainer:
                 return Q(pk__isnull=True)
 
-            trainer_id_str = str(trainer_id)  # 🔧 CAST TO STRING
-
-            super_admin_id = Trainer.objects.filter(
-                trainer_id=trainer_id,
-                created_by_type="super_admin"
-            ).values_list("created_by", flat=True).first()
-
-            super_admin_id_str = str(super_admin_id) if super_admin_id else None  # 🔧 CAST TO STRING
-
             return (
-                Q(student__created_by=trainer_id_str, student__created_by_type="admin") |
-                Q(student__created_by=super_admin_id_str, student__created_by_type="super_admin")
+                Q(handled_by_trainer=trainer) |
+                Q(student__created_by=trainer.trainer_id, student__created_by_type="admin") |
+                Q(webinar_participant__isnull=False)
             )
 
         return Q(pk__isnull=True)

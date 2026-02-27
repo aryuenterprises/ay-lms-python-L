@@ -4,7 +4,7 @@ from rest_framework import serializers
 from .models import *
 from rest_framework import serializers
 from django.db import transaction
-from aryuapp.models import Lead
+from aryuapp.models import Lead, StudentTicket, TicketAttachment, TicketReply
 
 
 class WebinarAttendanceLogSerializer(serializers.ModelSerializer):
@@ -328,6 +328,62 @@ class WebinarSerializer(serializers.ModelSerializer):
             )
 
         return super().update(instance, validated_data)
+
+class TicketReplySerializer(serializers.ModelSerializer):
+    sender_type = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+
+    class Meta:
+        model = TicketReply
+        fields = ["reply_id", "sender_type", "message", "created_at"]
+
+    def get_sender_type(self, obj):
+        if obj.student:
+            return "student"
+        if obj.trainer:
+            return "admin"
+        if obj.super_admin:
+            return "super_admin"
+        return "webinar"
+    
+class TicketAttachmentSerializer(serializers.ModelSerializer):
+    file = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+
+    class Meta:
+        model = TicketAttachment
+        fields = ["attachment_id", "file", "created_at"]
+
+    def get_file(self, obj):
+        return obj.file.url if obj.file else None
+    
+class WebinarTicketSerializer(serializers.ModelSerializer):
+    replies = TicketReplySerializer(many=True, read_only=True)
+    attachments = TicketAttachmentSerializer(many=True, read_only=True)
+    created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+    updated_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+
+    class Meta:
+        model = StudentTicket
+        fields = [
+            "ticket_id",
+            "subject",
+            "message",
+            "status",
+            "priority",
+            "created_at",
+            "updated_at",
+            "replies",
+            "attachments",
+        ]
+
+class WebinarTicketCreateSerializer(serializers.Serializer):
+    subject = serializers.CharField(max_length=255)
+    message = serializers.CharField()
+    priority = serializers.ChoiceField(choices=["Low", "Medium", "High"], default="Low")
+
+class WebinarReplyCreateSerializer(serializers.Serializer):
+    message = serializers.CharField()
 
 class PublicWebinarListSerializer(serializers.ModelSerializer):
     registered_count = serializers.SerializerMethodField()

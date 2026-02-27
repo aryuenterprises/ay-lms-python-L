@@ -1,4 +1,5 @@
 from datetime import datetime
+import token
 from django.utils import timezone
 import json
 from django.shortcuts import render
@@ -36,7 +37,7 @@ from django.db.models import Prefetch
 from .models import *
 from .serializers import *
 import logging
-
+from .utils import get_ticket_from_token
 logger = logging.getLogger(__name__)
 
 @csrf_exempt
@@ -1217,7 +1218,92 @@ class WebinarFeedbackViewSet(viewsets.ViewSet):
                 "success": False,
                 "message": str(e)
             }, status=400)
+
+class WebinarTicketViewSet(viewsets.ViewSet):
+    """
+    Token-based ticketing for webinar participants.
+    Multi-use token until expiry.
+    """
+
+    def _get_token(self, request):
+        return (
+            request.headers.get("X-Webinar-Token")
+            or request.query_params.get("token")
+        )
+
+    # GET /webinar/tickets/
+    def list(self, request):
+        mobile = request.query_params.get("mobile")
+
+        if not mobile:
+            return Response({"detail": "Mobile required"}, status=400)
+
+        participant = WebinarRegistration.objects.filter(phone=mobile).first()
+        if not participant:
+            return Response({"detail": "Mobile not registered"}, status=404)
+
+        ticket = (
+            StudentTicket.objects
+            .filter(webinar_participant=participant)
+            .order_by("-created_at")
+            .first()
+        )
+
+        if not ticket:
+            return Response({"success": True, "data": None})
+
+        serializer = WebinarTicketSerializer(ticket)
+        return Response({"success": True, "data": serializer.data})
+
+    # POST /webinar/tickets/
     
+    def create(self, request):
+        mobile = request.data.get("mobile")
+
+        if not mobile:
+            return Response({"detail": "Mobile number required"}, status=400)
+
+        participant = WebinarRegistration.objects.filter(phone=mobile).first()
+
+        if not participant:
+            return Response({"detail": "Mobile not registered"}, status=400)
+
+        serializer = WebinarTicketCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        ticket = StudentTicket.objects.create(
+            webinar_participant=participant,  # IMPORTANT FIX
+            subject=serializer.validated_data["subject"],
+            message=serializer.validated_data["message"],
+            priority=serializer.validated_data["priority"],
+            status="New",
+        )
+
+        return Response({
+            "success": True,
+            "ticket_id": ticket.ticket_id
+        }, status=201)
+    
+    # POST /webinar/tickets/{id}/reply/
+    def reply(self, request, pk=None):
+        ticket = StudentTicket.objects.filter(ticket_id=pk).first()
+
+        if not ticket:
+            return Response({"detail": "Ticket not found"}, status=404)
+
+        serializer = WebinarReplyCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        TicketReply.objects.create(
+            ticket=ticket,
+            message=serializer.validated_data["message"]
+        )
+
+        ticket.status = "in_progress"
+        ticket.save(update_fields=["status"])
+
+        return Response({"success": True}, status=201)
+
 class WebinarCertificateViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
 

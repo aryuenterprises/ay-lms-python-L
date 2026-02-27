@@ -434,19 +434,29 @@ def notify_student_on_test_result(sender, instance, created, **kwargs):
 
 
 def get_student_admin_and_superadmin(student: Student):
+    if not student:
+        return None, None
 
     admin = None
     super_admin = None
 
-    # Case 1: Student created by ADMIN
     if student.created_by_type == "admin":
-        admin = Trainer.objects.filter(trainer_id=student.created_by, user_type="admin").first()
-        if admin and admin.created_by_type == "super_admin":
-            super_admin = User.objects.filter(id=admin.created_by, user_type="super_admin").first()
+        admin = Trainer.objects.filter(
+            trainer_id=student.created_by,
+            user_type="admin"
+        ).first()
 
-    # Case 2: Student created directly by SUPER ADMIN
+        if admin and admin.created_by_type == "super_admin":
+            super_admin = User.objects.filter(
+                id=admin.created_by,
+                user_type="super_admin"
+            ).first()
+
     elif student.created_by_type == "super_admin":
-        super_admin = User.objects.filter(id=student.created_by, user_type="super_admin").first()
+        super_admin = User.objects.filter(
+            id=student.created_by,
+            user_type="super_admin"
+        ).first()
 
     return admin, super_admin
 
@@ -459,23 +469,40 @@ def create_ticket_notifications(sender, instance, created, **kwargs):
         return
 
     ticket = instance
-    student = ticket.student
 
-    admin, super_admin = get_student_admin_and_superadmin(student)
+    # CASE 1: LMS Student Ticket
+    if ticket.student:
+        admin, super_admin = get_student_admin_and_superadmin(ticket.student)
 
-    # Super admin notification
-    if super_admin:
-        Notification.objects.create(
-            super_admin=super_admin,
-            message=f"ticket:new: Ticket created by {student.first_name}",
-        )
+        if super_admin:
+            Notification.objects.create(
+                super_admin=super_admin,
+                message=f"ticket:new: Ticket created by {ticket.student.first_name}",
+            )
 
-    # Admin notification
-    if admin:
-        Notification.objects.create(
-            trainer=admin,
-            message=f"ticket:new: Ticket created by {student.first_name}",
-        )
+        if admin:
+            Notification.objects.create(
+                trainer=admin,
+                message=f"ticket:new: Ticket created by {ticket.student.first_name}",
+            )
+
+    # CASE 2: Webinar Ticket (no hierarchy)
+    elif ticket.webinar_participant:
+
+        # Option A (Recommended):
+        # Notify ALL super admins
+
+        super_admins = User.objects.filter(user_type="super_admin")
+
+        for sa in super_admins:
+            Notification.objects.create(
+                super_admin=sa,
+                message=f"webinar_ticket:new: Ticket from {ticket.webinar_participant.name}",
+            )
+
+        # Option B (If webinar has assigned admin)
+        # If your Webinar model has created_by / owner
+        # you can notify that person instead
 
 
 # ---------- 2. Reply → notify the correct side ----------
@@ -487,33 +514,65 @@ def create_ticket_reply_notifications(sender, instance, created, **kwargs):
 
     reply = instance
     ticket = reply.ticket
-    student = ticket.student
 
-    admin, super_admin = get_student_admin_and_superadmin(student)
+    # =========================
+    # CASE 1: LMS STUDENT TICKET
+    # =========================
+    if ticket.student:
 
-    # CASE A: Student replied → notify admin + super_admin
-    if reply.student:
-        if admin:
+        student = ticket.student
+        admin, super_admin = get_student_admin_and_superadmin(student)
+
+        # STUDENT replied → notify admin + super_admin
+        if reply.student:
+            if admin:
+                Notification.objects.create(
+                    trainer=admin,
+                    message=f"ticket:reply: Student replied on Ticket #{ticket.ticket_id}"
+                )
+
+            if super_admin:
+                Notification.objects.create(
+                    super_admin=super_admin,
+                    message=f"ticket:reply: Student replied on Ticket #{ticket.ticket_id}"
+                )
+
+        # ADMIN replied → notify student
+        elif reply.trainer:
             Notification.objects.create(
-                trainer=admin,
-                message=f"ticket:reply: Student replied on Ticket #{ticket.ticket_id}"
+                student=student,
+                message=f"ticket:reply: Admin replied on your Ticket #{ticket.ticket_id}"
             )
-        if super_admin:
+
+        # SUPER ADMIN replied → notify student
+        elif reply.super_admin:
             Notification.objects.create(
-                super_admin=super_admin,
-                message=f"ticket:reply: Student replied on Ticket #{ticket.ticket_id}"
+                student=student,
+                message=f"ticket:reply: Super Admin replied on your Ticket #{ticket.ticket_id}"
             )
 
-    # CASE B: Admin replied → notify student only
-    elif reply.trainer:
-        Notification.objects.create(
-            student=student,
-            message=f"ticket:reply:by Admin - Admin replied on your Ticket #{ticket.ticket_id}"
-        )
+    # =========================
+    # CASE 2: WEBINAR TICKET
+    # =========================
+    elif ticket.webinar_participant:
 
-    # CASE C: Super admin replied → notify student only
-    elif reply.super_admin:
-        Notification.objects.create(
-            student=student,
-            message=f"ticket:reply:by Admin - Super Admin replied on your Ticket #{ticket.ticket_id}"
-        )
+        participant = ticket.webinar_participant
+
+        # Webinar student replied → notify all super admins
+        if reply.student is None and reply.trainer is None and reply.super_admin is None:
+            # (In webinar flow, reply won't have student/trainer FK usually)
+            super_admins = User.objects.filter(user_type="super_admin")
+
+            for sa in super_admins:
+                Notification.objects.create(
+                    super_admin=sa,
+                    message=f"webinar_ticket:reply: Reply on Ticket #{ticket.ticket_id}"
+                )
+
+        # Admin replied → notify webinar participant (if you support it)
+        elif reply.super_admin or reply.trainer:
+            # If you have notification system for webinar participants,
+            # you can create a custom logic here.
+            pass
+
+
