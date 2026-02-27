@@ -447,6 +447,24 @@ class Login(LoggingMixin, APIView):
                     return Response({'success': False, 'message': 'Your account is inactive. Please contact admin.'}, status=200)
 
             if student and check_password(password, student.password):
+                role = getattr(student, "role", None)
+                role_permissions = []
+
+                if role:
+                    role_modules = (
+                        RoleModulePermission.objects
+                        .filter(role=role)
+                        .exclude(allowed_actions=[])
+                        .select_related("module_permission")
+                    )
+
+                    for rm in role_modules:
+                        role_permissions.append({
+                            "module_id": rm.module_permission.module_id,
+                            "module_name": rm.module_permission.module,
+                            "allowed_actions": rm.allowed_actions
+                        })
+
                 payload = {
                     'registration_id': student.registration_id,
                     'student_id': student.student_id,
@@ -455,6 +473,9 @@ class Login(LoggingMixin, APIView):
                     'user_type': 'student',
                     "attendance_type": system_settings .attendance_options if system_settings  else None,
                     'student_type': student.student_type,
+                    "role_id": role.role_id if role else None,
+                    "role_name": role.name if role else None,
+                    "permissions": role_permissions,
                     "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
                 }
                 token = jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')
@@ -470,6 +491,9 @@ class Login(LoggingMixin, APIView):
                         'user_type': 'student',
                         "attendance_type": system_settings .attendance_options if system_settings  else None,
                         'student_type': student.student_type,
+                        "role_id": role.role_id if role else None,
+                        "role_name": role.name if role else None,
+                        "permissions": role_permissions,
                     },
                     "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
                 }, status=200)
