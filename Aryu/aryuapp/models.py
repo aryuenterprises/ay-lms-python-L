@@ -11,6 +11,7 @@ from datetime import date
 import pytz
 from django.db.models import F, ExpressionWrapper, DateTimeField, Q
 from django.core.validators import MaxValueValidator
+from webinar.models import WebinarRegistration
 
 
 
@@ -1285,7 +1286,10 @@ class Message(models.Model):
     
 class StudentTicket(models.Model):
     ticket_id = models.AutoField(primary_key=True)
-    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="tickets")
+    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="tickets", null=True, blank=True)
+    webinar_participant = models.ForeignKey(
+        WebinarRegistration, on_delete=models.CASCADE, null=True, blank=True
+    )
     ticket_type = models.CharField(max_length=30,default="support") # support / course enquiry / etc....(ithukumela therila later will add)
     subject = models.CharField(max_length=255)
     message = models.TextField()

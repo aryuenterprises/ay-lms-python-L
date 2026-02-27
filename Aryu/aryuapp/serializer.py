@@ -4099,8 +4099,6 @@ class TicketAttachmentSerializer(serializers.ModelSerializer):
             return'https://portal.aryuacademy.com/api' +obj.file.url
         return None
 
-
-
 class TicketReplySerializer(serializers.ModelSerializer):
     sender_type = serializers.SerializerMethodField()
     sender_name = serializers.SerializerMethodField()
