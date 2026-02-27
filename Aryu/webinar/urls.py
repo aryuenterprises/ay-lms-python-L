@@ -28,6 +28,8 @@ urlpatterns = [
     path("feedback/",WebinarFeedbackViewSet.as_view({"get": "list","post": "create",}),name="webinar-feedback-list"),
     path("feedback/<uuid:pk>/",WebinarFeedbackViewSet.as_view({"get": "retrieve",}),name="webinar-feedback-detail"),
     path("certificates/send/",WebinarCertificateViewSet.as_view({"post": "send"}),name="webinar-certificate-send"),
+    path("tickets/", WebinarTicketViewSet.as_view({"get": "list", "post": "create"}), name="webinar-ticket-list"),
+    path("tickets/<int:pk>/reply/", WebinarTicketViewSet.as_view({"post": "reply"}), name="webinar-ticket-reply"),
 
     # Webinar Session Management
     path('<str:uuid>/session/',WebinarSessionViewSet.as_view({'get': 'retrieve'}),name='webinar-session'),

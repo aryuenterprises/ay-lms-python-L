@@ -1319,7 +1319,6 @@ class TicketReply(models.Model):
     message = models.TextField()
     created_at = models.DateTimeField(default=timezone.now)
 
-
 class TicketAttachment(models.Model):
     attachment_id = models.AutoField(primary_key=True)
     ticket = models.ForeignKey(StudentTicket, on_delete=models.CASCADE, related_name="attachments")

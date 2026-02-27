@@ -4124,9 +4124,9 @@ class StudentTicketSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
     updated_by_name = serializers.SerializerMethodField()
     updated_by_type = serializers.SerializerMethodField()
-    student_id = serializers.IntegerField(source='student.student_id', read_only=True)
-    contact_no = serializers.CharField(source='student.contact_no', read_only=True)
-    email = serializers.CharField(source='student.email', read_only=True)
+    student_id = serializers.SerializerMethodField()
+    contact_no = serializers.SerializerMethodField()
+    email = serializers.SerializerMethodField()
     attachments = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
     updated_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
@@ -4144,48 +4144,78 @@ class StudentTicketSerializer(serializers.ModelSerializer):
             models.Index(fields=['status']),
         ]
 
+    def get_student_id(self, obj):
+        if obj.student:
+            return obj.student.student_id
+        return None
+    
+    def get_contact_no(self, obj):
+        if obj.student:
+            return obj.student.contact_no
+
+        if obj.webinar_participant:
+            return obj.webinar_participant.phone
+
+        return None
+    
+    def get_email(self, obj):
+        if obj.student:
+            return obj.student.email
+
+        if obj.webinar_participant:
+            return obj.webinar_participant.email
+
+        return None
+    
     def get_updated_by_name(self, obj):
         if not obj.updated_by:
             return "System"
-        
-        # Handle different user types
-        if hasattr(obj.updated_by, 'student_id'):  # Student
+
+        if hasattr(obj.updated_by, 'student_id'):
             return f"{obj.updated_by.first_name} {obj.updated_by.last_name}".strip()
-        elif hasattr(obj.updated_by, 'trainer_id'):  # Trainer/Admin
+
+        if hasattr(obj.updated_by, 'trainer_id'):
             return getattr(obj.updated_by, 'full_name', obj.updated_by.username)
-        elif hasattr(obj.updated_by, 'is_superuser') or getattr(obj.updated_by, 'user_type') == 'super_admin':
+
+        if getattr(obj.updated_by, 'user_type', None) == 'super_admin':
             return "Super Admin"
-        else:
-            return obj.updated_by.get_full_name() or obj.updated_by.username
+
+        return getattr(obj.updated_by, 'username', 'Unknown')
 
     def get_updated_by_type(self, obj):
         if not obj.updated_by:
             return "system"
+
         if hasattr(obj.updated_by, 'student_id'):
             return "student"
+
         if hasattr(obj.updated_by, 'trainer_id'):
             return "admin"
-        if getattr(obj.updated_by, 'user_type') == 'super_admin':
+
+        if getattr(obj.updated_by, 'user_type', None) == 'super_admin':
             return "super_admin"
+
         return "unknown"
 
     def get_student_name(self, obj):
-        return f"{obj.student.first_name} {obj.student.last_name}".strip()
+        if obj.student:
+            return f"{obj.student.first_name} {obj.student.last_name}".strip()
+
+        if obj.webinar_participant:
+            return obj.webinar_participant.name  # webinar uses name field
+
+        return "Unknown"
     
     def get_attachments(self, obj):
-        # If you're using prefetch_related("attachments") in your view → obj.attachments exists
-        attachments = obj.attachments.all() if hasattr(obj, 'attachments') else []
-        return TicketAttachmentSerializer(attachments, many=True, read_only=True).data
+        return TicketAttachmentSerializer(
+            obj.attachments.all(),
+            many=True,
+            context=self.context
+        ).data
 
     def get_replies(self, obj):
-        # Now replies are ALWAYS prefetched → this will work
-        replies = getattr(obj, 'replies', None)
-        if replies is not None:
-            return TicketReplySerializer(replies, many=True, context=self.context).data
-        
-        # Fallback (never needed now)
         return TicketReplySerializer(
-            obj.replies.select_related("student", "trainer", "super_admin").order_by("created_at"),
+            obj.replies.all(),
             many=True,
             context=self.context
         ).data

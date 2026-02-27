@@ -23,7 +23,7 @@ def get_real_user(self, jwt_user):
             elif user_type == "admin":
                 return Trainer.objects.filter(username=jwt_user.username).first()
             elif user_type == "super_admin":
-                return User.objects.filter(id=jwt_user.id).first()
+                return User.objects.filter(id=jwt_user.user_id).first()
             return None
 
 def generate_cache_key(prefix, request, args, kwargs):
