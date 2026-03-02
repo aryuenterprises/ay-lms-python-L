@@ -25,7 +25,8 @@ def fit_font(draw, text, font_path, max_width, start_size):
 
 def generate_certificate_image_and_save(certificate):
 
-    template_path = Path(settings.MEDIA_ROOT) / "certificates" / "AK.png"
+    template_path = Path(settings.MEDIA_ROOT) / "certificates" / "AK2.png"
+    # template_path = Path(settings.MEDIA_ROOT) / "jp.png"
     output_dir = Path(settings.MEDIA_ROOT) / "certificates"
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -37,27 +38,37 @@ def generate_certificate_image_and_save(certificate):
 
     img_width, img_height = img.size
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    # font_path = "C:/Windows/Fonts/arialbd.ttf"
 
     name = certificate.student_name.title()
     course = certificate.course_name
 
     name_font = fit_font(draw, name, font_path, img_width * 0.45, 54)
-    course_font = fit_font(draw, course, font_path, img_width * 0.5, 36)
-    small_font = ImageFont.truetype(str(font_path), 20)
+    course_font = fit_font(draw, course, font_path, img_width * 0.45, 44)
+    small_font = ImageFont.truetype(str(font_path), 30)
+    large_font = ImageFont.truetype(str(font_path), 18)
 
-    draw.text((int(img_width * 0.850), int(img_height * 0.077)),
-              certificate.certificate_number, fill="black", font=small_font)
+    draw.text((int(img_width * 0.184), int(img_height * 0.136)),
+              certificate.certificate_number, fill="black", font=large_font)
 
-    name_y = int(img_height * 0.45)
+    name_y = int(img_height * 0.43)
     draw.text((center_x(draw, name, name_font, img_width), name_y),name,fill="black",font=name_font)
 
-    course_y = name_y + 205
-    draw.text((int(img_width * 0.375), course_y),
-              course, fill="black", font=course_font)
-    
-    date_y = 0.827
+    course_y = name_y + 170
+    # draw.text((int(img_width * 0.280), course_y),
+    #           course, fill="black", font=course_font)
 
-    draw.text((int(img_width * 0.250), int(img_height * date_y)),
+
+    draw.text(
+        (center_x(draw, course, course_font, img_width), course_y),
+        course,
+        fill="black",
+        font=course_font
+    )
+    
+    date_y = 0.635
+
+    draw.text((int(img_width * 0.450), int(img_height * date_y)),
               certificate.issued_date.strftime("%d-%m-%Y"),
               fill="black", font=small_font)
 
