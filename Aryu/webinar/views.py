@@ -1,5 +1,4 @@
 from datetime import datetime
-import token
 from django.utils import timezone
 import json
 from django.shortcuts import render
@@ -13,8 +12,10 @@ from .services.scheduler import schedule_webinar_messages
 from .services.certificate_generation import generate_and_send_certificate_pdf
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .services.whatsapp import send_webinar_reminder, send_webinar_welcome_whatsapp, send_webinar_joining_whatsapp
-from aryuapp.models import PaymentGateway, PaymentTransaction
+from aryuapp.models import PaymentGateway, PaymentTransaction, Certificate
 import razorpay
+from rest_framework.viewsets import ReadOnlyModelViewSet
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework.response import Response
 import json
 from django.http import HttpResponse, JsonResponse
@@ -22,29 +23,27 @@ from django.utils.timezone import make_aware, is_naive
 from .services.webinar_emails import send_webinar_registration_email
 from django.core.mail import EmailMultiAlternatives
 from django.shortcuts import get_object_or_404
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import action
 from django.views.decorators.csrf import csrf_exempt
 import hmac
 import hashlib
 from django.conf import settings
 from django.http import HttpResponse
-from aryuapp.models import Certificate
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
-from rest_framework.permissions import AllowAny
 from aryuapp.auth import CustomJWTAuthentication
-from django.db.models import Prefetch
+from django.db.models import Count, Prefetch
 from .models import *
 from .serializers import *
 import logging
 from .utils import get_ticket_from_token
+
 logger = logging.getLogger(__name__)
 
 @csrf_exempt
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def razorpay_webhook(request):
-    
     payload = request.body
     received_signature = request.headers.get("X-Razorpay-Signature")
 
@@ -308,7 +307,6 @@ class WebinarViewSet(
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
     
-
     def retrieve(self, request, uuid=None):
         queryset = self.get_queryset()
         webinar = get_object_or_404(queryset, uuid=uuid)
@@ -625,11 +623,11 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
 
         data["success_url"] = request.data.get(
             "success_url",
-            "https://portal.aryuacademy.com/payment-success"
+            "https://aylms.aryuprojects.com/payment-success"
         )
         data["failure_url"] = request.data.get(
             "failure_url",
-            "https://portal.aryuacademy.com/payment-failed"
+            "https://aylms.aryuprojects.com/payment-failed"
         )
 
         request._full_data = data
@@ -1304,6 +1302,7 @@ class WebinarTicketViewSet(viewsets.ViewSet):
 
         return Response({"success": True}, status=201)
 
+
 class WebinarCertificateViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
 
@@ -1333,4 +1332,294 @@ class WebinarCertificateViewSet(viewsets.ViewSet):
             "count": len(regs)
         })
 
+
+class FormViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def create(self, request):
+        serializer = FormCreateSerializer(
+            data=request.data,
+            context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        form = serializer.save()
+
+        return Response(
+            {
+                "success": True,
+                "message": "Form created successfully",
+                "data" : serializer.data
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+    def list(self, request):
+        user = request.user
+
+        role = getattr(user, "user_type", None)
+
+        if role in ("tutor", "admin"):
+            creator_id = getattr(user, "trainer_id", None)
+        elif role == "super_admin":
+            creator_id = getattr(user, "user_id", None)
+        else:
+            creator_id = None
+
+        if not creator_id or not role:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Invalid authenticated user"
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        queryset = (
+            Form.objects
+            .filter(
+                created_by=str(creator_id),
+                created_by_type=role
+            )
+            .annotate(
+                submissions_count=Count("submission", distinct=True)
+            )
+            .only(
+                "id",
+                "uuid",
+                "title",
+                "description",
+                "is_active",
+                "created_at",
+            )
+            .order_by("-created_at")
+        )
+
+        serializer = FormReadSerializer(queryset, many=True)
+
+        return Response(
+            {
+                "success": True,
+                "message": "Forms retrieved successfully",
+                "data": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # -------------------------
+    # RETRIEVE SINGLE FORM
+    # -------------------------
+    def retrieve(self, request, pk=None):
+        user_id = str(request.user.user_id)
+        user_type = request.user.user_type
+
+        form = get_object_or_404(
+            Form.objects
+            .annotate(submissions_count=Count("submission"))
+            .prefetch_related(
+                Prefetch(
+                    "questions",
+                    queryset=Question.objects
+                    .order_by("order")
+                    .prefetch_related("options")
+                    .prefetch_related(
+                        Prefetch(
+                            "answer_set",
+                            queryset=Answer.objects
+                            .select_related("submission")
+                            .order_by("submission__submitted_at"),
+                            to_attr="prefetched_answers"
+                        )
+                    )
+                )
+            ),
+            uuid=pk,
+            created_by=user_id,
+            created_by_type=user_type
+        )
+
+        serializer = FormWithAnswersSerializer(form)
+        return Response(
+            {
+                "success": True,
+                "message": "Form retrieved successfully",
+                "data": serializer.data
+            }
+        )
+    
+class SubmissionViewSet(viewsets.ViewSet):
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def list(self, request):
+
+        form_uuid = request.query_params.get("form_uuid")
+        if not form_uuid:
+            return Response(
+                {"success": False, "message": "form_uuid query param required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        queryset = (
+            Submission.objects
+            .filter(form__uuid=form_uuid)   # UUID
+            .prefetch_related(
+                Prefetch(
+                    "answers",
+                    queryset=Answer.objects.select_related("question")
+                )
+            )
+            .order_by("-submitted_at")
+        )
+
+        serializer = SubmissionReadSerializer(queryset, many=True)
+
+        return Response(
+            {
+                "success": True,
+                "count": len(serializer.data),
+                "results": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+    
+    def retrieve(self, request, pk=None):
+        submission = get_object_or_404(
+            Submission.objects
+            .select_related("user", "form")
+            .prefetch_related(
+                Prefetch(
+                    "answers",
+                    queryset=Answer.objects.select_related("question")
+                )
+            ),
+            uuid=pk
+        )
+
+        serializer = SubmissionReadSerializer(submission)
+
+        return Response(
+            {
+                "success": True,
+                "data": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def create(self, request):
+        raw_answers = request.data.get("answers")
+
+        # multipart → JSON string → Python list
+        if isinstance(raw_answers, str):
+            answers = json.loads(raw_answers)
+        else:
+            answers = raw_answers
+
+        data = {
+            "form_uuid": request.data.get("form_uuid"),
+            "answers": answers,
+        }
+
+        serializer = SubmissionCreateSerializer(data=data)
+
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "success": False,
+                    "errors": serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        submission = self._create_submission(
+            form=serializer.validated_data["form"],
+            answers_payload=serializer.validated_data["answers"],
+            files=request.FILES,
+        )
+
+        return Response(
+            {
+                "success": True,
+                "submission_uuid": str(submission.uuid),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    # --------------------------------------------------
+    # FAST + ATOMIC SUBMISSION HANDLER
+    # --------------------------------------------------
+    @transaction.atomic
+    def _create_submission(self, form, answers_payload, files):
+        submission = Submission.objects.create(
+            form=form,
+        )
+
+        question_ids = [a["question_id"] for a in answers_payload]
+
+        questions = Question.objects.filter(
+            form=form,
+            id__in=question_ids
+        )
+
+        question_map = {q.id: q for q in questions}
+
+        answer_objects = []
+
+        for item in answers_payload:
+            question = question_map.get(item["question_id"])
+            if not question:
+                continue
+
+            # secure file mapping
+            file_obj = None
+            if "file_key" in item:
+                file_obj = files.get(item["file_key"])
+
+            answer_objects.append(
+                Answer(
+                    submission=submission,
+                    question=question,
+                    value_text=item.get("value_text"),
+                    value_json=item.get("value_json"),
+                    value_number=item.get("value_number"),
+                    value_file=file_obj,
+                )
+            )
+
+        Answer.objects.bulk_create(answer_objects, batch_size=500)
+
+        return submission
+
+class PublicFormThrottle(AnonRateThrottle):
+    rate = "60/hour"
+
+
+class PublicFormViewSet(ReadOnlyModelViewSet):
+    permission_classes = [AllowAny]
+    throttle_classes = [PublicFormThrottle]
+    serializer_class = PublicFormSerializer
+    lookup_field = "uuid"
+
+    def get_queryset(self):
+        return (
+            Form.objects
+            .filter(is_active=True)
+            .prefetch_related(
+                Prefetch(
+                    "questions",
+                    queryset=Question.objects
+                    .order_by("order")
+                    .prefetch_related("options")
+                )
+            )
+        )
+
+    def retrieve(self, request, *args, **kwargs):
+        form = get_object_or_404(
+            self.get_queryset(),
+            uuid=kwargs["uuid"]
+        )
+        serializer = self.get_serializer(form)
+        return Response({
+            "success": True,
+            "data": serializer.data
+        })
     
