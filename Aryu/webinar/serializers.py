@@ -4,6 +4,7 @@ from rest_framework import serializers
 from .models import *
 from rest_framework import serializers
 from django.db import transaction
+from aryuapp.models import Lead
 from aryuapp.models import Lead, StudentTicket, TicketAttachment, TicketReply
 
 
@@ -385,6 +386,7 @@ class WebinarTicketCreateSerializer(serializers.Serializer):
 class WebinarReplyCreateSerializer(serializers.Serializer):
     message = serializers.CharField()
 
+
 class PublicWebinarListSerializer(serializers.ModelSerializer):
     registered_count = serializers.SerializerMethodField()
     pending_seats = serializers.SerializerMethodField()
@@ -459,4 +461,291 @@ class WebinarSessionSerializer(serializers.ModelSerializer):
     def get_is_live(self, obj):
         return obj.is_live()
 
+class AnswerInputSerializer(serializers.Serializer):
+    question_id = serializers.IntegerField()
 
+    value_text = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True
+    )
+
+    value_json = serializers.JSONField(
+        required=False,
+        allow_null=True
+    )
+
+    value_number = serializers.FloatField(
+        required=False,
+        allow_null=True
+    )
+
+    file_key = serializers.CharField(
+        required=False,
+        write_only=True,
+        allow_null=True
+    )
+
+    def validate(self, attrs):
+        if not any([
+            attrs.get("value_text"),
+            attrs.get("value_json"),
+            attrs.get("value_number") is not None,
+            attrs.get("file_key"),
+        ]):
+            raise serializers.ValidationError("Answer value required")
+        return attrs
+    
+class SubmissionCreateSerializer(serializers.Serializer):
+    form_uuid = serializers.UUIDField()
+    answers = AnswerInputSerializer(many=True)
+
+    def validate(self, attrs):
+        try:
+            form = Form.objects.get(
+                uuid=attrs["form_uuid"],
+                is_active=True
+            )
+        except Form.DoesNotExist:
+            raise serializers.ValidationError("Invalid form")
+
+        attrs["form"] = form
+        return attrs
+
+class AnswerReadSerializer(serializers.ModelSerializer):
+    question_id = serializers.IntegerField(source="question.id")
+    question_label = serializers.CharField(source="question.label")
+
+    class Meta:
+        model = Answer
+        fields = (
+            "id",
+            "question_id",
+            "question_label",
+            "value_text",
+            "value_json",
+            "value_number",
+            "value_file",
+        )
+
+class SubmissionReadSerializer(serializers.ModelSerializer):
+    answers = AnswerReadSerializer(many=True)
+    user_id = serializers.IntegerField(source="user.id", allow_null=True)
+
+    class Meta:
+        model = Submission
+        fields = (
+            "id",
+            "form_id",
+            "user_id",
+            "submitted_at",
+            "answers",
+        )
+
+class QuestionOptionReadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QuestionOption
+        fields = ["id", "value", "order"]
+
+class QuestionWithAnswersSerializer(serializers.ModelSerializer):
+    options = QuestionOptionReadSerializer(many=True, read_only=True)
+    answers = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Question
+        fields = [
+            "id",
+            "label",
+            "type",
+            "is_required",
+            "order",
+            "validation_rules",
+            "options",
+            "answers",
+        ]
+
+    def get_answers(self, obj):
+        # answers attached via Prefetch(to_attr)
+        answers = getattr(obj, "prefetched_answers", [])
+        return QuestionAnswerSerializer(answers, many=True).data
+
+class QuestionAnswerSerializer(serializers.ModelSerializer):
+    submission_id = serializers.IntegerField(source="submission.id")
+    submission_uuid = serializers.UUIDField(source="submission.uuid")
+    submitted_at = serializers.DateTimeField(source="submission.submitted_at")
+
+    class Meta:
+        model = Answer
+        fields = (
+            "submission_id",
+            "submission_uuid",
+            "submitted_at",
+            "value_text",
+            "value_json",
+            "value_number",
+            "value_file",
+        )
+
+class FormWithAnswersSerializer(serializers.ModelSerializer):
+    questions = QuestionWithAnswersSerializer(many=True)
+    submissions_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Form
+        fields = [
+            "id",
+            "title",
+            "description",
+            "submissions_count",
+            "is_active",
+            "created_at",
+            "questions",
+        ]
+
+    def get_submissions_count(self, obj):
+        # Count unique submissions for this form
+        return Submission.objects.filter(form=obj).count()
+
+class QuestionOptionCreateSerializer(serializers.Serializer):
+    value = serializers.CharField(max_length=255)
+    order = serializers.IntegerField()
+
+class QuestionCreateSerializer(serializers.Serializer):
+    label = serializers.CharField(max_length=500)
+    type = serializers.CharField(max_length=20)
+    is_required = serializers.BooleanField(default=False)
+    order = serializers.IntegerField()
+    validation_rules = serializers.JSONField(required=False)
+    options = QuestionOptionCreateSerializer(many=True, required=False)
+
+class FormCreateSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=255)
+    description = serializers.CharField(required=False, allow_blank=True)
+    is_active = serializers.BooleanField(default=True)
+    questions = QuestionCreateSerializer(many=True)
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        user = request.user  # JWT user (not Django User)
+
+        role = getattr(user, "user_type", None)
+
+        if role in ("tutor", "admin"):
+            creator_id = getattr(user, "trainer_id", None)
+        elif role == "super_admin":
+            creator_id = getattr(user, "user_id", None)
+        elif role == "student":
+            creator_id = getattr(user, "student_id", None)
+        else:
+            creator_id = getattr(user, "id", None)
+
+        if not creator_id or not role:
+            raise serializers.ValidationError("Invalid authenticated user")
+
+        validated_data["created_by"] = str(creator_id)
+        validated_data["created_by_type"] = role
+
+        questions_data = validated_data.pop("questions")
+
+        with transaction.atomic():
+            form = Form.objects.create(**validated_data)
+
+            question_objs = []
+            for q in questions_data:
+                question_objs.append(
+                    Question(
+                        form=form,
+                        label=q["label"],
+                        type=q["type"],
+                        is_required=q.get("is_required", False),
+                        order=q["order"],
+                        validation_rules=q.get("validation_rules", {}),
+                    )
+                )
+
+            questions = Question.objects.bulk_create(question_objs)
+
+            option_objs = []
+            for question, q_data in zip(questions, questions_data):
+                for opt in q_data.get("options", []):
+                    option_objs.append(
+                        QuestionOption(
+                            question=question,
+                            value=opt["value"],
+                            order=opt["order"],
+                        )
+                    )
+
+            if option_objs:
+                QuestionOption.objects.bulk_create(option_objs)
+
+        return form
+
+class QuestionReadSerializer(serializers.ModelSerializer):
+    options = QuestionOptionReadSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Question
+        fields = [
+            "id",
+            "label",
+            "type",
+            "is_required",
+            "order",
+            "validation_rules",
+            "options",
+        ]
+
+class FormReadSerializer(serializers.ModelSerializer):
+    questions = QuestionReadSerializer(many=True, read_only=True)
+    submissions_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Form
+        fields = [
+            "id",
+            "title",
+            "uuid",
+            "description",
+            "submissions_count",
+            "questions",
+            "is_active",
+            "created_at",
+
+        ]
+
+# serializers.py
+
+class PublicQuestionOptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QuestionOption
+        fields = ("id", "value", "order")
+
+
+class PublicQuestionSerializer(serializers.ModelSerializer):
+    options = PublicQuestionOptionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Question
+        fields = (
+            "id",
+            "label",
+            "type",
+            "is_required",
+            "order",
+            "validation_rules",
+            "options",
+        )
+
+
+class PublicFormSerializer(serializers.ModelSerializer):
+    questions = PublicQuestionSerializer(many=True)
+
+    class Meta:
+        model = Form
+        fields = (
+            "uuid",
+            "title",
+            "description",
+            "questions",
+        )

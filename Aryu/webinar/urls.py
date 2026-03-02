@@ -36,4 +36,14 @@ urlpatterns = [
     path('<uuid>/session/start/', WebinarSessionViewSet.as_view({"post": "start"}), name='webinar-session-start'),
     path('<uuid>/session/end/', WebinarSessionViewSet.as_view({"post": "end"}), name='webinar-session-end'),
     path("<uuid:uuid>/attendance/sync/",WebinarAttendanceViewSet.as_view({'get': 'list',"post": "sync"}),name="webinar-attendance-sync"),
+
+    # -------- FORMS --------
+    path("forms/", FormViewSet.as_view({"get": "list","post": "create",}), name="form-list-create"),
+    path("forms/<uuid:pk>/", FormViewSet.as_view({"get": "retrieve",}), name="form-detail"),
+
+    # -------- SUBMISSIONS --------
+    path("submissions/", SubmissionViewSet.as_view({"get": "list","post": "create",}), name="submission-list-create"),
+    path("submissions/<uuid:pk>/", SubmissionViewSet.as_view({"get": "retrieve",}), name="submission-detail"),
+    path("public/forms/<uuid:uuid>/",PublicFormViewSet.as_view({"get": "retrieve"}),name="public-form-detail"),
+
 ]  + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

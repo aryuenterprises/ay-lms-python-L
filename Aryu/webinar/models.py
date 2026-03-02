@@ -26,7 +26,7 @@ class Webinar(models.Model):
     created_by = models.CharField(max_length=50)
     created_by_type = models.CharField(max_length=20,)
     mode = models.BooleanField(default=True, help_text="True for online, False for offline")
-
+    seats_available = models.PositiveIntegerField(default=10)
     scheduled_start = models.DateTimeField()
     registration_link = models.URLField(blank=True, null=True)
     zoom_link = models.URLField(blank=True, null=True)
@@ -34,7 +34,7 @@ class Webinar(models.Model):
     zoom_join_url = models.URLField(blank=True, null=True)
     price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     regular_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    seats_available = models.PositiveIntegerField(default=10)
+
     status = models.CharField(max_length=20,default='DRAFT')
     webinar_status = models.BooleanField(default=True, help_text="True for active, False for inactive")
     is_paid = models.BooleanField(default=False)
@@ -47,7 +47,7 @@ class Webinar(models.Model):
     
     def get_image_url(self):
         if self.webinar_image:
-            return f"https://portal.aryuacademy.com/api{self.webinar_image.url}"
+            return f"https://aylms.aryuprojects.com/api{self.webinar_image.url}"
         return None
 
     def __str__(self):
@@ -179,7 +179,6 @@ class WebinarSession(models.Model):
     def is_live(self):
         return self.started_at and not self.ended_at and not self.is_cancelled
 
-
 class WebinarAttendanceLog(models.Model):
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True, primary_key=True)
 
@@ -279,5 +278,94 @@ class WebinarFeedback(models.Model):
     def __str__(self):
         return f"Feedback → {self.webinar.title}"
     
+class Form(models.Model):
+    uuid = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+        db_index=True
+    )
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.CharField(max_length=50)
+    created_by_type = models.CharField(max_length=20)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["is_active"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+class Question(models.Model):
+
+    # QUESTION_TYPES = [
+    #     (TEXT, "Text"),
+    #     (TEXTAREA, "Textarea"),
+    #     (MCQ, "Multiple Choice"),
+    #     (CHECKBOX, "Checkbox"),
+    #     (DROPDOWN, "Dropdown"),
+    #     (FILE, "File"),
+    #     (RATING, "Rating"),
+    # ]
+
+    form = models.ForeignKey(Form, related_name="questions", on_delete=models.CASCADE)
+    label = models.CharField(max_length=500)
+    type = models.CharField(max_length=20)
+    is_required = models.BooleanField(default=False)
+    order = models.IntegerField()
+    validation_rules = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["order"]
+        indexes = [
+            models.Index(fields=["form"]),
+            models.Index(fields=["order"]),
+        ]
+
+class QuestionOption(models.Model):
+    question = models.ForeignKey(Question, related_name="options", on_delete=models.CASCADE)
+    value = models.CharField(max_length=255)
+    order = models.IntegerField()
+
+    class Meta:
+        ordering = ["order"]
+        indexes = [
+            models.Index(fields=["question"]),
+        ]
+
+class Submission(models.Model):
+    uuid = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+        db_index=True
+    )
+    form = models.ForeignKey(Form, on_delete=models.CASCADE)
+    submitted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["form"]),
+            models.Index(fields=["submitted_at"]),
+        ]
+
+class Answer(models.Model):
+    submission = models.ForeignKey(Submission, related_name="answers", on_delete=models.CASCADE)
+    question = models.ForeignKey(Question, on_delete=models.CASCADE)
+
+    value_text = models.TextField(null=True, blank=True)
+    value_json = models.JSONField(null=True, blank=True)  # for checkbox
+    value_number = models.FloatField(null=True, blank=True)
+    value_file = models.FileField(upload_to="form_uploads/", null=True, blank=True)
     
+    class Meta:
+        indexes = [
+            models.Index(fields=["submission"]),
+            models.Index(fields=["question"]),
+            models.Index(fields=["question", "value_text"]),
+        ]
+
+   
 
