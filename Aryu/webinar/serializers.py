@@ -215,7 +215,7 @@ class WebinarSerializer(serializers.ModelSerializer):
 
     def get_webinar_image_url(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.webinar_image.url
+            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
         return None
     
     def get_total_amount_received(self, obj):
@@ -428,7 +428,7 @@ class PublicWebinarListSerializer(serializers.ModelSerializer):
 
     def get_webinar_image(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.webinar_image.url
+            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
         return None
     
     def get_registered_count(self, obj):
