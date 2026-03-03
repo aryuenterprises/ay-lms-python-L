@@ -6,6 +6,7 @@ from rest_framework import serializers
 from django.db import transaction
 from aryuapp.models import Lead
 from aryuapp.models import Lead, StudentTicket, TicketAttachment, TicketReply
+from django.utils.text import slugify
 
 
 class WebinarAttendanceLogSerializer(serializers.ModelSerializer):
@@ -214,7 +215,7 @@ class WebinarSerializer(serializers.ModelSerializer):
 
     def get_webinar_image_url(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
+            return 'https://aylms.aryuprojects.com/api' + obj.webinar_image.url
         return None
     
     def get_total_amount_received(self, obj):
@@ -427,7 +428,7 @@ class PublicWebinarListSerializer(serializers.ModelSerializer):
 
     def get_webinar_image(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
+            return 'https://aylms.aryuprojects.com/api' + obj.webinar_image.url
         return None
     
     def get_registered_count(self, obj):
@@ -497,13 +498,13 @@ class AnswerInputSerializer(serializers.Serializer):
         return attrs
     
 class SubmissionCreateSerializer(serializers.Serializer):
-    form_uuid = serializers.UUIDField()
+    form_slug = serializers.SlugField()
     answers = AnswerInputSerializer(many=True)
 
     def validate(self, attrs):
         try:
             form = Form.objects.get(
-                uuid=attrs["form_uuid"],
+                slug=attrs["form_slug"],
                 is_active=True
             )
         except Form.DoesNotExist:
@@ -586,9 +587,36 @@ class QuestionAnswerSerializer(serializers.ModelSerializer):
             "value_file",
         )
 
+class SubmissionWithAnswersSerializer(serializers.ModelSerializer):
+    answers = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Submission
+        fields = ["id", "uuid", "submitted_at", "answers"]
+
+    def get_answers(self, obj):
+        return [
+            {
+                "question": answer.question.id,
+                "value_text": answer.value_text,
+                "value_json": answer.value_json,
+                "value_number": answer.value_number,
+                "value_file": (
+                    answer.value_file.url
+                    if answer.value_file
+                    else None
+                ),
+            }
+            for answer in obj.answers.all()
+        ]
+
 class FormWithAnswersSerializer(serializers.ModelSerializer):
     questions = QuestionWithAnswersSerializer(many=True)
     submissions_count = serializers.SerializerMethodField()
+    submissions = SubmissionWithAnswersSerializer(
+        source="submission_set",
+        many=True
+    )
 
     class Meta:
         model = Form
@@ -596,7 +624,9 @@ class FormWithAnswersSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "description",
+            "slug",
             "submissions_count",
+            "submissions",
             "is_active",
             "created_at",
             "questions",
@@ -621,6 +651,7 @@ class QuestionCreateSerializer(serializers.Serializer):
 class FormCreateSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255)
     description = serializers.CharField(required=False, allow_blank=True)
+    slug = serializers.SlugField(required=True, allow_blank=True)
     is_active = serializers.BooleanField(default=True)
     questions = QuestionCreateSerializer(many=True)
 
@@ -706,6 +737,7 @@ class FormReadSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "uuid",
+            "slug",
             "description",
             "submissions_count",
             "questions",
@@ -714,13 +746,66 @@ class FormReadSerializer(serializers.ModelSerializer):
 
         ]
 
-# serializers.py
+class FormUpdateSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=255, required=False)
+    description = serializers.CharField(required=False, allow_blank=True)
+    is_active = serializers.BooleanField(required=False)
+    questions = QuestionCreateSerializer(many=True, required=False)
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        questions_data = validated_data.pop("questions", None)
+
+        # Update basic fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        # Optional: regenerate slug if title changed
+        if "title" in validated_data:
+            instance.slug = slugify(validated_data["title"])
+
+        instance.save()
+
+        # If questions provided → replace existing
+        if questions_data is not None:
+            # Delete old questions (cascade deletes options)
+            instance.questions.all().delete()
+
+            question_objs = []
+            for q in questions_data:
+                question_objs.append(
+                    Question(
+                        form=instance,
+                        label=q["label"],
+                        type=q["type"],
+                        is_required=q.get("is_required", False),
+                        order=q["order"],
+                        validation_rules=q.get("validation_rules", {}),
+                    )
+                )
+
+            created_questions = Question.objects.bulk_create(question_objs)
+
+            option_objs = []
+            for question, q_data in zip(created_questions, questions_data):
+                for opt in q_data.get("options", []):
+                    option_objs.append(
+                        QuestionOption(
+                            question=question,
+                            value=opt["value"],
+                            order=opt["order"],
+                        )
+                    )
+
+            if option_objs:
+                QuestionOption.objects.bulk_create(option_objs)
+
+        return instance
 
 class PublicQuestionOptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = QuestionOption
         fields = ("id", "value", "order")
-
 
 class PublicQuestionSerializer(serializers.ModelSerializer):
     options = PublicQuestionOptionSerializer(many=True, read_only=True)
@@ -736,7 +821,6 @@ class PublicQuestionSerializer(serializers.ModelSerializer):
             "validation_rules",
             "options",
         )
-
 
 class PublicFormSerializer(serializers.ModelSerializer):
     questions = PublicQuestionSerializer(many=True)

@@ -285,9 +285,11 @@ class Form(models.Model):
         unique=True,
         db_index=True
     )
+    slug = models.SlugField(max_length=255, unique=True)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
+    is_deleted = models.BooleanField(default=False)
     created_by = models.CharField(max_length=50)
     created_by_type = models.CharField(max_length=20)
     created_at = models.DateTimeField(auto_now_add=True)
