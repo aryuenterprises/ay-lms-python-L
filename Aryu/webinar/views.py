@@ -1378,7 +1378,8 @@ class FormViewSet(viewsets.ViewSet):
             Form.objects
             .filter(
                 created_by=str(creator_id),
-                created_by_type=role
+                created_by_type=role,
+                is_deleted=False
             )
             .annotate(
                 submissions_count=Count("submission", distinct=True)
@@ -1405,10 +1406,7 @@ class FormViewSet(viewsets.ViewSet):
             status=status.HTTP_200_OK,
         )
 
-    # -------------------------
-    # RETRIEVE SINGLE FORM
-    # -------------------------
-    def retrieve(self, request, pk=None):
+    def retrieve(self, request, slug=None):
         user_id = str(request.user.user_id)
         user_type = request.user.user_type
 
@@ -1432,7 +1430,7 @@ class FormViewSet(viewsets.ViewSet):
                     )
                 )
             ),
-            uuid=pk,
+            slug=slug,
             created_by=user_id,
             created_by_type=user_type
         )
@@ -1446,21 +1444,78 @@ class FormViewSet(viewsets.ViewSet):
             }
         )
     
+    def update(self, request, slug=None):
+        user = request.user
+        user_id = str(getattr(user, "user_id", None))
+        user_type = getattr(user, "user_type", None)
+
+        form = get_object_or_404(
+            Form,
+            slug=slug,
+            created_by=user_id,
+            created_by_type=user_type,
+            is_deleted=False
+        )
+
+        is_partial = request.method.lower() == "patch"
+
+        serializer = FormUpdateSerializer(
+            instance=form,
+            data=request.data,
+            partial=is_partial
+        )
+
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(
+            {
+                "success": True,
+                "message": "Form updated successfully"
+            },
+            status=status.HTTP_200_OK
+        )
+    
+    def destroy(self, request, slug=None):
+        user = request.user
+        user_id = str(getattr(user, "user_id", None))
+        user_type = getattr(user, "user_type", None)
+
+        form = get_object_or_404(
+            Form,
+            slug=slug,
+            created_by=user_id,
+            created_by_type=user_type,
+            is_deleted=False
+        )
+
+        form.is_deleted = True
+        form.is_active = False
+        form.save(update_fields=["is_deleted", "is_active"])
+
+        return Response(
+            {
+                "success": True,
+                "message": "Form deleted successfully"
+            },
+            status=status.HTTP_200_OK
+        )
+
 class SubmissionViewSet(viewsets.ViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def list(self, request):
 
-        form_uuid = request.query_params.get("form_uuid")
-        if not form_uuid:
+        form_slug = request.query_params.get("form_slug")
+        if not form_slug:
             return Response(
-                {"success": False, "message": "form_uuid query param required"},
+                {"success": False, "message": "form_slug query param required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         queryset = (
             Submission.objects
-            .filter(form__uuid=form_uuid)   # UUID
+            .filter(form__slug=form_slug)
             .prefetch_related(
                 Prefetch(
                     "answers",
@@ -1506,6 +1561,7 @@ class SubmissionViewSet(viewsets.ViewSet):
 
     def create(self, request):
         raw_answers = request.data.get("answers")
+        print("RAW ANSWERS:", raw_answers)
 
         # multipart → JSON string → Python list
         if isinstance(raw_answers, str):
@@ -1514,7 +1570,7 @@ class SubmissionViewSet(viewsets.ViewSet):
             answers = raw_answers
 
         data = {
-            "form_uuid": request.data.get("form_uuid"),
+            "form_slug": request.data.get("form_slug"),
             "answers": answers,
         }
 
@@ -1538,7 +1594,8 @@ class SubmissionViewSet(viewsets.ViewSet):
         return Response(
             {
                 "success": True,
-                "submission_uuid": str(submission.uuid),
+                "message": "Submission created successfully",
+                "submission_id": submission.uuid
             },
             status=status.HTTP_201_CREATED,
         )
@@ -1591,12 +1648,11 @@ class SubmissionViewSet(viewsets.ViewSet):
 class PublicFormThrottle(AnonRateThrottle):
     rate = "60/hour"
 
-
 class PublicFormViewSet(ReadOnlyModelViewSet):
     permission_classes = [AllowAny]
     throttle_classes = [PublicFormThrottle]
     serializer_class = PublicFormSerializer
-    lookup_field = "uuid"
+    lookup_field = "slug"
 
     def get_queryset(self):
         return (
@@ -1615,7 +1671,7 @@ class PublicFormViewSet(ReadOnlyModelViewSet):
     def retrieve(self, request, *args, **kwargs):
         form = get_object_or_404(
             self.get_queryset(),
-            uuid=kwargs["uuid"]
+            slug=kwargs["slug"]
         )
         serializer = self.get_serializer(form)
         return Response({

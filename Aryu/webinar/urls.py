@@ -39,11 +39,12 @@ urlpatterns = [
 
     # -------- FORMS --------
     path("forms/", FormViewSet.as_view({"get": "list","post": "create",}), name="form-list-create"),
-    path("forms/<uuid:pk>/", FormViewSet.as_view({"get": "retrieve",}), name="form-detail"),
+    path("forms/<slug:slug>/", FormViewSet.as_view({"get": "retrieve", "put": "update", "patch": "update",}), name="form-detail"),
+    path("forms/<slug:slug>/delete/",FormViewSet.as_view({"delete": "destroy"}),name="form-delete"),
 
     # -------- SUBMISSIONS --------
     path("submissions/", SubmissionViewSet.as_view({"get": "list","post": "create",}), name="submission-list-create"),
     path("submissions/<uuid:pk>/", SubmissionViewSet.as_view({"get": "retrieve",}), name="submission-detail"),
-    path("public/forms/<uuid:uuid>/",PublicFormViewSet.as_view({"get": "retrieve"}),name="public-form-detail"),
+    path("public/forms/<slug:slug>/",PublicFormViewSet.as_view({"get": "retrieve"}),name="public-form-detail"),
 
 ]  + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
