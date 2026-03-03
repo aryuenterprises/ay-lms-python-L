@@ -488,13 +488,61 @@ class AnswerInputSerializer(serializers.Serializer):
     )
 
     def validate(self, attrs):
-        if not any([
-            attrs.get("value_text"),
-            attrs.get("value_json"),
-            attrs.get("value_number") is not None,
-            attrs.get("file_key"),
-        ]):
-            raise serializers.ValidationError("Answer value required")
+        question_id = attrs.get("question_id")
+
+        try:
+            question = Question.objects.get(id=question_id)
+        except Question.DoesNotExist:
+            raise serializers.ValidationError("Invalid question")
+
+        value_text = attrs.get("value_text")
+        value_json = attrs.get("value_json")
+        value_number = attrs.get("value_number")
+        file_key = attrs.get("file_key")
+
+        # ===============================
+        # TEXT + TEXTAREA
+        # ===============================
+        if question.type in ["TEXT", "TEXTAREA"]:
+            if question.is_required and not value_text:
+                raise serializers.ValidationError("This field is required.")
+
+            # optional length validation
+            rules = question.validation_rules or {}
+            min_len = rules.get("min_length")
+            max_len = rules.get("max_length")
+
+            if value_text:
+                if min_len and len(value_text) < min_len:
+                    raise serializers.ValidationError(
+                        f"Minimum {min_len} characters required."
+                    )
+                if max_len and len(value_text) > max_len:
+                    raise serializers.ValidationError(
+                        f"Maximum {max_len} characters allowed."
+                    )
+
+        # ===============================
+        # CHECKBOX
+        # ===============================
+        elif question.type == "CHECKBOX":
+            if question.is_required and not value_json:
+                raise serializers.ValidationError("At least one option required.")
+
+        # ===============================
+        # RATING
+        # ===============================
+        elif question.type == "RATING":
+            if question.is_required and value_number is None:
+                raise serializers.ValidationError("Rating is required.")
+
+        # ===============================
+        # FILE
+        # ===============================
+        elif question.type == "FILE":
+            if question.is_required and not file_key:
+                raise serializers.ValidationError("File is required.")
+
         return attrs
     
 class SubmissionCreateSerializer(serializers.Serializer):

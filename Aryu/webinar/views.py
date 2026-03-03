@@ -1648,7 +1648,6 @@ class SubmissionViewSet(viewsets.ViewSet):
 class PublicFormThrottle(AnonRateThrottle):
     rate = "60/hour"
 
-
 class PublicFormViewSet(ReadOnlyModelViewSet):
     permission_classes = [AllowAny]
     throttle_classes = [PublicFormThrottle]
