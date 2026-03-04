@@ -623,11 +623,11 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
 
         data["success_url"] = request.data.get(
             "success_url",
-            "https://aylms.aryuprojects.com/payment-success"
+            "https://portal.aryuacademy.com/payment-success"
         )
         data["failure_url"] = request.data.get(
             "failure_url",
-            "https://aylms.aryuprojects.com/payment-failed"
+            "https://portal.aryuacademy.com/payment-failed"
         )
 
         request._full_data = data
@@ -1335,22 +1335,55 @@ class WebinarCertificateViewSet(viewsets.ViewSet):
 
 class FormViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def create(self, request):
+        data = request.data.dict() if hasattr(request.data, 'dict') else dict(request.data)
+
+        # Parse questions JSON string → list (sent as text in multipart)
+        questions = data.get("questions")
+        if isinstance(questions, str):
+            try:
+                data["questions"] = json.loads(questions)
+            except json.JSONDecodeError:
+                return Response(
+                    {"success": False, "message": "Invalid JSON in 'questions' field."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        elif isinstance(questions, list) and len(questions) == 1 and isinstance(questions[0], str):
+            # QueryDict wraps everything in a list — unwrap and parse
+            try:
+                data["questions"] = json.loads(questions[0])
+            except json.JSONDecodeError:
+                return Response(
+                    {"success": False, "message": "Invalid JSON in 'questions' field."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Re-attach the file from original request (dict() doesn't carry files)
+        if "form_image" not in data and "form_image" in request.data:
+            data["form_image"] = request.data["form_image"]
+        print("FINAL DATA FOR SERIALIZER:", data)
         serializer = FormCreateSerializer(
-            data=request.data,
+            data=data,  # pass the FIXED data, not request.data
             context={"request": request}
         )
-        serializer.is_valid(raise_exception=True)
+
+        if not serializer.is_valid():
+            return Response(
+                {"success": False, "message": "Validation failed.", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         form = serializer.save()
 
         return Response(
             {
                 "success": True,
                 "message": "Form created successfully",
-                "data" : serializer.data
+                "data": serializer.data,
             },
-            status=status.HTTP_201_CREATED
+            status=status.HTTP_201_CREATED,
         )
 
     def list(self, request):
@@ -1388,6 +1421,8 @@ class FormViewSet(viewsets.ViewSet):
                 "id",
                 "uuid",
                 "title",
+                "form_image",
+                "slug",
                 "description",
                 "is_active",
                 "created_at",
@@ -1400,7 +1435,7 @@ class FormViewSet(viewsets.ViewSet):
         return Response(
             {
                 "success": True,
-                "message": "Forms retrieved successfully",
+                "message": "Forms List retrieved successfully",
                 "data": serializer.data,
             },
             status=status.HTTP_200_OK,
@@ -1515,7 +1550,7 @@ class SubmissionViewSet(viewsets.ViewSet):
 
         queryset = (
             Submission.objects
-            .filter(form__slug=form_slug)
+            .filter(form__slug=form_slug, is_deleted=False)
             .prefetch_related(
                 Prefetch(
                     "answers",
@@ -1539,6 +1574,7 @@ class SubmissionViewSet(viewsets.ViewSet):
     def retrieve(self, request, pk=None):
         submission = get_object_or_404(
             Submission.objects
+            .filter(is_deleted=False)
             .select_related("user", "form")
             .prefetch_related(
                 Prefetch(
@@ -1644,9 +1680,26 @@ class SubmissionViewSet(viewsets.ViewSet):
         Answer.objects.bulk_create(answer_objects, batch_size=500)
 
         return submission
+    
+    def destroy(self, request, pk=None):
+        submission = get_object_or_404(
+            Submission.objects.filter(is_deleted=False),
+            uuid=pk
+        )
+
+        submission.is_deleted = True
+        submission.save(update_fields=["is_deleted"])
+
+        return Response(
+            {
+                "success": True,
+                "message": "Submission deleted successfully"
+            },
+            status=status.HTTP_200_OK,
+        )
 
 class PublicFormThrottle(AnonRateThrottle):
-    rate = "60/hour"
+    rate = "30/hour"
 
 class PublicFormViewSet(ReadOnlyModelViewSet):
     permission_classes = [AllowAny]
@@ -1657,7 +1710,7 @@ class PublicFormViewSet(ReadOnlyModelViewSet):
     def get_queryset(self):
         return (
             Form.objects
-            .filter(is_active=True)
+            .filter(is_active=True, is_deleted=False)
             .prefetch_related(
                 Prefetch(
                     "questions",

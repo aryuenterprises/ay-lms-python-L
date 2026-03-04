@@ -44,7 +44,7 @@ urlpatterns = [
 
     # -------- SUBMISSIONS --------
     path("submissions/", SubmissionViewSet.as_view({"get": "list","post": "create",}), name="submission-list-create"),
-    path("submissions/<uuid:pk>/", SubmissionViewSet.as_view({"get": "retrieve",}), name="submission-detail"),
+    path("submissions/<uuid:pk>/", SubmissionViewSet.as_view({"get": "retrieve", "delete": "destroy"}), name="submission-detail"),
     path("public/forms/<slug:slug>/",PublicFormViewSet.as_view({"get": "retrieve"}),name="public-form-detail"),
 
 ]  + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
