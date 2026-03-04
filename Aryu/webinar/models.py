@@ -47,7 +47,7 @@ class Webinar(models.Model):
     
     def get_image_url(self):
         if self.webinar_image:
-            return f"https://aylms.aryuprojects.com/api{self.webinar_image.url}"
+            return f"https://portal.aryuacademy.com/api{self.webinar_image.url}"
         return None
 
     def __str__(self):
@@ -285,6 +285,7 @@ class Form(models.Model):
         unique=True,
         db_index=True
     )
+    form_image = models.ImageField(upload_to='form_images/', null=True, blank=True)
     slug = models.SlugField(max_length=255, unique=True)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
@@ -344,6 +345,7 @@ class Submission(models.Model):
         unique=True,
         db_index=True
     )
+    is_deleted = models.BooleanField(default=False)
     form = models.ForeignKey(Form, on_delete=models.CASCADE)
     submitted_at = models.DateTimeField(auto_now_add=True)
 

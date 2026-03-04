@@ -4,6 +4,7 @@ from rest_framework import serializers
 from .models import *
 from rest_framework import serializers
 from django.db import transaction
+import json
 from aryuapp.models import Lead
 from aryuapp.models import Lead, StudentTicket, TicketAttachment, TicketReply
 from django.utils.text import slugify
@@ -661,16 +662,15 @@ class SubmissionWithAnswersSerializer(serializers.ModelSerializer):
 class FormWithAnswersSerializer(serializers.ModelSerializer):
     questions = QuestionWithAnswersSerializer(many=True)
     submissions_count = serializers.SerializerMethodField()
-    submissions = SubmissionWithAnswersSerializer(
-        source="submission_set",
-        many=True
-    )
+    submissions = serializers.SerializerMethodField()
+    form_image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Form
         fields = [
             "id",
             "title",
+            "form_image_url",
             "description",
             "slug",
             "submissions_count",
@@ -680,9 +680,18 @@ class FormWithAnswersSerializer(serializers.ModelSerializer):
             "questions",
         ]
 
+    def get_form_image_url(self, obj):
+        if obj.form_image:
+            return f"https://portal.aryuacademy.com/api{obj.form_image.url}"
+        return None
+
     def get_submissions_count(self, obj):
         # Count unique submissions for this form
-        return Submission.objects.filter(form=obj).count()
+        return Submission.objects.filter(form=obj, is_deleted=False).count()
+    
+    def get_submissions(self, obj):
+        submissions = obj.submission_set.filter(is_deleted=False).order_by("-submitted_at")
+        return SubmissionWithAnswersSerializer(submissions, many=True).data
 
 class QuestionOptionCreateSerializer(serializers.Serializer):
     value = serializers.CharField(max_length=255)
@@ -699,27 +708,49 @@ class QuestionCreateSerializer(serializers.Serializer):
 class FormCreateSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255)
     description = serializers.CharField(required=False, allow_blank=True)
-    slug = serializers.SlugField(required=True, allow_blank=True)
-    is_active = serializers.BooleanField(default=True)
+    slug = serializers.SlugField(required=True)
+    form_image = serializers.ImageField(required=False, allow_null=True)
+    form_image_url = serializers.SerializerMethodField(read_only=True)
     questions = QuestionCreateSerializer(many=True)
+
+    def to_internal_value(self, data):
+
+        if isinstance(data, dict):
+            questions = data.get("questions")
+            if isinstance(questions, str):
+                try:
+                    data = data.copy()
+                    data["questions"] = json.loads(questions)
+                except json.JSONDecodeError:
+                    raise serializers.ValidationError(
+                        {"questions": "Must be a valid JSON array."}
+                    )
+        return super().to_internal_value(data)
+
+    def get_form_image_url(self, obj):
+        if obj.form_image:
+            return f"https://portal.aryuacademy.com/api{obj.form_image.url}"
+        return None
 
     def create(self, validated_data):
         request = self.context.get("request")
-        user = request.user  # JWT user (not Django User)
+        user = request.user
 
         role = getattr(user, "user_type", None)
 
-        if role in ("tutor", "admin"):
+        if role == "admin":
             creator_id = getattr(user, "trainer_id", None)
+        elif role == "tutor":
+            raise serializers.ValidationError("Tutors cannot create forms.")
         elif role == "super_admin":
             creator_id = getattr(user, "user_id", None)
         elif role == "student":
-            creator_id = getattr(user, "student_id", None)
+            raise serializers.ValidationError("Students cannot create forms.")
         else:
-            creator_id = getattr(user, "id", None)
+            raise serializers.ValidationError("Invalid user role.")
 
         if not creator_id or not role:
-            raise serializers.ValidationError("Invalid authenticated user")
+            raise serializers.ValidationError("Invalid authenticated user.")
 
         validated_data["created_by"] = str(creator_id)
         validated_data["created_by_type"] = role
@@ -729,31 +760,28 @@ class FormCreateSerializer(serializers.Serializer):
         with transaction.atomic():
             form = Form.objects.create(**validated_data)
 
-            question_objs = []
-            for q in questions_data:
-                question_objs.append(
-                    Question(
-                        form=form,
-                        label=q["label"],
-                        type=q["type"],
-                        is_required=q.get("is_required", False),
-                        order=q["order"],
-                        validation_rules=q.get("validation_rules", {}),
-                    )
+            question_objs = [
+                Question(
+                    form=form,
+                    label=q["label"],
+                    type=q["type"],
+                    is_required=q.get("is_required", False),
+                    order=q["order"],
+                    validation_rules=q.get("validation_rules", {}),
                 )
+                for q in questions_data
+            ]
+            created_questions = Question.objects.bulk_create(question_objs)
 
-            questions = Question.objects.bulk_create(question_objs)
-
-            option_objs = []
-            for question, q_data in zip(questions, questions_data):
-                for opt in q_data.get("options", []):
-                    option_objs.append(
-                        QuestionOption(
-                            question=question,
-                            value=opt["value"],
-                            order=opt["order"],
-                        )
-                    )
+            option_objs = [
+                QuestionOption(
+                    question=question,
+                    value=opt["value"],
+                    order=opt["order"],
+                )
+                for question, q_data in zip(created_questions, questions_data)
+                for opt in q_data.get("options", [])
+            ]
 
             if option_objs:
                 QuestionOption.objects.bulk_create(option_objs)
@@ -778,6 +806,7 @@ class QuestionReadSerializer(serializers.ModelSerializer):
 class FormReadSerializer(serializers.ModelSerializer):
     questions = QuestionReadSerializer(many=True, read_only=True)
     submissions_count = serializers.IntegerField(read_only=True)
+    form_image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Form
@@ -786,6 +815,8 @@ class FormReadSerializer(serializers.ModelSerializer):
             "title",
             "uuid",
             "slug",
+            "form_image",
+            "form_image_url",
             "description",
             "submissions_count",
             "questions",
@@ -794,9 +825,15 @@ class FormReadSerializer(serializers.ModelSerializer):
 
         ]
 
+    def get_form_image_url(self, obj):
+        if obj.form_image:
+            return f"https://portal.aryuacademy.com/api{obj.form_image.url}"
+        return None
+
 class FormUpdateSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255, required=False)
     description = serializers.CharField(required=False, allow_blank=True)
+    form_image = serializers.ImageField(required=False, allow_null=True)
     is_active = serializers.BooleanField(required=False)
     questions = QuestionCreateSerializer(many=True, required=False)
 
@@ -872,12 +909,19 @@ class PublicQuestionSerializer(serializers.ModelSerializer):
 
 class PublicFormSerializer(serializers.ModelSerializer):
     questions = PublicQuestionSerializer(many=True)
-
+    form_image_url = serializers.SerializerMethodField()
     class Meta:
         model = Form
         fields = (
-            "uuid",
             "title",
+            "slug",
+            "form_image_url",
             "description",
             "questions",
         )
+
+    def get_form_image_url(self, obj):
+        if obj.form_image:
+            return f"https://portal.aryuacademy.com/api{obj.form_image.url}"
+        return None
+
