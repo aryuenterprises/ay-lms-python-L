@@ -32,7 +32,7 @@ from django.conf import settings
 from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from aryuapp.auth import CustomJWTAuthentication
-from django.db.models import Count, Prefetch
+from django.db.models import Count, Prefetch, Sum, Q
 from .models import *
 from .serializers import *
 import logging
@@ -271,7 +271,7 @@ class WebinarViewSet(
     def get_queryset(self):
         return (
             Webinar.objects
-            .select_related("session")  # OneToOne → valid
+            .select_related("session")
             .prefetch_related(
                 Prefetch(
                     "tools",
@@ -294,9 +294,27 @@ class WebinarViewSet(
                             "payment_transaction",
                             "lead"
                         )
-                        .order_by("-registered_at")  # or "-registered_at"
+                        .prefetch_related(
+                            # Fix for Problem 3 — nested prefetch for logs
+                            Prefetch(
+                                "attendance_logs",
+                                queryset=WebinarAttendanceLog.objects.order_by("join_time")
+                            )
+                        )
+                        .order_by("-registered_at")
                 ),
-                "feedbacks"  # reverse FK
+                Prefetch(
+                    # Convert bare string to explicit Prefetch so it can be filtered/optimized
+                    "feedbacks",
+                    queryset=WebinarFeedback.objects.all()
+                ),
+            )
+            .annotate(
+                # Fix for Problem 4 — compute aggregate in SQL, not Python
+                _total_amount_received=Sum(
+                    "registrations__payment_transaction__amount",
+                    filter=Q(registrations__payment_transaction__payment_status="done")
+                )
             )
             .filter(is_deleted=False)
             .order_by("-created_at")
@@ -304,14 +322,18 @@ class WebinarViewSet(
 
     def list(self, request):
         queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, many=True)
+        serializer = WebinarListSerializer(queryset, many=True)
         return Response(serializer.data)
     
-    def retrieve(self, request, uuid=None):
+    def retrieve(self, request, slug=None):
         queryset = self.get_queryset()
-        webinar = get_object_or_404(queryset, uuid=uuid)
+        webinar = get_object_or_404(queryset, slug=slug)
         serializer = WebinarSerializer(webinar, context={"request": request})
-        return Response(serializer.data)
+        return Response({
+            "status": True,
+            "message": "Webinar retrieved successfully",
+            "data": serializer.data
+        })
 
     def create(self, request):
         serializer = WebinarSerializer(
