@@ -5,6 +5,8 @@ from rest_framework import serializers
 from .models import *
 from rest_framework import serializers
 from django.db import transaction
+from django.utils import timezone
+import re
 import json
 from aryuapp.models import Lead
 from aryuapp.models import Lead, StudentTicket, TicketAttachment, TicketReply
@@ -505,6 +507,70 @@ class WebinarTicketCreateSerializer(serializers.Serializer):
 class WebinarReplyCreateSerializer(serializers.Serializer):
     message = serializers.CharField()
 
+
+class PublicTicketCreateSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = StudentTicket
+        fields = ["name", 'phone', "message", "subject"]
+
+    def validate_phone(self, value):
+        phone = value.strip()
+
+        if phone.startswith("+"):
+            phone = phone[1:]
+
+        if not re.match(r"^[1-9]\d{7,14}$", phone):
+            raise serializers.ValidationError("Invalid phone number")
+
+        return phone
+
+    def validate_email(self, value):
+        if value:
+            return value.lower().strip()
+        return value
+
+    def create(self, validated_data):
+        return StudentTicket.objects.create(
+            phone=validated_data["phone"],
+            name = validated_data.get("name"),
+            message=validated_data["message"],
+            subject=validated_data["subject"],
+
+            # SYSTEM CONTROLLED
+            ticket_type="support",
+            priority="Low",
+            status="New",
+
+            student=None,
+            webinar_participant=None,
+            handled_by_trainer=None,
+            handled_by_superadmin_id=3,
+
+            created_at=timezone.now(),
+        )
+
+class PublicTicketDetailSerializer(serializers.ModelSerializer):
+
+    replies = TicketReplySerializer(many=True, read_only=True)
+    attachments = TicketAttachmentSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = StudentTicket
+        fields = [
+            "ticket_id",
+            "subject",
+            "message",
+            "status",
+            "priority",
+            "created_at",
+            "updated_at",
+            "replies",
+            "attachments"
+        ]
+
+class PublicTicketReplySerializer(serializers.Serializer):
+    message = serializers.CharField()
 
 class PublicWebinarListSerializer(serializers.ModelSerializer):
     registered_count = serializers.SerializerMethodField()

@@ -20,6 +20,27 @@ WABA_ID= "1430646228583413"  #"4298067283844773"
 AISENSY_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5ODlkMjRmYTA4M2Q2NWQ4NmUyNmRjNSIsIm5hbWUiOiJBcnl1IEFjYWRlbXkgUHJpdmF0ZSBMaW1pdGVkIiwiYXBwTmFtZSI6IkFpU2Vuc3kiLCJjbGllbnRJZCI6IjY5ODlkMjRmYTA4M2Q2NWQ4NmUyNmRjMCIsImFjdGl2ZVBsYW4iOiJGUkVFX0ZPUkVWRVIiLCJpYXQiOjE3NzA3MjQ0MjN9.kp-EwaczYRcTGAcsufhNO2XD-WVqqtKzQ7elQ4Bt35o"
 AISENSY_API_URL = "https://backend.aisensy.com/campaign/t1/api/v2"
 
+def normalize_phone(phone):
+    """
+    Converts phone to WhatsApp API format.
+    Examples:
+    +919876543210 -> 919876543210
+    919876543210  -> 919876543210
+    9876543210    -> 919876543210 (default India fallback)
+    """
+
+    phone = str(phone).strip().replace(" ", "")
+
+    # remove +
+    if phone.startswith("+"):
+        phone = phone[1:]
+
+    # fallback if only 10 digit number
+    if len(phone) == 10:
+        phone = f"91{phone}"
+
+    return phone
+
 def send_whatsapp_message(phone, template_name, parameters, media_url=None):
     payload = {
         "apiKey": AISENSY_API_KEY,
@@ -64,11 +85,12 @@ def send_whatsapp_message(phone, template_name, parameters, media_url=None):
 def send_webinar_welcome_whatsapp(registration):
     webinar = registration.webinar
     start_dt = timezone.localtime(webinar.scheduled_start)
+    phone = normalize_phone(registration.phone)
 
-    print("Sending webinar welcome whatsapp to", registration.phone)
+    print("Sending webinar welcome whatsapp to", phone)
 
     res = send_whatsapp_message(
-        phone=f"91{registration.phone}",
+        phone=phone,
         template_name="Webinar Welcome Message",
         parameters=[
             webinar.title,
@@ -117,27 +139,21 @@ def send_webinar_reminder(registration_id, time_left):
 def send_webinar_joining_whatsapp(registration, join_url):
     webinar = registration.webinar
     start_dt = timezone.localtime(webinar.scheduled_start)
-    
-    phone = registration.phone.strip()
 
-    # Normalize phone
-    if phone.startswith("+"):
-        phone = phone[1:]
-    if not phone.startswith("91"):
-        phone = "91" + phone
+    phone = normalize_phone(registration.phone)
 
     print("Sending webinar joining WhatsApp to", phone)
 
     response = send_whatsapp_message(
         phone=phone,
-        template_name="webinar joining",  # MUST match AiSensy campaign name EXACTLY
+        template_name="webinar joining",
         parameters=[
-            webinar.title,                          # {{1}}
-            start_dt.strftime("%d/%m/%Y"),          # {{2}}
-            start_dt.strftime("%I:%M %p"),          # {{3}}
-            join_url                                # {{4}}
+            webinar.title,                   # {{1}}
+            start_dt.strftime("%d/%m/%Y"),   # {{2}}
+            start_dt.strftime("%I:%M %p"),   # {{3}}
+            join_url                         # {{4}}
         ],
-        media_url=webinar.get_image_url()          # Header image
+        media_url=webinar.get_image_url()
     )
 
     print("WhatsApp API response:", response)
@@ -148,24 +164,23 @@ def send_webinar_live_whatsapp(registration):
     webinar = registration.webinar
     start_dt = timezone.localtime(webinar.scheduled_start)
 
-    phone = registration.phone.strip()
+    phone = normalize_phone(registration.phone)
 
-    # Normalize phone
-    if phone.startswith("+"):
-        phone = phone[1:]
-    if not phone.startswith("91"):
-        phone = "91" + phone
+    print("Sending webinar live WhatsApp to", phone)
 
-    return send_whatsapp_message(
+    response = send_whatsapp_message(
         phone=phone,
-        template_name="Webinar Live Mess",  # Must match AiSensy campaign name exactly
+        template_name="Webinar Live Mess",
         parameters=[
-            webinar.title,                         # {{2}}
-            start_dt.strftime("%d/%m/%Y"),         # {{3}}
-            start_dt.strftime("%I:%M %p"),         # {{4}}
+            webinar.title,                         # {{1}}
+            start_dt.strftime("%d/%m/%Y"),         # {{2}}
+            start_dt.strftime("%I:%M %p"),         # {{3}}
         ],
-        media_url=webinar.get_image_url()         # Header image
+        media_url=webinar.get_image_url()
     )
+
+    print("WhatsApp API response:", response)
+    return response
 
 
 def send_webinar_certificate_whatsapp(certificate, phone):
@@ -175,27 +190,22 @@ def send_webinar_certificate_whatsapp(certificate, phone):
 
     logger.info("Sending webinar certificate WhatsApp to %s", phone)
 
-    # Normalize phone
-    phone = phone.strip()
-    if phone.startswith("+"):
-        phone = phone[1:]
-    if not phone.startswith("91"):
-        phone = "91" + phone
+    phone = normalize_phone(phone)
 
     pdf_url = certificate.certificate_file.url
     if not pdf_url.startswith("http"):
-        pdf_url = f"https://aylms.aryuprojects.com/api{pdf_url}"
+        pdf_url = f"https://portal.aryuacademy.com/api{pdf_url}"
 
     print(f"Certificate PDF URL: {pdf_url}")
 
     res = send_whatsapp_message(
         phone=phone,
-        template_name="Webinar certificates",  # Must match AiSensy campaign name EXACTLY
+        template_name="Webinar certificates",
         parameters=[
             certificate.student_name,   # {{1}}
             certificate.course_name     # {{2}}
         ],
-        media_url=pdf_url   # Document header
+        media_url=pdf_url
     )
 
     print("WhatsApp API response:", res)
