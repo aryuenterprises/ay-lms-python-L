@@ -1070,7 +1070,6 @@ def whatsapp_webhook(request):
     return JsonResponse({"status": "ok"})
 
 
-
 def _create_payment(self, request, webinar):
     razorpay_view = RazorpayPaymentViewSet()
 
@@ -1083,7 +1082,6 @@ def _create_payment(self, request, webinar):
     }
 
     return razorpay_view.create(payment_request)
-
 
 class WebinarSessionViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
@@ -1156,7 +1154,6 @@ class WebinarLifecycleViewSet(viewsets.ViewSet):
 
         return Response({"detail": "Webinar cancelled"})
     
-
 def get_webinar_participants(webinar_id, access_token):
     url = f"https://api.zoom.us/v2/report/webinars/{webinar_id}/participants"
     headers = {
@@ -1324,6 +1321,91 @@ class WebinarTicketViewSet(viewsets.ViewSet):
 
         return Response({"success": True}, status=201)
 
+class PublicTicketViewSet(viewsets.ViewSet):
+
+    permission_classes = [permissions.AllowAny]
+
+    # CREATE TICKET
+    @transaction.atomic
+    def create(self, request):
+
+        serializer = PublicTicketCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        ticket = serializer.save()
+
+        return Response(
+            {
+                "success": True,
+                "ticket_id": ticket.ticket_id,
+                "token": str(ticket.ticket_token),
+                "name": ticket.name,
+                "status": ticket.status,
+                "priority": ticket.priority,
+                "created_at": ticket.created_at,
+                "message": "Support ticket created successfully"
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+    # GET OPEN TICKET DETAILS
+    def retrieve(self, request):
+
+        mobile = request.query_params.get("mobile")
+
+        if not mobile:
+            return Response(
+                {"detail": "Mobile required"},
+                status=400
+            )
+
+        ticket = (
+            StudentTicket.objects
+            .prefetch_related("replies", "attachments")
+            .filter(phone=mobile)
+            .exclude(status="closed")   # ignore closed tickets
+            .order_by("-created_at")
+            .first()
+        )
+
+        if not ticket:
+            return Response(
+                {
+                    "success": True,
+                    "data": None,
+                    "message": "No open ticket found"
+                }
+            )
+
+        serializer = PublicTicketDetailSerializer(ticket)
+
+        return Response(
+            {
+                "success": True,
+                "data": serializer.data
+            }
+        )
+    
+    @transaction.atomic
+    def reply(self, request, pk= None):
+
+        if not pk:
+            return Response({"detail": "Id required"}, status=400)
+
+        ticket = get_object_or_404(StudentTicket, ticket_id=pk)
+
+        serializer = PublicTicketReplySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        TicketReply.objects.create(
+            ticket=ticket,
+            message=serializer.validated_data["message"],
+        )
+
+        ticket.status = "in_progress"
+        ticket.save(update_fields=["status"])
+
+        return Response({"success": True}, status=201)
 
 class WebinarCertificateViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]

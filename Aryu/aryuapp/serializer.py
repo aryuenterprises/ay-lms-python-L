@@ -4135,7 +4135,7 @@ class StudentTicketSerializer(serializers.ModelSerializer):
     class Meta:
         model = StudentTicket
         fields = [
-            "ticket_id", "subject", "message", "ticket_type","status", "priority", "student_id",
+            "ticket_id", "name", "phone", "subject", "message", "ticket_type","status", "priority", "student_id",
             "student_name", 'contact_no', "email", "created_at", "updated_at",
             "updated_by_name", "updated_by_type", "attachments", "replies"
         ]

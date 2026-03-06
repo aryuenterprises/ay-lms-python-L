@@ -9,6 +9,7 @@ from django.contrib.contenttypes.models import ContentType
 from rest_framework.exceptions import ValidationError
 from datetime import date
 import pytz
+import uuid
 from django.db.models import F, ExpressionWrapper, DateTimeField, Q
 from django.core.validators import MaxValueValidator
 from webinar.models import WebinarRegistration
@@ -1286,10 +1287,15 @@ class Message(models.Model):
     
 class StudentTicket(models.Model):
     ticket_id = models.AutoField(primary_key=True)
+
+    ticket_token = models.UUIDField(default=uuid.uuid4, editable=False, db_index=True)
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="tickets", null=True, blank=True)
     webinar_participant = models.ForeignKey(
         WebinarRegistration, on_delete=models.CASCADE, null=True, blank=True
     )
+    name = models.CharField(max_length=100, blank=True, null=True)
+    email = models.EmailField(blank=True, null=True)
+    phone = models.CharField(max_length=20, blank=True, null=True)
     ticket_type = models.CharField(max_length=30,default="support") # support / course enquiry / etc....(ithukumela therila later will add)
     subject = models.CharField(max_length=255)
     message = models.TextField()
