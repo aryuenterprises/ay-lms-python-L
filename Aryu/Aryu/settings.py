@@ -106,7 +106,7 @@ CHANNEL_LAYERS = {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
             "hosts": [
-                "redis://aryu_user:35l1VUx9@49.207.178.161:6379/0",
+                "redis://:35l1VUx9@49.207.178.161:6379/0"
             ],
         },
     },
