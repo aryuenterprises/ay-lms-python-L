@@ -9,7 +9,7 @@ redis_client = redis.Redis(
     host="49.207.178.161",
     port=6379,
     password="35l1VUx9",
-    db=0,
+    db=1,
     decode_responses=False
 )
 
@@ -37,10 +37,12 @@ class RoomConsumer(JsonWebsocketConsumer):
         self.token = params.get("token")
 
         if self.role == "participant":
+            
             try:
                 self.participant = Participant.objects.get(
                     token=self.token, room_id=self.room_id
                 )
+                print(self.participant)
             except Participant.DoesNotExist:
                 self.close()
                 return
