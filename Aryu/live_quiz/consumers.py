@@ -37,12 +37,10 @@ class RoomConsumer(JsonWebsocketConsumer):
         self.token = params.get("token")
 
         if self.role == "participant":
-            
             try:
                 self.participant = Participant.objects.get(
                     token=self.token, room_id=self.room_id
                 )
-                print(self.participant)
             except Participant.DoesNotExist:
                 self.close()
                 return
