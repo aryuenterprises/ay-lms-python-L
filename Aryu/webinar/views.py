@@ -702,6 +702,12 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
     def create(self, request, slug=None):
         webinar = get_object_or_404(Webinar, slug=slug)
 
+        if not webinar.is_registration_open:
+            return Response(
+                {"message": "Registration for this webinar is closed"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         phone = request.data.get("phone")
 
         if WebinarRegistration.objects.filter(webinar=webinar, phone=phone).exists():
