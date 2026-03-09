@@ -4366,7 +4366,7 @@ class StudentListAPIView(viewsets.ViewSet):
                 if admin_obj and admin_obj.created_by_type == "super_admin":
                     super_admin_id = admin_obj.created_by
 
-            students_qs = Student.objects.filter(is_archived=False)
+            students_qs = Student.objects.filter(is_archived=False).order_by("-created_at")
 
             if user_type == "super_admin":
                 students_qs = students_qs.filter(
@@ -7331,7 +7331,7 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
             trainers_qs = Trainer.objects.filter(
                 user_type='tutor',
                 is_archived=False
-            )
+            ).order_by("-created_at")
 
             if user.user_type == "super_admin":
                 trainers_qs = trainers_qs.filter(
