@@ -196,20 +196,20 @@ CRONJOBS = [
 CORS_ALLOWED_ORIGINS = [
     "https://portal.aryuacademy.com",
     "https://workshop.aryuacademy.com",
-    "http://localhost:3000"
+    # "http://localhost:3000"
 ]
 
 CSRF_TRUSTED_ORIGINS = [
     "https://portal.aryuacademy.com",
     "https://workshop.aryuacademy.com",
-    "http://localhost:3000"
+    # "http://localhost:3000"
 ]
 
 ALLOWED_HOSTS = [
     "portal.aryuacademy.com",
     "workshop.aryuacademy.com",
-    "127.0.0.1",
-    "localhost"
+    # "127.0.0.1",
+    # "localhost"
 ]  # Allow all hosts for development; change in production
 
 

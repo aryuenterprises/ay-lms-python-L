@@ -1582,6 +1582,9 @@ class StudentSerializer(serializers.ModelSerializer):
         password = validated_data.pop('password')
         validated_data['password'] = make_password(password)
         course_ids = validated_data.pop("course_ids", None)
+        student_role = Role.objects.filter(role_name__iexact="Student").first()
+        if student_role:
+            validated_data["role"] = student_role
         school_data = validated_data.pop('school_student', None)
         college_data = validated_data.pop('college_student', None)
         jobseeker_data = validated_data.pop('jobseeker', None)
