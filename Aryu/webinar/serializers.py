@@ -97,9 +97,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
         certificate = getattr(obj, "certificate", None)
 
         if certificate and certificate.certificate_file:
-            request = self.context.get("request")
-            
-            return 'https://portal.aryuacademy.com/api' + obj.certificate_file.url
+            return 'https://portal.aryuacademy.com/api' + certificate.certificate_file.url
 
         return None
 
