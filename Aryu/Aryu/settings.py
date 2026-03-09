@@ -208,8 +208,8 @@ CSRF_TRUSTED_ORIGINS = [
 ALLOWED_HOSTS = [
     "portal.aryuacademy.com",
     "workshop.aryuacademy.com",
-    "127.0.0.1",
-    "localhost"
+    # "127.0.0.1",
+    # "localhost"
 ]  # Allow all hosts for development; change in production
 
 
