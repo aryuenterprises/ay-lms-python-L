@@ -8,8 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 import re
 import json
-from aryuapp.models import Lead
-from aryuapp.models import Lead, StudentTicket, TicketAttachment, TicketReply
+from aryuapp.models import Lead, StudentTicket, TicketAttachment, TicketReply, Certificate
 from django.utils.text import slugify
 
 
@@ -40,6 +39,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
     eligible_for_certificate = serializers.SerializerMethodField()
     feedback = serializers.SerializerMethodField()
     payment_status = serializers.SerializerMethodField()
+    certificate_url = serializers.SerializerMethodField()
     webinar_title = serializers.CharField(
         source="webinar.title",
         read_only=True
@@ -62,6 +62,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
             "course",
             "profession",
             "payment_status",
+            "certificate_url",
             "state",
             "city",
             "feedback",
@@ -91,6 +92,16 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
         if not txn:
             return "free"
         return txn.payment_status
+    
+    def get_certificate_url(self, obj):
+        certificate = getattr(obj, "certificate", None)
+
+        if certificate and certificate.certificate_file:
+            request = self.context.get("request")
+            
+            return 'https://portal.aryuacademy.com/api' + obj.certificate_file.url
+
+        return None
 
     def get_total_duration_minutes(self, obj):
         summary = getattr(obj, "attendance_summary", None)
