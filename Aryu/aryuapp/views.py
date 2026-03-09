@@ -5549,8 +5549,8 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
             if not student_module:
                 return Response({"success": False, "message": "Students module not found"}, status=200)
 
-            # if not has_permission(user, module_id=student_module.module_id, actions=["update"]):
-            #     return Response({"success": False, "message": "You do not have permission"}, status=200)
+            if not has_permission(user, module_id=student_module.module_id, actions=["update"]):
+                return Response({"success": False, "message": "You do not have permission"}, status=200)
 
             # Validate without raising exception
             if not serializer.is_valid():
@@ -6428,9 +6428,19 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
                 Q(created_by_type="admin", created_by__in=admin_ids)
             )
         elif user.user_type == "admin" and user_created_id:
+
+            trainer = Trainer.objects.filter(
+                trainer_id=user_created_id,
+                is_archived=False
+            ).first()
+
+            super_admin_id = None
+            if trainer and trainer.created_by_type == "super_admin":
+                super_admin_id = trainer.created_by
+
             base_queryset = base_queryset.filter(
-                created_by_type="admin",
-                created_by=user_created_id
+                Q(created_by_type="admin", created_by=user_created_id) |
+                Q(created_by_type="super_admin", created_by=super_admin_id)
             )
 
         # Optional: filter by category if provided
@@ -6469,7 +6479,20 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
                     Q(created_by_type="admin", created_by__in=admin_ids)
                 )
             elif user.user_type == "admin" and user_created_id:
-                category_qs = category_qs.filter(created_by_type="admin", created_by=user_created_id)
+
+                trainer = Trainer.objects.filter(
+                    trainer_id=user_created_id,
+                    is_archived=False
+                ).first()
+
+                super_admin_id = None
+                if trainer and trainer.created_by_type == "super_admin":
+                    super_admin_id = trainer.created_by
+
+                category_qs = category_qs.filter(
+                    Q(created_by_type="admin", created_by=user_created_id) |
+                    Q(created_by_type="super_admin", created_by=super_admin_id)
+                )
 
             category_data = CourseCategorySerializer(category_qs, many=True).data
 
