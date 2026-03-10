@@ -23,6 +23,7 @@ from django.utils.timezone import make_aware, is_naive
 from .services.webinar_emails import send_webinar_registration_email
 from django.core.mail import EmailMultiAlternatives
 from django.shortcuts import get_object_or_404
+from django.utils.dateparse import parse_datetime
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import action
 from django.views.decorators.csrf import csrf_exempt
@@ -32,7 +33,7 @@ from django.conf import settings
 from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from aryuapp.auth import CustomJWTAuthentication
-from django.db.models import Count, Prefetch, Sum, Q
+from django.db.models import Count, Prefetch, Sum, Q, Avg
 from .models import *
 from .serializers import *
 import logging
@@ -256,6 +257,7 @@ class PublicWebinarViewSet(
             "data": response.data
         })
 
+
 class WebinarViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
@@ -271,20 +273,23 @@ class WebinarViewSet(
     def get_queryset(self):
         return (
             Webinar.objects
-            .select_related("session")
             .prefetch_related(
+
                 Prefetch(
                     "tools",
                     queryset=WebinarTool.objects.filter(is_deleted=False)
                 ),
+
                 Prefetch(
                     "metadata",
                     queryset=webinar_metadata.objects.filter(is_deleted=False)
                 ),
+
                 Prefetch(
                     "faqs",
                     queryset=Webinar_FAQ.objects.filter(is_deleted=False)
                 ),
+
                 Prefetch(
                     "registrations",
                     queryset=WebinarRegistration.objects
@@ -295,27 +300,40 @@ class WebinarViewSet(
                             "lead"
                         )
                         .prefetch_related(
-                            # Fix for Problem 3 — nested prefetch for logs
                             Prefetch(
                                 "attendance_logs",
-                                queryset=WebinarAttendanceLog.objects.order_by("join_time")
+                                queryset=WebinarAttendanceLog.objects
+                                    .only("join_time", "leave_time")
+                                    .order_by("join_time")
                             )
                         )
                         .order_by("-registered_at")
                 ),
+
+                # FETCH ALL FEEDBACKS
                 Prefetch(
-                    # Convert bare string to explicit Prefetch so it can be filtered/optimized
                     "feedbacks",
-                    queryset=WebinarFeedback.objects.all()
+                    queryset=WebinarFeedback.objects
+                        .select_related("registration")
+                        .order_by("-submitted_at")
                 ),
             )
+
             .annotate(
-                # Fix for Problem 4 — compute aggregate in SQL, not Python
-                _total_amount_received=Sum(
+                participants_count=Count("registrations", distinct=True),
+
+                total_amount_received=Sum(
                     "registrations__payment_transaction__amount",
-                    filter=Q(registrations__payment_transaction__payment_status="done")
-                )
+                    filter=Q(
+                        registrations__payment_transaction__payment_status="done"
+                    )
+                ),
+
+                feedback_count=Count("feedbacks", distinct=True),
+
+                avg_rating=Avg("feedbacks__overall_rating"),
             )
+
             .filter(is_deleted=False)
             .order_by("-created_at")
         )
@@ -798,26 +816,32 @@ def fetch_zoom_participants(meeting_id):
     token = get_zoom_access_token()
 
     url = f"https://api.zoom.us/v2/report/meetings/{meeting_id}/participants"
+
     headers = {
         "Authorization": f"Bearer {token}"
     }
 
     participants = []
-    next_page_token = ""
+    next_page_token = None
 
     while True:
-        resp = requests.get(
-            url,
-            headers=headers,
-            params={
-                "page_size": 300,
-                "next_page_token": next_page_token
-            }
-        )
+
+        params = {
+            "page_size": 300
+        }
+
+        if next_page_token:
+            params["next_page_token"] = next_page_token
+
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        resp.raise_for_status()
+
         data = resp.json()
+
         participants.extend(data.get("participants", []))
 
         next_page_token = data.get("next_page_token")
+
         if not next_page_token:
             break
 
@@ -856,108 +880,148 @@ class WebinarAttendanceViewSet(viewsets.ViewSet):
         return int(total)
 
     def sync(self, request, uuid=None):
+
         webinar = get_object_or_404(Webinar, uuid=uuid)
         session = webinar.session
 
         if not session.ended_at:
-            return Response(
-                {"message": "Webinar session not ended yet"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"message": "Session not ended"}, status=400)
 
-        participants = fetch_zoom_participants(
-            session.zoom_meeting_id
-        )
+        participants = fetch_zoom_participants(session.zoom_meeting_id)
+
+        registrations = list(webinar.registrations.all())
+
+        # ----------------------------------
+        # BUILD FAST LOOKUP MAPS
+        # ----------------------------------
+
+        email_map = {}
+        name_map = {}
+        first_name_map = {}
+
+        for r in registrations:
+            if r.email:
+                email_map[r.email.lower()] = r
+
+            if r.name:
+                name_map[r.name.lower()] = r
+
+                first = r.name.split()[0].lower()
+                if first not in first_name_map:
+                    first_name_map[first] = r
+
+        # ----------------------------------
+        # CREATE ATTENDANCE LOGS
+        # ----------------------------------
+
+        logs_to_create = []
 
         for p in participants:
 
-            print("PROCESSING ZOOM RAW PARTICIPANT:", p)
+            zoom_name = (p.get("name") or "").strip().lower()
+            email = (p.get("user_email") or "").strip().lower()
 
-            zoom_name = (p.get("name") or "").strip()
-            email = (p.get("user_email") or "").strip()
-            duration = int(p.get("duration") or 0)
+            join_time = parse_datetime(p.get("join_time"))
+            leave_time = parse_datetime(p.get("leave_time"))
+
+            if not join_time or not leave_time:
+                continue
 
             registration = None
 
-            # Try email match first
+            # email match
             if email:
-                registration = WebinarRegistration.objects.filter(
-                    webinar=webinar,
-                    email__iexact=email
-                ).first()
-                print("EMAIL MATCH:", registration)
+                registration = email_map.get(email)
 
-            # 4) Fallback: fuzzy name match
+            # exact name match
             if not registration and zoom_name:
-                registration = WebinarRegistration.objects.filter(
-                    webinar=webinar,
-                    name__icontains=zoom_name.split()[0]  # match first name only
-                ).first()
-                print("NAME MATCH:", registration)
+                registration = name_map.get(zoom_name)
+
+            # first name fallback
+            if not registration and zoom_name:
+                first = zoom_name.split()[0]
+                registration = first_name_map.get(first)
 
             if not registration:
-                print("NO MATCH FOUND FOR:", zoom_name, email)
                 continue
 
-            join_time = datetime.fromisoformat(
-                p["join_time"].replace("Z", "+00:00")
-            )
-            leave_time = datetime.fromisoformat(
-                p["leave_time"].replace("Z", "+00:00")
-            )
+            duration = int((leave_time - join_time).total_seconds())
 
-            if is_naive(join_time):
-                join_time = make_aware(join_time)
-
-            if is_naive(leave_time):
-                leave_time = make_aware(leave_time)
-
-            for reg in webinar.registrations.all():
-                logs = reg.attendance_logs.all()
-
-                if not logs.exists():
-                    continue
-
-                total = self.calculate_total_seconds(logs)
-
-                summary, _ = WebinarAttendanceSummary.objects.get_or_create(
-                    registration=reg
+            logs_to_create.append(
+                WebinarAttendanceLog(
+                    registration_id=registration.id,
+                    join_time=join_time,
+                    leave_time=leave_time,
+                    duration_seconds=duration
                 )
-
-                summary.total_duration_seconds = total
-                summary.join_count = logs.count()   # shows all joins
-                summary.eligible_for_certificate = total >= (45 * 60)
-                summary.save()
-
-                reg.attended = True
-                reg.save(update_fields=["attended"])
-
-            print("LOG CREATED FOR:", registration.email)
-
-        # Aggregate
-        for reg in webinar.registrations.all():
-            logs = reg.attendance_logs.all()
-            if not logs.exists():
-                continue
-
-            total = sum(l.duration_seconds for l in logs)
-
-            summary, _ = WebinarAttendanceSummary.objects.get_or_create(
-                registration=reg
             )
-            summary.total_duration_seconds = total
-            summary.join_count = logs.count()
-            summary.eligible_for_certificate = total >= (45 * 60)
-            summary.save()
 
+        WebinarAttendanceLog.objects.bulk_create(
+            logs_to_create,
+            batch_size=500
+        )
+
+        # ----------------------------------
+        # CALCULATE ATTENDANCE SUMMARY
+        # ----------------------------------
+
+        aggregates = (
+            WebinarAttendanceLog.objects
+            .filter(registration__in=registrations)
+            .values("registration")
+            .annotate(
+                total_duration=Sum("duration_seconds"),
+                join_count=Count("id")
+            )
+        )
+
+        reg_map = {r.id: r for r in registrations}
+
+        summaries = []
+        reg_updates = []
+
+        for item in aggregates:
+
+            reg_id = item["registration"]
+            total = item["total_duration"]
+            joins = item["join_count"]
+
+            summaries.append(
+                WebinarAttendanceSummary(
+                    registration_id=reg_id,
+                    total_duration_seconds=total,
+                    join_count=joins,
+                    eligible_for_certificate=total >= (45 * 60)
+                )
+            )
+
+            reg = reg_map.get(reg_id)
             reg.attended = True
-            reg.save(update_fields=["attended"])
+            reg_updates.append(reg)
+
+        # UPSERT summaries
+        WebinarAttendanceSummary.objects.bulk_create(
+            summaries,
+            update_conflicts=True,
+            unique_fields=["registration"],
+            update_fields=[
+                "total_duration_seconds",
+                "join_count",
+                "eligible_for_certificate"
+            ]
+        )
+
+        # BULK UPDATE registrations
+        WebinarRegistration.objects.bulk_update(
+            reg_updates,
+            ["attended"]
+        )
 
         return Response({
             "status": True,
             "message": "Attendance synced successfully"
         })
-    
+
     def list(self, request, uuid=None):
         webinar = get_object_or_404(Webinar, uuid=uuid)
 
@@ -1160,18 +1224,6 @@ class WebinarLifecycleViewSet(viewsets.ViewSet):
 
         return Response({"detail": "Webinar cancelled"})
     
-def get_webinar_participants(webinar_id, access_token):
-    url = f"https://api.zoom.us/v2/report/webinars/{webinar_id}/participants"
-    headers = {
-        "Authorization": f"Bearer {access_token}"
-    }
-
-    params = {
-        "page_size": 300
-    }
-
-    response = requests.get(url, headers=headers, params=params)
-    return response.json()["participants"]
 
 class WebinarFeedbackViewSet(viewsets.ViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
