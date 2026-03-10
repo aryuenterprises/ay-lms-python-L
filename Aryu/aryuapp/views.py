@@ -45,6 +45,7 @@ from .utils import *
 from .mixins import *
 from webinar.models import Webinar, WebinarRegistration, WebinarAttendanceSummary, WebinarFeedback
 from live_quiz.models import AdminUser
+from django.core.cache import cache
 
 
 class SettingsPicsViewSet(viewsets.ModelViewSet):
@@ -1204,8 +1205,12 @@ class UserDashboardView(APIView):
 
             assigned_course_ids = list(set(list(assigned_course_ids_old) + list(assigned_course_ids_new)))
 
-            assigned_mappings_old = BatchCourseTrainer.objects.filter(student=student)
-
+            assigned_mappings_old = BatchCourseTrainer.objects.filter(
+                student=student
+            ).select_related("batch", "course", "trainer").only(
+                "batch_id", "course_id", "trainer_id"
+            )
+            
             assigned_trainer_ids_old = assigned_mappings_old.values_list('trainer_id', flat=True)
             assigned_batch_ids_old = assigned_mappings_old.values_list('batch_id', flat=True)
 
@@ -1214,6 +1219,8 @@ class UserDashboardView(APIView):
                 students=student,
                 is_archived=False,
                 status=True
+            ).select_related("course", "trainer").only(
+                "batch_id", "course_id", "trainer_id"
             )
 
             assigned_trainer_ids_new = assigned_new_batches.values_list('trainer_id', flat=True)
@@ -1222,91 +1229,112 @@ class UserDashboardView(APIView):
             assigned_trainer_ids = list(set(list(assigned_trainer_ids_old) + list(assigned_trainer_ids_new)))
             assigned_batch_ids = list(set(list(assigned_batch_ids_old) + list(assigned_batch_ids_new)))
 
-            schedule_qs = ClassSchedule.objects.filter(
-                is_archived=False
-            ).filter(
-                Q(batch_id__in=assigned_batch_ids) |
-                Q(new_batch_id__in=assigned_batch_ids)
-            ).filter(
-                course_id__in=assigned_course_ids,
-                trainer_id__in=assigned_trainer_ids
-            ).order_by('-scheduled_date', '-start_time')
+            schedule_qs = (
+                ClassSchedule.objects
+                .filter(
+                    is_archived=False,
+                    course_id__in=assigned_course_ids,
+                    trainer_id__in=assigned_trainer_ids
+                )
+                .filter(
+                    Q(batch_id__in=assigned_batch_ids) |
+                    Q(new_batch_id__in=assigned_batch_ids)
+                )
+                .select_related(
+                    "course",
+                    "trainer",
+                    "batch",
+                    "new_batch"
+                )
+                .only(
+                    "schedule_id",
+                    "scheduled_date",
+                    "start_time",
+                    "end_time",
+                    "duration",
+                    "class_link",
+                    "is_online_class",
+                    "is_class_cancelled",
+                    "course__course_name",
+                    "course__course_id",
+                    "trainer__full_name",
+                    "trainer__employee_id",
+                    "batch__batch_name",
+                    "batch__title",
+                    "new_batch__title"
+                )
+                .order_by("-scheduled_date", "-start_time")
+            )
 
             all_schedules = []
-            current_time = timezone.now()
+            now = timezone.now()
+            attendance_qs = Attendance.objects.filter(
+                student=student
+            ).values("date", "status")
+
+            attendance_times = []
+
+            for a in attendance_qs:
+                if "Login" in a["status"] or "Logout" in a["status"] or "Present" in a["status"]:
+                    att_time = a["date"]
+
+                    # Ensure timezone aware
+                    if timezone.is_naive(att_time):
+                        att_time = timezone.make_aware(att_time, timezone.get_current_timezone())
+
+                    attendance_times.append(att_time)
+
+            attendance_set = set(attendance_times)
 
             for sched in schedule_qs:
-                start_time = getattr(sched, 'start_time', None) or time(9, 0)
 
-                class_start_dt = timezone.make_aware(
-                    datetime.combine(sched.scheduled_date, start_time),
-                    timezone.get_current_timezone()
+                start_time = sched.start_time or time(9, 0)
+
+                class_start = timezone.make_aware(
+                    datetime.combine(sched.scheduled_date, start_time)
                 )
 
-                # Determine end datetime
-                if sched.duration:
-                    class_end_dt = class_start_dt + sched.duration
-                elif sched.end_time:
-                    class_end_dt = timezone.make_aware(
-                        datetime.combine(sched.scheduled_date, sched.end_time),
-                        timezone.get_current_timezone()
-                    )
-                else:
-                    class_end_dt = class_start_dt + timedelta(hours=1)
+                duration = sched.duration or timedelta(hours=1)
+                class_end = class_start + duration
 
-                buffer = timedelta(minutes=5)
-                window_start = class_start_dt - buffer
-                window_end = class_end_dt + buffer
+                attended = any(
+                    class_start - timedelta(minutes=5)
+                    <= att
+                    <= class_end + timedelta(minutes=5)
+                    for att in attendance_set
+                )
 
-                attended = Attendance.objects.filter(
-                    student=student,
-                    date__gte=window_start,
-                    date__lte=window_end
-                ).filter(
-                    Q(status__icontains="Login") |
-                    Q(status__icontains="Logout") |
-                    Q(status__icontains="Present")
-                ).exists()
-
-                # Status calculation
                 if sched.is_class_cancelled:
-                    att_status = 'cancelled'
-                elif current_time < class_start_dt:
-                    att_status = "upcoming"
-                elif class_start_dt <= current_time <= class_end_dt:
-                    att_status = "ongoing"
+                    status = "cancelled"
+                elif now < class_start:
+                    status = "upcoming"
+                elif class_start <= now <= class_end:
+                    status = "ongoing"
                 elif attended:
-                    att_status = "completed"
+                    status = "completed"
                 else:
-                    att_status = "missed"
+                    status = "missed"
 
-                batch_obj = sched.batch if sched.batch else getattr(sched, "new_batch", None)
-                # batch_name fallback
-                if hasattr(batch_obj, "batch_name") and batch_obj.batch_name:
-                    batch_name = batch_obj.batch_name
-                elif hasattr(batch_obj, "title"):
-                    batch_name = batch_obj.title
-                else:
-                    batch_name = None
+                batch_obj = sched.batch or sched.new_batch
+                batch_name = getattr(batch_obj, "batch_name", None) or getattr(batch_obj, "title", None)
 
                 all_schedules.append({
                     "schedule_id": sched.schedule_id,
-                    "course_id": getattr(sched.course, "course_id", None),
-                    "course_name": getattr(sched.course, "course_name", None),
+                    "course_id": sched.course.course_id,
+                    "course_name": sched.course.course_name,
                     "batch_id": getattr(batch_obj, "batch_id", None),
                     "batch_name": batch_name,
                     "title": getattr(batch_obj, "title", None),
-                    "trainer_id": sched.trainer.employee_id if sched.trainer else None,
-                    "trainer_name": sched.trainer.full_name if sched.trainer else None,
+                    "trainer_id": sched.trainer.employee_id,
+                    "trainer_name": sched.trainer.full_name,
                     "scheduled_date": sched.scheduled_date,
                     "is_online": sched.is_online_class,
-                    'is_class_cancelled': sched.is_class_cancelled,
-                    "attendance_status": attended,
+                    "is_class_cancelled": sched.is_class_cancelled,
                     "class_link": sched.class_link,
                     "start_time": start_time.strftime("%I:%M %p"),
-                    "end_time": class_end_dt.strftime("%I:%M %p"),
+                    "end_time": class_end.strftime("%I:%M %p"),
                     "attended": attended,
-                    "status": att_status,
+                    "status": status
                 })
 
             next_two_schedules = schedule_qs.filter(
@@ -1317,9 +1345,12 @@ class UserDashboardView(APIView):
 
             for sched in next_two_schedules:
                 start_time = getattr(sched, 'start_time', time(9, 0))
-                class_start_dt = datetime.combine(sched.scheduled_date, start_time)
+                class_start_dt = timezone.make_aware(
+                    datetime.combine(sched.scheduled_date, start_time)
+                )
+
+                now = timezone.now()
                 duration_td = sched.duration or timedelta(hours=1)
-                now = datetime.now()
 
                 # Class status
                 if sched.is_class_cancelled:
@@ -1380,6 +1411,24 @@ class UserDashboardView(APIView):
                 Q(scheduled_date=date.today(), start_time__lte=now.time())
             ).order_by('scheduled_date', 'start_time')
 
+            # Fetch attendance once
+            attendance_records = []
+
+            for att in Attendance.objects.filter(
+                student=student
+            ).filter(
+                Q(status__icontains="Login") |
+                Q(status__icontains="Logout") |
+                Q(status__icontains="Present")
+            ).values_list("date", flat=True):
+
+                if timezone.is_naive(att):
+                    att = timezone.make_aware(att, timezone.get_current_timezone())
+
+                attendance_records.append(att)
+
+            attendance_records.sort()
+
             total_classes = 0
             attended_classes = 0
             absent_classes = 0
@@ -1396,15 +1445,8 @@ class UserDashboardView(APIView):
                 window_start = class_start_dt - buffer
                 window_end = class_end_dt + buffer
 
-                attended = Attendance.objects.filter(
-                    student=student,
-                    date__gte=window_start,
-                    date__lte=window_end
-                ).filter(
-                    Q(status__icontains="Login") |
-                    Q(status__icontains="Logout") |
-                    Q(status__icontains="Present")
-                ).exists()
+                # Check attendance from in-memory records
+                attended = any(window_start <= att <= window_end for att in attendance_records)
 
                 total_classes += 1
                 if sched.is_class_cancelled:
@@ -1420,42 +1462,58 @@ class UserDashboardView(APIView):
             assigned_courses = Course.objects.filter(
                 new_batches__students=student,
                 is_archived=False
-            ).distinct()
+            ).values_list("course_id", flat=True).distinct()
 
+            # ---- Assignments ----
             all_assignments = Assignment.objects.filter(
-                course__in=assigned_courses,
+                course_id__in=assigned_courses,
                 is_archived=False
             )
+
             total_assignments = all_assignments.count()
 
             submitted_assignment_ids = Submission.objects.filter(
                 student=student,
-                assignment__in=all_assignments
+                assignment__course_id__in=assigned_courses
             ).values_list('assignment_id', flat=True).distinct()
 
-            done_assignments = len(submitted_assignment_ids)
+            done_assignments = submitted_assignment_ids.count()
+
             pending_assignments = max(0, total_assignments - done_assignments)
 
+
+            # ---- Topics ----
             topics = Topic.objects.filter(
-                course__in=assigned_courses,
+                course_id__in=assigned_courses,
                 is_archived=False
             )
+
             total_topics = topics.count()
 
             completed_topic_ids = StudentTopicStatus.objects.filter(
                 student=student,
-                topic__in=topics,
+                topic__course_id__in=assigned_courses,
                 status=True
             ).values_list('topic_id', flat=True).distinct()
 
-            completed_topics = len(completed_topic_ids)
+            completed_topics = completed_topic_ids.count()
+
             progress_percent = (completed_topics / total_topics * 100) if total_topics > 0 else 0
 
             student_admin_id = str(student.created_by).strip() if student.created_by else None
-            admin = Trainer.objects.filter(trainer_id=student_admin_id).first()
+
+            admin = None
+            if student_admin_id:
+                admin = Trainer.objects.only("created_by").filter(
+                    trainer_id=student_admin_id
+                ).first()
+
             super_admin_id = str(admin.created_by).strip() if admin and admin.created_by else None
 
+
+            # ---------- ANNOUNCEMENTS ----------
             filters = Q(audience__in=["all", "students"], is_archived=False)
+
             if student_admin_id and super_admin_id:
                 filters &= Q(created_by__in=[student_admin_id, super_admin_id])
             elif student_admin_id:
@@ -1463,17 +1521,26 @@ class UserDashboardView(APIView):
             elif super_admin_id:
                 filters &= Q(created_by=super_admin_id)
 
-            announcements = Announcement.objects.filter(filters).order_by("-created_at")[:5]
+            announcements = (
+                Announcement.objects
+                .filter(filters)
+                .only("id", "title", "content", "created_at", "created_by", "audience")
+                .order_by("-created_at")[:5]
+            )
+
             announcement_data = AnnouncementSerializer(announcements, many=True).data
 
+
+            # ---------- NOTIFICATIONS ----------
             notifications = Notification.objects.filter(
-                student=student,
+                student_id=student.student_id,
                 is_read=False
             ).count()
 
-            chat_rooms = ChatRoom.objects.filter(student=student)
+
+            # ---------- UNREAD CHAT MESSAGES ----------
             unread_messages_count = Message.objects.filter(
-                room__in=chat_rooms,
+                room__student_id=student.student_id,
                 is_read=False,
                 is_deleted=False,
                 sender_type="trainer"
@@ -2410,6 +2477,7 @@ class UserDashboardView(APIView):
             "message": f"Dashboard for Company {company_name}",
             "data": data
         }, status=200)
+
 import traceback
 import logging     
 logger = logging.getLogger(__name__)  
@@ -6396,112 +6464,88 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
     serializer_class = CourseSerializer
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
-    lookup_field = 'course_id'
+    lookup_field = "course_id"
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
-    def get_queryset(self):
-        category_id = self.request.query_params.get('course_category')
-        base_queryset = Course.objects.filter(is_archived=False).select_related('course_category')
+    def _get_role_filters(self, user):
+        filters = Q()
 
-        user = self.request.user
-        user_created_id = None
         if user.user_type == "super_admin":
-            user_created_id = getattr(user, "user_id", None)
-        elif user.user_type == "admin":
-            user_created_id = getattr(user, "trainer_id", None)
+            super_admin_id = str(getattr(user, "user_id", ""))
 
-        # Get admin IDs created by this super admin
-        admin_ids = []
-        if user.user_type == "super_admin" and user_created_id:
-            admin_ids = list(
-                Trainer.objects.filter(
-                    created_by=user_created_id,
-                    created_by_type="super_admin",
-                    is_archived=False
-                ).values_list("trainer_id", flat=True)
-            )
+            admin_ids = Trainer.objects.filter(
+                created_by=super_admin_id,
+                created_by_type="super_admin",
+                is_archived=False
+            ).values_list("trainer_id", flat=True)
 
-        # Filter courses based on role
-        if user.user_type == "super_admin" and user_created_id:
-            base_queryset = base_queryset.filter(
-                Q(created_by_type="super_admin", created_by=user_created_id) |
+            admin_ids = [str(i) for i in admin_ids]
+
+            filters = (
+                Q(created_by_type="super_admin", created_by=super_admin_id) |
                 Q(created_by_type="admin", created_by__in=admin_ids)
             )
-        elif user.user_type == "admin" and user_created_id:
 
-            trainer = Trainer.objects.filter(
-                trainer_id=user_created_id,
+        elif user.user_type == "admin":
+            admin_id = str(getattr(user, "trainer_id", ""))
+
+            super_admin_id = Trainer.objects.filter(
+                trainer_id=admin_id,
                 is_archived=False
-            ).first()
+            ).values_list("created_by", flat=True).first()
 
-            super_admin_id = None
-            if trainer and trainer.created_by_type == "super_admin":
-                super_admin_id = trainer.created_by
+            if super_admin_id:
+                super_admin_id = str(super_admin_id)
 
-            base_queryset = base_queryset.filter(
-                Q(created_by_type="admin", created_by=user_created_id) |
+            filters = (
+                Q(created_by_type="admin", created_by=admin_id) |
                 Q(created_by_type="super_admin", created_by=super_admin_id)
             )
 
-        # Optional: filter by category if provided
-        if category_id:
-            base_queryset = base_queryset.filter(course_category_id=category_id)
+        return filters
 
-        return base_queryset.order_by('-course_id')
+
+    def get_queryset(self):
+        category_id = self.request.query_params.get("course_category")
+
+        queryset = (
+            Course.objects
+            .filter(is_archived=False)
+            .select_related("course_category")
+        )
+
+        filters = self._get_role_filters(self.request.user)
+
+        queryset = queryset.filter(filters)
+
+        if category_id:
+            queryset = queryset.filter(course_category_id=category_id)
+
+        return queryset.order_by("-course_id")
+
 
     def list(self, request, *args, **kwargs):
         try:
             queryset = self.get_queryset()
-            serializer = self.get_serializer(queryset, many=True)
 
-            # filter categories based on user role
-            user = request.user
-            user_created_id = None
-            if user.user_type == "super_admin":
-                user_created_id = getattr(user, "user_id", None)
-            elif user.user_type == "admin":
-                user_created_id = getattr(user, "trainer_id", None)
+            filters = self._get_role_filters(request.user)
 
-            admin_ids = []
-            if user.user_type == "super_admin" and user_created_id:
-                admin_ids = list(
-                    Trainer.objects.filter(
-                        created_by=user_created_id,
-                        created_by_type="super_admin",
-                        is_archived=False
-                    ).values_list("trainer_id", flat=True)
-                )
-
-            category_qs = CourseCategory.objects.filter(is_archived=False)
-            if user.user_type == "super_admin" and user_created_id:
-                category_qs = category_qs.filter(
-                    Q(created_by_type="super_admin", created_by=user_created_id) |
-                    Q(created_by_type="admin", created_by__in=admin_ids)
-                )
-            elif user.user_type == "admin" and user_created_id:
-
-                trainer = Trainer.objects.filter(
-                    trainer_id=user_created_id,
-                    is_archived=False
-                ).first()
-
-                super_admin_id = None
-                if trainer and trainer.created_by_type == "super_admin":
-                    super_admin_id = trainer.created_by
-
-                category_qs = category_qs.filter(
-                    Q(created_by_type="admin", created_by=user_created_id) |
-                    Q(created_by_type="super_admin", created_by=super_admin_id)
-                )
+            category_qs = (
+                CourseCategory.objects
+                .filter(is_archived=False)
+                .filter(filters)
+            )
 
             category_data = CourseCategorySerializer(category_qs, many=True).data
 
-            if not queryset.exists():
+            serializer = CourseListSerializer(queryset, many=True)
+
+            if not serializer.data:
                 return Response({
                     "success": False,
                     "message": "No courses found for the selected category.",
                     "categories": category_data,
-                    'currencies':CURRENCIES
+                    "currencies": CURRENCIES
                 }, status=200)
 
             return Response({
@@ -6509,13 +6553,13 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
                 "message": "Courses fetched successfully.",
                 "data": serializer.data,
                 "categories": category_data,
-                'currencies':CURRENCIES
+                "currencies": CURRENCIES
             }, status=200)
 
         except Exception as e:
             return Response({
                 "success": False,
-                "message": str(e),
+                "message": str(e)
             }, status=200)
 
     def create(self, request, *args, **kwargs):

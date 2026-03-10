@@ -1100,7 +1100,46 @@ class CourseCategorySerializer(serializers.ModelSerializer):
             instance.cascade_category_deactivation()
 
         return instance
-    
+
+class CourseListSerializer(serializers.ModelSerializer):
+
+    course_category = serializers.SlugRelatedField(
+        slug_field="category_name",
+        read_only=True
+    )
+
+    category_details = CourseCategorySerializer(
+        source="course_category",
+        read_only=True
+    )
+
+    course_pic_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Course
+        fields = [
+            "course_id",
+            "course_name",
+            "course_category",
+            "category_details",
+            "course_pic",
+            "course_pic_url",
+            "notes",
+            "currency_type",
+            "fee_type",
+            "duration",
+            "mode_of_delivery",
+            "fee",
+            "status",
+            "is_archived",
+            "is_featured",
+        ]
+
+    def get_course_pic_url(self, obj):
+        if obj.course_pic:
+            return f"https://portal.aryuacademy.com/api{obj.course_pic.url}"
+        return None
+
 class CourseSerializer(serializers.ModelSerializer):
     course_category = serializers.SlugRelatedField(
         slug_field='category_name',

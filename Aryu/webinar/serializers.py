@@ -178,6 +178,19 @@ class WebinarFeedbackSerializer(serializers.ModelSerializer):
         attrs["registration"] = registration
         return attrs
 
+class WebinarFeedbackSerializer(serializers.ModelSerializer):
+
+    rating_screenshot_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WebinarFeedback
+        fields = "__all__"
+
+    def get_rating_screenshot_url(self, obj):
+        if obj.rating_screenshot:
+            return f"https://portal.aryuacademy.com/api{obj.rating_screenshot.url}"
+        return None
+
 class WebinarToolSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
 
@@ -215,6 +228,7 @@ class WebinarSerializer(serializers.ModelSerializer):
     participants = serializers.SerializerMethodField()
     participants_count = serializers.SerializerMethodField()
     total_amount_received = serializers.SerializerMethodField()
+    feedbacks = WebinarFeedbackSerializer(many=True, read_only=True)
     tools = WebinarToolSerializer(many=True, read_only=True)
     metadata = WebinarMetadataSerializer(many=True, read_only=True)
     faqs = WebinarFAQSerializer(many=True, read_only=True)
