@@ -271,6 +271,41 @@ class WebinarViewSet(
     lookup_url_kwarg = "uuid"
 
     def get_queryset(self):
+
+        # -------- LIST QUERYSET (FAST) --------
+        if self.action == "list":
+            return (
+                Webinar.objects
+                .annotate(
+                    participants_count=Count("registrations", distinct=True),
+
+                    total_amount_received=Sum(
+                        "registrations__payment_transaction__amount",
+                        filter=Q(
+                            registrations__payment_transaction__payment_status="done"
+                        )
+                    ),
+
+                    feedback_count=Count("feedbacks", distinct=True),
+                    avg_rating=Avg("feedbacks__overall_rating"),
+                )
+                .filter(is_deleted=False)
+                .only(
+                    "uuid",
+                    "slug",
+                    "title",
+                    "scheduled_start",
+                    "seats_available",
+                    "price",
+                    "regular_price",
+                    "webinar_image",
+                    "status",
+                    "created_at"
+                )
+                .order_by("-created_at")
+            )
+
+        # -------- RETRIEVE QUERYSET (FULL DATA) --------
         return (
             Webinar.objects
             .prefetch_related(
@@ -310,7 +345,6 @@ class WebinarViewSet(
                         .order_by("-registered_at")
                 ),
 
-                # FETCH ALL FEEDBACKS
                 Prefetch(
                     "feedbacks",
                     queryset=WebinarFeedback.objects
@@ -330,28 +364,30 @@ class WebinarViewSet(
                 ),
 
                 feedback_count=Count("feedbacks", distinct=True),
-
                 avg_rating=Avg("feedbacks__overall_rating"),
             )
 
             .filter(is_deleted=False)
-            .order_by("-created_at")
         )
 
-    def list(self, request):
-        queryset = self.get_queryset()
-        serializer = WebinarListSerializer(queryset, many=True)
-        return Response(serializer.data)
-    
+    # -------- RETRIEVE --------
+
     def retrieve(self, request, slug=None):
         queryset = self.get_queryset()
         webinar = get_object_or_404(queryset, slug=slug)
+
         serializer = WebinarSerializer(webinar, context={"request": request})
+
         return Response({
             "status": True,
             "message": "Webinar retrieved successfully",
             "data": serializer.data
         })
+    def list(self, request):
+        queryset = self.get_queryset()
+        serializer = WebinarListSerializer(queryset, many=True)
+        return Response(serializer.data)
+
 
     def create(self, request):
         serializer = WebinarSerializer(
