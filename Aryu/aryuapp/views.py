@@ -1762,193 +1762,246 @@ class UserDashboardView(APIView):
             return Response({"success": False, "message": "Trainer not found."}, status=200)
      
     def _get_super_admin_dashboard(self, payload):
-            
+
         if payload.get("user_type") != "super_admin":
             return Response({"success": False, "message": "Unauthorized"}, status=200)
 
         allowed_ids = self._get_allowed_creator_ids(payload)
-        creator_filter = Q(created_by__in=allowed_ids)
 
-        total_students = Student.objects.filter(is_archived=False).filter(
+        creator_filter = (
             Q(created_by_type="super_admin", created_by__in=allowed_ids) |
             Q(created_by_type="admin", created_by__in=allowed_ids)
-        ).count()
+        )
 
-        active_students = Student.objects.filter(is_archived=False, status=True).filter(
-            Q(created_by_type="super_admin", created_by__in=allowed_ids) |
-            Q(created_by_type="admin", created_by__in=allowed_ids)
-        ).count()
-        inactive_students = total_students - active_students
+        # -----------------------------
+        # STUDENTS (1 query)
+        # -----------------------------
 
-        total_trainers = Trainer.objects.filter(is_archived=False, user_type='tutor').filter(
-            Q(created_by_type="super_admin", created_by__in=allowed_ids) |
-            Q(created_by_type="admin", created_by__in=allowed_ids)
-        ).count()
+        student_stats = Student.objects.filter(
+            is_archived=False
+        ).filter(creator_filter).aggregate(
+            total_students=Count("student_id"),
+            active_students=Count("student_id", filter=Q(status=True))
+        )
 
-        active_trainers = Trainer.objects.filter(is_archived=False, status__iexact="Active", user_type='tutor').filter(
-            Q(created_by_type="super_admin", created_by__in=allowed_ids) |
-            Q(created_by_type="admin", created_by__in=allowed_ids)
-        ).count()
-        inactive_trainers = total_trainers - active_trainers
+        total_students = student_stats["total_students"]
+        active_students = student_stats["active_students"]
 
-        total_courses = Course.objects.filter(is_archived=False).filter(
-            Q(created_by_type="super_admin", created_by__in=allowed_ids) |
-            Q(created_by_type="admin", created_by__in=allowed_ids)
-        ).count()
-        total_active_courses = Course.objects.filter(is_archived=False, status = "Active").filter(
-            Q(created_by_type="super_admin", created_by__in=allowed_ids) |
-            Q(created_by_type="admin", created_by__in=allowed_ids)
-        ).count()
-        total_batches = NewBatch.objects.filter(is_archived=False).filter(
-            Q(created_by_type="super_admin", created_by__in=allowed_ids) |
-            Q(created_by_type="admin", created_by__in=allowed_ids)
-        ).count()
-        total_active_batches = NewBatch.objects.filter(is_archived=False, status=True).filter(
-                Q(created_by_type="super_admin", created_by__in=allowed_ids) |
-                Q(created_by_type="admin", created_by__in=allowed_ids)
-            ).count()
+        # -----------------------------
+        # TRAINERS (1 query)
+        # -----------------------------
+
+        trainer_stats = Trainer.objects.filter(
+            is_archived=False,
+            user_type="tutor"
+        ).filter(creator_filter).aggregate(
+            total_trainers=Count("trainer_id"),
+            active_trainers=Count("trainer_id", filter=Q(status__iexact="Active"))
+        )
+
+        # -----------------------------
+        # COURSES (1 query)
+        # -----------------------------
+
+        course_stats = Course.objects.filter(
+            is_archived=False
+        ).filter(creator_filter).aggregate(
+            total_courses=Count("course_id"),
+            active_courses=Count("course_id", filter=Q(status="Active"))
+        )
+
+        # -----------------------------
+        # BATCHES (1 query)
+        # -----------------------------
+
+        batch_stats = NewBatch.objects.filter(
+            is_archived=False
+        ).filter(creator_filter).aggregate(
+            total_batches=Count("batch_id"),
+            active_batches=Count("batch_id", filter=Q(status=True))
+        )
+
+        # -----------------------------
+        # BATCHWISE STUDENTS
+        # -----------------------------
 
         batchwise_student_count = (
             NewBatch.objects
-            .filter(created_by__in=allowed_ids, is_archived=False, status=True)
-            .annotate(student_count=Count('students', distinct=True))
-            .values('title', 'batch_id', 'student_count')
-            .order_by('title')
+            .filter(is_archived=False, status=True, created_by__in=allowed_ids)
+            .annotate(student_count=Count("students", distinct=True))
+            .values("title", "batch_id", "student_count")
+            .order_by("title")
         )
-        now = timezone.now()
-        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-        overall_monthly_revenue = (
-            PaymentTransaction.objects.filter(
-                payment_status="done"
-            )
-            .annotate(month=TruncMonth("created_at"))
-            .values("month")
-            .annotate(total=Sum("amount"))
-            .order_by("month")
-        )
-        
+        # -----------------------------
+        # WEBINAR BASE QUERY
+        # -----------------------------
+
         webinar_qs = Webinar.objects.filter(
             creator_filter,
             is_deleted=False
         )
-        total_webinars = webinar_qs.count()
-        
-        webinar_uuid_list = list(
-            webinar_qs.values_list("uuid", flat=True)
+
+        webinar_ids = Subquery(
+            webinar_qs.values("uuid")
         )
 
-        webinar_uuid_str_list = [str(uid) for uid in webinar_uuid_list]
+        webinar_ids_str = webinar_qs.values_list("uuid", flat=True)
 
-        completed_webinars = webinar_qs.filter(is_completed=True).count()
+        webinar_ids_str = [str(i) for i in webinar_ids_str]
 
-        active_webinars = webinar_qs.filter(
-            webinar_status=True,
-            is_registration_open=True
-        ).count()
+        # -----------------------------
+        # WEBINAR OVERVIEW
+        # -----------------------------
 
-        # Total registrations (single query)
+        webinar_overview = webinar_qs.aggregate(
+            total_webinars=Count("uuid"),
+            completed_webinars=Count("uuid", filter=Q(is_completed=True)),
+            active_webinars=Count(
+                "uuid",
+                filter=Q(webinar_status=True, is_registration_open=True)
+            )
+        )
+
+        # -----------------------------
+        # REGISTRATIONS
+        # -----------------------------
+
         total_registrations = WebinarRegistration.objects.filter(
             webinar__in=webinar_qs
         ).count()
-        
-        # Total revenue (single aggregation)
-        total_revenue = PaymentTransaction.objects.filter(
-            metadata__webinar_id__in=webinar_uuid_str_list,
-            payment_status="done"
-        ).aggregate(total=Sum("amount"))["total"] or 0
 
-        webinar_performance = (
-            webinar_qs
-            .annotate(
-                participants=Count("registrations", distinct=True),
-                attended=Count(
-                    "registrations",
-                    filter=Q(registrations__attended=True),
-                    distinct=True
-                ),
-                feedback_count=Count("feedbacks", distinct=True),
-                avg_rating=Avg("feedbacks__overall_rating")
-            )
-            .values(
-                "title",
-                "participants",
-                "attended",
-                "feedback_count",
-                "avg_rating",
-                "uuid"
-            )
-            .order_by("-participants")
-        )
+        # -----------------------------
+        # TOTAL REVENUE (JSONB FIX)
+        # -----------------------------
+
+        total_revenue = PaymentTransaction.objects.filter(
+            metadata__webinar_id__in=webinar_ids_str,
+            payment_status="done"
+        ).aggregate(
+            total=Sum("amount")
+        )["total"] or 0
+
+        # -----------------------------
+        # WEBINAR PERFORMANCE
+        # -----------------------------
+
+        webinar_performance = webinar_qs.annotate(
+            participants=Count("registrations", distinct=True),
+            attended=Count(
+                "registrations",
+                filter=Q(registrations__attended=True),
+                distinct=True
+            ),
+            feedback_count=Count("feedbacks", distinct=True),
+            avg_rating=Avg("feedbacks__overall_rating")
+        ).values(
+            "title",
+            "uuid",
+            "participants",
+            "attended",
+            "feedback_count",
+            "avg_rating"
+        ).order_by("-participants")
+
+        # -----------------------------
+        # REVENUE MAP
+        # -----------------------------
 
         revenue_map = {
-            item["metadata__webinar_id"]: item["total"]
-            for item in PaymentTransaction.objects.filter(
-                metadata__webinar_id__in=webinar_uuid_str_list,
+            r["metadata__webinar_id"]: r["total"]
+            for r in PaymentTransaction.objects.filter(
+                metadata__webinar_id__in=webinar_ids_str,
                 payment_status="done"
+            ).values("metadata__webinar_id").annotate(
+                total=Sum("amount")
             )
-            .values("metadata__webinar_id")
-            .annotate(total=Sum("amount"))
         }
 
         webinar_analytics = []
 
         for w in webinar_performance:
+
             webinar_analytics.append({
+
                 "title": w["title"],
                 "participants": w["participants"],
                 "attended": w["attended"],
+
                 "attendance_rate": (
                     round((w["attended"] / w["participants"]) * 100, 2)
                     if w["participants"] else 0
                 ),
-                "revenue": float(revenue_map.get(str(w["uuid"]), 0)),
+
+                "revenue": float(
+                    revenue_map.get(str(w["uuid"]), 0)
+                ),
+
                 "avg_rating": round(w["avg_rating"] or 0, 2)
+
             })
 
-        daily_revenue = (
-            PaymentTransaction.objects.filter(
-                metadata__webinar_id__in=webinar_uuid_str_list,
-                payment_status="done",
-                created_at__gte=start_of_month
-            )
-            .annotate(day=TruncDay("created_at"))
-            .values("day")
-            .annotate(total=Sum("amount"))
-            .order_by("day")
-        )
-        
-        daily_registrations = (
-            WebinarRegistration.objects.filter(
-                webinar__in=webinar_qs,
-                registered_at__gte=start_of_month
-            )
-            .annotate(day=TruncDay("registered_at"))
-            .values("day")
-            .annotate(total=Count("id"))
-            .order_by("day")
-        )
-        
-        monthly_revenue = (
-            PaymentTransaction.objects.filter(
-                metadata__webinar_id__in=webinar_uuid_str_list,
-                payment_status="done"
-            )
-            .annotate(month=TruncMonth("created_at"))
-            .values("month")
-            .annotate(total=Sum("amount"))
-            .order_by("month")
+        now = timezone.now()
+
+        start_of_month = now.replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
         )
 
-        monthly_registrations = (
-            WebinarRegistration.objects.filter(
-                webinar__in=webinar_qs
-            )
-            .annotate(month=TruncMonth("registered_at"))
-            .values("month")
-            .annotate(total=Count("id"))
-            .order_by("month")
-        )
+        # -----------------------------
+        # DAILY REVENUE
+        # -----------------------------
+
+        daily_revenue = PaymentTransaction.objects.filter(
+            metadata__webinar_id__in=webinar_ids_str,
+            payment_status="done",
+            created_at__gte=start_of_month
+        ).annotate(
+            day=TruncDay("created_at")
+        ).values("day").annotate(
+            total=Sum("amount")
+        ).order_by("day")
+
+        # -----------------------------
+        # DAILY REGISTRATIONS
+        # -----------------------------
+
+        daily_registrations = WebinarRegistration.objects.filter(
+            webinar__in=webinar_qs,
+            registered_at__gte=start_of_month
+        ).annotate(
+            day=TruncDay("registered_at")
+        ).values("day").annotate(
+            total=Count("id")
+        ).order_by("day")
+
+        # -----------------------------
+        # MONTHLY REVENUE
+        # -----------------------------
+
+        monthly_revenue = PaymentTransaction.objects.filter(
+            metadata__webinar_id__in=webinar_ids_str,
+            payment_status="done"
+        ).annotate(
+            month=TruncMonth("created_at")
+        ).values("month").annotate(
+            total=Sum("amount")
+        ).order_by("month")
+
+        # -----------------------------
+        # MONTHLY REGISTRATIONS
+        # -----------------------------
+
+        monthly_registrations = WebinarRegistration.objects.filter(
+            webinar__in=webinar_qs
+        ).annotate(
+            month=TruncMonth("registered_at")
+        ).values("month").annotate(
+            total=Count("id")
+        ).order_by("month")
+
+        # -----------------------------
+        # ATTENDANCE SUMMARY
+        # -----------------------------
 
         attendance_summary = WebinarAttendanceSummary.objects.filter(
             registration__webinar__in=webinar_qs
@@ -1956,6 +2009,10 @@ class UserDashboardView(APIView):
             avg_duration=Avg("total_duration_seconds"),
             total_joins=Sum("join_count")
         )
+
+        # -----------------------------
+        # FEEDBACK STATS
+        # -----------------------------
 
         feedback_stats = WebinarFeedback.objects.filter(
             webinar__in=webinar_qs
@@ -1971,27 +2028,40 @@ class UserDashboardView(APIView):
         )
 
         return Response({
+
             "success": True,
             "user_type": "super_admin",
+
             "data": {
-                "total_trainers": total_trainers,
-                "active_trainers": active_trainers,
+
+                "total_trainers": trainer_stats["total_trainers"],
+                "active_trainers": trainer_stats["active_trainers"],
+
                 "total_students": total_students,
                 "active_students": active_students,
-                "total_courses": total_courses,
-                "active_courses": total_active_courses,
-                "total_batches": total_batches,
-                "active_batches": total_active_batches,
+
+                "total_courses": course_stats["total_courses"],
+                "active_courses": course_stats["active_courses"],
+
+                "total_batches": batch_stats["total_batches"],
+                "active_batches": batch_stats["active_batches"],
+
                 "batchwise_student_count": list(batchwise_student_count),
-                "overall_monthly_revenue": list(overall_monthly_revenue),
+
+                "overall_monthly_revenue": list(monthly_revenue),
+
                 "webinar_analytics": {
+
                     "overview": {
-                        "total_webinars": total_webinars,
-                        "completed_webinars": completed_webinars,
-                        "active_webinars": active_webinars,
+
+                        "total_webinars": webinar_overview["total_webinars"],
+                        "completed_webinars": webinar_overview["completed_webinars"],
+                        "active_webinars": webinar_overview["active_webinars"],
                         "total_registrations": total_registrations,
                         "total_revenue": float(total_revenue)
+
                     },
+
                     "daily_revenue": list(daily_revenue),
                     "daily_registrations": list(daily_registrations),
                     "webinar_performance": webinar_analytics,
@@ -1999,10 +2069,13 @@ class UserDashboardView(APIView):
                     "monthly_registrations": list(monthly_registrations),
                     "attendance_summary": attendance_summary,
                     "feedback_stats": feedback_stats
+
                 }
+
             }
+
         }, status=200)
-    
+   
 
     # ==========================================================
     # ADMIN DASHBOARD (HIERARCHY READY)
