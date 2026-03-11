@@ -102,7 +102,8 @@ class WebinarRegistration(models.Model):
     webinar = models.ForeignKey(
         Webinar,
         on_delete=models.CASCADE,
-        related_name='registrations'
+        related_name='registrations',
+        db_index=True
     )
 
     # 🔹 Snapshot fields (what user submitted)
@@ -156,7 +157,8 @@ class WebinarSession(models.Model):
     webinar = models.OneToOneField(
         Webinar,
         on_delete=models.CASCADE,
-        related_name='session'
+        related_name='session',
+        db_index=True
     )
 
     zoom_meeting_id = models.CharField(
@@ -185,7 +187,8 @@ class WebinarAttendanceLog(models.Model):
     registration = models.ForeignKey(
         WebinarRegistration,
         on_delete=models.CASCADE,
-        related_name="attendance_logs"
+        related_name="attendance_logs",
+        db_index=True,
     )
 
     join_time = models.DateTimeField()
@@ -210,7 +213,8 @@ class WebinarAttendanceSummary(models.Model):
     registration = models.OneToOneField(
         WebinarRegistration,
         on_delete=models.CASCADE,
-        related_name="attendance_summary"
+        related_name="attendance_summary",
+        db_index=True,
     )
 
     total_duration_seconds = models.PositiveIntegerField(default=0)
@@ -229,7 +233,8 @@ class WebinarFeedback(models.Model):
     webinar = models.ForeignKey(
         Webinar,
         on_delete=models.CASCADE,
-        related_name="feedbacks"
+        related_name="feedbacks",
+        db_index=True,
     )
 
     registration = models.OneToOneField(
@@ -237,7 +242,8 @@ class WebinarFeedback(models.Model):
         on_delete=models.CASCADE,
         related_name="feedback",
         null=True,
-        blank=True
+        blank=True,
+        db_index=True
     )
     phone = models.CharField(max_length=15)
 
@@ -307,17 +313,7 @@ class Form(models.Model):
 
 class Question(models.Model):
 
-    # QUESTION_TYPES = [
-    #     (TEXT, "Text"),
-    #     (TEXTAREA, "Textarea"),
-    #     (MCQ, "Multiple Choice"),
-    #     (CHECKBOX, "Checkbox"),
-    #     (DROPDOWN, "Dropdown"),
-    #     (FILE, "File"),
-    #     (RATING, "Rating"),
-    # ]
-
-    form = models.ForeignKey(Form, related_name="questions", on_delete=models.CASCADE)
+    form = models.ForeignKey(Form, related_name="questions", on_delete=models.CASCADE, db_index=True)
     label = models.CharField(max_length=500)
     type = models.CharField(max_length=20)
     is_required = models.BooleanField(default=False)
@@ -332,7 +328,7 @@ class Question(models.Model):
         ]
 
 class QuestionOption(models.Model):
-    question = models.ForeignKey(Question, related_name="options", on_delete=models.CASCADE)
+    question = models.ForeignKey(Question, related_name="options", on_delete=models.CASCADE, db_index=True)
     value = models.CharField(max_length=255)
     order = models.IntegerField()
 
@@ -350,7 +346,7 @@ class Submission(models.Model):
         db_index=True
     )
     is_deleted = models.BooleanField(default=False)
-    form = models.ForeignKey(Form, on_delete=models.CASCADE)
+    form = models.ForeignKey(Form, on_delete=models.CASCADE, db_index=True)
     submitted_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

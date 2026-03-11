@@ -29,11 +29,12 @@ from rest_framework.decorators import action
 from django.views.decorators.csrf import csrf_exempt
 import hmac
 import hashlib
+from django.core.cache import cache
 from django.conf import settings
 from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from aryuapp.auth import CustomJWTAuthentication
-from django.db.models import Count, Prefetch, Sum, Q, Avg, F, Value, IntegerField
+from django.db.models import Count, Prefetch, Sum, Q, Avg, F, Value, IntegerField, OuterRef, Subquery, DecimalField
 from .models import *
 from .serializers import *
 import logging
@@ -279,21 +280,18 @@ class WebinarViewSet(
         if self.action == "list":
             return (
                 Webinar.objects
+                .filter(is_deleted=False)
                 .annotate(
                     participants_count=Count("registrations", distinct=True),
-
                     total_amount_received=Sum(
                         "registrations__payment_transaction__amount",
-                        filter=Q(
-                            registrations__payment_transaction__payment_status="done"
-                        )
+                        filter=Q(registrations__payment_transaction__payment_status="done"),
                     ),
-
                     feedback_count=Count("feedbacks", distinct=True),
                     avg_rating=Avg("feedbacks__overall_rating"),
                 )
-                .filter(is_deleted=False)
                 .only(
+                    "id",
                     "uuid",
                     "slug",
                     "title",
@@ -303,7 +301,7 @@ class WebinarViewSet(
                     "regular_price",
                     "webinar_image",
                     "status",
-                    "created_at"
+                    "created_at",
                 )
                 .order_by("-created_at")
             )
@@ -506,11 +504,17 @@ class WebinarViewSet(
             "message": "Webinar retrieved successfully",
             "data": data
         })
-    
+
     def list(self, request):
-        queryset = self.get_queryset()
-        serializer = WebinarListSerializer(queryset, many=True)
-        return Response(serializer.data)
+        cache_key = "webinar_list_v1"
+        data = cache.get(cache_key)
+
+        if not data:
+            queryset = self.get_queryset()
+            data = WebinarListSerializer(queryset, many=True).data
+            cache.set(cache_key, data, 60)
+
+        return Response(data)
 
 
     def create(self, request):
