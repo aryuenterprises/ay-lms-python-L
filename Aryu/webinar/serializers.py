@@ -394,11 +394,7 @@ class WebinarSerializer(serializers.ModelSerializer):
 
 class WebinarListSerializer(serializers.ModelSerializer):
     scheduled_start = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
-    created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", read_only=True)
-    updated_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", read_only=True)
     webinar_image_url = serializers.SerializerMethodField()
-    participants_count = serializers.SerializerMethodField()
-    total_amount_received = serializers.SerializerMethodField()
     tools = WebinarToolSerializer(many=True, read_only=True)
     metadata = WebinarMetadataSerializer(many=True, read_only=True)
     faqs = WebinarFAQSerializer(many=True, read_only=True)
@@ -411,27 +407,21 @@ class WebinarListSerializer(serializers.ModelSerializer):
         read_only_fields = ("created_by", "created_by_type")
 
     def get_webinar_image_url(self, obj):
-        if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
+        if obj.webinar_image:
             return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
         return None
-    
-    def get_total_amount_received(self, obj):
-        # reads an already-computed annotation — no extra query
-        return float(getattr(obj, "_total_amount_received", None) or 0)
 
     def get_participants_count(self, obj):
-        # len() reads from the prefetch cache — zero DB queries
-        return len(obj.registrations.all())
-
+        return obj.participants_count
+    
     def get_pending_seats(self, obj):
-        registered = len(obj.registrations.all())
-        return max(obj.seats_available - registered, 0)
+        return max(obj.seats_available - obj.participants_count, 0)
 
     def get_is_full(self, obj):
-        return len(obj.registrations.all()) >= obj.seats_available
+        return obj.participants_count >= obj.seats_available
 
-    import logging
-    logger = logging.getLogger(__name__)
+    def get_total_amount_received(self, obj):
+        return float(obj.total_amount_received or 0)
 
     def create(self, validated_data):
         price = validated_data.get("price")
@@ -477,9 +467,6 @@ class WebinarListSerializer(serializers.ModelSerializer):
             )
         except Exception as e:
             webinar.delete()
-
-            # LOG full error for server logs
-            logger.exception("Zoom meeting creation failed")
 
             # RETURN real error to API caller
             raise serializers.ValidationError(
