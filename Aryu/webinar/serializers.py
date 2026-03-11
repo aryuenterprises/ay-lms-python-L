@@ -400,6 +400,8 @@ class WebinarListSerializer(serializers.ModelSerializer):
     faqs = WebinarFAQSerializer(many=True, read_only=True)
     pending_seats = serializers.SerializerMethodField()
     is_full = serializers.SerializerMethodField() 
+    participants_count=serializers.SerializerMethodField()
+    total_amount_received=serializers.SerializerMethodField()
     feedback = WebinarlistFeedbackSerializer(source="webinarfeedback_set", many=True, read_only=True)
 
     class Meta:
