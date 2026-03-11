@@ -39,8 +39,11 @@ from django.db import IntegrityError
 from django.utils.timezone import localtime, now
 from django.conf import settings
 from django.contrib.auth.hashers import *
-from django.db.models import Q, Count, F, Max, ExpressionWrapper, Prefetch, DateField, Case, When, IntegerField, Sum, Avg
+from django.db.models import Q, Count, F, Max, ExpressionWrapper, Prefetch, DateField, Case, When, IntegerField, Sum, Avg, Value, CharField, OuterRef, Subquery, Window
 import holidays
+from django.db.models.functions import Concat,Lag
+from django.contrib.postgres.aggregates import JSONBAgg
+from django.db.models.functions import JSONObject
 from .utils import *
 from .mixins import *
 from webinar.models import Webinar, WebinarRegistration, WebinarAttendanceSummary, WebinarFeedback
@@ -7993,220 +7996,240 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             }, status=200)
     
 class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
+
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
 
     def list(self, request):
+
         try:
             user = request.user
             user_type = getattr(user, "user_type", "").lower()
-            ist = pytz.timezone('Asia/Kolkata')
-            logs = []
 
-            # Determine super admin's admins
             user_created_id = getattr(user, "trainer_id", None)
             if user_type == "super_admin":
                 user_created_id = getattr(user, "user_id", None)
 
-            admin_ids = []
-            if user_type == "super_admin" and user_created_id:
-                admin_ids = list(
-                    Trainer.objects.filter(
-                        created_by=user_created_id,
-                        created_by_type="super_admin",
-                        is_archived=False
-                    ).values_list("trainer_id", flat=True)
+            # ---------------------------------------------
+            # Admin IDs
+            # ---------------------------------------------
+
+            admin_ids = Trainer.objects.filter(
+                created_by=user_created_id,
+                created_by_type="super_admin",
+                is_archived=False
+            ).annotate(
+                trainer_id_str=Cast("trainer_id", CharField())
+            ).values("trainer_id_str")
+
+            # ---------------------------------------------
+            # STUDENT LOGS
+            # ---------------------------------------------
+
+            student_filter = Q()
+
+            if user_type == "admin":
+                student_filter = Q(student__created_by=user_created_id)
+
+            elif user_type == "super_admin":
+                student_filter = (
+                    Q(student__created_by_type="super_admin", student__created_by=user_created_id)
+                    |
+                    Q(student__created_by_type="admin", student__created_by__in=Subquery(admin_ids))
                 )
 
-            # Base attendance querysets
-            student_attendance = Attendance.objects.select_related('student', 'course', 'batch')
-            trainer_attendance = TrainerAttendance.objects.select_related('trainer', 'course', 'batch')
+            student_logs = Attendance.objects.filter(student_filter).annotate(
 
-            # Filter attendance based on user type
-            if user_type == "admin" and user_created_id:
-                student_attendance = student_attendance.filter(student__created_by=user_created_id)
-                trainer_attendance = trainer_attendance.filter(trainer__created_by=user_created_id)
-            elif user_type == "super_admin" and user_created_id:
-                student_attendance = student_attendance.filter(
-                    Q(student__created_by_type='super_admin', student__created_by=user_created_id) |
-                    Q(student__created_by_type='admin', student__created_by__in=admin_ids)
+                student_name=Concat(
+                    F("student__first_name"),
+                    Value(" "),
+                    F("student__last_name")
                 )
-                trainer_attendance = trainer_attendance.filter(
-                    Q(trainer__created_by_type='super_admin', trainer__created_by=user_created_id) |
-                    Q(trainer__created_by_type='admin', trainer__created_by__in=admin_ids)
+
+            ).values().aggregate(
+
+                logs=JSONBAgg(
+
+                    JSONObject(
+
+                        name=F("student_name"),
+                        course=F("course__course_name"),
+                        user_type=Value("student", output_field=CharField()),
+                        batch=F("batch__batch_name"),
+                        title=F("batch__title"),
+                        batch_id=F("batch__batch_id"),
+                        course_id=F("course__course_id"),
+                        status=F("status"),
+                        ip=F("ip_address"),
+                        date_time=Cast(F("date"), CharField())
+
+                    )
+
                 )
-            else:
-                # Non-admin/non-super_admin see nothing
-                return Response({"success": True, "logs": []}, status=200)
 
-            # --- Student logs ---
-            for att in student_attendance:
-                date_ist = att.date.astimezone(ist) if att.date.tzinfo else pytz.utc.localize(att.date).astimezone(ist)
+            )["logs"] or []
 
-                # Determine batch info
-                if att.batch:  # Old batch
-                    batch_id = att.batch.batch_id
-                    batch_name = att.batch.batch_name
-                    title = att.batch.title
-                elif att.new_batch:  # New batch
-                    batch_id = att.new_batch.batch_id
-                    batch_name = att.new_batch.title
-                    title = att.new_batch.title
-                else:
-                    batch_id = None
-                    batch_name = None
-                    title = None
+            # ---------------------------------------------
+            # TRAINER LOGS
+            # ---------------------------------------------
 
-                logs.append({
-                    "name": f"{att.student.first_name} {att.student.last_name}",
-                    "course": att.course.course_name if att.course else None,
-                    "user_type": "student",
-                    "batch": batch_name,
-                    "title": title,
-                    "batch_id": batch_id,
-                    "course_id": att.course.course_id if att.course else None,
-                    "status": att.status,
-                    "ip": att.ip_address,
-                    "date_time": date_ist.strftime("%Y-%m-%d %I:%M:%S %p"),
-                    "total_hours": None
-                })
+            trainer_filter = Q()
 
+            if user_type == "admin":
+                trainer_filter = Q(trainer__created_by=user_created_id)
 
-            # --- Trainer logs ---
+            elif user_type == "super_admin":
+                trainer_filter = (
+                    Q(trainer__created_by_type="super_admin", trainer__created_by=user_created_id)
+                    |
+                    Q(trainer__created_by_type="admin", trainer__created_by__in=Subquery(admin_ids))
+                )
+
+            trainer_logs_raw = TrainerAttendance.objects.filter(
+                trainer_filter
+            ).annotate(
+
+                prev_time=Window(
+                    expression=Lag("date"),
+                    partition_by=[F("trainer_id")],
+                    order_by=F("date").asc()
+                ),
+
+                trainer_name=F("trainer__full_name")
+
+            ).values(
+
+                "trainer_id",
+                "trainer_name",
+                "course__course_id",
+                "course__course_name",
+                "topic",
+                "sub_topic",
+                "status",
+                "batch__batch_id",
+                "batch__batch_name",
+                "batch__title",
+                "new_batch__batch_id",
+                "new_batch__title",
+                date_time=Cast(F("date"), CharField())
+
+            )
+
             trainer_logs = []
-            for tatt in trainer_attendance:
-                date_ist = tatt.date.astimezone(ist) if tatt.date.tzinfo else pytz.utc.localize(tatt.date).astimezone(ist)
 
-                # Determine batch info
-                if tatt.batch:  # Old batch
-                    batch_id = tatt.batch.batch_id
-                    batch_name = tatt.batch.batch_name
-                    title = tatt.batch.title
-                elif tatt.new_batch:  # New batch
-                    batch_id = tatt.new_batch.batch_id
-                    batch_name = tatt.new_batch.title
-                    title = tatt.new_batch.title
-                else:
-                    batch_id = None
-                    batch_name = None
-                    title = None
+            for row in trainer_logs_raw:
 
                 trainer_logs.append({
-                    "trainer_id": tatt.trainer.trainer_id,
-                    "name": tatt.trainer.full_name,
+
+                    "trainer_id": row["trainer_id"],
+                    "name": row["trainer_name"],
                     "user_type": "trainer",
-                    "batch": batch_name,
-                    "batch_id": batch_id,
-                    "title": title,
-                    "course_id": tatt.course.course_id if tatt.course else None,
-                    "course": tatt.course.course_name if tatt.course else None,
-                    "topic": tatt.topic,
-                    "status": tatt.status,
-                    "sub_topic": tatt.sub_topic,
-                    "date_time": date_ist.strftime("%Y-%m-%d %I:%M:%S %p")
+
+                    "batch": row["batch__batch_name"] or row["new_batch__title"],
+                    "batch_id": row["batch__batch_id"] or row["new_batch__batch_id"],
+                    "title": row["batch__title"] or row["new_batch__title"],
+
+                    "course_id": row["course__course_id"],
+                    "course": row["course__course_name"],
+
+                    "topic": row["topic"],
+                    "sub_topic": row["sub_topic"],
+
+                    "status": row["status"],
+                    "date_time": row["date_time"],
+
+                    "total_hours": None
+
                 })
 
-            # --- Group trainer logs by trainer/day for total_hours ---
-            grouped = defaultdict(list)
-            for log in trainer_logs:
-                log_date = log["date_time"].split(" ")[0]
-                key = (log["trainer_id"], log_date)
-                grouped[key].append(log)
+            # ---------------------------------------------
+            # MERGE LOGS
+            # ---------------------------------------------
 
-            final_trainer_logs = []
-            for (t_id, log_date), day_logs in grouped.items():
-                total_seconds = 0
-                work_start = None
-                break_start = None
-                break_seconds = 0
+            logs = student_logs + trainer_logs
 
-                day_logs = sorted(day_logs, key=lambda x: x['date_time'])
-                for log in day_logs:
-                    status_val = log['status'].lower()
-                    log_time = datetime.strptime(log['date_time'], "%Y-%m-%d %I:%M:%S %p")
-
-                    if status_val == 'login':
-                        work_start = log_time
-                    elif status_val == 'logout' and work_start:
-                        total_seconds += max(0, (log_time - work_start).total_seconds() - break_seconds)
-                        work_start = None
-                        break_seconds = 0
-                    elif status_val == 'break out' and work_start:
-                        break_start = log_time
-                    elif status_val == 'break in' and break_start:
-                        break_seconds += (log_time - break_start).total_seconds()
-                        break_start = None
-
-                total_time = str(timedelta(seconds=int(total_seconds)))
-                for log in day_logs:
-                    log["total_hours"] = total_time
-                    final_trainer_logs.append(log)
-
-            # --- Merge logs ---
-            logs.extend(final_trainer_logs)
             logs_sorted = sorted(
                 logs,
-                key=lambda x: datetime.strptime(x['date_time'], "%Y-%m-%d %I:%M:%S %p"),
+                key=lambda x: x["date_time"],
                 reverse=True
             )
 
-            # --- Courses ---
+            # ---------------------------------------------
+            # COURSES
+            # ---------------------------------------------
+
             courses_qs = Course.objects.filter(is_archived=False)
+
             if user_type == "super_admin":
                 courses_qs = courses_qs.filter(
-                    Q(created_by_type='super_admin', created_by=user_created_id) |
-                    Q(created_by_type='admin', created_by__in=admin_ids)
+                    Q(created_by_type="super_admin", created_by=user_created_id)
+                    |
+                    Q(created_by_type="admin", created_by__in=Subquery(admin_ids))
                 )
+
             elif user_type == "admin":
                 courses_qs = courses_qs.filter(created_by=user_created_id)
 
-            # --- Old Batches ---
-            batches_old_qs = Batch.objects.filter(is_archived=False)
-            batches_old_qs = batches_old_qs.filter(batchcoursetrainer__course__in=courses_qs).distinct()
+            courses = list(
+                courses_qs.values("course_id", "course_name")
+            )
 
-            # --- New Batches ---
-            batches_new_qs = NewBatch.objects.filter(is_archived=False, status=True)
-            if user_type == "super_admin":
-                batches_new_qs = batches_new_qs.filter(
-                    Q(created_by_type='super_admin', created_by=user_created_id) |
-                    Q(created_by_type='admin', created_by__in=admin_ids),
-                    course__in=courses_qs
-                )
-            elif user_type == "admin":
-                batches_new_qs = batches_new_qs.filter(
-                    created_by=user_created_id,
-                    course__in=courses_qs
-                )
+            # ---------------------------------------------
+            # BATCHES
+            # ---------------------------------------------
 
-            # --- Merge old + new batches ---
-            batches_merge = []
+            old_batches = Batch.objects.filter(
+                is_archived=False,
+                batchcoursetrainer__course__in=Subquery(courses_qs.values("course_id"))
+            ).values(
+                "batch_id",
+                "batch_name",
+                "title"
+            ).distinct()
 
-            for b in batches_old_qs:
-                batches_merge.append({
-                    "batch_id": b.batch_id,
-                    "batch_name": b.batch_name,
-                    "title": b.title
+            new_batches = NewBatch.objects.filter(
+                is_archived=False,
+                status=True,
+                course__in=Subquery(courses_qs.values("course_id"))
+            ).values(
+                "batch_id"
+            ).annotate(
+                batch_name=F("title"),
+                title_val=F("title")
+            )
+
+            batches = list(old_batches)
+
+            for nb in new_batches:
+                batches.append({
+                    "batch_id": nb["batch_id"],
+                    "batch_name": nb["batch_name"],
+                    "title": nb["title_val"]
                 })
 
-            for nb in batches_new_qs:
-                batches_merge.append({
-                    "batch_id": nb.batch_id,
-                    "batch_name": nb.title,
-                    "title": nb.title
-                })
+            batches = list({b["batch_id"]: b for b in batches}.values())
 
-            # Remove duplicates by batch_id
-            batches_merge = list({b["batch_id"]: b for b in batches_merge}.values())
+            # ---------------------------------------------
+            # RESPONSE
+            # ---------------------------------------------
 
             return Response({
+
                 "success": True,
                 "logs": logs_sorted,
-                "course": list(courses_qs.values("course_id", "course_name")),
-                "batch": batches_merge
-            }, status=200)
+                "course": courses,
+                "batch": batches
+
+            })
 
         except Exception as e:
-            return Response({"success": False, "message": str(e)}, status=200)
+
+            return Response({
+
+                "success": False,
+                "message": str(e)
+
+            })
 
 def get_ist_now():
     ist = pytz.timezone('Asia/Kolkata')
