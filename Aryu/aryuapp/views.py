@@ -6153,13 +6153,6 @@ class CertificateViewSet(viewsets.ModelViewSet):
 #     email.content_subtype = "html"
 #     email.send(fail_silently=False)    
 
-class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
-    queryset = CourseCategory.objects.all()
-    serializer_class = CourseCategorySerializer
-    permission_classes = [IsAuthenticated]
-    authentication_classes = [CustomJWTAuthentication]
-    lookup_field = 'category_id' 
-
 CURRENCIES = [
     {"code": "USD", "name": "United States Dollar", "symbol": "$"},
     {"code": "EUR", "name": "Euro", "symbol": "€"},
@@ -6212,16 +6205,18 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
                 is_archived=False
             ).values_list("trainer_id", flat=True)
 
+            admin_ids = [str(i) for i in admin_ids]
+
         if user.user_type == "super_admin" and user_created_id:
             base_queryset = base_queryset.filter(
-                Q(created_by_type="super_admin", created_by=user_created_id) |
+                Q(created_by_type="super_admin", created_by=str(user_created_id)) |
                 Q(created_by_type="admin", created_by__in=admin_ids)
             )
 
         elif user.user_type == "admin" and user_created_id:
             base_queryset = base_queryset.filter(
                 created_by_type="admin",
-                created_by=user_created_id
+                created_by=str(user_created_id)
             )
 
         return base_queryset.order_by('-category_id')
