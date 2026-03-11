@@ -34,13 +34,13 @@ from django.conf import settings
 from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from aryuapp.auth import CustomJWTAuthentication
-from django.db.models import Count, Prefetch, Sum, Q, Avg, F, Value, IntegerField, OuterRef, Subquery, DecimalField
+from django.db.models import Count, Prefetch, Sum, Q, Avg, F, Value, IntegerField, OuterRef, Subquery, DecimalField, Value, CharField
 from .models import *
 from .serializers import *
 import logging
 from .utils import get_ticket_from_token
 from django.contrib.postgres.aggregates import JSONBAgg
-from django.db.models.functions import Coalesce, JSONObject
+from django.db.models.functions import Coalesce, JSONObject, Concat
 from django.db.models.expressions import ExpressionWrapper
 
 logger = logging.getLogger(__name__)
@@ -422,7 +422,11 @@ class WebinarViewSet(
                     F("payment_transaction__payment_status"),
                     Value("free")
                 ),
-
+                certificate_url=Concat(
+                    Value("https://portal.aryuacademy.com/api/media/"),
+                    F("certificate__certificate_file"),
+                    output_field=CharField()
+                ),
                 logs=JSONBAgg(
                     JSONObject(
                         join_time=F("attendance_logs__join_time"),
@@ -443,6 +447,8 @@ class WebinarViewSet(
                 "phone",
                 "course",
                 "profession",
+                "certificate_sent",
+                "certificate_url",
                 "state",
                 "city",
                 "registered_at",
