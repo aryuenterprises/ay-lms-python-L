@@ -33,11 +33,14 @@ from django.conf import settings
 from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from aryuapp.auth import CustomJWTAuthentication
-from django.db.models import Count, Prefetch, Sum, Q, Avg
+from django.db.models import Count, Prefetch, Sum, Q, Avg, F, Value, IntegerField
 from .models import *
 from .serializers import *
 import logging
 from .utils import get_ticket_from_token
+from django.contrib.postgres.aggregates import JSONBAgg
+from django.db.models.functions import Coalesce, JSONObject
+from django.db.models.expressions import ExpressionWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -324,27 +327,47 @@ class WebinarViewSet(
                     "faqs",
                     queryset=Webinar_FAQ.objects.filter(is_deleted=False)
                 ),
-
                 Prefetch(
                     "registrations",
                     queryset=WebinarRegistration.objects
                         .select_related(
                             "feedback",
-                            "attendance_summary",
                             "payment_transaction",
                             "lead"
                         )
                         .prefetch_related(
+                            "attendance_summary",
                             Prefetch(
                                 "attendance_logs",
                                 queryset=WebinarAttendanceLog.objects
-                                    .only("join_time", "leave_time")
+                                    .only(
+                                        "join_time",
+                                        "leave_time",
+                                        "duration_seconds",
+                                        "registration_id"
+                                    )
                                     .order_by("join_time")
                             )
                         )
+                        .only(
+                            "id",
+                            "uuid",
+                            "email",
+                            "name",
+                            "phone",
+                            "course",
+                            "profession",
+                            "state",
+                            "city",
+                            "registered_at",
+                            "attended",
+                            "certificate_sent",
+                            "webinar_id",
+                            "payment_transaction_id",
+                            "lead_id"
+                        )
                         .order_by("-registered_at")
                 ),
-
                 Prefetch(
                     "feedbacks",
                     queryset=WebinarFeedback.objects
@@ -373,16 +396,117 @@ class WebinarViewSet(
     # -------- RETRIEVE --------
 
     def retrieve(self, request, slug=None):
-        queryset = self.get_queryset()
-        webinar = get_object_or_404(queryset, slug=slug)
 
-        serializer = WebinarSerializer(webinar, context={"request": request})
+        webinar = get_object_or_404(
+            Webinar.objects.only(
+                "id",
+                "uuid",
+                "slug",
+                "title",
+                "scheduled_start",
+                "seats_available",
+                "price",
+                "regular_price",
+                "webinar_image",
+                "status",
+                "created_at"
+            ),
+            slug=slug,
+            is_deleted=False
+        )
+
+        registrations = (
+            WebinarRegistration.objects
+            .filter(webinar_id=webinar.id)
+            .annotate(
+
+                payment_status=Coalesce(
+                    F("payment_transaction__payment_status"),
+                    Value("free")
+                ),
+
+                logs=JSONBAgg(
+                    JSONObject(
+                        join_time=F("attendance_logs__join_time"),
+                        leave_time=F("attendance_logs__leave_time"),
+                        duration_minutes=ExpressionWrapper(
+                            F("attendance_logs__duration_seconds") / 60,
+                            output_field=IntegerField()
+                        )
+                    ),
+                    distinct=True
+                )
+            )
+            .values(
+                "id",
+                "uuid",
+                "email",
+                "name",
+                "phone",
+                "course",
+                "profession",
+                "state",
+                "city",
+                "registered_at",
+                "payment_status",
+                "logs"
+            )
+        )
+
+        tools = list(
+            WebinarTool.objects
+            .filter(webinar_id=webinar.id, is_deleted=False)
+            .values()
+        )
+
+        metadata = list(
+            webinar_metadata.objects
+            .filter(webinar_id=webinar.id, is_deleted=False)
+            .values()
+        )
+
+        faqs = list(
+            Webinar_FAQ.objects
+            .filter(webinar_id=webinar.id, is_deleted=False)
+            .values()
+        )
+
+        feedbacks = list(
+            WebinarFeedback.objects
+            .filter(registration__webinar_id=webinar.id)
+            .values()
+        )
+
+        participants = list(registrations)
+
+        participants_count = len(participants)
+
+        data = {
+            "uuid": webinar.uuid,
+            "slug": webinar.slug,
+            "title": webinar.title,
+            "scheduled_start": webinar.scheduled_start,
+            "seats_available": webinar.seats_available,
+            "price": webinar.price,
+            "regular_price": webinar.regular_price,
+            "status": webinar.status,
+            "created_at": webinar.created_at,
+            "participants_count": participants_count,
+            "pending_seats": max(webinar.seats_available - participants_count, 0),
+            "is_full": participants_count >= webinar.seats_available,
+            "participants": participants,
+            "tools": tools,
+            "metadata": metadata,
+            "faqs": faqs,
+            "feedbacks": feedbacks
+        }
 
         return Response({
             "status": True,
             "message": "Webinar retrieved successfully",
-            "data": serializer.data
+            "data": data
         })
+    
     def list(self, request):
         queryset = self.get_queryset()
         serializer = WebinarListSerializer(queryset, many=True)

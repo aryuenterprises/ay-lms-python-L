@@ -78,9 +78,14 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
         )
 
     def get_logs(self, obj):
-        # reads from the nested prefetch cache
-        logs = obj.attendance_logs.all()
-        return WebinarAttendanceLogSerializer(logs, many=True).data
+        return [
+            {
+                "join_time": log.join_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "leave_time": log.leave_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "duration_minutes": log.duration_seconds // 60,
+            }
+            for log in obj.attendance_logs.all()
+        ]
     
     def get_feedback(self, obj):
         if hasattr(obj, "feedback"):
@@ -250,23 +255,58 @@ class WebinarSerializer(serializers.ModelSerializer):
         return float(getattr(obj, "_total_amount_received", None) or 0)
         
     def get_participants(self, obj):
-        registrations = obj.registrations.all()  # or "-id"
-        return WebinarRegistrationSerializer(
-            registrations,
-            many=True,
-            context=self.context
-        ).data
+        result = []
+
+        for r in obj.registrations.all():
+            summary = getattr(r, "attendance_summary", None)
+            txn = getattr(r, "payment_transaction", None)
+            certificate = getattr(r, "certificate", None)
+
+            result.append({
+                "id": r.id,
+                "uuid": r.uuid,
+                "email": r.email,
+                "name": r.name,
+                "phone": r.phone,
+                "waba_link": r.webinar.waba_link if r.webinar else None,
+                "webinar_title": r.webinar.title if r.webinar else None,
+                "course": r.course,
+                "profession": r.profession,
+                "payment_status": txn.payment_status if txn else "free",
+                "certificate_url": (
+                    "https://portal.aryuacademy.com/api" + certificate.certificate_file.url
+                    if certificate and certificate.certificate_file else None
+                ),
+                "state": r.state,
+                "city": r.city,
+                "feedback": WebinarFeedbackSerializer(r.feedback).data if getattr(r, "feedback", None) else None,
+                "total_duration_minutes": summary.total_duration_seconds // 60 if summary else 0,
+                "total_hours_participated": round(summary.total_duration_seconds / 3600, 2) if summary else 0,
+                "join_count": summary.join_count if summary else 0,
+                "eligible_for_certificate": summary.eligible_for_certificate if summary else False,
+                "logs": [
+                    {
+                        "join_time": l.join_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "leave_time": l.leave_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "duration_minutes": l.duration_seconds // 60
+                    }
+                    for l in r.attendance_logs.all()
+                ],
+                "registered_at": r.registered_at,
+                "certificate_sent": r.certificate_sent,
+            })
+
+        return result
 
     def get_participants_count(self, obj):
-        # len() reads from the prefetch cache — zero DB queries
-        return len(obj.registrations.all())
+        return getattr(obj, "participants_count", 0)
 
     def get_pending_seats(self, obj):
-        registered = len(obj.registrations.all())
+        registered = getattr(obj, "participants_count", 0)
         return max(obj.seats_available - registered, 0)
 
     def get_is_full(self, obj):
-        return len(obj.registrations.all()) >= obj.seats_available
+        return getattr(obj, "participants_count", 0) >= obj.seats_available
     
     import logging
     logger = logging.getLogger(__name__)
