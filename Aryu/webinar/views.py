@@ -516,7 +516,6 @@ class WebinarViewSet(
 
         return Response(data)
 
-
     def create(self, request):
         serializer = WebinarSerializer(
             data=request.data,
