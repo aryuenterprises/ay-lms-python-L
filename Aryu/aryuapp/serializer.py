@@ -1019,22 +1019,8 @@ class CourseCategorySerializer(serializers.ModelSerializer):
         fields = '__all__'
     
     def get_notes(self, obj):
-    
-        from aryuapp.models import Note
 
-        notes_qs = Note.objects.filter(
-            object_id=obj.pk,
-            content_type__model='coursecategory'
-        ).order_by('-created_at')
-
-        # Convert "true"/"false" to boolean
-        def convert_status(value):
-            if isinstance(value, str):
-                if value.lower() == "true":
-                    return True
-                if value.lower() == "false":
-                    return False
-            return value
+        notes = getattr(obj, "prefetched_notes", [])
 
         return [
             {
@@ -1044,7 +1030,8 @@ class CourseCategorySerializer(serializers.ModelSerializer):
                 "status": note.status,
                 "created_at": note.created_at.strftime("%Y-%m-%d %H:%M"),
             }
-            for note in notes_qs
+            for note in notes
+            if note.object_id == obj.pk
         ]
 
     def validate_category_name(self, value):
