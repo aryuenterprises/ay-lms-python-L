@@ -6198,30 +6198,26 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
         user = self.request.user
         base_queryset = CourseCategory.objects.filter(is_archived=False)
 
-        # Identify user created id
         user_created_id = None
         if user.user_type == "super_admin":
             user_created_id = getattr(user, "user_id", None)
         elif user.user_type == "admin":
             user_created_id = getattr(user, "trainer_id", None)
 
-        # Get admin IDs for this super admin
         admin_ids = []
         if user.user_type == "super_admin" and user_created_id:
-            admin_ids = list(
-                Trainer.objects.filter(
-                    created_by=user_created_id,
-                    created_by_type="super_admin",
-                    is_archived=False
-                ).values_list("trainer_id", flat=True)
-            )
+            admin_ids = Trainer.objects.filter(
+                created_by=user_created_id,
+                created_by_type="super_admin",
+                is_archived=False
+            ).values_list("trainer_id", flat=True)
 
-        # Filter based on role
         if user.user_type == "super_admin" and user_created_id:
             base_queryset = base_queryset.filter(
                 Q(created_by_type="super_admin", created_by=user_created_id) |
                 Q(created_by_type="admin", created_by__in=admin_ids)
             )
+
         elif user.user_type == "admin" and user_created_id:
             base_queryset = base_queryset.filter(
                 created_by_type="admin",
@@ -6246,50 +6242,47 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
         category_name = request.data.get('category_name', '').strip()
         user = request.user
 
-        # Ensure module_id points to Course Categories
-        category_module = ModulePermission.objects.filter(module__iexact="Category").first()
+        category_module = ModulePermission.objects.filter(
+            module__iexact="Category"
+        ).only("module_id").first()
+
         if not category_module:
-            return Response({"success": False, "message": "Course Categories module not found"}, status=200)
+            return Response(
+                {"success": False, "message": "Course Categories module not found"},
+                status=200
+            )
 
         if not has_permission(user, module_id=category_module.module_id, actions=["create"]):
-            return Response({"success": False, "message": "You do not have permission"}, status=200)
+            return Response(
+                {"success": False, "message": "You do not have permission"},
+                status=200
+            )
 
-        # 🔹 Initialize serializer here
         serializer = self.get_serializer(data=request.data)
 
-        # Check for an active category with the same name (case-insensitive)
-        active_qs = CourseCategory.objects.filter(
-            category_name__iexact=category_name,
-            is_archived=False
-        )
+        # Single optimized query
+        existing = CourseCategory.objects.filter(
+            category_name__iexact=category_name
+        ).only("category_id", "is_archived").first()
 
-        if active_qs.exists():
+        if existing and not existing.is_archived:
             return Response({
                 "success": False,
-                "message": f"Category '{category_name}' already exists.",
+                "message": f"Category '{category_name}' already exists."
             }, status=status.HTTP_200_OK)
 
-        # Check if an archived category exists
-        archived_qs = CourseCategory.objects.filter(
-            category_name__iexact=category_name,
-            is_archived=True,  # fixed: was incorrectly False
-            status=True
-        )
+        if existing and existing.is_archived:
+            existing.is_archived = False
+            existing.save(update_fields=["is_archived"])
 
-        if archived_qs.exists():
-            # Reactivate the archived category
-            category = archived_qs.first()
-            category.is_archived = False  # fixed: restore to active
-            category.save()
+            serializer = self.get_serializer(existing)
 
-            serializer = self.get_serializer(category)
             return Response({
                 "success": True,
                 "message": f"Category '{category_name}' created successfully (reactivated).",
                 "data": serializer.data
             }, status=status.HTTP_200_OK)
 
-        # 🔹 Validate new category
         if not serializer.is_valid():
             error_messages = flatten_errors(serializer.errors)
             error_message = ". ".join(error_messages) + "."
@@ -6298,8 +6291,8 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
                 "message": error_message
             }, status=status.HTTP_200_OK)
 
-        # 🔹 Create a new category
         serializer.save()
+
         return Response({
             "success": True,
             "message": f"Category '{category_name}' created successfully.",
