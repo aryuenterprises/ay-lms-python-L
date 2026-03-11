@@ -201,6 +201,10 @@ class WebinarAttendanceLog(models.Model):
 
     class Meta:
         ordering = ["join_time"]
+        indexes = [
+            models.Index(fields=["-registration"]),
+        ]
+
 
 class WebinarAttendanceSummary(models.Model):
     registration = models.OneToOneField(

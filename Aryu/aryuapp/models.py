@@ -1150,7 +1150,7 @@ class BatchCourseTrainer(models.Model):
             models.Index(fields=["trainer", "student"]),
             models.Index(fields=["batch", "course"]),
         ]
-        
+
     def __str__(self):
         return f"{self.batch.batch_name}: {self.course.course_name} -> {self.trainer.full_name}"
     
@@ -1415,6 +1415,13 @@ class PaymentTransaction(models.Model):
     metadata = models.JSONField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["student"]),
+            models.Index(fields=["course"]),
+            models.Index(fields=["id"]),
+        ]
 
 
     def __str__(self):
