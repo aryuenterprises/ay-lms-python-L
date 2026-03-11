@@ -1076,6 +1076,11 @@ class Batch(models.Model):
 
     class Meta:
         db_table = 'batch'
+        indexes = [
+            models.Index(fields=["is_archived", "status"]),
+            models.Index(fields=["created_by", "created_by_type"]),
+            models.Index(fields=["created_at"]),
+        ]
         
     def save(self, *args, **kwargs):
         if not self.batch_name:
@@ -1139,6 +1144,13 @@ class BatchCourseTrainer(models.Model):
     student = models.ForeignKey(Student, on_delete=models.CASCADE, db_column='student_id')
     trainer = models.ForeignKey(Trainer, on_delete=models.CASCADE)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["trainer", "batch"]),
+            models.Index(fields=["trainer", "student"]),
+            models.Index(fields=["batch", "course"]),
+        ]
+        
     def __str__(self):
         return f"{self.batch.batch_name}: {self.course.course_name} -> {self.trainer.full_name}"
     

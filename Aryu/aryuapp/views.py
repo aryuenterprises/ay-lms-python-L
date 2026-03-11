@@ -4396,31 +4396,14 @@ class StudentListAPIView(viewsets.ViewSet):
     def get(self, request):
         try:
             user = request.user
-            user_type = user.user_type  # super_admin / admin / trainer / student
+            user_type = user.user_type
 
-            if user_type == "super_admin":
-                creator_id = user.user_id  # super admin ID from User table
-                super_admin_id = creator_id
-
-            elif user_type == "admin":
-                creator_id = user.trainer_id  # admin ID from Trainer table
-                super_admin_id = None  # will be discovered below
-
-            elif user_type == "trainer":
-                creator_id = user.trainer_id  # trainer ID
-                super_admin_id = None
-
-            elif user_type == "student":
-                creator_id = user.student_id  # student ID
-                super_admin_id = None
-
-            else:
-                creator_id = None
-                super_admin_id = None
-
+            creator_id = None
+            super_admin_id = None
             admin_ids = []
 
             if user_type == "super_admin":
+                creator_id = user.user_id
                 admin_ids = list(
                     Trainer.objects.filter(
                         created_by=creator_id,
@@ -4429,12 +4412,18 @@ class StudentListAPIView(viewsets.ViewSet):
                     ).values_list("trainer_id", flat=True)
                 )
 
-            if user_type == "admin":
-                admin_obj = Trainer.objects.filter(trainer_id=creator_id).first()
+            elif user_type == "admin":
+                creator_id = user.trainer_id
+                admin_obj = Trainer.objects.filter(trainer_id=creator_id).only(
+                    "created_by", "created_by_type"
+                ).first()
                 if admin_obj and admin_obj.created_by_type == "super_admin":
                     super_admin_id = admin_obj.created_by
 
-            students_qs = Student.objects.filter(is_archived=False).order_by("-created_at")
+            elif user_type == "student":
+                creator_id = user.student_id
+
+            students_qs = Student.objects.filter(is_archived=False)
 
             if user_type == "super_admin":
                 students_qs = students_qs.filter(
@@ -4448,9 +4437,6 @@ class StudentListAPIView(viewsets.ViewSet):
                     Q(created_by=super_admin_id, created_by_type="super_admin")
                 )
 
-            elif user_type == "trainer":
-                students_qs = Student.objects.none()
-
             elif user_type == "student":
                 students_qs = students_qs.filter(student_id=creator_id)
 
@@ -4458,13 +4444,29 @@ class StudentListAPIView(viewsets.ViewSet):
                 students_qs = Student.objects.none()
 
             students_qs = students_qs.select_related(
-                "school_student", "college_student",
-                "jobseeker", "employee"
+                "school_student",
+                "college_student",
+                "jobseeker",
+                "employee"
             ).prefetch_related(
                 Prefetch(
                     "notes",
                     queryset=Note.objects.all().order_by("-created_at"),
                     to_attr="prefetched_notes"
+                ),
+                Prefetch(
+                    "batchcoursetrainer_set",
+                    queryset=BatchCourseTrainer.objects.select_related(
+                        "batch", "course__course_category"
+                    ),
+                    to_attr="old_batches"
+                ),
+                Prefetch(
+                    "new_batches",
+                    queryset=NewBatch.objects.select_related(
+                        "course__course_category"
+                    ),
+                    to_attr="prefetched_new_batches"
                 )
             )
 
@@ -4480,20 +4482,15 @@ class StudentListAPIView(viewsets.ViewSet):
                     "created_at": n.created_at,
                 } for n in getattr(s, "prefetched_notes", [])]
 
-                # Resolve company
                 company_id = None
-                if hasattr(s, "employee") and s.employee.company_id:
+                if getattr(s, "employee", None) and s.employee.company_id:
                     company_id = s.employee.company_id.company_id
-                elif hasattr(s, "jobseeker") and s.jobseeker.company_id:
+                elif getattr(s, "jobseeker", None) and s.jobseeker.company_id:
                     company_id = s.jobseeker.company_id.company_id
-                elif hasattr(s, "college_student") and s.college_student.company_id:
+                elif getattr(s, "college_student", None) and s.college_student.company_id:
                     company_id = s.college_student.company_id.company_id
-                elif hasattr(s, "school_student") and s.school_student.company_id:
+                elif getattr(s, "school_student", None) and s.school_student.company_id:
                     company_id = s.school_student.company_id.company_id
-
-                # ---------------------------------------------------------
-                #  AGGREGATE ALL BATCH/COURSE/CATEGORY FROM OLD + NEW
-                # ---------------------------------------------------------
 
                 batch_id_list = []
                 title_list = []
@@ -4502,15 +4499,7 @@ class StudentListAPIView(viewsets.ViewSet):
                 category_id_list = []
                 category_name_list = []
 
-                # ---------------------------------------
-                # OLD SYSTEM BATCHES (Batch + BCT)
-                # ---------------------------------------
-                old_bct = BatchCourseTrainer.objects.filter(
-                    student=s,
-                    batch__is_archived=False
-                ).select_related("batch", "course__course_category")
-
-                for b in old_bct:
+                for b in getattr(s, "old_batches", []):
                     batch = b.batch
                     course = b.course
                     category = course.course_category if course else None
@@ -4522,15 +4511,7 @@ class StudentListAPIView(viewsets.ViewSet):
                     category_id_list.append(category.category_id if category else None)
                     category_name_list.append(category.category_name if category else None)
 
-                # ---------------------------------------
-                # NEW SYSTEM BATCHES (NewBatch)
-                # ---------------------------------------
-                new_batches = NewBatch.objects.filter(
-                    students=s,
-                    is_archived=False
-                ).select_related("course__course_category")
-
-                for nb in new_batches:
+                for nb in getattr(s, "prefetched_new_batches", []):
                     course = nb.course
                     category = course.course_category if course else None
 
@@ -4541,16 +4522,8 @@ class StudentListAPIView(viewsets.ViewSet):
                     category_id_list.append(category.category_id if category else None)
                     category_name_list.append(category.category_name if category else None)
 
-                # Remove duplicates while preserving order
-                def unique_list(values):
+                def unique(values):
                     return list(dict.fromkeys(v for v in values if v is not None))
-
-                batch_id_list = unique_list(batch_id_list)
-                title_list = unique_list(title_list)
-                course_id_list = unique_list(course_id_list)
-                course_name_list = unique_list(course_name_list)
-                category_id_list = unique_list(category_id_list)
-                category_name_list = unique_list(category_name_list)
 
                 response_data.append({
                     "registration_id": s.registration_id,
@@ -4578,148 +4551,71 @@ class StudentListAPIView(viewsets.ViewSet):
                     "created_by": s.created_by,
                     "created_by_type": s.created_by_type,
                     "created_at": s.created_at,
-                    "batch_id": batch_id_list,
-                    "batch_title": title_list,
-                    "course_id": course_id_list,
-                    "course_name": course_name_list,
-                    "category_id": category_id_list,
-                    "category_name": category_name_list,
+                    "batch_id": unique(batch_id_list),
+                    "batch_title": unique(title_list),
+                    "course_id": unique(course_id_list),
+                    "course_name": unique(course_name_list),
+                    "category_id": unique(category_id_list),
+                    "category_name": unique(category_name_list),
                     "profile_pic": (
-                        f"https://portal.aryuacademy.com/api{s.profile_pic.url}"
+                        f"https://aylms.aryuprojects.com/api{s.profile_pic.url}"
                         if s.profile_pic else None
                     ),
-
-                    "school_student": (
-                        School_StudentSerializer(s.school_student).data
-                        if hasattr(s, "school_student") else None
-                    ),
-                    "college_student": (
-                        College_StudentSerializer(s.college_student).data
-                        if hasattr(s, "college_student") else None
-                    ),
-                    "jobseeker": (
-                        JobSeekerSerializer(s.jobseeker).data
-                        if hasattr(s, "jobseeker") else None
-                    ),
-                    "employee": (
-                        EmployeeSerializer(s.employee).data
-                        if hasattr(s, "employee") else None
-                    ),
+                    "school_student": School_StudentSerializer(s.school_student).data if getattr(s, "school_student", None) else None,
+                    "college_student": College_StudentSerializer(s.college_student).data if getattr(s, "college_student", None) else None,
+                    "jobseeker": JobSeekerSerializer(s.jobseeker).data if getattr(s, "jobseeker", None) else None,
+                    "employee": EmployeeSerializer(s.employee).data if getattr(s, "employee", None) else None,
                 })
 
-            # SUPER ADMIN
+            role_filter = Q(created_by=-1)
+
             if user_type == "super_admin":
-                role_filter = (
-                    Q(created_by=creator_id, created_by_type="super_admin") |
-                    Q(created_by__in=admin_ids, created_by_type="admin")
+                role_filter = Q(created_by=creator_id, created_by_type="super_admin") | Q(
+                    created_by__in=admin_ids, created_by_type="admin"
                 )
 
-            # ADMIN
             elif user_type == "admin":
-                role_filter = (
-                    Q(created_by=creator_id, created_by_type="admin") |
-                    Q(created_by=super_admin_id, created_by_type="super_admin")
+                role_filter = Q(created_by=creator_id, created_by_type="admin") | Q(
+                    created_by=super_admin_id, created_by_type="super_admin"
                 )
 
-            # OTHERS → no access
-            else:
-                role_filter = Q(created_by=-1)
-
-            # ===============================================================
-            # COURSES
-            # ===============================================================
             courses = list(
-                Course.objects.filter(is_archived=False).filter(role_filter).values(
+                Course.objects.filter(is_archived=False)
+                .filter(role_filter)
+                .values(
                     "course_id",
                     "course_name",
                     category_id=F("course_category_id"),
-                    category_name=F("course_category__category_name")
+                    category_name=F("course_category__category_name"),
                 )
             )
 
-            # ===============================================================
-            # CATEGORIES
-            # ===============================================================
             categories = list(
-                CourseCategory.objects.filter(is_archived=False).filter(role_filter).values(
-                    "category_id", "category_name"
-                )
+                CourseCategory.objects.filter(is_archived=False)
+                .filter(role_filter)
+                .values("category_id", "category_name")
             )
 
-            # ===============================================================
-            # COMPANIES
-            # ===============================================================
             companies = list(
-                Employer.objects.filter(is_archived=False, status=True).filter(role_filter).values(
-                    "company_id", "company_name"
-                )
+                Employer.objects.filter(is_archived=False, status=True)
+                .filter(role_filter)
+                .values("company_id", "company_name")
             )
-
-            # ===============================================================
-            # OLD SYSTEM BATCHES (using Batch table for filtering)
-            # ===============================================================
-            all_batches = []
-
-            old_batches = Batch.objects.filter(is_archived=False).filter(role_filter)
-
-            old_bct = BatchCourseTrainer.objects.filter(
-                batch__in=old_batches
-            ).select_related("batch", "course__course_category")
-
-            for bct in old_bct:
-                course = bct.course
-                category = course.course_category if course else None
-
-                all_batches.append({
-                    "batch_id": bct.batch.batch_id,
-                    "title": getattr(bct.batch, "title", bct.batch.batch_name),
-                    "course_id": course.course_id if course else None,
-                    "course_name": course.course_name if course else None,
-                    "category_id": category.category_id if category else None,
-                    "category_name": category.category_name if category else None,
-                    "created_at": bct.batch.created_at
-                })
-
-            # ===============================================================
-            # NEW SYSTEM BATCHES
-            # ===============================================================
-            new_batches = NewBatch.objects.filter(
-                is_archived=False,
-                status=True
-            ).filter(role_filter).select_related("course__course_category")
-
-            for nb in new_batches:
-                course = nb.course
-                category = course.course_category if course else None
-
-                all_batches.append({
-                    "batch_id": nb.batch_id,
-                    "title": nb.title,
-                    "course_id": course.course_id if course else None,
-                    "course_name": course.course_name if course else None,
-                    "category_id": category.category_id if category else None,
-                    "category_name": category.category_name if category else None,
-                    "created_at": nb.created_at
-                })
-
-            all_batches = sorted(all_batches, key=lambda x: x["created_at"], reverse=True)
-            
-            all_batches = list({b["batch_id"]: b for b in all_batches}.values())
 
             return Response({
                 "success": True,
                 "students": response_data,
                 "courses": courses,
                 "categories": categories,
-                "batches": all_batches,
+                "batches": [],
                 "companies": companies
-            }, status=200)
+            })
 
         except Exception as e:
             return Response({
                 "success": False,
                 "message": str(e)
-            }, status=200)
+            })
 
 
 class StudentTicketViewSet(APIView):
@@ -7371,15 +7267,12 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
             user = request.user
             user_created_id = getattr(user, "trainer_id", None)
             super_admin_id = None
+            admin_ids = []
 
-            # If super admin → user_created_id = super admin id
             if user.user_type == "super_admin":
                 user_created_id = getattr(user, "user_id", None)
                 super_admin_id = user_created_id
 
-            # Get admin IDs created by super admin
-            admin_ids = []
-            if user.user_type == "super_admin" and user_created_id:
                 admin_ids = list(
                     Trainer.objects.filter(
                         created_by=user_created_id,
@@ -7388,17 +7281,15 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                     ).values_list("trainer_id", flat=True)
                 )
 
-            # Determine super admin of an admin
             if user.user_type == "admin" and user_created_id:
-                admin_record = Trainer.objects.filter(trainer_id=user_created_id).first()
-                if admin_record and admin_record.created_by_type == "super_admin":
-                    super_admin_id = admin_record.created_by
+                super_admin_id = Trainer.objects.filter(
+                    trainer_id=user_created_id
+                ).values_list("created_by", flat=True).first()
 
-            # Trainer Queryset
             trainers_qs = Trainer.objects.filter(
-                user_type='tutor',
+                user_type="tutor",
                 is_archived=False
-            ).order_by("-created_at")
+            )
 
             if user.user_type == "super_admin":
                 trainers_qs = trainers_qs.filter(
@@ -7406,38 +7297,77 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                     Q(created_by_type="admin", created_by__in=admin_ids)
                 )
 
-            elif user.user_type == "admin" and user_created_id:
+            elif user.user_type == "admin":
                 filters = Q(created_by=user_created_id, created_by_type="admin")
                 if super_admin_id:
                     filters |= Q(created_by=super_admin_id, created_by_type="super_admin")
                 trainers_qs = trainers_qs.filter(filters)
 
-            # Prefetch notes
-            trainers_qs = trainers_qs.prefetch_related(
-                Prefetch(
-                    "notes",
-                    queryset=Note.objects.all().order_by("-created_at"),
-                    to_attr="prefetched_notes"
-                )
-            ).order_by("-trainer_id")
+            trainers = list(
+            trainers_qs.select_related("role").values(
+                "trainer_id",
+                "employee_id",
+                "username",
+                "full_name",
+                "password",
+                "user_type",
+                "profile_pic",
+                "email",
+                "contact_no",
+                "gender",
+                "specialization",
+                "working_hours",
+                "status",
+                "is_archived",
+                "role_id",
+                role_name=F("role__name")
+            )
+        )
+
+            trainer_ids = [t["trainer_id"] for t in trainers]
+
+            # -------- Old Batch Mapping --------
+
+            old_bct = BatchCourseTrainer.objects.filter(
+                trainer_id__in=trainer_ids,
+                batch__is_archived=False
+            ).values(
+                "trainer_id",
+                "batch__batch_id",
+                "batch__title",
+                "batch__batch_name",
+                "course__course_id",
+                "course__course_name",
+                "course__course_category__category_id",
+                "course__course_category__category_name"
+            )
+
+            old_map = {}
+            for r in old_bct:
+                old_map.setdefault(r["trainer_id"], []).append(r)
+
+            # -------- New Batch Mapping --------
+
+            new_batches = NewBatch.objects.filter(
+                trainer_id__in=trainer_ids,
+                is_archived=False
+            ).values(
+                "trainer_id",
+                "batch_id",
+                "title",
+                "course__course_id",
+                "course__course_name",
+                "course__course_category__category_id",
+                "course__course_category__category_name"
+            )
+
+            new_map = {}
+            for r in new_batches:
+                new_map.setdefault(r["trainer_id"], []).append(r)
 
             trainer_data = []
 
-            for t in trainers_qs:
-                notes = [
-                    {
-                        "note_id": n.id,
-                        "reason": n.reason,
-                        "status": n.status,
-                        "created_by": n.created_by,
-                        "created_at": n.created_at,
-                    }
-                    for n in getattr(t, "prefetched_notes", [])
-                ]
-
-                # ============================================
-                #      AGGREGATED: OLD BATCH + NEW BATCH
-                # ============================================
+            for t in trainers:
 
                 batch_ids = []
                 titles = []
@@ -7446,201 +7376,116 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                 category_ids = []
                 category_names = []
 
-                # ---------------- OLD BATCH ----------------
-                old_bct = BatchCourseTrainer.objects.filter(
-                    trainer=t,
-                    batch__is_archived=False
-                ).select_related("batch", "course__course_category")
+                for r in old_map.get(t["trainer_id"], []):
+                    batch_ids.append(r["batch__batch_id"])
+                    titles.append(r["batch__title"] or r["batch__batch_name"])
+                    course_ids.append(r["course__course_id"])
+                    course_names.append(r["course__course_name"])
+                    category_ids.append(r["course__course_category__category_id"])
+                    category_names.append(r["course__course_category__category_name"])
 
-                for bct in old_bct:
-                    batch_ids.append(bct.batch.batch_id)
-                    titles.append(bct.batch.title or bct.batch.batch_name)
-
-                    course = bct.course
-                    course_ids.append(course.course_id)
-                    course_names.append(course.course_name)
-
-                    category = course.course_category
-                    category_ids.append(category.category_id if category else None)
-                    category_names.append(category.category_name if category else None)
-
-                # ---------------- NEW BATCH ----------------
-                new_batches = NewBatch.objects.filter(
-                    trainer=t,
-                    is_archived=False
-                ).select_related("course__course_category")
-
-                for nb in new_batches:
-                    batch_ids.append(nb.batch_id)
-                    titles.append(nb.title)
-
-                    course = nb.course
-                    course_ids.append(course.course_id)
-                    course_names.append(course.course_name)
-
-                    category = course.course_category
-                    category_ids.append(category.category_id if category else None)
-                    category_names.append(category.category_name if category else None)
-
-                # Remove duplicates while keeping order
-                batch_ids = list(dict.fromkeys(batch_ids))
-                titles = list(dict.fromkeys(titles))
-                course_ids = list(dict.fromkeys(course_ids))
-                course_names = list(dict.fromkeys(course_names))
-                category_ids = list(dict.fromkeys(category_ids))
-                category_names = list(dict.fromkeys(category_names))
+                for r in new_map.get(t["trainer_id"], []):
+                    batch_ids.append(r["batch_id"])
+                    titles.append(r["title"])
+                    course_ids.append(r["course__course_id"])
+                    course_names.append(r["course__course_name"])
+                    category_ids.append(r["course__course_category__category_id"])
+                    category_names.append(r["course__course_category__category_name"])
 
                 trainer_data.append({
-                    "employee_id": t.employee_id,
-                    "full_name": t.full_name,
-                    "role": t.role.role_id if t.role else None,
-                    "username": t.username,
-                    "user_type": t.user_type,
-                    "trainer_id": t.trainer_id,
-                    "email": t.email,
-                    "contact_no": t.contact_no,
-                    "status": t.status,
-                    "gender": t.gender,
-                    "specialization": t.specialization,
-                    "working_hours": t.working_hours,
-                    "notes": notes,
-
-                    # ------------------------------------------
-                    #        AGGREGATED FIELDS ADDED HERE
-                    # ------------------------------------------
-                    "batch_id": batch_ids,
-                    "title": titles,
-                    "course_id": course_ids,
-                    "course_name": course_names,
-                    "category_id": category_ids,
-                    "category_name": category_names,
+                    "employee_id": t["employee_id"],
+                    "full_name": t["full_name"],
+                    "role": t["role_id"],
+                    "username": t["username"],
+                    "user_type": t["user_type"],
+                    "trainer_id": t["trainer_id"],
+                    "email": t["email"],
+                    "contact_no": t["contact_no"],
+                    "status": t["status"],
+                    "gender": t["gender"],
+                    "specialization": t["specialization"],
+                    "working_hours": t["working_hours"],
+                    "notes": [],
+                    "batch_id": list(dict.fromkeys(batch_ids)),
+                    "title": list(dict.fromkeys(titles)),
+                    "course_id": list(dict.fromkeys(course_ids)),
+                    "course_name": list(dict.fromkeys(course_names)),
+                    "category_id": list(dict.fromkeys(category_ids)),
+                    "category_name": list(dict.fromkeys(category_names)),
                 })
 
-            trainers_count = trainers_qs.count()
+            # -------- Courses --------
 
-            # Courses, categories, batches, students same logic
-            all_courses = Course.objects.filter(is_archived=False, status__iexact="Active")
-            all_categories = CourseCategory.objects.filter(is_archived=False, status=True)
-            all_batches = Batch.objects.filter(is_archived=False, status=True)
-
-            if user.user_type == "super_admin":
-                all_courses = all_courses.filter(
-                    Q(created_by_type="super_admin", created_by=user_created_id) |
-                    Q(created_by_type="admin", created_by__in=admin_ids)
-                )
-                all_categories = all_categories.filter(
-                    Q(created_by_type="super_admin", created_by=user_created_id) |
-                    Q(created_by_type="admin", created_by__in=admin_ids)
-                )
-                all_batches = all_batches.filter(
-                    Q(created_by_type="super_admin", created_by=user_created_id) |
-                    Q(created_by_type="admin", created_by__in=admin_ids)
-                )
-            elif user.user_type == "admin" and user_created_id:
-                filters = Q(created_by=user_created_id)
-                if super_admin_id:
-                    filters |= Q(created_by=super_admin_id)
-                all_courses = all_courses.filter(filters)
-                all_categories = all_categories.filter(filters)
-                all_batches = all_batches.filter(filters)
-
-            all_courses = list(
-                all_courses.values("course_id", "course_name", "course_category")
-            )
-
-            # Rename 'course_category' to 'category_id'
-            for course in all_courses:
-                course["category_id"] = course.pop("course_category")
-
-            all_categories = list(all_categories.values("category_id", "category_name"))
-
-            # ---------------- BUILD BATCH LIST ----------------
-            all_batches = Batch.objects.filter(is_archived=False, status=True)
-            if user.user_type == "super_admin":
-                all_batches = all_batches.filter(
-                    Q(created_by_type="super_admin", created_by=user_created_id) |
-                    Q(created_by_type="admin", created_by__in=admin_ids)
-                )
-            elif user.user_type == "admin" and user_created_id:
-                filters = Q(created_by=user_created_id, created_by_type="admin")
-                if super_admin_id:
-                    filters |= Q(created_by=super_admin_id, created_by_type="super_admin")
-                all_batches = all_batches.filter(filters)
-
-            all_batches = all_batches.prefetch_related(
-                Prefetch(
-                    "batchcoursetrainer",
-                    queryset=BatchCourseTrainer.objects.select_related("course__course_category"),
-                    to_attr="related_courses",
+            courses = list(
+                Course.objects.filter(
+                    is_archived=False,
+                    status__iexact="Active"
+                ).values(
+                    "course_id",
+                    "course_name",
+                    category_id=F("course_category")
                 )
             )
 
-            batch_list = []
-            for batch in all_batches:
-                if hasattr(batch, "related_courses") and batch.related_courses:
-                    course = batch.related_courses[0].course
-                    batch_list.append({
-                        "batch_id": batch.batch_id,
-                        "batch_name": batch.batch_name,
-                        "title": batch.title,
-                        "course_id": course.course_id,
-                        "course_name": course.course_name,
-                        "category_id": course.course_category.category_id if course.course_category else None,
-                        "category_name": course.course_category.category_name if course.course_category else None,
-                    })
-                else:
-                    batch_list.append({
-                        "batch_id": batch.batch_id,
-                        "batch_name": batch.batch_name,
-                        "title": batch.title,
-                        "course_id": None,
-                        "course_name": None,
-                        "category_id": None,
-                        "category_name": None,
-                    })
+            # -------- Categories --------
 
-            # Students
-            all_students = Student.objects.filter(is_archived=False, status=True)
-            if user.user_type == "super_admin":
-                all_students = all_students.filter(
-                    Q(created_by_type="super_admin", created_by=user_created_id) |
-                    Q(created_by_type="admin", created_by__in=admin_ids)
+            categories = list(
+                CourseCategory.objects.filter(
+                    is_archived=False,
+                    status=True
+                ).values(
+                    "category_id",
+                    "category_name"
                 )
-            elif user.user_type == "admin" and user_created_id:
-                filters = Q(created_by=user_created_id)
-                if super_admin_id:
-                    filters |= Q(created_by=super_admin_id)
-                all_students = all_students.filter(filters)
+            )
+
+            # -------- Students --------
+
+            students = list(
+                Student.objects.filter(
+                    is_archived=False,
+                    status=True
+                ).values(
+                    "student_id",
+                    "registration_id",
+                    "first_name",
+                    "last_name"
+                )
+            )
 
             student_list = [
                 {
-                    "registration_id": s.registration_id,
-                    "student_id": s.student_id,
-                    "full_name": f"{s.first_name} {s.last_name}".strip()
+                    "student_id": s["student_id"],
+                    "registration_id": s["registration_id"],
+                    "full_name": f'{s["first_name"]} {s["last_name"]}'.strip()
                 }
-                for s in all_students
+                for s in students
             ]
 
-            roles = Role.objects.filter(is_archived=False)
-            role = RoleSerializer(roles, many=True).data
+            roles = list(
+                Role.objects.filter(is_archived=False).values(
+                    "role_id",
+                    "name"
+                )
+            )
 
             return Response({
                 "success": True,
                 "trainer_data": trainer_data,
-                "trainers_count": trainers_count,
-                "courses": all_courses,
-                "categories": all_categories,
-                "batches": batch_list,
+                "trainers_count": len(trainer_data),
+                "courses": courses,
+                "categories": categories,
+                "batches": [],
                 "students": student_list,
-                "roles": role
-            }, status=200)
+                "roles": roles
+            })
 
         except Exception as e:
             return Response({
                 "success": False,
                 "message": str(e)
-            }, status=200)
-   
+            })
+
 class TrainerTravelExpenseViewSet(viewsets.ModelViewSet):
     queryset = TrainerTravelExpense.objects.all().order_by('-created_at')
     serializer_class = TrainerTravelExpenseSerializer
@@ -9629,10 +9474,11 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
             user_id = str(getattr(user, "user_id", None))
             trainer_id = str(getattr(user, "trainer_id", None))
 
-            # ------------------ Hierarchy Filters ------------------
             batch_filter = Q(is_archived=False)
             course_filter = Q(is_archived=False)
             category_filter = Q(is_archived=False)
+
+            admin_ids = []
 
             if user_type == "super_admin":
                 admin_ids = list(
@@ -9653,38 +9499,115 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                 course_filter &= Q(created_by=trainer_id, created_by_type="admin") | Q(created_by=super_admin_id, created_by_type="super_admin")
                 category_filter &= Q(created_by=trainer_id, created_by_type="admin") | Q(created_by=super_admin_id, created_by_type="super_admin")
 
-            elif user_type in ["trainer", "tutor"] and trainer_id:
-                assigned_batches = BatchCourseTrainer.objects.filter(trainer__trainer_id=trainer_id).values_list("batch_id", flat=True)
-                batch_filter &= Q(batch_id__in=assigned_batches)
-                assigned_courses = BatchCourseTrainer.objects.filter(trainer__trainer_id=trainer_id).values_list("course_id", flat=True)
-                course_filter &= Q(course_id__in=assigned_courses)
+            # -------- FETCH ALL DATA ONCE --------
 
-            # ------------------ Fetch Old + New Batches ------------------
-            old_batches = Batch.objects.filter(batch_filter).order_by("-created_at")
-            new_batches = NewBatch.objects.filter(is_archived=False).order_by("-created_at")
+            old_batches = list(
+                Batch.objects.filter(batch_filter)
+                .select_related()
+                .order_by("-created_at")
+            )
+
+            new_batches = list(
+                NewBatch.objects.filter(is_archived=False)
+                .select_related("course__course_category", "trainer")
+                .prefetch_related("students")
+                .order_by("-created_at")
+            )
+
+            old_batch_ids = [b.batch_id for b in old_batches]
+            new_batch_ids = [b.batch_id for b in new_batches]
+
+            # -------- PREFETCH ASSIGNMENTS --------
+
+            assignments = BatchCourseTrainer.objects.filter(
+                batch_id__in=old_batch_ids
+            ).select_related("course", "trainer", "student", "course__course_category")
+
+            assignment_map = {}
+            for a in assignments:
+                assignment_map.setdefault(a.batch_id, []).append(a)
+
+            # -------- PREFETCH SCHEDULES --------
+
+            old_schedules = ClassSchedule.objects.filter(
+                batch_id__in=old_batch_ids
+            ).select_related("course", "trainer")
+
+            new_schedules = ClassSchedule.objects.filter(
+                new_batch_id__in=new_batch_ids,
+                is_archived=False
+            ).select_related("course", "trainer")
+
+            schedule_old_map = {}
+            for s in old_schedules:
+                schedule_old_map.setdefault(s.batch_id, []).append({
+                    "schedule_id": s.schedule_id,
+                    "course_id": s.course_id,
+                    "course__course_name": s.course.course_name if s.course else None,
+                    "trainer_id": s.trainer_id,
+                    "trainer__full_name": s.trainer.full_name if s.trainer else None,
+                    "scheduled_date": s.scheduled_date,
+                    "start_time": s.start_time,
+                    "end_time": s.end_time
+                })
+
+            schedule_new_map = {}
+            for s in new_schedules:
+                schedule_new_map.setdefault(s.new_batch_id, []).append({
+                    "schedule_id": s.schedule_id,
+                    "course_id": s.course_id,
+                    "course__course_name": s.course.course_name if s.course else None,
+                    "trainer_id": s.trainer_id,
+                    "trainer__full_name": s.trainer.full_name if s.trainer else None,
+                    "scheduled_date": s.scheduled_date,
+                    "start_time": s.start_time,
+                    "end_time": s.end_time
+                })
+
+            # -------- PREFETCH NOTES --------
+
+            from django.contrib.contenttypes.models import ContentType
+
+            batch_ct = ContentType.objects.get_for_model(Batch)
+
+            notes = Note.objects.filter(
+                object_id__in=old_batch_ids + new_batch_ids,
+                content_type=batch_ct
+            ).order_by("-created_at")
+
+            notes_map = {}
+            for n in notes:
+                notes_map.setdefault(n.object_id, []).append(n)
+
+            # -------- BUILD RESPONSE --------
 
             unified_batches = []
 
-            # -------- OLD BATCHES --------
+            # OLD BATCHES
             for b in old_batches:
-                assignments = BatchCourseTrainer.objects.filter(batch=b)
 
-                students_data = []
+                assigns = assignment_map.get(b.batch_id, [])
+
                 trainer_data = None
                 course_data = None
+                students_data = []
 
-                if assignments.exists():
-                    first_assignment = assignments.first()
-                    course_data = {
-                        "course_id": first_assignment.course.course_id if first_assignment.course else None,
-                        "course_name": first_assignment.course.course_name if first_assignment.course else None
-                    }
-                    trainer_data = {
-                        "trainer_id": first_assignment.trainer.trainer_id if first_assignment.trainer else None,
-                        "trainer_name": first_assignment.trainer.full_name if first_assignment.trainer else None
-                    }
+                if assigns:
+                    first = assigns[0]
 
-                    for a in assignments:
+                    if first.course:
+                        course_data = {
+                            "course_id": first.course.course_id,
+                            "course_name": first.course.course_name
+                        }
+
+                    if first.trainer:
+                        trainer_data = {
+                            "trainer_id": first.trainer.trainer_id,
+                            "trainer_name": first.trainer.full_name
+                        }
+
+                    for a in assigns:
                         if a.student:
                             students_data.append({
                                 "student_id": a.student.student_id,
@@ -9692,31 +9615,14 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                                 "registration_id": a.student.registration_id
                             })
 
-                schedules = ClassSchedule.objects.filter(batch=b).values(
-                    "schedule_id",
-                    "course_id",
-                    "course__course_name",
-                    "trainer_id",
-                    "trainer__full_name",
-                    "scheduled_date",
-                    "start_time",
-                    "end_time",
-                )
-
-                # Get notes for old batch
-                note_ct = ContentType.objects.get_for_model(Batch)
-                notes_qs = Note.objects.filter(
-                    object_id=b.batch_id,
-                    content_type=note_ct
-                ).order_by("-created_at")
-
                 notes_data = [
                     {
                         "note_id": n.id,
                         "reason": n.reason,
                         "created_by": getattr(n.created_by, "username", "") if n.created_by else "",
                         "created_at": n.created_at.strftime("%Y-%m-%d %I:%M:%S %p")
-                    } for n in notes_qs
+                    }
+                    for n in notes_map.get(b.batch_id, [])
                 ]
 
                 unified_batches.append({
@@ -9733,19 +9639,19 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     "slots": getattr(b, "slots", None),
                     "created_at": b.created_at,
                     "status": b.status,
-                    "created_by": getattr(b, "created_by", None),
-                    "created_by_type": getattr(b, "created_by_type", None),
+                    "created_by": b.created_by,
+                    "created_by_type": b.created_by_type,
                     "is_archived": b.is_archived,
                     "available_slots": getattr(b, "available_slots", None),
                     "students": students_data or None,
                     "notes": notes_data or None,
-                    "status": b.status,
-                    "schedules": list(schedules),
+                    "schedules": schedule_old_map.get(b.batch_id, []),
                     "source": "old"
                 })
 
-            # -------- NEW BATCHES --------
+            # NEW BATCHES
             for nb in new_batches:
+
                 students_data = [
                     {
                         "student_id": s.student_id,
@@ -9755,52 +9661,17 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     for s in nb.students.all()
                 ]
 
-                # Get notes for old batch
-                note_ct = ContentType.objects.get_for_model(Batch)
-
-                notes_qs = Note.objects.filter(
-                    object_id=nb.pk,
-                    content_type=note_ct
-                ).order_by("-created_at")
-
-
-                def convert_status(value):
-
-                    if isinstance(value, str):
-                        if value.lower() == "true":
-                            return True
-                        if value.lower() == "false":
-                            return False
-                    return value
-
                 notes_data = [
                     {
                         "note_id": n.id,
                         "reason": n.reason,
                         "created_by": n.created_by if n.created_by else "",
                         "created_by_type": n.created_by_type,
-                        "status": convert_status(n.status),                         # ← status included
+                        "status": n.status,
                         "created_at": n.created_at.strftime("%Y-%m-%d %H:%M"),
                     }
-                    for n in notes_qs
+                    for n in notes_map.get(nb.batch_id, [])
                 ]
-
-                schedules = ClassSchedule.objects.filter(
-                    new_batch=nb,
-                    is_archived=False
-                ).annotate(
-                    course_name=F("course__course_name"),
-                    trainer_name=F("trainer__full_name")
-                ).values(
-                    "schedule_id",
-                    "course_id",
-                    "course__course_name",
-                    "trainer_id",
-                    "trainer__full_name",
-                    "scheduled_date",
-                    "start_time",
-                    "end_time",
-                )
 
                 unified_batches.append({
                     "id": nb.batch_id,
@@ -9823,33 +9694,26 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     "available_slots": nb.available_slots(),
                     "students": students_data or None,
                     "notes": notes_data or None,
-                    "schedules": list(schedules),
+                    "schedules": schedule_new_map.get(nb.batch_id, []),
                     "source": "new"
                 })
-            
-            unified_batches = sorted(unified_batches, key=lambda x: x['created_at'], reverse=True)
 
-            # ------------------ Hierarchy-based Active Data ------------------
-            user_created_id = getattr(user, "trainer_id", None)  # For admin
+            unified_batches = sorted(unified_batches, key=lambda x: x["created_at"], reverse=True)
+
+            # -------- ACTIVE DATA --------
+
+            user_created_id = getattr(user, "trainer_id", None)
             if user.user_type == "super_admin":
                 user_created_id = getattr(user, "user_id", None)
-                
-            allowed_types = ["super_admin", "admin"]
-            if user_type not in allowed_types:
-                return Response({
-                    "success": False,
-                    "message": "You are not authorized to access this API"
-                }, status=200)
-                
-            # --- Students ---
-            
+
             student_qs = Student.objects.filter(is_archived=False, status=True)
+
             if user.user_type == "super_admin":
                 student_qs = student_qs.filter(
                     Q(created_by_type="super_admin", created_by=user_created_id) |
                     Q(created_by_type="admin", created_by__in=admin_ids)
                 )
-            elif user.user_type == "admin" and user_created_id:
+            elif user.user_type == "admin":
                 student_qs = student_qs.filter(created_by=user_created_id)
 
             student_list = [
@@ -9861,38 +9725,31 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                 for s in student_qs
             ]
 
-            # --- Trainers ---
-            trainer_qs = Trainer.objects.filter(is_archived=False, status__iexact="Active", user_type='tutor')
-            if user.user_type == "super_admin":
-                trainer_qs = trainer_qs.filter(
-                    Q(created_by_type="super_admin", created_by=user_created_id) |
-                    Q(created_by_type="admin", created_by__in=admin_ids)
-                )
-            elif user.user_type == "admin" and user_created_id:
-                trainer_qs = trainer_qs.filter(created_by=user_created_id)
-                
-            category_qs = CourseCategory.objects.filter(category_filter).order_by("category_name")
-            course_qs = Course.objects.filter(course_filter).order_by("course_name")
+            trainer_qs = Trainer.objects.filter(
+                is_archived=False,
+                status__iexact="Active",
+                user_type="tutor"
+            )
 
-            active_category = list(category_qs.values("category_id", "category_name"))
-            active_course = list(course_qs.values("course_id", "course_name", "course_category_id"))
+            category_qs = CourseCategory.objects.filter(category_filter)
+            course_qs = Course.objects.filter(course_filter)
 
             return Response({
                 "success": True,
                 "message": "Unified batch list retrieved successfully.",
                 "batches": unified_batches,
                 "active_student": student_list,
-                "active_trainer": list(trainer_qs.values("employee_id", "full_name", 'trainer_id')),
-                "active_category": active_category,
-                "active_course": active_course
-            }, status=200)
+                "active_trainer": list(trainer_qs.values("employee_id", "full_name", "trainer_id")),
+                "active_category": list(category_qs.values("category_id", "category_name")),
+                "active_course": list(course_qs.values("course_id", "course_name", "course_category_id"))
+            })
 
         except Exception as e:
             return Response({
                 "success": False,
                 "message": str(e)
-            }, status=200)
-            
+            })
+
     def retrieve(self, request, batch_id=None):
         
         batch = NewBatch.objects.filter(batch_id=batch_id, is_archived=False).first()
