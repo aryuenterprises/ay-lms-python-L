@@ -412,7 +412,7 @@ class WebinarViewSet(
             slug=slug,
             is_deleted=False
         )
-
+        MEDIA_PREFIX = "https://portal.aryuacademy.com/api/media/"
         registrations = (
             WebinarRegistration.objects
             .filter(webinar_id=webinar.id)
@@ -422,11 +422,13 @@ class WebinarViewSet(
                     F("payment_transaction__payment_status"),
                     Value("free")
                 ),
+
                 certificate_url=Concat(
-                    Value("https://aylms.aryuprojects.com/api/media/"),
+                    Value(MEDIA_PREFIX),
                     F("certificate__certificate_file"),
                     output_field=CharField()
                 ),
+
                 # total hours participated
                 total_hours_participated=ExpressionWrapper(
                     Coalesce(
@@ -435,6 +437,35 @@ class WebinarViewSet(
                     ) / 3600.0,
                     output_field=FloatField()
                 ),
+
+                # full feedback JSON
+                feedback_data=JSONObject(
+                    id=F("feedback__uuid"),
+                    overall_rating=F("feedback__overall_rating"),
+                    content_quality=F("feedback__content_quality"),
+                    speaker_quality=F("feedback__speaker_quality"),
+                    pace_of_session=F("feedback__pace_of_session"),
+                    interaction_rating=F("feedback__interaction_rating"),
+                    learned_something_new=F("feedback__learned_something_new"),
+                    would_recommend=F("feedback__would_recommend"),
+                    liked_most=F("feedback__liked_most"),
+                    improvement_suggestions=F("feedback__improvement_suggestions"),
+                    additional_comments=F("feedback__additional_comments"),
+                    interested_in_future_webinars=F("feedback__interested_in_future_webinars"),
+                    interested_in_paid_courses=F("feedback__interested_in_paid_courses"),
+                    submitted_at=F("feedback__submitted_at"),
+
+                    rating_screenshot=Coalesce(
+                        Concat(
+                            Value(MEDIA_PREFIX),
+                            F("feedback__rating_screenshot"),
+                            output_field=CharField()
+                        ),
+                        Value(None),
+                        output_field=CharField()
+                    )
+                ),
+
                 logs=JSONBAgg(
                     JSONObject(
                         join_time=F("attendance_logs__join_time"),
@@ -462,6 +493,7 @@ class WebinarViewSet(
                 "registered_at",
                 "total_hours_participated",
                 "payment_status",
+                "feedback_data",
                 "logs"
             )
         )
