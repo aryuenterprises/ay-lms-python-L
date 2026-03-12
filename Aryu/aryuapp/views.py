@@ -3551,11 +3551,22 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             .only("id", "gatway_name")
             .values("id", "gatway_name")
         )
+
+        course_list = list(
+            Course.objects
+            .filter(is_archived=False, status="Active")
+            .values(
+                id=F("course_id"),
+                name=F("course_name")
+            ).order_by("-course_id")
+        )
+        
         return Response({
             "success": True,
             "student_payment_summaries": serializer.data,
             "students": student_list,
-            "gatway": gateway_list
+            "gatway": gateway_list,
+            "courses": course_list
         })
    
     def retrieve(self, request, pk=None):
