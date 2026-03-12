@@ -3374,7 +3374,10 @@ class PaymentGatewayViewSet(viewsets.ViewSet):
             return Response({"success": False, "message": f"Error archiving gateway: {str(e)}"}, status=status.HTTP_200_OK)
 
 class PaymentTransactionViewSet(viewsets.ViewSet):
-    
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
     def get_queryset(self):
         return PaymentTransaction.objects.all()
     
@@ -3419,7 +3422,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                         "gateway__gatway_name",
                         "course__course_name",
                         "created_at"
-                    )
+                    ).order_by("-created_at")
                 ),
                 Prefetch(
                     "emi_plans",
@@ -3533,10 +3536,10 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 enabled_gateways.append("Stripe test")
 
             if settings.paypal_enabled:
-                enabled_gateways.append("Paypal")
+                enabled_gateways.append("paypal")
 
             if settings.razorpay_enabled:
-                enabled_gateways.append("Razorpay")
+                enabled_gateways.append("razorpay")
 
 
         gateway_list = list(
@@ -3554,7 +3557,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             "students": student_list,
             "gatway": gateway_list
         })
-     
+   
     def retrieve(self, request, pk=None):
 
         latest_tx = PaymentTransaction.objects.filter(
@@ -3615,10 +3618,10 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 enabled_gateways.append("Stripe test")
 
             if settings.paypal_enabled:
-                enabled_gateways.append("Paypal")
+                enabled_gateways.append("paypal")
 
             if settings.razorpay_enabled:
-                enabled_gateways.append("Razorpay")
+                enabled_gateways.append("razorpay")
 
 
         gateway_list = list(
@@ -3638,42 +3641,18 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         })
     
     def create(self, request):
-        print(request.data)
-        try:
-            gateway_map = {
-                "stripe_enabled": "Stripe test",
-                "paypal_enabled": "Paypal",
-                "razorpay_enabled": "Razorpay"
-            }
-            gateway_key = request.data.get('gateway')
-            gateway_name = gateway_map.get(gateway_key)
-
-            if not gateway_name:
-                raise ValidationError("Invalid gateway selected")
-
-            gateway_obj = PaymentGateway.objects.filter(gatway_name=gateway_name).first()
-            if not gateway_obj:
-                raise ValidationError(f"{gateway_name} gateway not configured")
-
-            data = request.data.copy()
-            data['gateway'] = int(gateway_obj.id)
-
-        except ValidationError:
-            raise 
-        except Exception as e:
-            raise ValidationError(str(e))
-
         serializer = PaymentTransactionCreateSerializer(
-            data=data,
+            data=request.data,
             context={'request': request}
         )
         serializer.is_valid(raise_exception=True)
+
         transaction = serializer.save()
 
+        # Return full details
         return Response({
             "success": True,
-            "message": "Payment created successfully",
-            "payment_transaction": PaymentTransactionDetailSerializer(transaction).data
+            'message': "Payment created successfully",
         })
 
 from django.conf import settings as django_settings
