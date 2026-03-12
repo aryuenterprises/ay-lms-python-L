@@ -3533,10 +3533,10 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 enabled_gateways.append("Stripe test")
 
             if settings.paypal_enabled:
-                enabled_gateways.append("paypal")
+                enabled_gateways.append("Paypal")
 
             if settings.razorpay_enabled:
-                enabled_gateways.append("razorpay")
+                enabled_gateways.append("Razorpay")
 
 
         gateway_list = list(
@@ -3615,10 +3615,10 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 enabled_gateways.append("Stripe test")
 
             if settings.paypal_enabled:
-                enabled_gateways.append("paypal")
+                enabled_gateways.append("Paypal")
 
             if settings.razorpay_enabled:
-                enabled_gateways.append("razorpay")
+                enabled_gateways.append("Razorpay")
 
 
         gateway_list = list(
@@ -3642,8 +3642,8 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         try:
             gateway_map = {
                 "stripe_enabled": "Stripe test",
-                "paypal_enabled": "paypal",
-                "razorpay_enabled": "razorpay"
+                "paypal_enabled": "Paypal",
+                "razorpay_enabled": "Razorpay"
             }
             gateway_key = request.data.get('gateway')
             gateway_name = gateway_map.get(gateway_key)
