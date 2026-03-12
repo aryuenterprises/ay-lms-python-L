@@ -301,7 +301,6 @@ class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "transaction_id",
-            "order_id",
             "amount",
             "currency",
             "payment_status",
@@ -366,6 +365,7 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
     # ------------------------------- TOTAL COURSE FEE ------------------------
 
     def get_total_course_fee(self, obj):
+       
         """
         Get course fee directly from the course attached to the latest payment.
         """
@@ -376,7 +376,7 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
             .order_by("-created_at")
             .first()
         )
-
+       
         if last_tx and last_tx.course:
             return last_tx.course.fee
 
@@ -412,7 +412,8 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
         return paid or 0
 
     def get_remaining_amount(self, obj):
-        return self.get_total_course_fee(obj) - self.get_paid_amount(obj)
+        remaining = self.get_total_course_fee(obj) - self.get_paid_amount(obj)
+        return max(remaining, 0)
 
     # ------------------------------ EMI HELPERS ------------------------------
 
@@ -498,7 +499,7 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
             "currency",
             "payment_status",
             "transaction_id",
-            "order_id",
+            "attachment", 
             "description",
             "metadata",
             "emi_installment_id"
@@ -531,12 +532,16 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
         emi_installment_id = validated_data.pop("emi_installment_id", None)
 
         student = validated_data["student"]
-        course = validated_data["course"]
+        course = validated_data.pop("course",None)
 
         amount = validated_data["amount"]
         discount = validated_data.get("discount", 0)
 
         validated_data["total_after_discount"] = amount - discount
+
+        Gateway=validated_data.get("gateway",None)
+
+        
 
         transaction = super().create(validated_data)
 
