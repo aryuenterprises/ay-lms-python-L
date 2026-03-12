@@ -34,7 +34,7 @@ from django.conf import settings
 from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from aryuapp.auth import CustomJWTAuthentication
-from django.db.models import Count, Prefetch, Sum, Q, Avg, F, Value, IntegerField, OuterRef, Subquery, DecimalField, Value, CharField
+from django.db.models import Count, Prefetch, Sum, Q, Avg, F, Value, IntegerField, OuterRef, Subquery, FloatField, Value, CharField
 from .models import *
 from .serializers import *
 import logging
@@ -423,9 +423,17 @@ class WebinarViewSet(
                     Value("free")
                 ),
                 certificate_url=Concat(
-                    Value("https://portal.aryuacademy.com/api/media/"),
+                    Value("https://aylms.aryuprojects.com/api/media/"),
                     F("certificate__certificate_file"),
                     output_field=CharField()
+                ),
+                # total hours participated
+                total_hours_participated=ExpressionWrapper(
+                    Coalesce(
+                        F("attendance_summary__total_duration_seconds"),
+                        Value(0)
+                    ) / 3600.0,
+                    output_field=FloatField()
                 ),
                 logs=JSONBAgg(
                     JSONObject(
@@ -452,6 +460,7 @@ class WebinarViewSet(
                 "state",
                 "city",
                 "registered_at",
+                "total_hours_participated",
                 "payment_status",
                 "logs"
             )
