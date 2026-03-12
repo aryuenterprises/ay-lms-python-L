@@ -105,9 +105,9 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [
-                "redis://:35l1VUx9@49.207.178.161:6379/0"
-            ],
+            "hosts": ["redis://:35l1VUx9@49.207.178.161:6379/0"],
+            "capacity": 1500,
+            "expiry": 10,
         },
     },
 }

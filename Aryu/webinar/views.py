@@ -56,7 +56,7 @@ def razorpay_webhook(request):
         return HttpResponse(status=400)
 
     gateway = PaymentGateway.objects.filter(
-        gatway_name__icontains="razorpay"
+        gatway_name__icontains="Razorpay"
     ).first()
 
     expected_signature = hmac.new(
@@ -106,7 +106,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
     def _get_client(self):
         gateway = PaymentGateway.objects.filter(
-            gatway_name__icontains="razorpay"
+            gatway_name__icontains="Razorpay"
         ).first()
 
 
@@ -202,7 +202,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             )
 
         gateway = PaymentGateway.objects.filter(
-            gatway_name__icontains="razorpay"
+            gatway_name__icontains="Razorpay"
         ).first()
 
         if not gateway or not gateway.secret_key:

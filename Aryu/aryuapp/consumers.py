@@ -1,4 +1,4 @@
-#consumers.py
+#aryuapp/consumers.py
 
 import asyncio
 import json
@@ -14,12 +14,6 @@ from django.conf import settings
 
 django.setup()
 # ------------------ CHAT CONSUMER ------------------
-import json
-from channels.generic.websocket import AsyncWebsocketConsumer
-from channels.db import database_sync_to_async
-from django.utils import timezone
-from .models import ChatRoom, Message
-from .serializer import MessageSerializer
 
 
 class ChatConsumer(AsyncWebsocketConsumer):
