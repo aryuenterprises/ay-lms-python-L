@@ -299,7 +299,7 @@ class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
 
     gateway_name = serializers.CharField(source="gateway.gatway_name", read_only=True)
     course_name = serializers.CharField(source="course.course_name", read_only=True)
-
+    attachment_url = serializers.SerializerMethodField()
     class Meta:
         model = PaymentTransaction
         fields = [
@@ -309,13 +309,21 @@ class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
             "currency",
             "payment_status",
             "gateway",
+            "discount",
+            "total_after_discount",
             "gateway_name",
+            "attachment_url",
             "course",
             "course_name",
             "description",
             "metadata",
             "created_at"
         ]
+
+    def get_attachment_url(self, obj):
+        if obj.attachment and hasattr(obj.attachment, 'url'):
+            return 'https://aylms.aryuprojects.com/api' + obj.attachment.url
+        return None
 
 class StudentPaymentSummarySerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
@@ -539,16 +547,12 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
         emi_installment_id = validated_data.pop("emi_installment_id", None)
 
         student = validated_data["student"]
-        course = validated_data.pop("course",None)
+        course = validated_data["course"]
 
         amount = validated_data["amount"]
         discount = validated_data.get("discount", 0)
 
         validated_data["total_after_discount"] = amount - discount
-
-        Gateway=validated_data.get("gateway",None)
-
-        
 
         transaction = super().create(validated_data)
 
