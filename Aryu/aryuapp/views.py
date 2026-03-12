@@ -39,11 +39,10 @@ from django.db import IntegrityError
 from django.utils.timezone import localtime, now
 from django.conf import settings
 from django.contrib.auth.hashers import *
-from django.db.models import Q, Count, F, Max, ExpressionWrapper, Prefetch, DateField, Case, When, IntegerField, Sum, Avg, Value, CharField, OuterRef, Subquery, Window
+from django.db.models import Q, Count, F, Max, ExpressionWrapper, Prefetch, DateField, Case, When, DecimalField, IntegerField, Sum, Avg, Value, CharField, OuterRef, Subquery, Window
 import holidays
-from django.db.models.functions import Concat,Lag
+from django.db.models.functions import Concat,Lag, JSONObject, Coalesce
 from django.contrib.postgres.aggregates import JSONBAgg
-from django.db.models.functions import JSONObject
 from .utils import *
 from .mixins import *
 from webinar.models import Webinar, WebinarRegistration, WebinarAttendanceSummary, WebinarFeedback
@@ -3384,27 +3383,65 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         user_type = getattr(user, "user_type", "")
         user_created_id = getattr(user, "trainer_id", None)
 
-        # For super_admin, created_id comes from user_id
         if user_type == "super_admin":
             user_created_id = getattr(user, "user_id", None)
 
-        # ---------------- Fetch only students who have payments ----------------
-        students_qs = Student.objects.filter(
-            transactions__isnull=False,
-            is_archived=False
-        ).prefetch_related(
-            Prefetch("transactions", queryset=PaymentTransaction.objects.select_related("course", "gateway")),
-            Prefetch("emi_plans", queryset=PaymentEMI.objects.select_related("course").prefetch_related("installments"))
+        # ---------------- Latest successful transaction ----------------
+        latest_tx = PaymentTransaction.objects.filter(
+            student=OuterRef("pk"),
+            payment_status="Success"
+        ).order_by("-created_at")
+
+        # ---------------- Paid amount aggregation ----------------
+        paid_amount_subquery = PaymentTransaction.objects.filter(
+            student=OuterRef("pk"),
+            payment_status="Success"
+        ).values("student").annotate(
+            total=Sum("amount")
+        ).values("total")
+
+        students_qs = (
+            Student.objects
+            .filter(transactions__isnull=False, is_archived=False)
+            .select_related()
+            .prefetch_related(
+                Prefetch(
+                    "transactions",
+                    queryset=PaymentTransaction.objects.select_related(
+                        "gateway",
+                        "course"
+                    ).only(
+                        "id",
+                        "transaction_id",
+                        "amount",
+                        "currency",
+                        "payment_status",
+                        "gateway__gatway_name",
+                        "course__course_name",
+                        "created_at"
+                    )
+                ),
+                Prefetch(
+                    "emi_plans",
+                    queryset=PaymentEMI.objects.prefetch_related("installments")
+                )
+            )
+            .annotate(
+                course_name=Subquery(latest_tx.values("course__course_name")[:1]),
+                total_course_fee=Subquery(latest_tx.values("course__fee")[:1]),
+                paid_amount=Coalesce(
+                    Subquery(paid_amount_subquery[:1]),
+                    Value(0),
+                    output_field=DecimalField()
+                )
+            )
         )
 
-
-        # ---------------- Apply hierarchy filters ----------------
+        # ---------------- Hierarchy filters ----------------
         if user_type == "admin" and user_created_id:
-            # Admin sees students created by them
             students_qs = students_qs.filter(created_by=user_created_id)
 
         elif user_type == "super_admin" and user_created_id:
-            # Super admin sees students created by them + admin created students
             admin_ids = list(
                 Trainer.objects.filter(
                     created_by=user_created_id,
@@ -3414,51 +3451,28 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             )
 
             students_qs = students_qs.filter(
-                Q(created_by_type='super_admin', created_by=user_created_id) |
-                Q(created_by_type='admin', created_by__in=admin_ids)
+                Q(created_by_type="super_admin", created_by=user_created_id) |
+                Q(created_by_type="admin", created_by__in=admin_ids)
             )
-
         else:
-            # Non-admin / Non-super admin sees nothing
             students_qs = Student.objects.none()
-            
-        all_students = Student.objects.filter(
-            status=True,
-            is_archived=False
+
+        # ---------------- Serializer ----------------
+        serializer = StudentPaymentSummarySerializer(
+            students_qs,
+            many=True
         )
 
-        # Apply hierarchy filter for ALL STUDENTS
-        if user_type == "admin" and user_created_id:
-            all_students = all_students.filter(created_by=user_created_id)
-
-        elif user_type == "super_admin" and user_created_id:
-            admin_ids = list(
-                Trainer.objects.filter(
-                    created_by=user_created_id,
-                    created_by_type="super_admin",
-                    is_archived=False
-                ).values_list("trainer_id", flat=True)
-            )
-
-            all_students = all_students.filter(
-                Q(created_by_type='super_admin', created_by=user_created_id) |
-                Q(created_by_type='admin', created_by__in=admin_ids)
-            )
-
-        else:
-            all_students = Student.objects.none()
-
-        
-
-
-        # ---------------- Serialize summaries ----------------
-        student_payment_summary_serializer = StudentPaymentSummarySerializer(
-            students_qs, many=True
+        # ---------------- Student list ----------------
+        all_students = students_qs.only(
+            "student_id",
+            "registration_id",
+            "first_name",
+            "last_name",
+            "email",
+            "contact_no"
         )
 
-        # print(student_payment_summary_serializer.data,"new payments in it")
-
-        # ---------------- Simple student details list ----------------
         student_list = [
             {
                 "student_id": s.student_id,
@@ -3469,23 +3483,123 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             }
             for s in all_students
         ]
+        settings = (
+            Settings.objects
+            .filter(is_archived=False)
+            .only("stripe_enabled", "paypal_enabled", "razorpay_enabled")
+            .order_by("-created_at")
+            .first()
+        )
 
+        enabled_gateways = []
+
+        if settings:
+            if settings.stripe_enabled:
+                enabled_gateways.append("Stripe test")
+
+            if settings.paypal_enabled:
+                enabled_gateways.append("paypal")
+
+            if settings.razorpay_enabled:
+                enabled_gateways.append("razorpay")
+
+
+        gateway_list = list(
+            PaymentGateway.objects
+            .filter(
+                is_archived=False,
+                gatway_name__in=enabled_gateways
+            )
+            .only("id", "gatway_name")
+            .values("id", "gatway_name")
+        )
         return Response({
             "success": True,
-            "student_payment_summaries": student_payment_summary_serializer.data,
-            "students": student_list
-        }, status=200)
+            "student_payment_summaries": serializer.data,
+            "students": student_list,
+            "gatway": gateway_list
+        })
 
     def retrieve(self, request, pk=None):
-        try:
-            student = Student.objects.prefetch_related("transactions").get(student_id=pk)
-        except Student.DoesNotExist:
-            return Response({"success": False, "message": "Student not found"}, status=200)
+
+        latest_tx = PaymentTransaction.objects.filter(
+            student=OuterRef("pk"),
+            payment_status="Success"
+        ).order_by("-created_at")
+
+        paid_amount_subquery = PaymentTransaction.objects.filter(
+            student=OuterRef("pk"),
+            payment_status="Success"
+        ).values("student").annotate(
+            total=Sum("amount")
+        ).values("total")
+
+        student = (
+            Student.objects
+            .filter(student_id=pk)
+            .prefetch_related(
+                Prefetch(
+                    "transactions",
+                    queryset=PaymentTransaction.objects.select_related(
+                        "gateway",
+                        "course"
+                    )
+                ),
+                Prefetch(
+                    "emi_plans",
+                    queryset=PaymentEMI.objects.prefetch_related("installments")
+                )
+            )
+            .annotate(
+                course_name=Subquery(latest_tx.values("course__course_name")[:1]),
+                total_course_fee=Subquery(latest_tx.values("course__fee")[:1]),
+                paid_amount=Coalesce(Subquery(paid_amount_subquery[:1]), Value(0))
+            )
+            .first()
+        )
+
+        if not student:
+            return Response({
+                "success": False,
+                "message": "Student not found"
+            })
 
         serializer = StudentPaymentSummarySerializer(student)
+        settings = (
+            Settings.objects
+            .filter(is_archived=False)
+            .only("stripe_enabled", "paypal_enabled", "razorpay_enabled")
+            .order_by("-created_at")
+            .first()
+        )
+
+        enabled_gateways = []
+
+        if settings:
+            if settings.stripe_enabled:
+                enabled_gateways.append("Stripe test")
+
+            if settings.paypal_enabled:
+                enabled_gateways.append("paypal")
+
+            if settings.razorpay_enabled:
+                enabled_gateways.append("razorpay")
+
+
+        gateway_list = list(
+            PaymentGateway.objects
+            .filter(
+                is_archived=False,
+                gatway_name__in=enabled_gateways
+            )
+            .only("id", "gatway_name")
+            .values("id", "gatway_name")
+        )
+
         return Response({
             "success": True,
-            "student_payment_summary": serializer.data
+            "student_payment_summary": serializer.data,
+            "gatway":gateway_list,
         })
     
     def create(self, request):
