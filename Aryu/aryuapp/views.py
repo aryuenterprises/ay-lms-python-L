@@ -3448,10 +3448,15 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         else:
             all_students = Student.objects.none()
 
+        
+
+
         # ---------------- Serialize summaries ----------------
         student_payment_summary_serializer = StudentPaymentSummarySerializer(
             students_qs, many=True
         )
+
+        # print(student_payment_summary_serializer.data,"new payments in it")
 
         # ---------------- Simple student details list ----------------
         student_list = [
@@ -3484,18 +3489,41 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         })
     
     def create(self, request):
+        print(request.data)
+        try:
+            gateway_map = {
+                "stripe_enabled": "Stripe test",
+                "paypal_enabled": "paypal",
+                "razorpay_enabled": "razorpay"
+            }
+            gateway_key = request.data.get('gateway')
+            gateway_name = gateway_map.get(gateway_key)
+
+            if not gateway_name:
+                raise ValidationError("Invalid gateway selected")
+
+            gateway_obj = PaymentGateway.objects.filter(gatway_name=gateway_name).first()
+            if not gateway_obj:
+                raise ValidationError(f"{gateway_name} gateway not configured")
+
+            data = request.data.copy()
+            data['gateway'] = int(gateway_obj.id)
+
+        except ValidationError:
+            raise 
+        except Exception as e:
+            raise ValidationError(str(e))
+
         serializer = PaymentTransactionCreateSerializer(
-            data=request.data,
+            data=data,
             context={'request': request}
         )
         serializer.is_valid(raise_exception=True)
-
         transaction = serializer.save()
 
-        # Return full details
         return Response({
             "success": True,
-            'message': "Payment created successfully",
+            "message": "Payment created successfully",
             "payment_transaction": PaymentTransactionDetailSerializer(transaction).data
         })
 
