@@ -37,9 +37,10 @@ class Settings(models.Model):
     declaration = models.TextField(max_length=100, null=True, blank=True)
     attendance_options = models.CharField(max_length=100, null=True, blank=True)
     deactivation_options = models.CharField(max_length=100, null=True, blank=True)
-    payment_method = models.CharField(max_length=100, null=True, blank=True)
+    payment_method = models.JSONField(default=list, blank=True)
     stripe_enabled = models.BooleanField(default=True)
     paypal_enabled = models.BooleanField(default=True)
+    razorpay_enabled=models.BooleanField(default=True)
     is_archived = models.BooleanField(default=False)
     created_by = models.CharField(max_length=100, null=True, blank=True)
     created_by_type = models.CharField(max_length=50, null=True, blank=True)
@@ -1393,7 +1394,7 @@ class PaymentGateway(models.Model):
     is_archived = models.BooleanField(default=False)
 
     def __str__(self):
-        return f"{self.name} ({'Enabled' if self.is_enabled else 'Disabled'})"
+        return f"{self.gatway_name} ({'Enabled' if not self.is_archived else 'Disabled'})"
 
 class PaymentTransaction(models.Model):
 
@@ -1410,7 +1411,8 @@ class PaymentTransaction(models.Model):
     currency = models.CharField(max_length=10, null=True, blank=True)
     payment_status = models.CharField(max_length=20, null=True, blank=True)
     transaction_id = models.CharField(max_length=100, blank=True, null=True)
-    order_id = models.CharField(max_length=100, blank=True, null=True)
+    # order_id = models.CharField(max_length=100, blank=True, null=True)
+    attachment = models.FileField(upload_to='payment_attachments/', blank=True, null=True)
     description = models.TextField(blank=True, null=True)
     metadata = models.JSONField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)

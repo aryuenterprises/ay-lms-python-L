@@ -3436,7 +3436,6 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 )
             )
         )
-
         # ---------------- Hierarchy filters ----------------
         if user_type == "admin" and user_created_id:
             students_qs = students_qs.filter(created_by=user_created_id)
@@ -3463,26 +3462,62 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             many=True
         )
 
-        # ---------------- Student list ----------------
-        all_students = students_qs.only(
-            "student_id",
-            "registration_id",
-            "first_name",
-            "last_name",
-            "email",
-            "contact_no"
+        # ---------------- Students List (Ultra Optimized) ----------------
+
+        student_queryset = Student.objects.filter(
+            is_archived=False
         )
 
+        if user_type == "admin" and user_created_id:
+
+            student_queryset = student_queryset.filter(
+                created_by=str(user_created_id)
+            )
+
+        elif user_type == "super_admin" and user_created_id:
+
+            admin_ids = list(
+                Trainer.objects.filter(
+                    created_by=user_created_id,
+                    created_by_type="super_admin",
+                    is_archived=False
+                ).values_list("trainer_id", flat=True)
+            )
+
+            admin_ids = [str(i) for i in admin_ids]
+
+            student_queryset = student_queryset.filter(
+                Q(created_by_type="super_admin", created_by=str(user_created_id)) |
+                Q(created_by_type="admin", created_by__in=admin_ids)
+            )
+
+        else:
+            student_queryset = Student.objects.none()
+
+
+        student_list = list(
+            student_queryset.values(
+                "student_id",
+                "registration_id",
+                "first_name",
+                "last_name",
+                "email",
+                "contact_no"
+            )
+        )
+
+        # Rename fields for response format
         student_list = [
             {
-                "student_id": s.student_id,
-                "registration_id": s.registration_id,
-                "student_name": f"{s.first_name} {s.last_name}",
-                "email": s.email,
-                "phone": s.contact_no
+                "student_id": s["student_id"],
+                "registration_id": s["registration_id"],
+                "student_name": f"{s['first_name']} {s['last_name']}".strip(),
+                "email": s["email"],
+                "phone": s["contact_no"]
             }
-            for s in all_students
+            for s in student_list
         ]
+
         settings = (
             Settings.objects
             .filter(is_archived=False)
@@ -3519,7 +3554,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             "students": student_list,
             "gatway": gateway_list
         })
-
+     
     def retrieve(self, request, pk=None):
 
         latest_tx = PaymentTransaction.objects.filter(
