@@ -3379,7 +3379,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
-        return PaymentTransaction.objects.all()
+        return PaymentTransaction.objects.filter(is_archived=False)
     
     def list(self, request):
         user = request.user
@@ -3392,13 +3392,15 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         # ---------------- Latest successful transaction ----------------
         latest_tx = PaymentTransaction.objects.filter(
             student=OuterRef("pk"),
-            payment_status="Success"
+            payment_status="Success",
+             is_archived=False
         ).order_by("-created_at")
 
         # ---------------- Paid amount aggregation ----------------
         paid_amount_subquery = PaymentTransaction.objects.filter(
             student=OuterRef("pk"),
-            payment_status="Success"
+            payment_status="Success",
+             is_archived=False
         ).values("student").annotate(
             total=Sum("amount")
         ).values("total")
@@ -3410,7 +3412,10 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             .prefetch_related(
                 Prefetch(
                     "transactions",
-                    queryset=PaymentTransaction.objects.select_related(
+                    queryset=PaymentTransaction.objects
+                    .filter(
+        is_archived=False
+    ).select_related(
                         "gateway",
                         "course"
                     ).only(
@@ -3579,6 +3584,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         paid_amount_subquery = PaymentTransaction.objects.filter(
             student=OuterRef("pk"),
             payment_status="Success"
+
         ).values("student").annotate(
             total=Sum("amount")
         ).values("total")
@@ -3665,6 +3671,42 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             "success": True,
             'message': "Payment created successfully",
         })
+        
+    def update(self, request, pk=None):
+        try:
+            transaction = PaymentTransaction.objects.select_related(
+                "course", "gateway", "student"
+            ).get(pk=pk)
+        except PaymentTransaction.DoesNotExist:
+            return Response({
+                "success": False,
+                "message": "Transaction not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+ 
+        serializer = PaymentTransactionUpdateSerializer(
+            transaction,
+            data=request.data,
+            partial=True,                        # allow partial updates
+            context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+ 
+        return Response({
+            "success": True,
+            "message": "Payment updated successfully",
+        })
+
+
+    def destroy(self, request, pk=None):
+        try:
+            transaction = PaymentTransaction.objects.get(pk=pk)
+            transaction.is_archived = True   # soft delete
+            transaction.save()
+            return Response({"success": True, "message": "Payment deleted successfully"})
+        except PaymentTransaction.DoesNotExist:
+            return Response({"success": False, "message": "Transaction not found"}, status=404)
+
 
 from django.conf import settings as django_settings
 from stripe import _error as stripe_error
