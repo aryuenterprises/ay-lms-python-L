@@ -1696,7 +1696,7 @@ class WebinarCertificateViewSet(viewsets.ViewSet):
         user_id = getattr(request.user, "user_id", None)
         user_type = getattr(request.user, "username", None)
 
-        sent_count = 0
+        sent_ids = []
 
         for reg in regs:
 
@@ -1717,15 +1717,17 @@ class WebinarCertificateViewSet(viewsets.ViewSet):
                 phone=reg.phone
             )
 
-            reg.certificate_sent = True
-            reg.save(update_fields=["certificate_sent"])
+            sent_ids.append(reg.id)
 
-            sent_count += 1
+        # Bulk update after sending
+        WebinarRegistration.objects.filter(id__in=sent_ids).update(
+            certificate_sent=True
+        )
 
         return Response({
             "success": True,
             "message": "Certificates sent successfully",
-            "count": sent_count
+            "count": len(sent_ids)
         })
 
 
