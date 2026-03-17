@@ -553,6 +553,17 @@ class WebinarViewSet(
         })
 
     def list(self, request):
+        user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         cache_key = "webinar_list_v1"
         data = cache.get(cache_key)
 
@@ -564,6 +575,17 @@ class WebinarViewSet(
         return Response(data)
 
     def create(self, request):
+        user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         serializer = WebinarSerializer(
             data=request.data,
             context={"request": request}
@@ -617,6 +639,17 @@ class WebinarViewSet(
     def update(self, request, uuid=None):
         try:
             with transaction.atomic():
+                user = request.user
+                user_type = user.user_type
+
+                if user_type in ["student", "tutor"]:
+                    return Response(
+                        {
+                            "success": False,
+                            "message": "You do not have permission to access this resource."
+                        },
+                        status=403
+                    )
 
                 webinar = get_object_or_404(Webinar, uuid=uuid)
 
@@ -1380,6 +1413,17 @@ class WebinarSessionViewSet(viewsets.ViewSet):
         return Response(serializer.data)
     
     def start(self, request, uuid=None):
+        user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         webinar = get_object_or_404(Webinar, uuid=uuid)
 
         session, created = WebinarSession.objects.get_or_create(
@@ -1440,6 +1484,17 @@ class WebinarFeedbackViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
 
     def list(self, request):
+        user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         queryset = WebinarFeedback.objects.select_related(
             "webinar",
             "registration"
@@ -1786,7 +1841,16 @@ class FormViewSet(viewsets.ViewSet):
 
     def list(self, request):
         user = request.user
+        user_type = user.user_type
 
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         role = getattr(user, "user_type", None)
 
         if role in ("tutor", "admin"):
@@ -1879,6 +1943,16 @@ class FormViewSet(viewsets.ViewSet):
     
     def update(self, request, slug=None):
         user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         user_id = str(getattr(user, "user_id", None))
         user_type = getattr(user, "user_type", None)
 
@@ -1938,7 +2012,17 @@ class SubmissionViewSet(viewsets.ViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def list(self, request):
+        user = request.user
+        user_type = user.user_type
 
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         form_slug = request.query_params.get("form_slug")
         if not form_slug:
             return Response(

@@ -4647,7 +4647,16 @@ class StudentRegistration(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         
         user = request.user
-        
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         # Ensure module_id points to Students
         student_module = ModulePermission.objects.filter(module__iexact="Students").first()
         if not student_module:
@@ -4686,6 +4695,14 @@ class StudentListAPIView(viewsets.ViewSet):
             creator_id = None
             super_admin_id = None
             admin_ids = []
+            if user_type in ["student", "tutor"]:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "You do not have permission to access this resource."
+                    },
+                    status=403
+                )
 
             if user_type == "super_admin":
                 creator_id = user.user_id
@@ -5780,6 +5797,17 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         return StudentProfileSerializer  # Read-only profile view
     
     def partial_update(self, request, *args, **kwargs):
+        user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         try:
             student = kwargs.get('student_id')
             if not student:
@@ -5898,6 +5926,17 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         url_path=r'(?P<student_id>[^/]+)/archive'
     )
     def archive_student(self, request, student_id=None):
+        user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         student = Student.objects.get(student_id=student_id)
         student.is_archived = True
         student.save()
@@ -6349,6 +6388,17 @@ class InvoiceDetailView(viewsets.ReadOnlyModelViewSet):
         }, status=status.HTTP_200_OK)
         
     def destroy(self, request, *args, **kwargs):
+        user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         invoice = self.get_object()
         invoice.is_archived = True
         return Response({
@@ -6372,6 +6422,17 @@ class InvoiceListViewSet(viewsets.ModelViewSet):
         return qs.order_by('-created_at')
 
     def list(self, request, *args, **kwargs):
+        user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         queryset = self.get_queryset()
         serializer = self.get_serializer(queryset, many=True, context={"request": request})
         return Response({
@@ -6395,6 +6456,18 @@ class CertificateViewSet(viewsets.ModelViewSet):
         return certificate
     
     def list(self, request, *args, **kwargs):
+        user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
+        
         queryset = self.get_queryset()
         serializer = self.get_serializer(queryset, many=True)
         return Response({
@@ -6474,8 +6547,19 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        base_queryset = CourseCategory.objects.filter(is_archived=False)
+        user_type = user.user_type
 
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
+        
+        base_queryset = CourseCategory.objects.filter(is_archived=False)
+        
         user_created_id = None
         if user.user_type == "super_admin":
             user_created_id = getattr(user, "user_id", None)
@@ -6582,7 +6666,16 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop('partial', False)
         user = request.user
-        
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         # Ensure module_id points to Course Categories
         category_module = ModulePermission.objects.filter(module__iexact="Category").first()
         if not category_module:
@@ -6619,6 +6712,17 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['patch'], url_path='archive')
     def archive_category(self, request, *args, **kwargs):
+        user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         category = self.get_object()
         category.is_archived = True
         category.save()
@@ -6695,6 +6799,18 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         try:
+            user = request.user
+            user_type = user.user_type
+
+            if user_type in ["student", "tutor"]:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "You do not have permission to access this resource."
+                    },
+                    status=403
+                )
+            
             queryset = self.get_queryset()
 
             filters = self._get_role_filters(request.user)
@@ -6735,7 +6851,16 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         
         user = request.user
-        
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         # Ensure module_id points to Courses
         courses_module = ModulePermission.objects.filter(module__iexact="Course").first()
         if not courses_module:
@@ -6765,7 +6890,16 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop('partial', False)
         user = request.user
+        user_type = user.user_type
 
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         # Ensure module_id points to Courses
         courses_module = ModulePermission.objects.filter(module__iexact="Course").first()
         if not courses_module:
@@ -6846,6 +6980,17 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['patch'], url_path='archive')
     def archive_course(self, request, *args, **kwargs):
+        user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         course = self.get_object()
         course.is_archived = True
         course.save()
@@ -7047,6 +7192,17 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     lookup_field = 'employee_id'
 
     def get_queryset(self):
+        user = self.request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         employee_id = self.request.query_params.get('employee_id')
         if employee_id:
             return Trainer.objects.filter(employee_id=employee_id)
@@ -7100,7 +7256,16 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         
         user = request.user
-        
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         # Ensure module_id points to Tutors
         tutors_module = ModulePermission.objects.filter(module__iexact="Tutors").first()
         if not tutors_module:
@@ -7218,6 +7383,16 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     def list_admins(self, request):
         try:
             user = request.user
+            user_type = user.user_type
+
+            if user_type in ["student", "tutor"]:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "You do not have permission to access this resource."
+                    },
+                    status=403
+                )
             user_created_id = getattr(user, "trainer_id", None)  # For admin
             if user.user_type == "super_admin":
                 user_created_id = getattr(user, "user_id", None)  # Super admin
@@ -7374,6 +7549,17 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='students')
     def student_list(self, request, employee_id=None):
         try:
+            user = request.user
+            user_type = user.user_type
+
+            if user_type in ["student", "tutor"]:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "You do not have permission to access this resource."
+                    },
+                    status=403
+                )
             trainer = self.get_object()
         except Trainer.DoesNotExist:
             return Response({
@@ -7538,6 +7724,16 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
     def get(self, request):
         try:
             user = request.user
+            user_type = user.user_type
+
+            if user_type in ["student", "tutor"]:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "You do not have permission to access this resource."
+                    },
+                    status=403
+                )
             user_created_id = getattr(user, "trainer_id", None)
             super_admin_id = None
             admin_ids = []
@@ -7773,6 +7969,18 @@ class TrainerTravelExpenseViewSet(viewsets.ModelViewSet):
         return self.queryset.none()
 
     def list(self, request, *args, **kwargs):
+        user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
+        
         """
         List all expenses for the trainer
         """
@@ -7976,7 +8184,7 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         except Course.DoesNotExist:
             return Response({'success': False, 'message': 'Course not found.'}, status=status.HTTP_200_OK)
 
-        # 🚀 Fetch NEW batch
+        # Fetch NEW batch
         try:
             new_batch = NewBatch.objects.get(batch_id=batch_id, is_archived=False)
         except NewBatch.DoesNotExist:
@@ -8286,6 +8494,16 @@ class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
 
         try:
             user = request.user
+            user_type = user.user_type
+
+            if user_type in ["student", "tutor"]:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "You do not have permission to access this resource."
+                    },
+                    status=403
+                )
             user_type = getattr(user, "user_type", "").lower()
 
             user_created_id = getattr(user, "trainer_id", None)
@@ -8593,7 +8811,16 @@ class AnnouncementViewSet(LoggingMixin, viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         user = request.user
+        user_type = user.user_type
 
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         queryset = self.get_queryset()
 
         page = self.paginate_queryset(queryset)
@@ -8756,6 +8983,16 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
     def list(self, request, *args, **kwargs):
         try:
             user = request.user
+            user_type = user.user_type
+
+            if user_type in ["student", "tutor"]:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "You do not have permission to access this resource."
+                    },
+                    status=403
+                )
             user_type = user.user_type.lower()
             user_id = str(user.user_id)
             trainer_id = str(getattr(user, "trainer_id", None))
@@ -9556,6 +9793,16 @@ class BatchViewSet(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
 
     def list(self, request, *args, **kwargs):
         user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         queryset = self.get_queryset()
         serializer = self.get_serializer(queryset, many=True)
 
@@ -9644,7 +9891,16 @@ class BatchViewSet(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         user = request.user
+        user_type = user.user_type
 
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         # Ensure module_id points to Batch
         batch_module = ModulePermission.objects.filter(module__iexact="Batch").first()
         if not batch_module:
@@ -9763,6 +10019,16 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
     def list(self, request):
         try:
             user = request.user
+            user_type = user.user_type
+
+            if user_type in ["student", "tutor"]:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "You do not have permission to access this resource."
+                    },
+                    status=403
+                )
             user_type = str(getattr(user, "user_type", "")).lower()
             user_id = str(getattr(user, "user_id", None))
             trainer_id = str(getattr(user, "trainer_id", None))
@@ -12494,6 +12760,7 @@ class AdminfullLogViewSet(ReadOnlyModelViewSet):
     ordering_fields = ['timestamp']
 
     def list(self, request, *args, **kwargs):
+        
         user = getattr(request, 'user_data', None)
         if not user or user.get('user_type') != 'admin':
             return Response({'error': 'Unauthorized'}, status=status.HTTP_200_OK)
@@ -12530,6 +12797,17 @@ class LeadViewSet(viewsets.ModelViewSet, NotesMixin):
 
     # ---------------- LIST ----------------
     def list(self, request, *args, **kwargs):
+        user = request.user
+        user_type = user.user_type
+
+        if user_type in ["student", "tutor"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to access this resource."
+                },
+                status=403
+            )
         queryset = self.queryset
         serializer = self.get_serializer(queryset, many=True)
         return Response({"success": True, "leads": serializer.data}, status=status.HTTP_200_OK)
