@@ -26,6 +26,7 @@ urlpatterns = [
    path("razorpay/verify", RazorpayPaymentViewSet.as_view({"post": "verify_payment"})),
    path('stripe/success/', stripe_success),
    path('stripe/cancel/', stripe_cancel),
+   path('role/<int:pk>',RoleViewSet.as_view({'patch':'status_update'})),
    path('roles', RoleViewSet.as_view({'get': 'list', 'post': 'create'})),
    path('roles/<int:pk>', RoleViewSet.as_view({'get': 'retrieve', 'patch': 'update', 'put': 'update'})),
    path('roles/<int:pk>/archive', RoleViewSet.as_view({'patch': 'is_archived'})),

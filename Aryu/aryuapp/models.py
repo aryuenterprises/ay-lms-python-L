@@ -161,6 +161,7 @@ class Role(models.Model):
     created_by = models.CharField(max_length=100, null=True, blank=True)
     created_by_type = models.CharField(max_length=50, null=True, blank=True)
     is_archived = models.BooleanField(default=False)
+    status=models.BooleanField(default=True)
 
     class Meta:
         db_table = "roles"
