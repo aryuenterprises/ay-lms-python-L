@@ -293,7 +293,49 @@ class PaymentGatewaySerializer(serializers.ModelSerializer):
                 validated_data["created_by_type"] = role
 
         return super().create(validated_data)
-
+class PaymentTransactionUpdateSerializer(serializers.ModelSerializer):
+    total_course_fee = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False
+    )
+ 
+    class Meta:
+        model = PaymentTransaction
+        fields = [
+            "gateway",
+            "course",
+            "amount",
+            "discount",
+            "total_after_discount",
+            "currency",
+            "payment_status",
+            "transaction_id",
+            "attachment",
+            "description",
+            "metadata",
+            "total_course_fee",   # extra field to update course fee
+        ]
+ 
+    def update(self, instance, validated_data):
+        # Pop total_course_fee — it belongs to Course model, not PaymentTransaction
+        total_course_fee = validated_data.pop("total_course_fee", None)
+ 
+        # Recalculate total_after_discount if amount or discount changed
+        amount   = validated_data.get("amount",   instance.amount)
+        discount = validated_data.get("discount", instance.discount)
+        validated_data["total_after_discount"] = amount - discount
+ 
+        # Update the transaction fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+ 
+        # Update the course fee if provided
+        if total_course_fee is not None and instance.course:
+            Course.objects.filter(course_id=instance.course.course_id).update(
+                fee=total_course_fee
+            )
+ 
+        return instance
 class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
     created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", read_only=True)
 

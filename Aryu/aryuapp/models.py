@@ -1417,6 +1417,7 @@ class PaymentTransaction(models.Model):
     metadata = models.JSONField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    is_archived = models.BooleanField(default=False)
 
     class Meta:
         indexes = [
