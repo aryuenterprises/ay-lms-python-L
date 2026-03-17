@@ -856,6 +856,9 @@ class RoleViewSet(viewsets.ViewSet):
     authentication_classes = [CustomJWTAuthentication]
     lookup_field = "role_id"
 
+
+
+
     def get_queryset(self):
         try:
             user = self.request.user
@@ -894,6 +897,18 @@ class RoleViewSet(viewsets.ViewSet):
             return qs
         except Exception:
             return Role.objects.none()
+    
+
+    def status_update(self,request,pk=None):
+        try:
+            role = Role.objects.get(role_id=pk)
+            role.status=not role.status
+            role.save()
+            return Response({"success": True, "message": "Role deleted successfully"}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
+
+
 
     def list(self, request):
         """List all roles with module permissions"""
@@ -907,7 +922,8 @@ class RoleViewSet(viewsets.ViewSet):
                     "role_id": role.role_id,
                     "name": role.name,
                     "module_permissions": perms_serializer.data,
-                    'is_archived': role.is_archived
+                    'is_archived': role.is_archived,
+                    'status':role.status
                 })
             return Response({"success": True, "message": "Roles retrieved successfully", "data": data}, status=status.HTTP_200_OK)
         except Exception as e:
