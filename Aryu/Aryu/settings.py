@@ -159,9 +159,6 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle"
     ],
-    "DEFAULT_THROTTLE_RATES": {
-        "anon": "10/min"
-    }
 }
 
 
@@ -208,7 +205,7 @@ CSRF_TRUSTED_ORIGINS = [
 ALLOWED_HOSTS = [
     "portal.aryuacademy.com",
     "workshop.aryuacademy.com",
-    "127.0.0.1",
+    # "127.0.0.1",
     # "localhost"
 ]  # Allow all hosts for development; change in production
 
