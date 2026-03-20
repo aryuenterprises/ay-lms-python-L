@@ -3866,13 +3866,33 @@ class StudentTicketViewSet(APIView):
 
         real_user = self.get_real_user(request.user)
 
+        admin_user = None
+        trainer = None
+
+        if student.created_by:
+            
+            # SUPER ADMIN CASE
+            if student.created_by_type == "super_admin":
+                from django.contrib.auth.models import User
+                admin_user = User.objects.filter(
+                    id=int(student.created_by)
+                ).first()
+
+            # ADMIN / TRAINER CASE
+            elif student.created_by_type == "admin":
+                trainer = Trainer.objects.filter(
+                    trainer_id=student.created_by
+                ).first()
+
         ticket = StudentTicket.objects.create(
             student=student,
             subject=subject,
             message=message,
             priority=priority,
             status="new",
-            updated_by=real_user
+            updated_by=real_user,
+            handled_by_superadmin=admin_user,
+            handled_by_trainer=trainer
         )
 
         # Handle attachments
@@ -3980,21 +4000,40 @@ class StudentTicketViewSet(APIView):
     from .utils import get_real_user
     def get_admin_scope(self, user):
         user_type = getattr(user, "user_type", None)
-
-        # IMPORTANT: Convert JWTUser → Real DB User
         real_user = self.get_real_user(user)
 
         if not real_user:
             return Q(pk__isnull=True)
 
-        # ---------------- SUPER ADMIN ----------------
+        # -------- SUPER ADMIN --------
         if user_type == "super_admin":
+
+            # Get all admins under this super admin
+            trainers = Trainer.objects.filter(
+                created_by=str(real_user.id)   # adjust field name if different
+            ).values_list("trainer_id", flat=True)
+
             return (
+                # assigned tickets
                 Q(handled_by_superadmin=real_user) |
+
+                # tickets of students directly created by super admin
+                Q(
+                    student__created_by=str(real_user.id),
+                    student__created_by_type="super_admin"
+                ) |
+
+                # KEY FIX: students created by admins under this super admin
+                Q(
+                    student__created_by__in=[str(t) for t in trainers],
+                    student__created_by_type="admin"
+                ) |
+
+                # webinar
                 Q(webinar_participant__isnull=False)
             )
 
-        # ---------------- ADMIN ----------------
+        # -------- ADMIN --------
         if user_type == "admin":
             trainer = Trainer.objects.filter(username=real_user.username).first()
 
@@ -4003,7 +4042,7 @@ class StudentTicketViewSet(APIView):
 
             return (
                 Q(handled_by_trainer=trainer) |
-                Q(student__created_by=trainer.trainer_id, student__created_by_type="admin") |
+                Q(student__created_by=str(trainer.trainer_id), student__created_by_type="admin") |
                 Q(webinar_participant__isnull=False)
             )
 
@@ -4056,6 +4095,7 @@ class StudentTicketViewSet(APIView):
             "message": "Reply updated successfully",
             "reply": TicketReplySerializer(reply, context={'request': request}).data
         }, status=status.HTTP_200_OK)
+
 
 
 class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
