@@ -164,16 +164,6 @@ REST_FRAMEWORK = {
         'django_filters.rest_framework.DjangoFilterBackend'
     ],
     'EXCEPTION_HANDLER': 'aryuapp.exceptions.custom_exception_handler',
-    "DEFAULT_THROTTLE_CLASSES": [
-        "rest_framework.throttling.AnonRateThrottle",
-        "rest_framework.throttling.UserRateThrottle",
-    ],
-    "DEFAULT_THROTTLE_RATES": {
-        "anon": "30/minute",
-        "user": "200/minute",
-        "login": "5/minute",
-        "sensitive": "10/minute",
-    }
 }
 
 
