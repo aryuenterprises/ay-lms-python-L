@@ -1,0 +1,386 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
+from django.db.models import Count, Q, Min, Max
+from django.core.cache import cache
+from datetime import datetime, timedelta, time
+from django.utils import timezone
+from announcements.models import Announcement
+from aryuapp.models import (
+    Student,
+    Attendance,
+    Assignment,
+    Submission,
+    Course,
+)
+from batches.models import ClassSchedule
+
+
+class StudentDashboardService:
+
+    CACHE_TIMEOUT = 60
+
+    def __init__(self, student_id):
+        self.student_id = student_id
+        self.student = Student.objects.only(
+            "student_id",
+            "registration_id",
+            "first_name",
+            "last_name",
+            "email",
+            "profile_pic"
+        ).filter(student_id=student_id).first()
+
+    # ---------------------------------------------------------
+    # DASHBOARD BUILDER
+    # ---------------------------------------------------------
+
+    def get_dashboard(self):
+
+        cache_key = f"student_dashboard_{self.student_id}"
+        cached = cache.get(cache_key)
+
+        if cached:
+            return cached
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+
+            profile = executor.submit(self.get_profile)
+            attendance = executor.submit(self.get_attendance_stats)
+            progress = executor.submit(self.get_course_progress)
+            assignments = executor.submit(self.get_assignment_stats)
+            schedules = executor.submit(self.get_class_schedules)
+            upcoming = executor.submit(self.get_upcoming_classes)
+            announcements = executor.submit(self.get_announcements)
+
+        data = {
+            "profile": profile.result(),
+            "attendance": attendance.result(),
+            "course_progress": progress.result(),
+            "assignments": assignments.result(),
+            "schedules": schedules.result(),
+            "upcoming_classes": upcoming.result(),
+            "announcements": announcements.result()
+        }
+
+        cache.set(cache_key, data, self.CACHE_TIMEOUT)
+
+        return data
+
+    # ---------------------------------------------------------
+    # PROFILE
+    # ---------------------------------------------------------
+
+    def get_profile(self):
+
+        if not self.student:
+            return {}
+
+        return {
+            "student_name": f"{self.student.first_name} {self.student.last_name}",
+            "student_id": self.student.registration_id,
+            "email": self.student.email,
+            "profile_pic": f"https://aylms.aryuprojects.com/api/media/{self.student.profile_pic}",
+            "badge": None
+        }
+
+    # ---------------------------------------------------------
+    # COURSE PROGRESS
+    # ---------------------------------------------------------
+
+    def get_course_progress(self):
+
+        student_id = self.student_id
+
+        courses = (
+            Course.objects.filter(
+                new_batches__students=student_id,
+                is_archived=False
+            )
+            .annotate(
+                total_topics=Count(
+                    "topics__topic_id",
+                    filter=Q(topics__is_archived=False),
+                    distinct=True
+                ),
+                completed_topics=Count(
+                    "topics__topic_id",
+                    filter=Q(
+                        topics__student_statuses__student_id=student_id,
+                        topics__student_statuses__status=True
+                    ),
+                    distinct=True
+                ),
+                batch_start_time=Min("new_batches__start_time"),
+                batch_end_time=Max("new_batches__end_time"),
+                batch_start_date=Min("new_batches__start_date"),
+                batch_end_date=Max("new_batches__end_date"),
+                trainer_name=Min("new_batches__trainer__full_name")
+            )
+            .values(
+                "course_id",
+                "course_name",
+                "trainer_name",
+                "total_topics",
+                "completed_topics",
+                "batch_start_time",
+                "batch_end_time",
+                "batch_start_date",
+                "batch_end_date"
+            )
+        )
+
+        results = []
+
+        for c in courses:
+
+            total = c["total_topics"] or 0
+            completed = c["completed_topics"] or 0
+
+            progress_percent = (completed / total * 100) if total else 0
+
+            duration = None
+            if c["batch_start_date"] and c["batch_end_date"]:
+                days = (c["batch_end_date"] - c["batch_start_date"]).days
+                months = round(days / 30)
+                duration = f"{months} Months" if months else f"{days} Days"
+
+            results.append({
+                "course_id": c["course_id"],
+                "course_name": c["course_name"],
+                "trainer_name": c["trainer_name"],
+                "duration": duration,
+                "start_time": c["batch_start_time"].strftime("%H:%M") if c["batch_start_time"] else None,
+                "end_time": c["batch_end_time"].strftime("%H:%M") if c["batch_end_time"] else None,
+                "total_topics": total,
+                "completed_topics": completed,
+                "progress_percent": round(progress_percent, 2)
+            })
+
+        return results
+
+    # ---------------------------------------------------------
+    # ATTENDANCE
+    # ---------------------------------------------------------
+
+    def get_attendance_stats(self):
+
+        schedules = ClassSchedule.objects.filter(
+            Q(new_batch__students=self.student_id) |
+            Q(batch__batchcoursetrainer__student_id=self.student_id),
+            is_archived=False
+        )
+
+        total = schedules.count()
+
+        cancelled = schedules.filter(
+            is_class_cancelled=True
+        ).count()
+
+        attended = Attendance.objects.filter(
+            student_id=self.student_id,
+            schedule_id__isnull=False
+        ).values("schedule_id").distinct().count()
+
+        absent = max(0, total - attended - cancelled)
+
+        percentage = (attended / total * 100) if total else 0
+
+        return {
+            "total_classes": total,
+            "attended": attended,
+            "absent": absent,
+            "cancelled_classes": cancelled,
+            "percentage": round(percentage, 2)
+        }
+
+    # ---------------------------------------------------------
+    # ASSIGNMENTS
+    # ---------------------------------------------------------
+
+    def get_assignment_stats(self):
+
+        courses = Course.objects.filter(
+            new_batches__students=self.student_id
+        ).values_list("course_id", flat=True)
+
+        assignments = Assignment.objects.filter(
+            course_id__in=courses,
+            is_archived=False
+        )
+
+        total = assignments.count()
+
+        completed = Submission.objects.filter(
+            student_id=self.student_id,
+            assignment__in=assignments
+        ).values("assignment_id").distinct().count()
+
+        pending = total - completed
+
+        return {
+            "total_assessments": total,
+            "completed": completed,
+            "pending": pending
+        }
+
+    # ---------------------------------------------------------
+    # ALL CLASS SCHEDULES
+    # ---------------------------------------------------------
+
+    def get_class_schedules(self):
+
+        student_id = self.student_id
+        tz = timezone.get_current_timezone()
+        now = timezone.now()
+
+        # -----------------------------
+        # Fetch schedules
+        # -----------------------------
+        schedules = list(
+            ClassSchedule.objects
+            .filter(
+                Q(new_batch__students=student_id) |
+                Q(batch__batchcoursetrainer__student_id=student_id),
+                is_archived=False
+            )
+            .select_related("course", "batch", "new_batch")
+            .values(
+                "schedule_id",
+                "scheduled_date",
+                "start_time",
+                "end_time",
+                "duration",
+                "is_class_cancelled",
+                "course__course_name",
+                "batch__batch_name",
+                "batch__title",
+                "new_batch__title"
+            )
+            .order_by("-scheduled_date", "-start_time")
+        )
+
+        # -----------------------------
+        # Fetch attendance logs
+        # -----------------------------
+        attendance_logs = list(
+            Attendance.objects.filter(
+                student_id=student_id,
+                status__in=["Login", "Logout", "Present"]
+            ).values_list("date", flat=True)
+        )
+
+        # normalize timezone
+        attendance_set = set()
+        for att in attendance_logs:
+            if timezone.is_naive(att):
+                att = timezone.make_aware(att, tz)
+            attendance_set.add(att)
+
+        result = []
+
+        for sched in schedules:
+
+            start_time = sched["start_time"] or time(9, 0)
+
+            class_start = timezone.make_aware(
+                datetime.combine(sched["scheduled_date"], start_time),
+                tz
+            )
+
+            if sched["end_time"]:
+                class_end = timezone.make_aware(
+                    datetime.combine(sched["scheduled_date"], sched["end_time"]),
+                    tz
+                )
+            else:
+                duration = sched["duration"] or timedelta(hours=1)
+                class_end = class_start + duration
+
+            # attendance check
+            attended = any(
+                (class_start - timedelta(minutes=5))
+                <= att <=
+                (class_end + timedelta(minutes=5))
+                for att in attendance_set
+            )
+
+            # status logic
+            if sched["is_class_cancelled"]:
+                status = "cancelled"
+
+            elif now < class_start:
+                status = "upcoming"
+
+            elif class_start <= now <= class_end:
+                status = "ongoing"
+
+            elif attended:
+                status = "completed"
+
+            else:
+                status = "missed"
+
+            batch_name = (
+                sched["batch__batch_name"]
+                or sched["batch__title"]
+                or sched["new_batch__title"]
+            )
+
+            result.append({
+                "schedule_id": sched["schedule_id"],
+                "course_name": sched["course__course_name"],
+                "batch_name": batch_name,
+                "scheduled_date": sched["scheduled_date"],
+                "start_time": start_time.strftime("%I:%M %p"),
+                "end_time": class_end.strftime("%I:%M %p"),
+                "status": status
+            })
+
+        return result
+
+    # ---------------------------------------------------------
+    # UPCOMING CLASSES
+    # ---------------------------------------------------------
+
+    def get_upcoming_classes(self):
+
+        schedules = (
+            ClassSchedule.objects
+            .filter(
+                new_batch__students=self.student_id,
+                scheduled_date__gte=date.today(),
+                is_archived=False
+            )
+            .select_related("course", "trainer", "new_batch")
+            .values(
+                "scheduled_date",
+                "start_time",
+                "class_link",
+                "course__course_name",
+                "trainer__full_name",
+                "new_batch__title"
+            )
+            .order_by("scheduled_date", "start_time")[:3]
+        )
+
+        return list(schedules)
+
+    # ---------------------------------------------------------
+    # ANNOUNCEMENTS
+    # ---------------------------------------------------------
+
+    def get_announcements(self):
+
+        return list(
+            Announcement.objects
+            .filter(
+                audience__in=["all", "students"],
+                is_archived=False
+            )
+            .values(
+                "title",
+                "content",
+                "created_at"
+            )
+            .order_by("-created_at")[:5]
+        )

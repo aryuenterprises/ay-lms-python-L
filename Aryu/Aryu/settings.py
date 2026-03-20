@@ -59,8 +59,16 @@ INSTALLED_APPS = [
     'aryuapp',
     'live_quiz',
     "axes",
+    'django_ratelimit',
     "mock_interview",
     "webinar",
+    "announcements",
+    "chats",
+    "tests",
+    "feedback",
+    "courses",
+    "batches",
+    "payments",
 ]
 
 ASGI_APPLICATION = "Aryu.asgi.application"
@@ -157,8 +165,15 @@ REST_FRAMEWORK = {
     ],
     'EXCEPTION_HANDLER': 'aryuapp.exceptions.custom_exception_handler',
     "DEFAULT_THROTTLE_CLASSES": [
-        "rest_framework.throttling.AnonRateThrottle"
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
     ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "30/minute",
+        "user": "200/minute",
+        "login": "5/minute",
+        "sensitive": "10/minute",
+    }
 }
 
 

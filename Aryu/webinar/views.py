@@ -12,7 +12,8 @@ from .services.scheduler import schedule_webinar_messages
 from .services.certificate_generation import generate_and_send_certificate_pdf
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .services.whatsapp import send_webinar_reminder, send_webinar_welcome_whatsapp, send_webinar_joining_whatsapp
-from aryuapp.models import PaymentGateway, PaymentTransaction, Certificate
+from aryuapp.models import Certificate
+from payments.models import PaymentTransaction, PaymentGateway
 import razorpay
 from rest_framework.viewsets import ReadOnlyModelViewSet
 from rest_framework.throttling import AnonRateThrottle
