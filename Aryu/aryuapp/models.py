@@ -2,16 +2,14 @@ from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseU
 from django.db import models
 from django.utils import timezone
 from django.contrib.postgres.fields import ArrayField
-from datetime import timedelta, datetime, time
-import string
+from datetime import timedelta
 from django.contrib.contenttypes.fields import GenericForeignKey, GenericRelation
 from django.contrib.contenttypes.models import ContentType
 from rest_framework.exceptions import ValidationError
-from datetime import date
 import pytz
 import uuid
-from django.db.models import F, ExpressionWrapper, DateTimeField, Q
-from django.core.validators import MaxValueValidator
+from batches.models import ClassSchedule, NewBatch, Batch
+from courses.models import Course
 from webinar.models import WebinarRegistration
 
 
@@ -189,133 +187,6 @@ class RoleModulePermission(models.Model):
     def __str__(self):
         return f"{self.role} - {self.module_permission.module} - {self.allowed_actions}"
 
-class CourseCategory(models.Model):
-    category_id = models.AutoField(primary_key=True)
-    category_name = models.CharField(max_length=100)
-    category_pic = models.ImageField(upload_to='course_categories/', null=True, blank=True)
-    status = models.BooleanField(default=True)
-    notes = models.CharField(max_length=255, null=True, blank=True)
-    is_archived = models.BooleanField(default=False)
-    created_by = models.CharField(max_length=100, null=True, blank=True)
-    created_by_type = models.CharField(max_length=50, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def cascade_category_deactivation(self):
-        # Deactivate all courses under this category
-        courses = Course.objects.filter(course_category=self, status="Active")
-        IST = pytz.timezone("Asia/Kolkata")
-        now = timezone.now().astimezone(IST)
-
-        for course in courses:
-            # Deactivate the course
-            course.status = "Inactive"
-            course.save(update_fields=["status"])
-
-            # ---- Handle NewBatch only ----
-            new_batches = NewBatch.objects.filter(course=course, is_archived=False)
-
-            # Deactivate batches
-            new_batches.update(status=False)
-
-            # ---- Archive upcoming schedules (only new_batch) ----
-            schedules_qs = ClassSchedule.objects.filter(
-                course=course,
-                new_batch__in=new_batches,
-                is_archived=False
-            ).select_related("new_batch")
-
-            schedules_to_archive = []
-
-            for sched in schedules_qs:
-                sched_date = sched.scheduled_date
-                start_time = sched.start_time or time(0, 0)
-                end_time = sched.end_time or time(23, 59, 59)
-
-                start_dt = IST.localize(datetime.combine(sched_date, start_time))
-                end_dt = IST.localize(datetime.combine(sched_date, end_time))
-
-                # Archive only future schedules
-                if end_dt > now:
-                    schedules_to_archive.append(sched.schedule_id)
-
-            if schedules_to_archive:
-                ClassSchedule.objects.filter(
-                    schedule_id__in=schedules_to_archive
-                ).update(is_archived=True)
-
-    def __str__(self):
-        return self.category_name
-
-class Course(models.Model):
-    course_id = models.AutoField(primary_key=True)
-    course_category = models.ForeignKey(
-        CourseCategory,
-        on_delete=models.CASCADE,
-        related_name="courses"
-    )
-    course_name = models.CharField(max_length=255, null=True, blank=True)
-    course_pic = models.ImageField(upload_to="courses/", null=True, blank=True)
-    syllabus = models.FileField(upload_to="syllabus/", null=True, blank=True)
-    duration = models.CharField(max_length=3, null=True, blank=True)
-    start_date = models.DateField(null=True, blank=True)
-    end_date = models.DateField(null=True, blank=True)
-    internship_duration = models.CharField(max_length=3, null=True, blank=True)
-    mode_of_delivery = models.CharField(max_length=100, null=True, blank=True)
-    currency_type = models.CharField(max_length=100, null=True, blank=True)
-    fee_type = models.CharField(max_length=100, null=True, blank=True)
-    fee = models.DecimalField(
-        max_digits=10, decimal_places=2,
-        validators=[MaxValueValidator(100000)], null=True, blank=True
-    )
-    status = models.CharField(max_length=20, null=True, blank=True)
-    notes = models.CharField(max_length=255, null=True, blank=True)
-    is_archived = models.BooleanField(default=False)
-    is_featured = models.BooleanField(default=False)
-    created_by = models.CharField(max_length=100, null=True, blank=True)
-    created_by_type = models.CharField(max_length=50, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    
-    def deactivate_course(self, course):
-        IST = pytz.timezone("Asia/Kolkata")
-        now = timezone.now().astimezone(IST)
-
-        # Step 1: Deactivate the course
-        course.status = "Inactive"
-        course.save(update_fields=["status"])
-
-        # Step 2: Deactivate related new batches
-        new_batches = NewBatch.objects.filter(course=course, is_archived=False)
-        new_batches.update(status=False)
-
-        # Step 3: Archive only upcoming schedules linked to NewBatch
-        schedules_qs = ClassSchedule.objects.filter(
-            course=course,
-            new_batch__in=new_batches,
-            is_archived=False
-        ).select_related("new_batch")
-
-        schedules_to_archive = []
-
-        for sched in schedules_qs:
-            sched_date = sched.scheduled_date
-            start_time = sched.start_time or time(0, 0)
-            end_time = sched.end_time or time(23, 59, 59)
-
-            start_dt = IST.localize(datetime.combine(sched_date, start_time))
-            end_dt = IST.localize(datetime.combine(sched_date, end_time))
-
-            # Archive only future schedules
-            if end_dt > now:
-                schedules_to_archive.append(sched.schedule_id)
-
-        if schedules_to_archive:
-            ClassSchedule.objects.filter(
-                schedule_id__in=schedules_to_archive
-            ).update(is_archived=True)
-
-    def __str__(self):
-        return self.course_name
-
 def trainer_profile_pic_path(instance, filename):
         reg_id = str(instance.employee_id).replace(" ", "_")
         return f'trainer_profile_pics/{reg_id}/{filename}'
@@ -328,24 +199,58 @@ def trainer_expense_bill_path(instance, filename):
 class Trainer(models.Model):
     trainer_id = models.AutoField(primary_key=True, db_index=True)
     employee_id = models.CharField(max_length=255, unique=True, db_index=True)
+
     role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True)
     username = models.CharField(max_length=50)
     password = models.CharField(max_length=128, null=False, blank=False)
     full_name = models.CharField(max_length=255, db_index=True)
     user_type = models.CharField(max_length=20, null=False, blank=False, db_index=True)
+    tutor_type = models.CharField(max_length=50,null= True,blank =True)     #part time or full time
+    dob = models.DateField(null=True, blank=True)
+
+    address = models.CharField(max_length=255, null=True, blank=True)
+    city = models.CharField(max_length=50,null= True,blank =True)
+    state = models.CharField(max_length=50,null= True,blank =True)
+    country = models.CharField(max_length=255, null=True, blank=True)
+    pincode = models.IntegerField(null=True, blank=True)
     profile_pic = models.ImageField(upload_to=trainer_profile_pic_path, null=True, blank=True)
     email = models.EmailField()
     contact_no = models.CharField(max_length=20)
+
+    salary = models.FloatField(null=True, blank=True)
+    salary_type = models.CharField(max_length=255, null=True, blank=True)
+    courses = models.ManyToManyField(Course, related_name='trainer_courses', blank=True)
+    
     gender = models.CharField(max_length=10, null=True, blank=True)
     specialization = models.CharField(max_length=255, null=True, blank=True)
     working_hours = models.CharField(max_length=100, null=True, blank=True)
+    
+    experience = models.CharField(max_length=20, null=True, blank=True) 
+    last_company = models.CharField(max_length=255, null=True, blank=True)
+    linkedin_profile = models.CharField(max_length=100, null=True, blank=True)
+    short_bio = models.CharField(max_length=200, null=True, blank=True)
+    joining_date = models.DateField(null=True, blank=True)
+
+    account_no = models.BigIntegerField(null=True, blank=True)
+    account_holder_name = models.CharField(null=True, blank=True)
+    bank_name = models.CharField(null=True, blank=True)
+    ifsc_code = models.CharField(max_length=15,null=True, blank=True)
+    upi_id = models.CharField(null=True, blank=True)
+    gpay_no = models.BigIntegerField(null=True, blank=True)
+
+    aadhar_card = models.FileField(upload_to="trainers_data/adharcard",null=True, blank=True)
+    pan_card = models.FileField(upload_to="trainers_data/pancard",null=True, blank=True)
+    resume= models.FileField(upload_to="trainers_data/resume",null=True, blank=True)
+    certificate = models.FileField(upload_to="trainers_data/certificate",null=True, blank=True)
+    photo = models.FileField(upload_to="trainers_data/photo",null=True, blank=True)
+
     status = models.CharField(max_length=20, null=True, blank=True, db_index=True)
     notes = GenericRelation("Note", related_query_name="trainer_notes")
     is_archived = models.BooleanField(default=False, db_index=True)
     created_by = models.CharField(max_length=100, null=True, blank=True, db_index=True)
     created_by_type = models.CharField(max_length=50, null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    
+
     class Meta:
         indexes = [
             models.Index(fields=['trainer_id']),
@@ -354,6 +259,25 @@ class Trainer(models.Model):
             models.Index(fields=['created_by', 'created_by_type']),
             models.Index(fields=['status', 'is_archived']),
         ]
+
+    def save(self, *args, **kwargs):
+        if self.email:
+            self.email = self.email.lower()  # force lowercase before saving
+        if not self.employee_id:
+            self.employee_id = self.generate_employee_id()
+        super().save(*args, **kwargs)
+
+    def generate_employee_id(self):
+        prefix = "AA-TUT"
+        current_date = get_ist_now()
+        month = current_date.strftime("%m")
+        year = current_date.strftime("%y")
+
+        from .models import Trainer  # avoid circular import
+        trainers = Trainer.objects.filter(employee_id__contains=f"{month}{year}")
+        count = trainers.count() + 1 
+        number = (count - 1) % 999 + 1
+        return f"{prefix}-{month}{year}-{number:03d}"
 
 class TrainerTravelExpense(models.Model):
     expense_id = models.AutoField(primary_key=True, db_index=True)
@@ -364,7 +288,7 @@ class TrainerTravelExpense(models.Model):
     status = models.CharField(max_length=50, default="pending", db_index=True)
     remarks = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    updated_at = models.DateTimeField(auto_now=True)                                                    
     is_archived = models.BooleanField(default=False, db_index=True)
 
     def __str__(self):
@@ -385,17 +309,17 @@ class TrainerAttendance(models.Model):
         null=False
     )
     new_batch = models.ForeignKey(
-        "NewBatch",
+        NewBatch,
         on_delete=models.CASCADE,
         null=True,
         related_name='trainer_attendance'
     )
     schedule_id = models.ForeignKey(
-        'CLassSchedule',
+        ClassSchedule,
         on_delete=models.CASCADE,
         null=True, blank=True
     )
-    batch = models.ForeignKey("Batch", null=True, blank=True, on_delete=models.SET_NULL)
+    batch = models.ForeignKey(Batch, null=True, blank=True, on_delete=models.SET_NULL)
     date = models.DateTimeField(null=False, blank=False)
     status = models.CharField(max_length=10)
     course =models.ForeignKey(Course, on_delete=models.CASCADE, null=False, blank=False)
@@ -406,18 +330,6 @@ class TrainerAttendance(models.Model):
     class Meta:
         db_table = 'trainer_attendance'
 
-class Topic(models.Model):
-    topic_id = models.AutoField(primary_key=True)
-    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='topics')
-    title = models.CharField(max_length=255)
-    description = models.TextField(null=True, blank=True)
-    created_date = models.DateTimeField(auto_now_add=True)
-    create_by = models.ForeignKey(Trainer, on_delete=models.SET_NULL, null=True, related_name='created_topics', blank=True)
-    is_archived = models.BooleanField(default=False)
-    created_by = models.CharField(max_length=100, null=True, blank=True)
-    created_by_type = models.CharField(max_length=50, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    
 
 def student_profile_pic_path(instance, filename):
         reg_id = str(instance.registration_id).replace(" ", "_")
@@ -431,15 +343,19 @@ class Student(models.Model):
     username = models.CharField(max_length=50, null=False, blank=False)
     password = models.CharField(max_length=128, null=False, blank=False)
     first_name = models.CharField(max_length=255)
-    last_name = models.CharField(max_length=255)
+    last_name = models.CharField(max_length=255, null=True, blank=True)
     is_archived = models.BooleanField(default=False)
+    gender = models.CharField(max_length=255, null=True, blank=True)
+    discount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     dob = models.DateField()
     email = models.EmailField( null=False, blank=False)
     contact_no = models.CharField(max_length=20, null=False, blank=False)
+    alternate_mobile_no = models.CharField(max_length=20, null=True, blank=True)
     current_address = models.TextField(max_length=255, null=False, blank=False)
     permanent_address = models.TextField(max_length=255, null=False, blank=False)
     joining_date = models.DateField(auto_now_add=True)
-    internship = models.CharField(max_length=3, null=True, blank=True)
+    internship_required = models.BooleanField(default=False)
+    internship = models.CharField(max_length=255, null=True, blank=True)
     city = models.CharField(max_length=255, null=False, blank=False)
     state = models.CharField(max_length=255, null=False, blank=False)
     country = models.CharField(max_length=255, null=False, blank=False) 
@@ -447,8 +363,11 @@ class Student(models.Model):
     parent_guardian_phone = models.CharField(max_length=20, null=True, blank=True)
     parent_guardian_occupation = models.CharField(max_length=255, null=True, blank=True)
     trainer = models.ForeignKey(Trainer, on_delete=models.SET_NULL, null=True, blank=True, related_name='students')
+    is_referenced = models.BooleanField(default=False)
+    reference_name = models.CharField(max_length=255, null=True, blank=True)
     reference_number = models.CharField(max_length=255, null=True, blank=True)
     student_type = models.CharField(max_length=30, null=False, blank=False)
+    source_type = models.CharField(max_length=20,null=True,blank=False)
     status = models.BooleanField(default=True, null=False, blank=False)
     notes = GenericRelation("Note", related_query_name="student_notes")
     created_by = models.CharField(max_length=100, null=True, blank=True)
@@ -640,17 +559,6 @@ class Employee(models.Model):
     experience = models.CharField(max_length=255, default="0", null=False, blank=False)
     skills = models.TextField(null=False, blank=True)
 
-class StudentTopicStatus(models.Model):
-    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="topic_statuses")
-    topic = models.ForeignKey(Topic, on_delete=models.CASCADE, related_name="student_statuses")
-    status = models.BooleanField(default=True)
-    ratings = models.IntegerField(null=True, blank=True)
-    notes = models.TextField(null=True, blank=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    created_by = models.CharField(max_length=100, null=True, blank=True)
-    created_by_type = models.CharField(max_length=50, null=True, blank=True)
-    
 class Recordings(models.Model):
     id = models.AutoField(primary_key=True)
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="recordings")
@@ -671,7 +579,7 @@ class Attendance(models.Model):
         db_column='student_id', null=False
     )
     schedule_id = models.ForeignKey(
-        'CLassSchedule',
+        ClassSchedule,
         on_delete=models.CASCADE,
         null=True, blank=True
     )
@@ -682,12 +590,12 @@ class Attendance(models.Model):
         related_name='attendances'
     )
     new_batch = models.ForeignKey(
-        "NewBatch",
+        NewBatch,
         on_delete=models.CASCADE,
         null=True,
         related_name='attendance'
     )
-    batch = models.ForeignKey("Batch", null=True, blank=True, on_delete=models.SET_NULL)
+    batch = models.ForeignKey(Batch, null=True, blank=True, on_delete=models.SET_NULL)
     date = models.DateTimeField(null=False, blank=False)
     status = models.CharField(max_length=10)
     ip_address= models.GenericIPAddressField(null=True, blank=True)
@@ -695,6 +603,10 @@ class Attendance(models.Model):
 
     class Meta:
         db_table = 'attendance'
+        indexes = [
+            models.Index(fields=["student", "date"]),
+            models.Index(fields=["status"])
+        ]
     
 class Invoice(models.Model):
     invoice_number = models.CharField(max_length=50, unique=True, editable=False)
@@ -802,112 +714,7 @@ class Certificate(models.Model):
     def __str__(self):
         return f"Certificate - {self.student}"
 
-class Announcement(models.Model):
-    id = models.AutoField(primary_key=True)
-    title = models.CharField(max_length=255)
-    content = models.TextField()
-    content_pic = models.ImageField(upload_to='announcements/', blank=True, null=True)
-    background_pic = models.ImageField(upload_to='announcements/', blank=True, null=True)
-    audience = models.CharField(
-        max_length=20,
-        default="all"
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    is_archived = models.BooleanField(default=False)
-    created_by = models.CharField(max_length=100, null=True, blank=True)
-    created_by_type = models.CharField(max_length=50, null=True, blank=True)
-
-    class Meta:
-        ordering = ['-created_at']
-
-    def __str__(self):
-        return self.title
-
-class Feedback(models.Model):
-    student_id = models.CharField(max_length=50)
-    student_name = models.CharField(max_length=100)
-    trainer_name = models.CharField(max_length=100)
-    rating = models.PositiveIntegerField()  # e.g., 1 to 5
-    comments = models.TextField()
-    suggestions = models.TextField(blank=True, null=True)
-    submitted_date = models.DateTimeField(auto_now_add=True)
-    created_by = models.CharField(max_length=100, null=True, blank=True)
-    created_by_type = models.CharField(max_length=50, null=True, blank=True)
-
-    class Meta:
-        db_table = 'feedback'
-
-    def __str__(self):
-        return f"{self.student_name} → {self.trainer_name} ({self.rating}/5)"
     
-class Test(models.Model):
-    test_id = models.AutoField(primary_key=True)
-    test_name = models.CharField(max_length=255, null=True, blank=True)
-    description = models.TextField(max_length=255, null=True, blank=True)
-    duration = models.CharField(max_length=10, null=True, blank=True)  # in minutes
-    total_marks = models.PositiveIntegerField(null=True, blank=True)
-    course_id = models.ForeignKey('Course', on_delete=models.CASCADE)
-    is_archived = models.BooleanField(default=False)
-    created_by = models.CharField(max_length=100, null=True, blank=True)
-    created_by_type = models.CharField(max_length=50, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-class TestQuestions(models.Model):
-    question_id = models.AutoField(primary_key=True)
-    test_id = models.ForeignKey(
-        Test,
-        on_delete=models.CASCADE,
-        null=True, blank=True,
-        related_name="test_questions"
-    )
-    question = models.CharField(max_length=255, null=True, blank=True)
-    type = models.CharField(max_length=20) #mcq, written
-    options = models.JSONField(max_length=255,null=True, blank=True, help_text="MCQ options from frontend")
-    marks = models.PositiveBigIntegerField(null=True, blank=True)
-    written_answer = models.TextField(null=True, blank=True, help_text="Correct answer for written questions")
-    mcq_correct_option = models.CharField(max_length=255, null=True, blank=True)
-    is_archived = models.BooleanField(default=False)
-    created_by = models.CharField(max_length=100, null=True, blank=True)
-    created_by_type = models.CharField(max_length=50, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return f"{self.question} ({self.type})"
-
-class StudentAnswers(models.Model):
-    answer_id = models.AutoField(primary_key=True)
-    student_id = models.ForeignKey(
-        Student,
-        on_delete=models.CASCADE,
-        related_name="student_answers",
-        null=True, blank=True
-    )
-    question_id = models.ForeignKey(TestQuestions, on_delete=models.CASCADE, related_name="student_answers")
-    test_id = models.ForeignKey(Test, on_delete=models.CASCADE, related_name="student_test_answers")
-    selected_option = models.TextField(null=True, blank=True)
-    written_answer = models.TextField(null=True, blank=True)
-    is_correct = models.BooleanField(null=True, blank=True)
-    submitted_at = models.DateTimeField(auto_now_add=True)
-    question_text = models.TextField(null=True, blank=True)
-    options_snapshot = models.JSONField(null=True, blank=True)
-    correct_answer_snapshot = models.TextField(null=True, blank=True)
-    marks_snapshot = models.FloatField(null=True, blank=True)
-
-class TestResult(models.Model):
-    result_id = models.AutoField(primary_key=True)
-    student_id = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="test_results")
-    test_id = models.ForeignKey(Test, on_delete=models.CASCADE, related_name="test_results")
-    score = models.PositiveIntegerField(null=True, blank=True)
-    time_taken = models.DurationField(null=True, blank=True)
-    evaluated_by = models.ForeignKey(
-        "Trainer",
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name="evaluated_results"
-    )
-    evaluated_at = models.DateTimeField(auto_now=True)
-
 class LeaveRequest(models.Model):
     student = models.ForeignKey(
         Student,
@@ -936,282 +743,6 @@ class LeaveRequest(models.Model):
 
     def __str__(self):
         return f"{self.student} - {self.leave_type} ({self.status})"
-    
-class ClassSchedule(models.Model):
-    BUFFER_MINUTES = 0
-
-    schedule_id = models.AutoField(primary_key=True)
-    batch = models.ForeignKey('Batch', on_delete=models.CASCADE, related_name='schedules', null=True, blank=True)
-    new_batch = models.ForeignKey(
-        'NewBatch',
-        on_delete=models.CASCADE,
-        related_name='schedules',
-        null=True, blank=True
-    )
-    course = models.ForeignKey('Course', on_delete=models.CASCADE)
-    trainer = models.ForeignKey('Trainer', on_delete=models.SET_NULL, null=True)
-    scheduled_date = models.DateField()
-    start_time = models.TimeField()
-    end_time = models.TimeField()
-    duration = models.DurationField(null=True, blank=True)
-    is_archived = models.BooleanField(default=False)
-    is_online_class = models.BooleanField(default=False)
-    is_class_cancelled = models.BooleanField(default=False)
-    actual_end_time = models.DateTimeField(null=True, blank=True)
-    meeting_link = models.URLField(max_length=500, null=True, blank=True)
-    class_link = models.TextField(max_length=500, null=True, blank=True)
-    created_by = models.CharField(max_length=100, null=True, blank=True)
-    created_by_type = models.CharField(max_length=50, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    
-    class Meta:
-        indexes = [
-            models.Index(fields=['trainer']),
-            models.Index(fields=['course']),
-            models.Index(fields=['created_by']),
-            models.Index(fields=['created_by_type']),
-            models.Index(fields=['scheduled_date']),
-            models.Index(fields=['batch']),
-            models.Index(fields=['new_batch']),
-        ]
-
-    def save(self, *args, **kwargs):
-        if self.start_time and self.end_time:
-            start_seconds = self.start_time.hour * 3600 + self.start_time.minute * 60 + self.start_time.second
-            end_seconds = self.end_time.hour * 3600 + self.end_time.minute * 60 + self.end_time.second
-            if end_seconds < start_seconds:
-                end_seconds += 24 * 3600
-            self.duration = timedelta(seconds=(end_seconds - start_seconds))
-        super().save(*args, **kwargs)
-
-    def scheduled_end_datetime(self):
-        """Combine scheduled_date and end_time as a timezone-aware datetime."""
-        return datetime.datetime.combine(
-            self.scheduled_date,
-            self.end_time,
-            tzinfo=timezone.get_current_timezone()
-        )
-
-    def get_extra_time(self):
-        if not self.actual_end_time:
-            return timedelta(0)
-
-        threshold = self.scheduled_end_datetime() + timedelta(minutes=self.BUFFER_MINUTES)
-
-        if self.actual_end_time > threshold:
-            return self.actual_end_time - threshold
-
-        return timedelta(0)
-
-    def get_planned_duration(self):
-        """Return the planned class duration (from start_time to end_time)."""
-        start_dt = datetime.datetime.combine(
-            self.scheduled_date,
-            self.start_time,
-            tzinfo=timezone.get_current_timezone()
-        )
-        end_dt = self.scheduled_end_datetime()
-        return end_dt - start_dt
-
-    def get_actual_duration(self):
-        """Return actual duration (from start_time to actual_end_time)."""
-        if not self.actual_end_time:
-            return None
-        start_dt = datetime.datetime.combine(
-            self.scheduled_date,
-            self.start_time,
-            tzinfo=timezone.get_current_timezone()
-        )
-        return self.actual_end_time - start_dt
-
-    def __str__(self):
-        return f"{self.course.course_name} - {self.scheduled_date} ({self.start_time}-{self.end_time})"
-
-class RecurringSchedule(models.Model):
-    recurring_id = models.AutoField(primary_key=True)
-    course = models.ForeignKey('Course', on_delete=models.CASCADE)
-    batch = models.ForeignKey('Batch', on_delete=models.CASCADE, null=True, blank=True)
-    new_batch = models.ForeignKey(
-        'NewBatch',
-        on_delete=models.CASCADE,
-        related_name='recurring_schedules',
-        null=True, blank=True
-    )
-    trainer = models.ForeignKey('Trainer', on_delete=models.CASCADE)
-
-    recurrence_type = models.CharField(max_length=20, null=True, blank=True)
-    days_of_week = models.JSONField(null=True, blank=True)
-    start_date = models.DateField()
-    end_date = models.DateField()
-    start_time = models.TimeField()
-    end_time = models.TimeField()
-    is_online_class = models.BooleanField(default=False)
-    class_link = models.TextField(max_length=500, null=True, blank=True)
-
-    country = models.CharField(max_length=5, default="IN")
-    subdiv = models.CharField(max_length=10, null=True, blank=True)
-    is_archived = models.BooleanField(default=False)
-    created_by = models.CharField(max_length=100, null=True, blank=True)
-    created_by_type = models.CharField(max_length=50, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=['new_batch']),
-        ]
-    
-    def __str__(self):
-        return f"Recurring {self.course.course_name} ({self.recurrence_type})"
-      
-class Batch(models.Model):
-    batch_id = models.AutoField(primary_key=True)
-    batch_name = models.CharField(max_length=100)
-    title = models.CharField(max_length=100, null=True, blank=True)
-    scheduled_date = models.DateField()
-    status = models.BooleanField(default=True, null=True, blank=True)
-    notes = models.CharField(max_length=255, null=True, blank=True)
-    end_date = models.DateField(null=True, blank=True)
-    is_archived = models.BooleanField(default=False)
-    created_by = models.CharField(max_length=100, null=True, blank=True)
-    created_by_type = models.CharField(max_length=50, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = 'batch'
-        indexes = [
-            models.Index(fields=["is_archived", "status"]),
-            models.Index(fields=["created_by", "created_by_type"]),
-            models.Index(fields=["created_at"]),
-        ]
-        
-    def save(self, *args, **kwargs):
-        if not self.batch_name:
-            year = self.scheduled_date.year if self.scheduled_date else date.today().year
-            year_suffix = str(year)[-2:]  # '25' from 2025
-
-            # Count batches in this year
-            batches_this_year = Batch.objects.filter(scheduled_date__year=year).count()
-
-            # Determine letter and number
-            letter_index = batches_this_year // 999  # every 999 batches rolls to next letter
-            sequence_number = (batches_this_year % 999) + 1  # 1–999
-
-            # Get corresponding uppercase letter: A, B, C, etc.
-            letters = string.ascii_uppercase
-            if letter_index >= len(letters):
-                raise ValueError("Batch limit exceeded for the year")
-
-            letter = letters[letter_index]
-            batch_code = f"AYA-AKIRA-{year_suffix}{letter}{sequence_number:03d}"
-            self.batch_name = batch_code
-
-        super().save(*args, **kwargs)
-        
-    def deactivate_batch(self, batch):
-        IST = timezone.get_current_timezone()  # Or pytz.timezone("Asia/Kolkata") if using IST specifically
-        now = timezone.now().astimezone(IST)
-
-        # Step 1: Deactivate the batch
-        batch.status = False
-        batch.save(update_fields=["status"])
-
-        # Step 2: Archive only upcoming schedules
-        schedules_qs = ClassSchedule.objects.filter(
-            batch=batch,
-            is_archived=False
-        )
-
-        schedules_to_archive = []
-
-        for sched in schedules_qs:
-            start_time = sched.start_time or time(9, 0)
-            end_time = sched.end_time or (sched.start_time or time(9, 0)) + timedelta(hours=1)
-
-            start_dt = datetime.combine(sched.scheduled_date, start_time)
-            end_dt = datetime.combine(sched.scheduled_date, end_time)
-            start_dt = timezone.make_aware(start_dt, IST)
-            end_dt = timezone.make_aware(end_dt, IST)
-
-            if end_dt > now:
-                schedules_to_archive.append(sched.schedule_id)
-
-        ClassSchedule.objects.filter(schedule_id__in=schedules_to_archive).update(is_archived=True)
-
-    def __str__(self):
-        return f"{self.batch_name}"
-    
-class BatchCourseTrainer(models.Model):
-    batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='batchcoursetrainer')
-    course = models.ForeignKey(Course, on_delete=models.CASCADE)
-    student = models.ForeignKey(Student, on_delete=models.CASCADE, db_column='student_id')
-    trainer = models.ForeignKey(Trainer, on_delete=models.CASCADE)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["trainer", "batch"]),
-            models.Index(fields=["trainer", "student"]),
-            models.Index(fields=["batch", "course"]),
-        ]
-
-    def __str__(self):
-        return f"{self.batch.batch_name}: {self.course.course_name} -> {self.trainer.full_name}"
-    
-class NewBatch(models.Model):
-    batch_id = models.AutoField(primary_key=True)
-    title = models.CharField(max_length=100)
-    course = models.ForeignKey('Course', on_delete=models.CASCADE, related_name='new_batches')
-    trainer = models.ForeignKey('Trainer', on_delete=models.CASCADE, related_name='new_batches')
-    start_date = models.DateField()
-    end_date = models.DateField()
-    start_time = models.TimeField()
-    end_time = models.TimeField()
-    slots = models.PositiveIntegerField(default=0)
-    status = models.BooleanField(default=True)
-    students = models.ManyToManyField('Student', related_name='new_batches', blank=True)
-    created_by = models.CharField(max_length=100, null=True, blank=True)
-    created_by_type = models.CharField(max_length=50, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    is_archived = models.BooleanField(default=False)
-
-    def available_slots(self):
-        return self.slots - self.students.count()
-    
-    def deactivate_batch(self):
-        """
-        Deactivate the batch and delete only upcoming schedules.
-        Past schedules remain untouched.
-        """
-        IST = timezone.get_current_timezone()
-        now = timezone.now().astimezone(IST)
-
-        # Step 1: Mark this batch as archived / deactivated
-        self.is_archived = True
-        self.save(update_fields=["is_archived"])
-
-        # Step 2: Get only schedules for this batch
-        schedules_qs = ClassSchedule.objects.filter(
-            new_batch=self,
-            is_archived=False
-        )
-
-        upcoming_to_delete = []
-
-        for sched in schedules_qs:
-            start_dt = datetime.combine(
-                sched.scheduled_date,
-                sched.start_time or time(9, 0)
-            )
-            start_dt = timezone.make_aware(start_dt, IST)
-
-            # Only delete schedules whose start time is in the future
-            if start_dt > now:
-                upcoming_to_delete.append(sched.schedule_id)
-
-        # Step 3: Delete only future schedules
-        ClassSchedule.objects.filter(schedule_id__in=upcoming_to_delete).delete()
-
-    def __str__(self):
-        return f"{self.title} ({self.course.course_name})"
     
 class Assignment(models.Model):
     id = models.AutoField(primary_key=True)
@@ -1253,52 +784,7 @@ class SubmissionReply(models.Model):
     
     def __str__(self):
         return f"Reply to {self.submission.assignment.title} by {self.trainer.full_name}"
-    
-class Notification(models.Model):
-    id = models.AutoField(primary_key=True)
-    super_admin = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
-    student = models.ForeignKey(Student, on_delete=models.CASCADE, null=True, blank=True, related_name="notifications")
-    trainer = models.ForeignKey(Trainer, on_delete=models.CASCADE, null=True, blank=True, related_name="notifications")
-    sub_admin = models.ForeignKey(SubAdmin, on_delete=models.CASCADE, null=True, blank=True)
-    course = models.ForeignKey(Course, on_delete=models.SET_NULL, null=True, blank=True)
-    assignment = models.ForeignKey(Assignment, on_delete=models.SET_NULL, null=True, blank=True)
-    test = models.ForeignKey(Test, on_delete=models.SET_NULL, null=True, blank=True)
-    topic = models.ForeignKey(Topic, on_delete=models.SET_NULL, null=True, blank=True)
-    schedule = models.ForeignKey(ClassSchedule, on_delete=models.SET_NULL, null=True, blank=True)
-    message = models.TextField()
-    is_read = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        target = self.student.registration_id if self.student else self.trainer.employee_id
-        return f"Notification → {target}: {self.message[:30]}"
-
-class ChatRoom(models.Model):
-    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="chat_rooms")
-    trainer = models.ForeignKey(Trainer, on_delete=models.CASCADE, related_name="chat_rooms")
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ("student", "trainer")
-
-    def __str__(self):
-        return f"Room: {self.student.registration_id} ↔ {self.trainer.employee_id}"
-
-class Message(models.Model):
-    room = models.ForeignKey(ChatRoom, on_delete=models.CASCADE, related_name="messages")
-    sender_type = models.CharField(max_length=20)
-    sender_id = models.CharField(max_length=50)
-    content = models.TextField(null=True, blank=True)
-    upload = models.FileField(upload_to='chat/uploades/', null=True, blank=True)
-    audio_file = models.FileField(upload_to="chat/audio/", blank=True, null=True)
-    is_read = models.BooleanField(default=False)
-    is_deleted = models.BooleanField(default=False)
-    created_at = models.DateTimeField(default=timezone.now)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        return f"{self.sender_type}({self.sender_id}): {self.content[:20]}"
-    
+  
 class StudentTicket(models.Model):
     ticket_id = models.AutoField(primary_key=True)
 
@@ -1381,115 +867,6 @@ class PasswordResetOTP(models.Model):
     def is_expired(self):
         return timezone.now() > self.created_at + timedelta(minutes=10)
     
-class PaymentGateway(models.Model):
-    
-    gatway_name = models.CharField(max_length=50)
-    public_key = models.CharField(max_length=200, blank=True, null=True)
-    secret_key = models.CharField(max_length=200, blank=True, null=True)
-    webhook_secret = models.CharField(max_length=200, blank=True, null=True)
-    currency = models.CharField(max_length=10, blank=True, null=True)
-    created_by = models.CharField(max_length=50, null=True, blank=True)
-    created_by_type = models.CharField(max_length=50, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    is_archived = models.BooleanField(default=False)
-
-    def __str__(self):
-        return f"{self.gatway_name} ({'Enabled' if not self.is_archived else 'Disabled'})"
-
-class PaymentTransaction(models.Model):
-
-    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="transactions", null=True, blank=True)
-    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name="course_transactions", null=True, blank=True)
-
-    gateway = models.ForeignKey(PaymentGateway, on_delete=models.SET_NULL, null=True)
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
-    
-    # ADD THIS
-    discount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    total_after_discount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-
-    currency = models.CharField(max_length=10, null=True, blank=True)
-    payment_status = models.CharField(max_length=20, null=True, blank=True)
-    transaction_id = models.CharField(max_length=100, blank=True, null=True)
-    # order_id = models.CharField(max_length=100, blank=True, null=True)
-    attachment = models.FileField(upload_to='payment_attachments/', blank=True, null=True)
-    description = models.TextField(blank=True, null=True)
-    metadata = models.JSONField(blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    is_archived = models.BooleanField(default=False)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["student"]),
-            models.Index(fields=["course"]),
-            models.Index(fields=["id"]),
-        ]
-
-
-    def __str__(self):
-        return f"{self.student} - {self.amount} {self.currency} ({self.payment_status})"
-
-
-class PaymentLog(models.Model):
-    transaction = models.ForeignKey(PaymentTransaction, on_delete=models.CASCADE, related_name="logs")
-    event_type = models.CharField(max_length=100)
-    payload = models.JSONField(blank=True, null=True)
-    received_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return f"Log for {self.transaction.transaction_id} ({self.event_type})"
-
-class PaymentEMI(models.Model):
-    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="emi_plans")
-    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name="emi_plans", null=True, blank=True)
-
-    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
-    months = models.PositiveIntegerField()
-    created_at = models.DateTimeField(auto_now_add=True)
-
-
-    def __str__(self):
-        return f"{self.student.student_id} - {self.months} months"
-    
-    def create_installments(self):
-        from datetime import date, timedelta
-
-        monthly_amount = self.total_amount / self.months
-        today = date.today()
-
-        installments = []
-        for i in range(self.months):
-            due_date = today + timedelta(days=30 * (i + 1))
-            installments.append(
-                PaymentEMIInstallment(
-                    emi_plan=self,
-                    course=self.course,                 # NEW IMPORTANT LINE
-                    amount=monthly_amount,
-                    due_date=due_date
-                )
-            )
-
-        PaymentEMIInstallment.objects.bulk_create(installments)
-        return installments
-
-
-class PaymentEMIInstallment(models.Model):
-    emi_plan = models.ForeignKey(PaymentEMI, on_delete=models.CASCADE, related_name="installments")
-    course = models.ForeignKey(Course, on_delete=models.CASCADE, null=True, blank=True)
-
-    due_date = models.DateField()
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
-    paid = models.BooleanField(default=False)
-    paid_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    payment = models.ForeignKey(PaymentTransaction, on_delete=models.SET_NULL, null=True, blank=True)
-    paid_at = models.DateTimeField(null=True, blank=True)
-
-
-    def __str__(self):
-        return f"Installment for {self.emi_plan.student.student_id} - {self.amount}"
-
 class Lead(models.Model):
     name = models.CharField(max_length=100, blank=True, null=True)
     phone = models.CharField(max_length=15)
@@ -1508,7 +885,7 @@ class Lead(models.Model):
         return f"{self.name or 'Unknown'} - {self.phone}"
     
 class LeadCallLog(models.Model):
-    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="call_logs")
+    lead = models.ForeignKey('aryuapp.Lead', on_delete=models.CASCADE, related_name="call_logs")
     called_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     call_time = models.DateTimeField(auto_now_add=True)
     call_status = models.CharField(max_length=50, blank=True, null=True)  # e.g., 'answered', 'missed'

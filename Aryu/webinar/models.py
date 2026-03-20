@@ -118,7 +118,7 @@ class WebinarRegistration(models.Model):
     wants_reminder = models.BooleanField(default=True)
     is_paid = models.BooleanField(default=False)
     payment_transaction = models.ForeignKey(
-        'aryuapp.PaymentTransaction',
+        'payments.PaymentTransaction',
         null=True,
         blank=True,
         on_delete=models.SET_NULL
