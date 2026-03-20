@@ -107,7 +107,7 @@ class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
 
     def get_attachment_url(self, obj):
         if obj.attachment and hasattr(obj.attachment, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.attachment.url
+            return 'https://portal.aryuacademy.com/api' + obj.attachment.url
         return None
     
     def get_notes(self, obj):
