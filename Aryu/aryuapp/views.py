@@ -3680,7 +3680,7 @@ class StudentListAPIView(viewsets.ViewSet):
                     "category_id": unique(category_id_list),
                     "category_name": unique(category_name_list),
                     "profile_pic": (
-                        f"https://aylms.aryuprojects.com/api{s.profile_pic.url}"
+                        f"https://portal.aryuacademy.com/api{s.profile_pic.url}"
                         if s.profile_pic else None
                     ),
                     "school_student": School_StudentSerializer(s.school_student).data if getattr(s, "school_student", None) else None,
@@ -4800,7 +4800,7 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
                 status=404
             )
 
-        MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api/media/"
+        MEDIA_BASE_URL = "https://portal.aryuacademy.com/api/media/"
 
         # ----------------------------------
         # 1. STUDENT-SPECIFIC BATCHES
@@ -6198,7 +6198,7 @@ class TutorSignupView(APIView):
             "errors": serializer.errors
         }, status=400)
         
-BASE_MEDIA_URL = "https://aylms.aryuprojects.com/api/media/"
+BASE_MEDIA_URL = "https://portal.aryuacademy.com/api/media/"
   
 class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
 
@@ -7814,7 +7814,7 @@ class LeadViewSet(viewsets.ModelViewSet, NotesMixin):
             call = client.calls.create(
                 to=sales_person_phone,
                 from_=settings.TWILIO_PHONE_NUMBER,  # Verified Twilio number
-                url=f"https://aylms.aryuprojects.com/api/twilio/connect_customer?lead_phone={lead_number}"
+                url=f"https://portal.aryuacademy.com/api/twilio/connect_customer?lead_phone={lead_number}"
             )
 
             # Log the call

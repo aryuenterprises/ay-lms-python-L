@@ -79,7 +79,7 @@ class StudentDashboardService:
             "student_name": f"{self.student.first_name} {self.student.last_name}",
             "student_id": self.student.registration_id,
             "email": self.student.email,
-            "profile_pic": f"https://aylms.aryuprojects.com/api/media/{self.student.profile_pic}",
+            "profile_pic": f"https://portal.aryuacademy.com/api/media/{self.student.profile_pic}",
             "badge": None
         }
 
