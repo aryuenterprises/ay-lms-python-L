@@ -270,8 +270,6 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 "course", "course__course_category", "trainer"
             )
 
-            print("Batch QS Count:", batch_qs.count())
-
             batch_data = [
                 {
                     "batch_id": b.batch_id,
@@ -410,7 +408,6 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
             class_schedule.is_archived = True
             class_schedule.save()
             delete_cache_pattern("schedules*")
-            print(f'schedule arch: {class_schedule.is_archived}, id {class_schedule.schedule_id}')
             return Response({'success': True, 'message': 'Class schedule deleted successfully.'}, status=200)
         except ClassSchedule.DoesNotExist:
             return Response({'success': False, 'message': 'Class schedule not found, but no error raised.'}, status=200)

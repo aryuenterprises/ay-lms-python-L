@@ -201,7 +201,7 @@ class Trainer(models.Model):
     employee_id = models.CharField(max_length=255, unique=True, db_index=True)
 
     role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True)
-    username = models.CharField(max_length=50)
+    username = models.CharField(max_length=50, null=True, blank=True)
     password = models.CharField(max_length=128, null=False, blank=False)
     full_name = models.CharField(max_length=255, db_index=True)
     user_type = models.CharField(max_length=20, null=False, blank=False, db_index=True)
