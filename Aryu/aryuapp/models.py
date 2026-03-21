@@ -367,7 +367,7 @@ class Student(models.Model):
     reference_name = models.CharField(max_length=255, null=True, blank=True)
     reference_number = models.CharField(max_length=255, null=True, blank=True)
     student_type = models.CharField(max_length=30, null=False, blank=False)
-    source_type = models.CharField(max_length=20,null=True,blank=False)
+    source_type = models.CharField(max_length=255,null=True,blank=False)
     status = models.BooleanField(default=True, null=False, blank=False)
     notes = GenericRelation("Note", related_query_name="student_notes")
     created_by = models.CharField(max_length=100, null=True, blank=True)
