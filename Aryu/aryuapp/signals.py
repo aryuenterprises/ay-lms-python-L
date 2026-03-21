@@ -294,8 +294,8 @@ def notify_on_topic_status(sender, instance, created, **kwargs):
     for batch in assigned_batches:
         trainer = batch.trainer
 
-        if trainer and trainer.id not in notified_trainers:
-            notified_trainers.add(trainer.id)
+        if trainer and trainer.trainer_id not in notified_trainers:
+            notified_trainers.add(trainer.trainer_id)
 
             Notification.objects.create(
                 trainer=trainer,

@@ -509,7 +509,6 @@ class SubAdminSerializer(serializers.ModelSerializer, NotesMixin):
             if role == "admin":
 
                 trainer = Trainer.objects.filter(trainer_id=creator_id).first()
-                print("Trainer:", trainer)
                 return trainer.full_name if trainer else str(created_by)
 
             # fallback
@@ -1791,17 +1790,6 @@ class TrainerSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Name must contain only letters and spaces.")
         return value
  
-    def validate_username(self, value):
-        instance = getattr(self, "instance", None)
-        if instance and instance.username == value:
-            return value  # unchanged — skip duplicate check
- 
-        if (
-            Trainer.objects.filter(username__iexact=value, is_archived=False).exists()
-        ):
-            raise serializers.ValidationError("Username already exists")
-        return value
- 
     # ── Create / Update ───────────────────────────────────────────────────
     def to_internal_value(self, data):
 
@@ -1844,7 +1832,6 @@ class TrainerSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         batch_ids = validated_data.pop("batch_ids", [])
         courses = validated_data.pop("courses", [])  # extract M2M
-        print(courses)
         password = validated_data.get("password")
         if not password:
             raise serializers.ValidationError({"password": "Password is required."})

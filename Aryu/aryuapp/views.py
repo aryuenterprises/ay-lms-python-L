@@ -156,7 +156,6 @@ class SettingsViewSet(viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
 
-        print(request.data,"request is false in it ")
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
@@ -2217,7 +2216,6 @@ class ReportsViewSet(ViewSet):
             )
         trainer = trainer_qs.values('full_name', 'employee_id')
         setting=Settings.objects.values('payment_method')
-        print(setting,"settings")
 
         return Response({
             "success": True,
@@ -4792,7 +4790,6 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         
     @cache_api(prefix="student_profile", timeout=300)
     def retrieve(self, request, student_id=None):
-        print("success")
         try:
             student = Student.objects.get(student_id=student_id)
           
@@ -4803,7 +4800,6 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
             }, status=status.HTTP_200_OK)
 
         serializer = StudentProfileSerializer(student, context={'request': request})
-        print(serializer.data,"data is here too")
         return Response({
             "success": True,
             "message": "Student profile retrieved successfully",
@@ -5766,7 +5762,6 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                 {"success": False, "message": "You do not have permission"},
                 status=status.HTTP_200_OK,
             )
-        print(request.data)
         serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():
             return Response(
@@ -7889,12 +7884,9 @@ class LeadViewSet(viewsets.ModelViewSet, NotesMixin):
 @permission_classes([AllowAny])
 def connect_customer(request):
 
-    print("Twilio hit /connect_customer endpoint")  # Debug
     lead_phone = request.GET.get('lead_phone')
-    print(f"Lead phone: {lead_phone}")
 
     if not lead_phone:
-        print("Missing lead_phone parameter")
         return Response({'success': False, "message": "Missing lead_phone parameter"}, status=200)
 
     try:
@@ -7903,11 +7895,9 @@ def connect_customer(request):
         dial.number(lead_phone)
         response.append(dial)
 
-        print("TwiML response generated successfully")
         return Response({'success': True, 'message': str(response)}, content_type='text/xml', status=200)
 
     except Exception as e:
-        print(f"Error in connect_customer: {e}")
         return Response({'success': False, "message": str(e)}, status=200)
 
 
