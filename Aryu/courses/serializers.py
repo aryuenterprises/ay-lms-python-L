@@ -133,8 +133,8 @@ class CourseSerializer(serializers.ModelSerializer):
     )
     category_details = CourseCategorySerializer(source='course_category', read_only=True)
     syllabus_info = serializers.SerializerMethodField()
+    syllabus_url = serializers.SerializerMethodField()
     course_pic = serializers.ImageField(required=False, allow_null=True)
-    syllabus = serializers.SerializerMethodField()  # Change here!
     course_pic_url = serializers.SerializerMethodField()
     batches = serializers.SerializerMethodField()
     topic = serializers.SerializerMethodField()
@@ -146,7 +146,7 @@ class CourseSerializer(serializers.ModelSerializer):
         fields = [
             'course_id', 'course_name', 'course_category', 'category_details',
             'course_pic', 'course_pic_url', 'notes', 'currency_type', 'fee_type',
-            'topic', 'syllabus', 'syllabus_info', 'assignment', 'batches',
+            'topic', 'syllabus', 'syllabus_url','syllabus_info', 'assignment', 'batches',
             'duration', 'mode_of_delivery', 'fee', 'status', 'is_archived', 'is_featured', 'created_by', 'created_at'
         ]
         
@@ -199,16 +199,9 @@ class CourseSerializer(serializers.ModelSerializer):
             return 'https://portal.aryuacademy.com/api' + obj.course_pic.url
         return None
     
-    def get_syllabus(self, obj):
-        if not obj.syllabus:
-            return None
-
-        try:
-            if os.path.exists(obj.syllabus.path):
-                return 'https://portal.aryuacademy.com/api' + obj.syllabus.url
-        except Exception:
-            pass
-
+    def get_syllabus_url(self, obj):
+        if obj.syllabus and hasattr(obj.syllabus, 'url'):
+            return 'https://portal.aryuacademy.com/api' + obj.syllabus.url
         return None
     
     def get_assignment(self, obj):

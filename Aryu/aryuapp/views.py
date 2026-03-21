@@ -4949,6 +4949,8 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
             .values(
                 "batch_id",
                 "title",
+                "course__course_id",
+                "course__course_name",
             )
         )
 
