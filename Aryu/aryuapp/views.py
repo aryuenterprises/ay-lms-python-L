@@ -4770,8 +4770,14 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         except AuthenticationFailed as e:
             return Response({"success": False, "message": str(e)}, status=200)
 
-        if not hasattr(user, 'user_type') or user.user_type.lower() != 'admin':
-            return Response({"success": False, "message": "Only admin users can reset student passwords."}, status=200)
+        if not hasattr(user, 'user_type') or user.user_type.lower() not in ['admin', 'super_admin']:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Only admin or super admin users can reset student passwords."
+                },
+                status=200
+            )
 
         new_password = request.data.get('new_password')
         if not new_password:
