@@ -392,21 +392,8 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
         # If validation passed, save changes
         self.perform_update(serializer)
 
-        # Syllabus message logic
-        had_syllabus_before = bool(instance.syllabus)
-        has_syllabus_now = bool(serializer.instance.syllabus)
-        if 'syllabus' in request.FILES:
-            if not had_syllabus_before and has_syllabus_now:
-                main_message = "Syllabus uploaded successfully"
-            elif had_syllabus_before and has_syllabus_now:
-                main_message = "Syllabus updated successfully"
-            else:
-                main_message = "Course updated successfully"
-        else:
-            main_message = "Course updated successfully"
-
         return Response({
-            "message": main_message,
+            "message": "Course Updated Successfully",
             "success": True,
             "data": serializer.data
         }, status=status.HTTP_200_OK)
