@@ -1098,20 +1098,21 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         return StudentTopicStatusSerializer(qs, many=True).data
     
     def get_trainer(self, obj):
-
-        # Get all batches this student is enrolled in
         batches = obj.new_batches.filter(is_archived=False, status=True)
 
-        # Get unique trainers from those batches
         trainers = {batch.trainer for batch in batches}
 
-        # Serialize trainer info
-        return [
-            {
-                "name": trainer.full_name,
-                "email": trainer.email
-            } for trainer in trainers
-        ]
+        result = []
+        for trainer in trainers:
+            if not trainer:
+                continue
+
+            result.append({
+                "name": getattr(trainer, "full_name", None),
+                "email": getattr(trainer, "email", None),
+            })
+
+        return result
     
     def get_notes(self, obj):
         student_ct = ContentType.objects.get_for_model(obj)
