@@ -1,5 +1,5 @@
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 from django.contrib.postgres.fields import ArrayField
 from datetime import timedelta
@@ -387,11 +387,23 @@ class Student(models.Model):
         month = current_date.strftime("%m")
         year = current_date.strftime("%y")
 
-        from .models import Student  # avoid circular import
-        students = Student.objects.filter(registration_id__contains=f"{month}{year}")
-        count = students.count() + 1 
-        number = (count - 1) % 999 + 1
-        return f"{prefix}{month}{year}{number:03d}"
+        with transaction.atomic():
+            last_student = (
+                Student.objects
+                .select_for_update()
+                .filter(registration_id__startswith=f"{prefix}{month}{year}")
+                .order_by('-registration_id')
+                .first()
+            )
+
+            if last_student:
+                last_number = int(last_student.registration_id[-3:])
+                new_number = last_number + 1
+            else:
+                new_number = 1
+
+            return f"{prefix}{month}{year}{new_number:03d}"
+        
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
 
