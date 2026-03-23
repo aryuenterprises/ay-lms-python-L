@@ -25,64 +25,73 @@ class NotificationSerializer(serializers.ModelSerializer):
         return None
 
     def get_course_id(self, obj):
+        # 1. Primary (correct way)
+        if obj.course:
+            return obj.course.course_id
+
+        # fallback only if really needed
+        if not obj.message or not obj.student:
+            return None
+
+        msg_lower = obj.message.lower()
+
         try:
-            """
-            Return course_id for submission/submission_reply, topic status,
-            test submission, and test result notifications.
-            """
-            if not obj.message or not obj.student:
-                return None
-
-            msg_lower = obj.message.lower()
-
-            # --- Submission / Submission Reply notifications ---
+            # --- Submission ---
             if msg_lower.startswith("submission"):
                 submission = (
-                    Submission.objects.filter(student=obj.student)
+                    Submission.objects
+                    .filter(student=obj.student)
                     .select_related("assignment__course")
-                    .order_by("-assignment__course__course_id")
+                    .order_by("-date")
                     .first()
                 )
-                if submission and submission.assignment and submission.assignment.course:
-                    return submission.assignment.course.course_id
+                return submission.assignment.course.course_id if (
+                    submission and submission.assignment and submission.assignment.course
+                ) else None
 
-            # --- Topic status notifications ---
+            # --- Topic ---
             elif "topic status" in msg_lower:
                 sts = (
-                    StudentTopicStatus.objects.filter(student=obj.student)
+                    StudentTopicStatus.objects
+                    .filter(student=obj.student)
                     .select_related("topic__course")
                     .order_by("-updated_at")
                     .first()
                 )
-                if sts and sts.topic and sts.topic.course:
-                    return sts.topic.course.course_id
+                return sts.topic.course.course_id if (
+                    sts and sts.topic and sts.topic.course
+                ) else None
 
-            # --- Test submission notifications ---
+            # --- Test Submission ---
             elif msg_lower.startswith("test_submission"):
                 ans = (
-                    StudentAnswers.objects.filter(student_id=obj.student)
+                    StudentAnswers.objects
+                    .filter(student_id=obj.student)
                     .select_related("test_id__course_id")
                     .order_by("-submitted_at")
                     .first()
                 )
-                if ans and ans.test_id and ans.test_id.course_id:
-                    return ans.test_id.course_id.course_id  # course_id field
+                return ans.test_id.course_id.course_id if (
+                    ans and ans.test_id and ans.test_id.course_id
+                ) else None
 
-            # --- Test result notifications ---
+            # --- Test Result ---
             elif msg_lower.startswith("test_result"):
                 result = (
-                    TestResult.objects.filter(student_id=obj.student)
+                    TestResult.objects
+                    .filter(student_id=obj.student)
                     .select_related("test_id__course_id")
                     .order_by("-evaluated_at")
                     .first()
                 )
-                if result and result.test_id and result.test_id.course_id:
-                    return result.test_id.course_id.course_id  # course_id field
+                return result.test_id.course_id.course_id if (
+                    result and result.test_id and result.test_id.course_id
+                ) else None
 
+        except Exception:
             return None
 
-        except Exception as e:
-            return {'success': False, 'message': str(e)}
+        return None
 
     def get_topic_id(self, obj):
         """
@@ -106,34 +115,7 @@ class NotificationSerializer(serializers.ModelSerializer):
         return None
 
     def get_assignment_id(self, obj):
-        
-        if obj.message and obj.student:
-            message_lower = obj.message.lower()
-            if "submission" in message_lower:
-                reply_or_submission = (
-                    SubmissionReply.objects
-                    .filter(submission__student=obj.student)
-                    .select_related("submission__assignment")
-                    .order_by("-date")
-                    .first()
-                )
-
-                if not reply_or_submission:
-                    reply_or_submission = (
-                        Submission.objects
-                        .filter(student=obj.student)
-                        .select_related("assignment")
-                        .order_by("-date")
-                        .first()
-                    )
-
-                if reply_or_submission and reply_or_submission.submission and reply_or_submission.submission.assignment:
-                    return reply_or_submission.submission.assignment.id  # reply_or_submission.submission.assignment.id
-
-                if isinstance(reply_or_submission, Submission) and reply_or_submission.assignment:
-                    return reply_or_submission.assignment.id
-
-        return None
+        return obj.assignment.id if obj.assignment else None
 
 
 class ChatRoomSerializer(serializers.ModelSerializer):
