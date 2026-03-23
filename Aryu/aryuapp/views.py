@@ -3867,20 +3867,28 @@ class StudentTicketViewSet(APIView):
         admin_user = None
         trainer = None
 
-        if student.created_by:
-            
-            # SUPER ADMIN CASE
-            if student.created_by_type == "super_admin":
-                from django.contrib.auth.models import User
+        created_by = student.created_by
+        created_type = student.created_by_type
+
+        if created_by and created_type:
+
+            # -------- SUPER ADMIN --------
+            if created_type == "super_admin":
                 admin_user = User.objects.filter(
-                    id=int(student.created_by)
+                    id=int(created_by)
                 ).first()
 
-            # ADMIN / TRAINER CASE
-            elif student.created_by_type == "admin":
+            # -------- ADMIN (TRAINER) --------
+            elif created_type == "admin":
                 trainer = Trainer.objects.filter(
-                    trainer_id=student.created_by
+                    trainer_id=created_by
                 ).first()
+
+                # OPTIONAL: also assign its parent super admin
+                if trainer and trainer.created_by:
+                    admin_user = User.objects.filter(
+                        id=int(trainer.created_by)
+                    ).first()
 
         ticket = StudentTicket.objects.create(
             student=student,
