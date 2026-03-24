@@ -5,7 +5,8 @@ from django.db import connection
 from django.core.cache import cache
 from django.utils.timezone import now, localtime
 import datetime
-from .models import *
+from .models import TrainerAttendance
+from datetime import timedelta
 
 
 class AutoLogoutMiddleware(MiddlewareMixin):

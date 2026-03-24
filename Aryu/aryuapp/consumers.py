@@ -8,25 +8,16 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.utils import timezone
 from django.conf import settings
-from .models import ChatRoom, Message, Notification
-from .serializer import MessageSerializer, NotificationSerializer
+from chats.models import ChatRoom, Message, Notification
+from chats.serializers import MessageSerializer, NotificationSerializer
 
-
-# ══════════════════════════════════════════════════════════════════
-# CHAT CONSUMER — WhatsApp style
-# Flow:
-#   connect()     → join room group, send last 30 messages as history
-#   receive()     → save message to DB + broadcast to room group
-#   chat_message()→ channel layer handler, sends to this WebSocket
-#   disconnect()  → leave room group
-# ══════════════════════════════════════════════════════════════════
 
 class ChatConsumer(AsyncWebsocketConsumer):
 
     async def connect(self):
         self.room_id = self.scope["url_route"]["kwargs"]["room_id"]
         self.room_group_name = f"chat_{self.room_id}"
-        self.room = None  # ✅ always initialize before any early return
+        self.room = None  # always initialize before any early return
 
         self.room = await self._get_room(self.room_id)
         if not self.room:
@@ -46,7 +37,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }))
 
     async def disconnect(self, close_code):
-        # ✅ guard — room_group_name may not be set if connect() failed early
+        # guard — room_group_name may not be set if connect() failed early
         if hasattr(self, "room_group_name"):
             await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
@@ -205,20 +196,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             ).update(is_read=True)
         finally:
             connection.close()
-
-
-# ══════════════════════════════════════════════════════════════════
-# NOTIFICATION CONSUMER — push only
-# Flow:
-#   connect()   → join personal group, send unread COUNT only
-#   notify()    → channel layer handler called by signals.py on new notification
-#   receive()   → handle mark_read from frontend
-#   disconnect()→ leave group
-#
-# NOTE: signals.py calls group_send("type": "notify") when a
-#       Notification is saved — this consumer just delivers it live.
-#       Full notification list comes from REST API (NotificationListView).
-# ══════════════════════════════════════════════════════════════════
 
 class NotificationConsumer(AsyncWebsocketConsumer):
 

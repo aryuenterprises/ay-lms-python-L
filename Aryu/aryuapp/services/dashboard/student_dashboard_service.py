@@ -10,8 +10,8 @@ from aryuapp.models import (
     Attendance,
     Assignment,
     Submission,
-    Course,
 )
+from courses.models import Course
 from batches.models import ClassSchedule
 
 
