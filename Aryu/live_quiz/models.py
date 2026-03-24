@@ -111,3 +111,4 @@ class Answer(models.Model):
     class Meta:
         db_table = 'livequiz"."answer'
         unique_together = ("participant", "question")
+

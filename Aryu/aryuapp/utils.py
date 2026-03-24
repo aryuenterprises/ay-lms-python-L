@@ -1,4 +1,4 @@
-from .models import *
+from .models import Student, Trainer, User, Role, RoleModulePermission
 from PIL import Image, ImageDraw, ImageFont
 import os
 import re
@@ -11,7 +11,7 @@ import random
 import hashlib
 import json
 import string
-from django.core.mail import send_mail, EmailMultiAlternatives
+from django.core.mail import EmailMultiAlternatives
 from django.conf import settings
 from datetime import datetime
 

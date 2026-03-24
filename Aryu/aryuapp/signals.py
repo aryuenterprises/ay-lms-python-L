@@ -1,7 +1,7 @@
 # /home/aryu_user/Arun/academystaging-python/Aryu/aryuapp/signals.py
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from .models import *
+from .models import Student, Submission, Trainer, SubAdmin, SubmissionReply, User, StudentTicket, TicketReply
 from chats.models import Notification
 from chats.serializers import NotificationSerializer
 from tests.models import StudentAnswers, TestResult
@@ -49,10 +49,10 @@ def push_realtime_notification(sender, instance, created, **kwargs):
             pass  # Never crash a DB save because of a WebSocket push failure
 
 
-# @receiver(post_save, sender=Student)
-# def send_student_welcome(sender, instance, created, **kwargs):
-#     if created:
-#         send_welcome_email(instance)
+@receiver(post_save, sender=Student)
+def send_student_welcome(sender, instance, created, **kwargs):
+    if created:
+        send_welcome_email(instance)
 
 @receiver(post_save, sender=Submission)
 def notify_trainer_on_submission(sender, instance, created, **kwargs):

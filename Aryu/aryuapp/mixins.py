@@ -1,11 +1,10 @@
 # mixins.py
-from .models import *
+from .models import UserActivityLog, Note, Student, Trainer, User
 from django.contrib.contenttypes.models import ContentType
-from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from django.utils import timezone
 from django.db.models import CharField
 from rest_framework.response import Response
-from django.utils.timezone import localtime
 
 class LoggingMixin:
 
