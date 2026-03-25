@@ -266,26 +266,6 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             for s in student_list
         ]
 
-        settings = (
-            Settings.objects
-            .filter(is_archived=False)
-            .only("stripe_enabled", "paypal_enabled", "razorpay_enabled")
-            .order_by("-created_at")
-            .first()
-        )
-
-        enabled_gateways = []
-
-        if settings:
-            if settings.stripe_enabled:
-                enabled_gateways.append("Stripe test")
-
-            if settings.paypal_enabled:
-                enabled_gateways.append("paypal")
-
-            if settings.razorpay_enabled:
-                enabled_gateways.append("razorpay")
-
         return Response({
             "success": True,
             "student_payment_summaries": serializer.data,
