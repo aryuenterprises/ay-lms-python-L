@@ -2,6 +2,8 @@ from .models import *
 from rest_framework import serializers
 from django.utils import timezone
 from django.db.models import Sum
+from django.db import transaction as db_transaction
+from decimal import Decimal
 from courses.models import Course
 from aryuapp.models import Note, Student
 from aryuapp.mixins import ContentType
@@ -249,62 +251,78 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
         emi_installment_id = validated_data.pop("emi_installment_id", None)
 
         student = validated_data["student"]
-        course = validated_data["course"]
-
         amount = validated_data["amount"]
-        discount = validated_data.get("discount", 0)
 
-        validated_data["total_after_discount"] = amount - discount
+        with db_transaction.atomic():  # CRITICAL
 
-        transaction = super().create(validated_data)
+            transaction_obj = super().create(validated_data)
 
-        if emi_installment_id:
-            installment = PaymentEMIInstallment.objects.select_related("emi_plan").get(pk=emi_installment_id)
+            # =========================================
+            # CASE 1: Paying existing EMI installment
+            # =========================================
+            if emi_installment_id:
+                try:
+                    installment = PaymentEMIInstallment.objects.select_related("emi_plan").get(
+                        pk=emi_installment_id,
+                        emi_plan__student=student  # security check
+                    )
+                except PaymentEMIInstallment.DoesNotExist:
+                    raise serializers.ValidationError("Invalid EMI installment.")
 
-            # Validate installment belongs to same course
-            if installment.emi_plan.course_id != course.id:
-                raise serializers.ValidationError("This EMI installment does not belong to this course.")
+                if installment.paid:
+                    raise serializers.ValidationError("Installment already paid.")
 
-            # Mark installment as paid
-            installment.paid = True
-            installment.paid_amount = transaction.amount
-            installment.payment = transaction
-            installment.paid_at = timezone.now()
-            installment.save()
+                installment.paid = True
+                installment.paid_amount = amount
+                installment.payment = transaction_obj
+                installment.paid_at = timezone.now()
+                installment.save()
 
-            return transaction
+                return transaction_obj
 
-        emi_data = metadata.get("emi")
+            # =========================================
+            # CASE 2: Create EMI plan from metadata
+            # =========================================
+            emi_data = metadata.get("emi")
 
-        if emi_data:
-            months = emi_data.get("months")
-            total_fee = emi_data.get("total_fee")
+            if emi_data:
+                months = emi_data.get("months")
+                total_fee = emi_data.get("total_fee")
 
-            if not months or not total_fee:
-                raise serializers.ValidationError("Invalid EMI metadata provided.")
+                if not months or not total_fee:
+                    raise serializers.ValidationError("Invalid EMI metadata provided.")
 
-            # Create EMI plan for THIS COURSE ONLY
-            emi = PaymentEMI.objects.create(
-                student=student,
-                course=course,                 # NEW: Important link to course
-                total_amount=total_fee,
-                months=months
-            )
+                # Prevent duplicate EMI plans
+                emi = PaymentEMI.objects.filter(
+                    student=student,
+                    total_amount=total_fee,
+                    months=months
+                ).first()
 
-            # Create installments
-            installments = emi.create_installments()
+                if not emi:
+                    emi = PaymentEMI.objects.create(
+                        student=student,
+                        total_amount=total_fee,
+                        months=months
+                    )
 
-            # If first installment equals payment amount → Auto mark first as paid
-            if installments and float(installments[0].amount) == float(transaction.amount):
-                first = installments[0]
-                first.paid = True
-                first.paid_amount = transaction.amount
-                first.payment = transaction
-                first.paid_at = timezone.now()
-                first.save()
+                    installments = emi.create_installments()
+                else:
+                    installments = emi.installments.all().order_by("due_date")
 
-        # Done
-        return transaction
+                #  Safe decimal comparison
+                if installments:
+                    first = installments[0]
+
+                    if Decimal(first.amount) == Decimal(amount):
+                        if not first.paid:
+                            first.paid = True
+                            first.paid_amount = amount
+                            first.payment = transaction_obj
+                            first.paid_at = timezone.now()
+                            first.save()
+
+            return transaction_obj
 
 class StripePaymentSerializer(serializers.ModelSerializer):
     amount = serializers.DecimalField(max_digits=10, decimal_places=2)
