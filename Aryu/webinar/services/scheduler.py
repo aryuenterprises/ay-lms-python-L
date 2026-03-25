@@ -2,8 +2,9 @@ from datetime import timedelta
 from django.utils.timezone import now
 import logging
 from celery import shared_task
-from webinar.models import WebinarRegistration, Certificate
-from webinar.utils import generate_and_send_certificate_pdf
+from webinar.models import WebinarRegistration
+from aryuapp.models import Certificate
+from webinar.services.certificate_generation import generate_and_send_certificate_pdf
 from django.db import transaction
 from webinar.tasks import (
     send_webinar_reminder_task,
@@ -26,7 +27,7 @@ def send_certificate_task(self, reg_id, user_id="system", user_type="auto"):
 
         reg = WebinarRegistration.objects.select_related("webinar").get(id=reg_id)
 
-        # 🔒 Idempotency check (VERY IMPORTANT)
+        # Idempotency check (VERY IMPORTANT)
         if reg.certificate_sent:
             logger.warning(f"[Celery] Certificate already sent for reg_id={reg_id}")
             return "Already sent"
@@ -44,16 +45,15 @@ def send_certificate_task(self, reg_id, user_id="system", user_type="auto"):
                 }
             )
 
-        # 🚀 Heavy operation (outside transaction)
+        # Heavy operation (outside transaction)
         generate_and_send_certificate_pdf(
             certificate=certificate,
             phone=reg.phone
         )
 
-        # ✅ Mark as sent
+        # Mark as sent
         reg.certificate_sent = True
-        reg.certificate_sent_at = now()
-        reg.save(update_fields=["certificate_sent", "certificate_sent_at"])
+        reg.save(update_fields=["certificate_sent"])
 
         logger.info(f"[Celery] Certificate sent successfully for reg_id={reg_id}")
         return "Success"
