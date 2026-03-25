@@ -1514,51 +1514,33 @@ class WebinarFeedbackViewSet(viewsets.ViewSet):
         )
         serializer = WebinarFeedbackSerializer(feedback)
         return Response(serializer.data)
-
+    
+    @transaction.atomic
     def create(self, request):
-        try:
-            serializer = WebinarFeedbackSerializer(data=request.data)
+        serializer = WebinarFeedbackSerializer(data=request.data)
 
-            if not serializer.is_valid():
-                return Response({
-                    "success": False,
-                    "message": serializer.errors
-                }, status=200)
-
-            feedback = serializer.save()
-
-            reg = feedback.registration
-            webinar = reg.webinar
-
-            certificate, _ = Certificate.objects.get_or_create(
-                webinar_registration=reg,
-                defaults={
-                    "student": getattr(reg, "student", None),
-                    "student_name": feedback.name.strip(),
-                    "course_name": webinar.title,
-                    "course_duration": "3 Hours",
-                    "created_by": "system",
-                    "created_by_type": "auto"
-                }
-            )
-
-            generate_and_send_certificate_pdf(
-                certificate=certificate,
-                phone=reg.phone
-            )
-            reg.certificate_sent = True
-            reg.save(update_fields=["certificate_sent"])
-
-            return Response({
-                "success": True,
-                "message": "Feedback submitted and certificate sent",
-                "data": serializer.data
-            }, status=201)
-        except Exception as e:
+        if not serializer.is_valid():
             return Response({
                 "success": False,
-                "message": str(e)
-            }, status=400)
+                "message": serializer.errors
+            }, status=200)
+
+        feedback = serializer.save()
+
+        reg = feedback.registration
+
+        # ASYNC TASK (non-blocking)
+        send_certificate_task.delay(
+            reg_id=reg.id,
+            user_id="system",
+            user_type="auto"
+        )
+
+        return Response({
+            "success": True,
+            "message": "Feedback submitted. Certificate will be sent shortly.",
+            "data": serializer.data
+        }, status=201)
 
 class WebinarTicketViewSet(viewsets.ViewSet):
     """

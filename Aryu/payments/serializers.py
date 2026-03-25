@@ -1,6 +1,7 @@
 from .models import *
 from rest_framework import serializers
 from django.utils import timezone
+from django.db.models import Sum
 from courses.models import Course
 from aryuapp.models import Note, Student
 from aryuapp.mixins import ContentType
@@ -81,8 +82,6 @@ class PaymentTransactionUpdateSerializer(serializers.ModelSerializer):
 class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
     created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", read_only=True)
     notes = serializers.SerializerMethodField()
-    gateway_name = serializers.CharField(source="gateway.gatway_name", read_only=True)
-    course_name = serializers.CharField(source="course.course_name", read_only=True)
     attachment_url = serializers.SerializerMethodField()
     class Meta:
         model = PaymentTransaction
@@ -92,14 +91,7 @@ class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
             "amount",
             "currency",
             "payment_status",
-            "gateway",
-            "discount",
-            "total_after_discount",
-            "gateway_name",
             "attachment_url",
-            "course",
-            "course_name",
-            "description",
             "metadata",
             "notes",
             "created_at",
@@ -133,19 +125,11 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
     registration_id = serializers.SerializerMethodField()
 
-    course_name = serializers.SerializerMethodField()
     total_course_fee = serializers.SerializerMethodField()
     paid_amount = serializers.SerializerMethodField()
     remaining_amount = serializers.SerializerMethodField()
 
     transactions = PaymentTransactionDetailSerializer(many=True, read_only=True)
-    emi_plans = serializers.SerializerMethodField()
-
-    remaining_emi_count = serializers.SerializerMethodField()
-    next_due_emi_date = serializers.SerializerMethodField()
-    next_due_emi_amount = serializers.SerializerMethodField()
-    total_pending_emi_amount = serializers.SerializerMethodField()
-    overdue_emi_list = serializers.SerializerMethodField()
 
     class Meta:
         model = Student
@@ -153,150 +137,64 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
             "student_name",
             "registration_id",
             "student_id",
-            "email",
-            "contact_no",
-            "current_address",
-            "joining_date",
-
-            "course_name",
             "total_course_fee",
             "paid_amount",
             "remaining_amount",
-
             "transactions",
-            "remaining_emi_count",
-            "emi_plans",
-            "next_due_emi_date",
-            "next_due_emi_amount",
-            "total_pending_emi_amount",
-            "overdue_emi_list",
         ]
 
-    # --------------------------------------------------
+    # -------------------------
     # BASIC DETAILS
-    # --------------------------------------------------
-
+    # -------------------------
     def get_student_name(self, obj):
         return f"{obj.first_name} {obj.last_name}".strip()
 
     def get_registration_id(self, obj):
         return obj.registration_id
 
-    # --------------------------------------------------
-    # TRANSACTION HELPERS (cached per student)
-    # --------------------------------------------------
-
-    def _successful_transactions(self, obj):
-        if not hasattr(obj, "_success_tx_cache"):
-            obj._success_tx_cache = [
-                tx for tx in obj.transactions.all()
-                if tx.payment_status == "Success"
-            ]
-        return obj._success_tx_cache
-
-    def _latest_success_tx(self, obj):
-        if not hasattr(obj, "_latest_success_tx"):
-            success_tx = self._successful_transactions(obj)
-            obj._latest_success_tx = (
-                max(success_tx, key=lambda t: t.created_at)
-                if success_tx else None
+    # -------------------------
+    # BASE TRANSACTION (IMPORTANT)
+    # -------------------------
+    def _student_course(self, obj):
+        """
+        Get course from student's batch
+        """
+        if not hasattr(obj, "_course_cache"):
+            batch = (
+                obj.new_batches
+                .filter(is_archived=False)
+                .select_related("course")
+                .first()
             )
-        return obj._latest_success_tx
+            obj._course_cache = batch.course if batch else None
+        return obj._course_cache
 
-    # --------------------------------------------------
-    # COURSE INFO
-    # --------------------------------------------------
-
+    # -------------------------
+    # TOTAL COURSE FEE
+    # -------------------------
     def get_total_course_fee(self, obj):
-        last_tx = self._latest_success_tx(obj)
-        return last_tx.course.fee if last_tx and last_tx.course else 0
+        course = self._student_course(obj)
+        return course.fee if course else 0
 
-    def get_course_name(self, obj):
-        last_tx = self._latest_success_tx(obj)
-        return last_tx.course.course_name if last_tx and last_tx.course else None
-
-    # --------------------------------------------------
-    # PAYMENT SUMMARY
-    # --------------------------------------------------
-
+    # -------------------------
+    # PAID AMOUNT (ONLY SUCCESS)
+    # -------------------------
     def get_paid_amount(self, obj):
-        success_tx = self._successful_transactions(obj)
-        return sum(tx.amount for tx in success_tx)
+        return obj.transactions.filter(
+            payment_status__in=["done", "Done"],
+            is_archived=False
+        ).aggregate(total=Sum("amount"))["total"] or 0
 
+    # -------------------------
+    # REMAINING AMOUNT (FINAL FIX)
+    # -------------------------
     def get_remaining_amount(self, obj):
-        remaining = self.get_total_course_fee(obj) - self.get_paid_amount(obj)
+        total_fee = self.get_total_course_fee(obj)
+        discount = obj.discount or 0
+        paid = self.get_paid_amount(obj)
+
+        remaining = (total_fee - discount) - paid
         return max(remaining, 0)
-
-    # --------------------------------------------------
-    # EMI HELPERS
-    # --------------------------------------------------
-
-    def _all_installments(self, obj):
-        if not hasattr(obj, "_installments_cache"):
-            installments = []
-            for emi in obj.emi_plans.all():
-                installments.extend(list(emi.installments.all()))
-            obj._installments_cache = installments
-        return obj._installments_cache
-
-    # --------------------------------------------------
-    # EMI DETAILS
-    # --------------------------------------------------
-
-    def get_emi_plans(self, obj):
-        return [
-            {
-                "months": emi.months,
-                "total_amount": emi.total_amount,
-                "installments": [
-                    {
-                        "due_date": ins.due_date,
-                        "amount": ins.amount,
-                        "paid": ins.paid,
-                        "paid_amount": ins.paid_amount,
-                        "paid_at": ins.paid_at,
-                    }
-                    for ins in emi.installments.all()
-                ],
-            }
-            for emi in obj.emi_plans.all()
-        ]
-
-    # --------------------------------------------------
-    # EMI SUMMARY
-    # --------------------------------------------------
-
-    def get_remaining_emi_count(self, obj):
-        installments = self._all_installments(obj)
-        return sum(1 for ins in installments if not ins.paid)
-
-    def get_next_due_emi_date(self, obj):
-        installments = [i for i in self._all_installments(obj) if not i.paid]
-        if not installments:
-            return None
-        return min(installments, key=lambda i: i.due_date).due_date
-
-    def get_next_due_emi_amount(self, obj):
-        installments = [i for i in self._all_installments(obj) if not i.paid]
-        if not installments:
-            return None
-        return min(installments, key=lambda i: i.due_date).amount
-
-    def get_total_pending_emi_amount(self, obj):
-        return sum(ins.amount for ins in self._all_installments(obj) if not ins.paid)
-
-    def get_overdue_emi_list(self, obj):
-        today = timezone.now().date()
-
-        return [
-            {
-                "due_date": ins.due_date,
-                "amount": ins.amount,
-                "days_overdue": (today - ins.due_date).days,
-            }
-            for ins in self._all_installments(obj)
-            if not ins.paid and ins.due_date < today
-        ]
 
 class PaymentLogSerializer(serializers.ModelSerializer):
     class Meta:

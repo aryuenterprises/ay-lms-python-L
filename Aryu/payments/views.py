@@ -3,6 +3,7 @@ from .serializers import *
 from aryuapp.auth import CustomJWTAuthentication
 from django.core.mail import EmailMessage
 from num2words import num2words
+from aryuapp.models import Invoice, Settings
 from rest_framework.response import Response
 import io
 import razorpay
@@ -285,32 +286,10 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             if settings.razorpay_enabled:
                 enabled_gateways.append("razorpay")
 
-
-        gateway_list = list(
-            PaymentGateway.objects
-            .filter(
-                is_archived=False,
-                gatway_name__in=enabled_gateways
-            )
-            .only("id", "gatway_name")
-            .values("id", "gatway_name")
-        )
-
-        course_list = list(
-            Course.objects
-            .filter(is_archived=False, status="Active")
-            .values(
-                id=F("course_id"),
-                name=F("course_name")
-            ).order_by("-course_id")
-        )
-        
         return Response({
             "success": True,
             "student_payment_summaries": serializer.data,
             "students": student_list,
-            "gatway": gateway_list,
-            "courses": course_list
         })
    
     def retrieve(self, request, pk=None):
