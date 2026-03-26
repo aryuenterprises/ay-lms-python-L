@@ -51,6 +51,11 @@ class IsAdminOrSuperAdmin(BasePermission):
     def has_permission(self, request, view):
         return getattr(request.user, "user_type", "") in ["admin", "super_admin"]
     
+class IsAdminSuperAdminOrTutor(BasePermission):
+    def has_permission(self, request, view):
+        user = request.user
+        return user and user.is_authenticated and user.user_type in ["admin", "super_admin", "tutor"]
+    
 class SettingsPicsViewSet(viewsets.ModelViewSet):
     login_required = False
     serializer_class = SettingsPicsSerializer
@@ -5691,7 +5696,11 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     permission_classes      = [IsAuthenticated, IsAdminOrSuperAdmin]
     authentication_classes  = [CustomJWTAuthentication]
     lookup_field            = "employee_id"
- 
+    
+    def get_permissions(self):
+        if self.action in ["student_list", "trainer_student_profile"]:
+            return [IsAuthenticated(), IsAdminSuperAdminOrTutor()]
+        return [IsAuthenticated(), IsAdminOrSuperAdmin()]
     # ── Base queryset — used by list, retrieve, update, destroy ──────────
  
     def get_queryset(self):
@@ -6058,7 +6067,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
             "data": course_data
         }, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=['get'], url_path='students')
+    @action(detail=True, methods=['get'], url_path='students', permission_classes=[IsAuthenticated, IsAdminSuperAdminOrTutor])
     def student_list(self, request, employee_id=None):
         try:
             trainer = self.get_object()
@@ -6112,7 +6121,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
     
     @cache_api(prefix="trainer_student_profile", timeout=300)
-    @action(detail=False, methods=['get'], url_path=r'(?P<student_id>[^/]+)')
+    @action(detail=False, methods=['get'], url_path=r'(?P<student_id>[^/]+)', permission_classes=[IsAuthenticated, IsAdminSuperAdminOrTutor])
     def trainer_student_profile(self, request, employee_id=None, student_id=None):
         trainer = Trainer.objects.filter(employee_id=employee_id, is_archived=False).first()
         if not trainer:
