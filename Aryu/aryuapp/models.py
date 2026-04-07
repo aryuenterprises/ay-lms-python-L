@@ -75,7 +75,7 @@ class Note(models.Model):
     created_by_type = models.CharField(max_length=50, null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     reason = models.CharField(max_length=255, blank=True, null=True)
-    status = models.CharField(max_length=20, null=True, blank=True)
+    status = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']

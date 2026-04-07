@@ -25,16 +25,18 @@ class PaymentTransaction(models.Model):
 
     student = models.ForeignKey("aryuapp.Student", on_delete=models.CASCADE, related_name="transactions", null=True, blank=True)
     course = models.ForeignKey("courses.Course", on_delete=models.CASCADE, related_name="course_transactions", null=True, blank=True)
+    course_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
     gateway = models.ForeignKey(PaymentGateway, on_delete=models.SET_NULL, null=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     
     # ADD THIS
-    discount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount = models.DecimalField(max_digits=10, decimal_places=2, null=True)
     total_after_discount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     currency = models.CharField(max_length=10, null=True, blank=True)
-    payment_status = models.CharField(max_length=20, null=True, blank=True)
+    payment_status = models.CharField(max_length=255, null=True, blank=True)
     transaction_id = models.CharField(max_length=100, blank=True, null=True)
+    payment_mode = models.CharField(max_length=150,blank = True, null = True)
     attachment = models.FileField(upload_to='payment_attachments/', blank=True, null=True)
     description = models.TextField(blank=True, null=True)
     metadata = models.JSONField(blank=True, null=True)

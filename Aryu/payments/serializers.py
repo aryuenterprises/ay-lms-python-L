@@ -2,12 +2,15 @@ from .models import *
 from rest_framework import serializers
 from django.utils import timezone
 from django.db.models import Sum
-from django.db import transaction as db_transaction
-from decimal import Decimal
 from courses.models import Course
 from aryuapp.models import Note, Student
 from aryuapp.mixins import ContentType
-
+import datetime, django.utils.timezone as tz
+from django.utils import timezone
+from decimal import Decimal
+from aryuapp.mixins import NotesMixin
+from batches.models import NewBatch
+import uuid
 class PaymentGatewaySerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentGateway
@@ -38,15 +41,43 @@ class PaymentGatewaySerializer(serializers.ModelSerializer):
 
         return super().create(validated_data)
 
+class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
+    course_name = serializers.SerializerMethodField()
+    payment_status = serializers.SerializerMethodField()
+    
+    
+    class Meta:
+        model = PaymentTransaction
+        fields = [
+            "id",
+            "transaction_id",
+            "amount",
+            "course_name",
+            "currency",
+            "payment_status",
+            
+            "gateway",
+            "created_at",
+            "discount",
+            "metadata"
+        ]
+
+    def get_course_name(self, obj):
+        return obj.course.course_name if obj.course else None
+
+    def get_payment_status(self, obj):
+        # Just return the status of this transaction
+        return obj.payment_status if obj.payment_status else "Pending"
+
+   
+
 class PaymentTransactionUpdateSerializer(serializers.ModelSerializer):
-    total_course_fee = serializers.DecimalField(
-        max_digits=10, decimal_places=2, required=False
-    )
+    total_course_fee = serializers.SerializerMethodField()
  
     class Meta:
         model = PaymentTransaction
         fields = [
-            "gateway",
+            "payment_mode",
             "course",
             "amount",
             "discount",
@@ -59,271 +90,231 @@ class PaymentTransactionUpdateSerializer(serializers.ModelSerializer):
             "metadata",
             "total_course_fee",   # extra field to update course fee
         ]
- 
-    def update(self, instance, validated_data):
-        # Pop total_course_fee — it belongs to Course model, not PaymentTransaction
-        total_course_fee = validated_data.pop("total_course_fee", None)
- 
-        # Recalculate total_after_discount if amount or discount changed
-        amount   = validated_data.get("amount",   instance.amount)
-        discount = validated_data.get("discount", instance.discount)
-        validated_data["total_after_discount"] = amount - discount
- 
-        # Update the transaction fields
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
- 
-        # Update the course fee if provided
-        if total_course_fee is not None and instance.course:
-            Course.objects.filter(course_id=instance.course.course_id).update(
-                fee=total_course_fee
-            )
- 
-        return instance
-class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
-    created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", read_only=True)
-    notes = serializers.SerializerMethodField()
-    attachment_url = serializers.SerializerMethodField()
+
+    def get_total_course_fee(self, obj):
+        if obj.course and hasattr(obj.course, 'fee'):
+            return obj.course.fee
+        return 0
+class PaymentTransactionDeleteSerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentTransaction
-        fields = [
-            "id",
-            "transaction_id",
-            "amount",
-            "currency",
-            "payment_status",
-            "attachment_url",
-            "metadata",
-            "notes",
-            "created_at",
-        ]
+        fields = ["id", "is_archived"]
+        read_only_fields = ["id"]
 
-    def get_attachment_url(self, obj):
-        if obj.attachment and hasattr(obj.attachment, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.attachment.url
-        return None
-    
-    def get_notes(self, obj):
-        transaction_ct = ContentType.objects.get_for_model(obj)
 
-        notes_qs = Note.objects.filter(
-            content_type=transaction_ct,
-            object_id=obj.pk
-        ).order_by("-created_at")
+class PaymentCourseSerializer(serializers.Serializer):
+    course_id = serializers.IntegerField()
+    course_name = serializers.CharField()
+    course_fee = serializers.FloatField()
+    discount = serializers.FloatField()
+    final_fee = serializers.FloatField()
+    paid_amount = serializers.FloatField()
+    balance = serializers.FloatField()
+    transactions = PaymentTransactionDetailSerializer(many=True)
 
-        return [
-            {
-                "note_id": n.id,
-                "reason": n.reason,
-                "created_by": n.created_by,
-                "status": n.status,
-                "created_at": n.created_at.strftime("%Y-%m-%d %H:%M"),
-            }
-            for n in notes_qs
-        ]
 
 class StudentPaymentSummarySerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
     registration_id = serializers.SerializerMethodField()
-
-    total_course_fee = serializers.SerializerMethodField()
-    paid_amount = serializers.SerializerMethodField()
-    remaining_amount = serializers.SerializerMethodField()
-
-    transactions = PaymentTransactionDetailSerializer(many=True, read_only=True)
+    discount = serializers.SerializerMethodField()
+   
+    courses = serializers.SerializerMethodField()  # NEW: nested per course
 
     class Meta:
         model = Student
         fields = [
-            "student_name",
-            "registration_id",
             "student_id",
-            "total_course_fee",
-            "paid_amount",
-            "remaining_amount",
-            "transactions",
+            "registration_id",
+            "student_name",
+            "email",
+            "contact_no",
+            "discount",
+            # "payment_status",
+            # "payment_mode",
+            "courses",
         ]
 
-    # -------------------------
-    # BASIC DETAILS
-    # -------------------------
     def get_student_name(self, obj):
-        return f"{obj.first_name} {obj.last_name}".strip()
+        return f"{obj.first_name} ".strip()
 
     def get_registration_id(self, obj):
         return obj.registration_id
 
-    # -------------------------
-    # BASE TRANSACTION (IMPORTANT)
-    # -------------------------
-    def _student_course(self, obj):
+    def get_discount(self, obj):
+        return float(getattr(obj, "discount", 0))
+    
+
+    def get_courses(self, obj):
         """
-        Get course from student's batch
+        Build per-course summary with transactions
         """
-        if not hasattr(obj, "_course_cache"):
-            batch = (
-                obj.new_batches
-                .filter(is_archived=False)
-                .select_related("course")
-                .first()
+        courses_data = []
+        
+
+        # Iterate over student's batches (or courses)
+        for batch in obj.new_batches.all():  # ✅ use .all()
+            course = getattr(batch, "course", None)
+            if not course:
+                continue
+
+            # Filter transactions belonging to this course
+            txs = [
+                tx for tx in obj.transactions.all()
+                if tx.course_id == course.course_id
+            ]
+
+            total_paid = sum(
+                float(tx.amount or 0) 
+                for tx in txs 
+                if tx.payment_status and tx.payment_status.lower() == "success"
             )
-            obj._course_cache = batch.course if batch else None
-        return obj._course_cache
 
-    # -------------------------
-    # TOTAL COURSE FEE
-    # -------------------------
-    def get_total_course_fee(self, obj):
-        course = self._student_course(obj)
-        return course.fee if course else 0
+            course_fee = float(getattr(course, "fee", 0))
+            student_discount = float(getattr(obj, "discount", 0))
+            final_fee = course_fee - student_discount
+            balance = max(final_fee - total_paid, 0.0)
 
-    # -------------------------
-    # PAID AMOUNT (ONLY SUCCESS)
-    # -------------------------
-    def get_paid_amount(self, obj):
-        return obj.transactions.filter(
-            payment_status__in=["done", "Done"],
-            is_archived=False
-        ).aggregate(total=Sum("amount"))["total"] or 0
+            courses_data.append({
+                "course_id": course.course_id,
+                "course_name": course.course_name,
+                "course_fee": course_fee,
+                "discount": student_discount,
+                "final_fee": final_fee,
+                "paid_amount": total_paid,
+                "balance": balance,
+                "transactions": PaymentTransactionDetailSerializer(txs, many=True).data
+            })
 
-    # -------------------------
-    # REMAINING AMOUNT (FINAL FIX)
-    # -------------------------
-    def get_remaining_amount(self, obj):
-        total_fee = self.get_total_course_fee(obj)
-        discount = obj.discount or 0
-        paid = self.get_paid_amount(obj)
-
-        remaining = (total_fee - discount) - paid
-        return max(remaining, 0)
-
+        return courses_data
+    
 class PaymentLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentLog
         fields = '__all__'
 
 class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
-    emi_installment_id = serializers.IntegerField(required=False)
+    emi_installment_id = serializers.IntegerField(required=False, allow_null=True)
+    date = serializers.DateField(required=False, allow_null=True)
+    note = serializers.CharField(required=False, allow_blank=True)
+    total_after_discount = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    transaction_id = serializers.CharField(read_only=True)
+    attachment = serializers.FileField(required=False, allow_null=True)
+    description = serializers.CharField(required=False, allow_blank=True)
+    metadata = serializers.JSONField(required=False, allow_null=True)
 
     class Meta:
         model = PaymentTransaction
         fields = [
             "student",
-            "course",
-            "gateway",
             "amount",
             "discount",
             "total_after_discount",
             "currency",
             "payment_status",
             "transaction_id",
-            "attachment", 
+            "attachment",
             "description",
             "metadata",
-            "emi_installment_id"
+            "emi_installment_id",
+            "date",
+            "note",
         ]
 
-
     def validate(self, attrs):
+        # ── FIX: idempotency guard ────────────────────────────────
+        # If the same student + amount + status was already created in the
+        # last 30 seconds, reject it as a duplicate.
+        
+        student = attrs.get("student")
+        amount  = attrs.get("amount")
+        payment_status  = attrs.get("payment_status")
+        if student and amount and payment_status:
+            cutoff = tz.now() - datetime.timedelta(seconds=30)
+            duplicate = PaymentTransaction.objects.filter(
+                student=student,
+                amount=amount,
+                payment_status=payment_status,
+                is_archived=False,
+                created_at__gte=cutoff,
+            ).exists()
+            if duplicate:
+                raise serializers.ValidationError(
+                    "A duplicate payment was detected. Please wait a moment before retrying."
+                )
+ 
+        # ── EMI validation ────────────────────────────────────────
         installment_id = attrs.get("emi_installment_id")
-
         if installment_id:
             try:
                 installment = PaymentEMIInstallment.objects.get(pk=installment_id)
             except PaymentEMIInstallment.DoesNotExist:
                 raise serializers.ValidationError("Invalid EMI installment.")
-
-            # Check if already paid
             if installment.paid:
                 raise serializers.ValidationError("This EMI installment is already paid.")
-
-            # Amount should match installment amount
             if attrs["amount"] != installment.amount:
                 raise serializers.ValidationError(
                     f"Installment amount must be {installment.amount}"
                 )
-
         return attrs
-
+ 
+   
     def create(self, validated_data):
-        metadata = validated_data.get("metadata", {})
         emi_installment_id = validated_data.pop("emi_installment_id", None)
+        note_text = validated_data.pop("note", None)
+        date_value = validated_data.pop("date", None)  # remove it from validated_data
 
-        student = validated_data["student"]
-        amount = validated_data["amount"]
+        # Ensure transaction_id exists
+        if not validated_data.get("transaction_id"):
+            validated_data["transaction_id"] = f"TXN{uuid.uuid4().hex[:8].upper()}"
+        # Compute discount if not provided
+        if not validated_data.get("discount"):
+            student = validated_data.get("student")
+            course = validated_data.get("course")
+            # find the batch the student is enrolled in for this course
+            batch = NewBatch.objects.filter(student=student, course=course).first()
+            if batch:
+                validated_data["discount"] = batch.discount or Decimal("0")
 
-        with db_transaction.atomic():  # CRITICAL
 
-            transaction_obj = super().create(validated_data)
 
-            # =========================================
-            # CASE 1: Paying existing EMI installment
-            # =========================================
-            if emi_installment_id:
-                try:
-                    installment = PaymentEMIInstallment.objects.select_related("emi_plan").get(
-                        pk=emi_installment_id,
-                        emi_plan__student=student  # security check
-                    )
-                except PaymentEMIInstallment.DoesNotExist:
-                    raise serializers.ValidationError("Invalid EMI installment.")
+        # Compute total after discount
+        amount = validated_data.get("amount", Decimal("0"))
+        discount = validated_data.get("discount", Decimal("0"))
+        validated_data["total_after_discount"] = amount - discount
 
-                if installment.paid:
-                    raise serializers.ValidationError("Installment already paid.")
+        # Save date inside metadata if provided
+        if date_value:
+            metadata = validated_data.get("metadata") or {}
+            metadata["payment_date"] = str(date_value)
+            validated_data["metadata"] = metadata
 
-                installment.paid = True
-                installment.paid_amount = amount
-                installment.payment = transaction_obj
-                installment.paid_at = timezone.now()
-                installment.save()
+        # Save payment_status & payment_mode
+        status = validated_data.pop("payment_status", None)
+        mode = validated_data.pop("payment_mode", None)
+        if status:
+            validated_data["payment_status"] = status
+        if mode:
+            validated_data["payment_mode"] = mode
 
-                return transaction_obj
+        # Create the transaction
+        transaction = super().create(validated_data)
 
-            # =========================================
-            # CASE 2: Create EMI plan from metadata
-            # =========================================
-            emi_data = metadata.get("emi")
+        # Save note if provided
+        if note_text:
+            mixin = NotesMixin()
+            mixin.save_notes(transaction, note_text, request=self.context.get("request"))
 
-            if emi_data:
-                months = emi_data.get("months")
-                total_fee = emi_data.get("total_fee")
+        # Mark EMI installment as paid
+        if emi_installment_id:
+            installment = PaymentEMIInstallment.objects.select_related("emi_plan").get(pk=emi_installment_id)
+            installment.paid = True
+            installment.paid_amount = transaction.amount
+            installment.payment = transaction
+            installment.paid_at = timezone.now()
+            installment.save()
 
-                if not months or not total_fee:
-                    raise serializers.ValidationError("Invalid EMI metadata provided.")
-
-                # Prevent duplicate EMI plans
-                emi = PaymentEMI.objects.filter(
-                    student=student,
-                    total_amount=total_fee,
-                    months=months
-                ).first()
-
-                if not emi:
-                    emi = PaymentEMI.objects.create(
-                        student=student,
-                        total_amount=total_fee,
-                        months=months
-                    )
-
-                    installments = emi.create_installments()
-                else:
-                    installments = emi.installments.all().order_by("due_date")
-
-                #  Safe decimal comparison
-                if installments:
-                    first = installments[0]
-
-                    if Decimal(first.amount) == Decimal(amount):
-                        if not first.paid:
-                            first.paid = True
-                            first.paid_amount = amount
-                            first.payment = transaction_obj
-                            first.paid_at = timezone.now()
-                            first.save()
-
-            return transaction_obj
-
+        return transaction
+    
 class StripePaymentSerializer(serializers.ModelSerializer):
     amount = serializers.DecimalField(max_digits=10, decimal_places=2)
     success_url = serializers.URLField()
