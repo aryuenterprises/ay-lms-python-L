@@ -41,6 +41,7 @@ INSTALLED_APPS = [
 
     'rest_framework',
     'rest_framework.authtoken',
+    'django.contrib.postgres',
 
     'dj_rest_auth',
     'dj_rest_auth.registration',

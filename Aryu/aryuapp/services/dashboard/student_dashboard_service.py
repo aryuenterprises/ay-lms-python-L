@@ -10,9 +10,10 @@ from aryuapp.models import (
     Attendance,
     Assignment,
     Submission,
+    Course,
 )
-from courses.models import Course
 from batches.models import ClassSchedule
+from django.db.models import F, ExpressionWrapper, DateTimeField, Q
 
 
 class StudentDashboardService:
@@ -163,35 +164,118 @@ class StudentDashboardService:
     # ---------------------------------------------------------
 
     def get_attendance_stats(self):
-
-        schedules = ClassSchedule.objects.filter(
-            Q(new_batch__students=self.student_id) |
-            Q(batch__batchcoursetrainer__student_id=self.student_id),
+        now = datetime.now()
+    
+        courses = Course.objects.filter(
+            Q(new_batches__students=self.student_id) |
+            Q(batchcoursetrainer__student_id=self.student_id),
             is_archived=False
-        )
+        ).distinct()
 
-        total = schedules.count()
+        attendance_by_course = []
 
-        cancelled = schedules.filter(
-            is_class_cancelled=True
-        ).count()
+        for course in courses:
+        
+            schedules = ClassSchedule.objects.filter(
+                Q(new_batch__students=self.student_id) |
+                Q(batch__batchcoursetrainer__student_id=self.student_id),
+                course=course,
+                is_archived=False
+            )
 
-        attended = Attendance.objects.filter(
-            student_id=self.student_id,
-            schedule_id__isnull=False
-        ).values("schedule_id").distinct().count()
+            total = schedules.count()
+            cancelled = schedules.filter(is_class_cancelled=True).count()
 
-        absent = max(0, total - attended - cancelled)
+            attended = Attendance.objects.filter(
+                student_id=self.student_id,
+                schedule_id__in=schedules.values_list("schedule_id", flat=True)
+            ).values("schedule_id").distinct().count()
 
-        percentage = (attended / total * 100) if total else 0
+            absent = max(0, total - attended - cancelled)
+            percentage = (attended / total * 100) if total else 0
+            upcoming_qs = schedules.annotate(
+                start_datetime=ExpressionWrapper(
+                    F("scheduled_date") + F("start_time"),
+                    output_field=DateTimeField()
+                )
+            ).filter(start_datetime__gte=now)
+            upcoming_classes_count = upcoming_qs .count()
 
-        return {
+            attendance_by_course.append({
+            "course_id": course.course_id,
+            "course_name": course.course_name,
             "total_classes": total,
             "attended": attended,
             "absent": absent,
             "cancelled_classes": cancelled,
-            "percentage": round(percentage, 2)
-        }
+            "percentage": round(percentage, 2),
+            "upcoming_classes_count": upcoming_classes_count 
+            })
+
+        return attendance_by_course
+    
+
+    def get_attendance_with_upcoming(self):
+        courses = Course.objects.filter(
+            Q(new_batches__students=self.student_id) |
+            Q(batchcoursetrainer__student_id=self.student_id),
+            is_archived=False
+        ).distinct()
+
+        now = datetime.now()
+        result = []
+
+        for course in courses:
+            schedules = ClassSchedule.objects.filter(
+                Q(new_batch__students=self.student_id) |
+                Q(batch__batchcoursetrainer__student_id=self.student_id),
+                course=course,
+                is_archived=False
+            )
+
+            total = schedules.count()
+            cancelled = schedules.filter(is_class_cancelled=True).count()
+            attended = Attendance.objects.filter(
+                student_id=self.student_id,
+                schedule_id__in=schedules.values_list("schedule_id", flat=True)
+            ).values("schedule_id").distinct().count()
+
+            absent = max(0, total - attended - cancelled)
+            percentage = (attended / total * 100) if total else 0
+
+            # --- Upcoming Classes (all) ---
+            upcoming_qs = schedules.annotate(
+                start_datetime=ExpressionWrapper(
+                    F("scheduled_date") + F("start_time"),
+                    output_field=DateTimeField()
+                )
+            ).filter(start_datetime__gte=now)
+
+            upcoming_schedules_count = upcoming_qs.count()  # ✅ total upcoming classes
+            upcoming_schedules = upcoming_qs.select_related(
+                "course", "trainer", "new_batch"
+            ).values(
+                "scheduled_date",
+                "start_time",
+                "class_link",
+                "course__course_name",
+                "trainer__full_name",
+                "new_batch__title"
+            ).order_by("scheduled_date", "start_time")[:3]  # ✅ next 3 classes
+
+            result.append({
+                "course_id": course.course_id,
+                "course_name": course.course_name,
+                "total_classes": total,
+                "attended": attended,
+                "absent": absent,
+                "cancelled_classes": cancelled,
+                "percentage": round(percentage, 2),
+                "upcoming_classes_count": upcoming_schedules_count,  # now included
+                "upcoming_classes": list(upcoming_schedules)
+            })
+
+        return result
 
     # ---------------------------------------------------------
     # ASSIGNMENTS
@@ -200,28 +284,39 @@ class StudentDashboardService:
     def get_assignment_stats(self):
 
         courses = Course.objects.filter(
-            new_batches__students=self.student_id
-        ).values_list("course_id", flat=True)
-
-        assignments = Assignment.objects.filter(
-            course_id__in=courses,
+            Q(new_batches__students=self.student_id) |
+            Q(batchcoursetrainer__student_id=self.student_id),
             is_archived=False
-        )
+        ).distinct()
 
-        total = assignments.count()
+        result = []
 
-        completed = Submission.objects.filter(
-            student_id=self.student_id,
-            assignment__in=assignments
-        ).values("assignment_id").distinct().count()
+        for course in courses:
+            assignments = Assignment.objects.filter(
+                course_id=course.course_id,
+                is_archived=False
+            )
 
-        pending = total - completed
+            total = assignments.count()
 
-        return {
-            "total_assessments": total,
-            "completed": completed,
-            "pending": pending
-        }
+            completed = Submission.objects.filter(
+                student_id=self.student_id,
+                assignment__in=assignments
+            ).values("assignment_id").distinct().count()
+
+            pending = total - completed
+
+            result.append({
+                "course_id": course.course_id,
+                "course_name": course.course_name,
+                "total_assessments": total,
+                "completed": completed,
+                "pending": pending,
+            })
+
+        return result
+            
+        
 
     # ---------------------------------------------------------
     # ALL CLASS SCHEDULES
