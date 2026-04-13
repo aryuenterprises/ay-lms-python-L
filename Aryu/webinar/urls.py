@@ -7,7 +7,7 @@ urlpatterns = [
     # Webinar CRUD
     path('web', WebinarViewSet.as_view({'get': 'list','post': 'create'}), name='webinar-list'),
     path("webhooks/whatsapp/", whatsapp_webhook),
-    path('web/<slug:slug>/', WebinarViewSet.as_view({'get': 'retrieve','put': 'update','patch': 'update','delete': 'delete'}), name='webinar-detail'),
+    path('web/<slug:slug>/', WebinarViewSet.as_view({'get': 'retrieve','put': 'update','patch': 'update','delete': 'destroy'}), name='webinar-detail'),
     path("<uuid:uuid>/tools/<int:pk>/", WebinarToolUpdateDeleteView.as_view(), name="webinar-tool-update-delete"),
     
     # Webinar Registration

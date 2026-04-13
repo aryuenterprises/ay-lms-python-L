@@ -40,6 +40,7 @@ class PaymentTransaction(models.Model):
     attachment = models.FileField(upload_to='payment_attachments/', blank=True, null=True)
     description = models.TextField(blank=True, null=True)
     metadata = models.JSONField(blank=True, null=True)
+    order_id = models.CharField(max_length=255, blank=True, null=True)
     notes = GenericRelation("aryuapp.Note", related_query_name="payment_notes")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
