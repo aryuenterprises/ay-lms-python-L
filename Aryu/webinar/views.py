@@ -12,8 +12,8 @@ from .services.scheduler import schedule_webinar_messages
 from .services.certificate_generation import generate_and_send_certificate_pdf
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .services.whatsapp import send_webinar_reminder, send_webinar_welcome_whatsapp, send_webinar_joining_whatsapp
+from payments.models import PaymentGateway, PaymentTransaction
 from aryuapp.models import Certificate
-from payments.models import PaymentTransaction, PaymentGateway
 import razorpay
 from rest_framework.viewsets import ReadOnlyModelViewSet
 from rest_framework.throttling import AnonRateThrottle
@@ -35,7 +35,7 @@ from django.conf import settings
 from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from aryuapp.auth import CustomJWTAuthentication
-from django.db.models import Count, Prefetch, Sum, Q, Avg, F, Value, IntegerField, OuterRef, Subquery, FloatField, Value, CharField
+from django.db.models import Count, Prefetch, Sum, Q, Avg, F, Value, IntegerField, Case, When, FloatField, Value, CharField
 from .models import *
 from .serializers import *
 import logging
@@ -57,7 +57,7 @@ def razorpay_webhook(request):
         return HttpResponse(status=400)
 
     gateway = PaymentGateway.objects.filter(
-        gatway_name__icontains="Razorpay"
+        gatway_name__icontains="razorpay"
     ).first()
 
     expected_signature = hmac.new(
@@ -107,7 +107,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
     def _get_client(self):
         gateway = PaymentGateway.objects.filter(
-            gatway_name__icontains="Razorpay"
+            gatway_name__icontains="razorpay"
         ).first()
 
 
@@ -203,7 +203,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             )
 
         gateway = PaymentGateway.objects.filter(
-            gatway_name__icontains="Razorpay"
+            gatway_name__icontains="razorpay"
         ).first()
 
         if not gateway or not gateway.secret_key:
@@ -272,8 +272,8 @@ class WebinarViewSet(
     authentication_classes = [CustomJWTAuthentication]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     serializer_class = WebinarSerializer
-    lookup_field = "uuid"
-    lookup_url_kwarg = "uuid"
+    lookup_field = "slug"
+    lookup_url_kwarg = "slug"
 
     def get_queryset(self):
 
@@ -413,7 +413,7 @@ class WebinarViewSet(
             slug=slug,
             is_deleted=False
         )
-        MEDIA_PREFIX = "https://portal.aryuacademy.com/api/media/"
+        MEDIA_PREFIX = "https://aylms.aryuprojects.com/api/media/"
         registrations = (
             WebinarRegistration.objects
             .filter(webinar_id=webinar.id)
@@ -424,9 +424,17 @@ class WebinarViewSet(
                     Value("free")
                 ),
 
-                certificate_url=Concat(
-                    Value(MEDIA_PREFIX),
-                    F("certificate__certificate_file"),
+                certificate_url=Case(
+                    When(
+                        certificate__certificate_file__isnull=False,
+                        certificate__certificate_file__gt="",
+                        then=Concat(
+                            Value(MEDIA_PREFIX),
+                            F("certificate__certificate_file"),
+                            output_field=CharField()
+                        )
+                    ),
+                    default=Value(None),
                     output_field=CharField()
                 ),
 
@@ -456,13 +464,16 @@ class WebinarViewSet(
                     interested_in_paid_courses=F("feedback__interested_in_paid_courses"),
                     submitted_at=F("feedback__submitted_at"),
 
-                    rating_screenshot=Coalesce(
-                        Concat(
-                            Value(MEDIA_PREFIX),
-                            F("feedback__rating_screenshot"),
-                            output_field=CharField()
+                    rating_screenshot=Case(
+                        When(
+                            feedback__rating_screenshot__isnull=False,
+                            then=Concat(
+                                Value(MEDIA_PREFIX),
+                                F("feedback__rating_screenshot"),
+                                output_field=CharField()
+                            )
                         ),
-                        Value(None),
+                        default=Value(None),
                         output_field=CharField()
                     )
                 ),
@@ -554,17 +565,6 @@ class WebinarViewSet(
         })
 
     def list(self, request):
-        user = request.user
-        user_type = user.user_type
-
-        if user_type in ["student", "tutor"]:
-            return Response(
-                {
-                    "success": False,
-                    "message": "You do not have permission to access this resource."
-                },
-                status=403
-            )
         cache_key = "webinar_list_v1"
         data = cache.get(cache_key)
 
@@ -576,17 +576,6 @@ class WebinarViewSet(
         return Response(data)
 
     def create(self, request):
-        user = request.user
-        user_type = user.user_type
-
-        if user_type in ["student", "tutor"]:
-            return Response(
-                {
-                    "success": False,
-                    "message": "You do not have permission to access this resource."
-                },
-                status=403
-            )
         serializer = WebinarSerializer(
             data=request.data,
             context={"request": request}
@@ -637,22 +626,12 @@ class WebinarViewSet(
         }, status=201)
 
 
-    def update(self, request, uuid=None):
+    def update(self, request, *args,**kwargs):
         try:
             with transaction.atomic():
-                user = request.user
-                user_type = user.user_type
+                slug = kwargs.get("slug") 
 
-                if user_type in ["student", "tutor"]:
-                    return Response(
-                        {
-                            "success": False,
-                            "message": "You do not have permission to access this resource."
-                        },
-                        status=403
-                    )
-
-                webinar = get_object_or_404(Webinar, uuid=uuid)
+                webinar = get_object_or_404(Webinar, slug=slug)
 
                 serializer = WebinarSerializer(webinar, data=request.data, partial=True)
                 serializer.is_valid(raise_exception=True)
@@ -854,12 +833,15 @@ class WebinarViewSet(
                 "message": str(e)
             }, status=400)
     
-    def delete(self, request, uuid):
+    def destroy(self, request, *args, **kwargs):
+        slug = kwargs.get("slug") or kwargs.get("uuid")
+
         webinar = get_object_or_404(
             Webinar,
-            uuid=uuid,
+            slug=slug,
             is_deleted=False
         )
+
         webinar.is_deleted = True
         webinar.save(update_fields=["is_deleted", "updated_at"])
 
@@ -907,11 +889,11 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
 
         data["success_url"] = request.data.get(
             "success_url",
-            "https://portal.aryuacademy.com/payment-success"
+            "https://aylms.aryuprojects.com/payment-success"
         )
         data["failure_url"] = request.data.get(
             "failure_url",
-            "https://portal.aryuacademy.com/payment-failed"
+            "https://aylms.aryuprojects.com/payment-failed"
         )
 
         request._full_data = data
@@ -1384,6 +1366,7 @@ def whatsapp_webhook(request):
     return JsonResponse({"status": "ok"})
 
 
+
 def _create_payment(self, request, webinar):
     razorpay_view = RazorpayPaymentViewSet()
 
@@ -1391,8 +1374,8 @@ def _create_payment(self, request, webinar):
     payment_request.data = {
         "amount": webinar.price,
         "currency": "INR",
-        "success_url": f"https://portal.aryuacademy.com/webinar/payment-success/{webinar.uuid}",
-        "failure_url": f"https://portal.aryuacademy.com/webinar/payment-failed/{webinar.uuid}",
+        "success_url": f"https://aylms.aryuprojects.com/webinar/payment-success/{webinar.uuid}",
+        "failure_url": f"https://aylms.aryuprojects.com/webinar/payment-failed/{webinar.uuid}",
     }
 
     return razorpay_view.create(payment_request)
@@ -1414,17 +1397,6 @@ class WebinarSessionViewSet(viewsets.ViewSet):
         return Response(serializer.data)
     
     def start(self, request, uuid=None):
-        user = request.user
-        user_type = user.user_type
-
-        if user_type in ["student", "tutor"]:
-            return Response(
-                {
-                    "success": False,
-                    "message": "You do not have permission to access this resource."
-                },
-                status=403
-            )
         webinar = get_object_or_404(Webinar, uuid=uuid)
 
         session, created = WebinarSession.objects.get_or_create(
@@ -1485,17 +1457,6 @@ class WebinarFeedbackViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
 
     def list(self, request):
-        user = request.user
-        user_type = user.user_type
-
-        if user_type in ["student", "tutor"]:
-            return Response(
-                {
-                    "success": False,
-                    "message": "You do not have permission to access this resource."
-                },
-                status=403
-            )
         queryset = WebinarFeedback.objects.select_related(
             "webinar",
             "registration"
@@ -1514,33 +1475,51 @@ class WebinarFeedbackViewSet(viewsets.ViewSet):
         )
         serializer = WebinarFeedbackSerializer(feedback)
         return Response(serializer.data)
-    
-    @transaction.atomic
-    def create(self, request):
-        serializer = WebinarFeedbackSerializer(data=request.data)
 
-        if not serializer.is_valid():
+    def create(self, request):
+        try:
+            serializer = WebinarFeedbackSerializer(data=request.data)
+
+            if not serializer.is_valid():
+                return Response({
+                    "success": False,
+                    "message": serializer.errors
+                }, status=200)
+
+            feedback = serializer.save()
+
+            reg = feedback.registration
+            webinar = reg.webinar
+
+            certificate, _ = Certificate.objects.get_or_create(
+                webinar_registration=reg,
+                defaults={
+                    "student": getattr(reg, "student", None),
+                    "student_name": feedback.name.strip(),
+                    "course_name": webinar.title,
+                    "course_duration": "3 Hours",
+                    "created_by": "system",
+                    "created_by_type": "auto"
+                }
+            )
+
+            generate_and_send_certificate_pdf(
+                certificate=certificate,
+                phone=reg.phone
+            )
+            reg.certificate_sent = True
+            reg.save(update_fields=["certificate_sent"])
+
+            return Response({
+                "success": True,
+                "message": "Feedback submitted and certificate sent",
+                "data": serializer.data
+            }, status=201)
+        except Exception as e:
             return Response({
                 "success": False,
-                "message": serializer.errors
-            }, status=200)
-
-        feedback = serializer.save()
-
-        reg = feedback.registration
-
-        # ASYNC TASK (non-blocking)
-        send_certificate_task.delay(
-            reg_id=reg.id,
-            user_id="system",
-            user_type="auto"
-        )
-
-        return Response({
-            "success": True,
-            "message": "Feedback submitted. Certificate will be sent shortly.",
-            "data": serializer.data
-        }, status=201)
+                "message": str(e)
+            }, status=400)
 
 class WebinarTicketViewSet(viewsets.ViewSet):
     """
@@ -1734,7 +1713,7 @@ class WebinarCertificateViewSet(viewsets.ViewSet):
         user_id = getattr(request.user, "user_id", None)
         user_type = getattr(request.user, "username", None)
 
-        sent_ids = []
+        sent_count = 0
 
         for reg in regs:
 
@@ -1755,17 +1734,15 @@ class WebinarCertificateViewSet(viewsets.ViewSet):
                 phone=reg.phone
             )
 
-            sent_ids.append(reg.id)
+            reg.certificate_sent = True
+            reg.save(update_fields=["certificate_sent"])
 
-        # Bulk update after sending
-        WebinarRegistration.objects.filter(id__in=sent_ids).update(
-            certificate_sent=True
-        )
+            sent_count += 1
 
         return Response({
             "success": True,
             "message": "Certificates sent successfully",
-            "count": len(sent_ids)
+            "count": sent_count
         })
 
 
@@ -1824,16 +1801,7 @@ class FormViewSet(viewsets.ViewSet):
 
     def list(self, request):
         user = request.user
-        user_type = user.user_type
 
-        if user_type in ["student", "tutor"]:
-            return Response(
-                {
-                    "success": False,
-                    "message": "You do not have permission to access this resource."
-                },
-                status=403
-            )
         role = getattr(user, "user_type", None)
 
         if role in ("tutor", "admin"):
@@ -1926,16 +1894,6 @@ class FormViewSet(viewsets.ViewSet):
     
     def update(self, request, slug=None):
         user = request.user
-        user_type = user.user_type
-
-        if user_type in ["student", "tutor"]:
-            return Response(
-                {
-                    "success": False,
-                    "message": "You do not have permission to access this resource."
-                },
-                status=403
-            )
         user_id = str(getattr(user, "user_id", None))
         user_type = getattr(user, "user_type", None)
 
@@ -1995,17 +1953,7 @@ class SubmissionViewSet(viewsets.ViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def list(self, request):
-        user = request.user
-        user_type = user.user_type
 
-        if user_type in ["student", "tutor"]:
-            return Response(
-                {
-                    "success": False,
-                    "message": "You do not have permission to access this resource."
-                },
-                status=403
-            )
         form_slug = request.query_params.get("form_slug")
         if not form_slug:
             return Response(
@@ -2164,7 +2112,7 @@ class SubmissionViewSet(viewsets.ViewSet):
         )
 
 class PublicFormThrottle(AnonRateThrottle):
-    rate = "20/hour"
+    rate = "30/hour"
 
 class PublicFormViewSet(ReadOnlyModelViewSet):
     permission_classes = [AllowAny]
