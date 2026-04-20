@@ -341,7 +341,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         Args:
             pk: student_id
         """
-        student = Student.objects.filter(student_id=pk).prefetch_related(
+        student = Student.objects.filter(student_id=pk,is_archived=True).prefetch_related(
             Prefetch(
                 "transactions",
                 queryset=PaymentTransaction.objects.select_related("course", "gateway")
@@ -377,7 +377,10 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             seen_course_ids.add(course.course_id)
 
             # Get transactions for this course
-            txs = [tx for tx in student.transactions.all() if tx.course_id == course.course_id]
+            txs = [
+                    tx for tx in student.transactions.all()
+                    if tx.course_id == course.course_id and not tx.is_archived
+                ]
 
             # Calculate paid amount (only successful payments)
             paid_amount = sum(
@@ -477,112 +480,50 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
     
 
     def create(self, request):
-
-      
-
-        # ================================================================
-        # STEP 1: Validate IDs
-        # ================================================================
         try:
             student_id = int(str(request.data.get("student_id")).strip())
             course_id = int(str(request.data.get("course_id")).strip())
         except (TypeError, ValueError):
-            return Response({
-                "success": False,
-                "message": "Invalid student_id or course_id"
-            }, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"success": False, "message": "Invalid student_id or course_id"}, status=400)
 
-        # ================================================================
-        # STEP 2: SAFE FLOAT VALUES
-        # ================================================================
-        discount = safe_float(request.data.get("discount"), 0)
-        course_fee = safe_float(request.data.get("course_fee"), 0)
-        total_after_discount = safe_float(request.data.get("total_after_discount"), 0)
-        description = request.data.get("notes", "")
-
-        
-        # ================================================================
-        # STEP 3: Payments parsing
-        # ================================================================
         payments = request.data.get("payments", [])
 
         if isinstance(payments, str):
             try:
-               
                 payments = json.loads(payments)
-            except Exception as e:
-                return Response({
-                    "success": False,
-                    "message": f"Invalid payments format: {str(e)}"
-                }, status=status.HTTP_400_BAD_REQUEST)
+            except Exception:
+                return Response({"success": False, "message": "Invalid payments format"}, status=400)
 
-        if not isinstance(payments, list) or len(payments) == 0:
-            return Response({
-                "success": False,
-                "message": "Payments must be a non-empty list"
-            }, status=status.HTTP_400_BAD_REQUEST)
+        # if not isinstance(payments, list) or not payments:
+        #     return Response({"success": False, "message": "Payments must be a non-empty list"}, status=400)
 
-        # ================================================================
-        # STEP 4: Fetch student & course
-        # ================================================================
         student = Student.objects.filter(student_id=student_id).first()
-        if not student:
-            return Response({
-                "success": False,
-                "message": "Student not found"
-            }, status=status.HTTP_404_NOT_FOUND)
-
         course = Course.objects.filter(course_id=course_id).first()
-        if not course:
-            return Response({
-                "success": False,
-                "message": "Course not found"
-            }, status=status.HTTP_404_NOT_FOUND)
 
-        # ================================================================
-        # STEP 5: Create transactions
-        # ================================================================
-        created_transactions = []
+        if not student or not course:
+            return Response({"success": False, "message": "Student or Course not found"}, status=404)
+
+        created_ids = []
 
         for pay in payments:
-
-            if not isinstance(pay, dict):
-                return Response({
-                    "success": False,
-                    "message": "Each payment must be an object"
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-            raw_amount = pay.get("amount")
-
-            if raw_amount is None:
-                return Response({
-                    "success": False,
-                    "message": "Amount is required"
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-            # ✅ SAFE amount conversion
-            amount = safe_float(raw_amount, 0)
-
-           
-
-            # 🚨 STRICT VALIDATION
+            amount = float(pay.get("amount", 0))
             if amount <= 0:
-                return Response({
-                    "success": False,
-                    "message": f"Invalid amount: {raw_amount}"
-                }, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"success": False, "message": "Invalid amount"}, status=400)
 
-            transaction = PaymentTransaction.objects.create(
+            transaction_id = pay.get("transaction_id") or f"TXN{uuid.uuid4().hex[:8].upper()}"
+
+            # ✅ prevent duplicate at create level
+            exists = PaymentTransaction.objects.filter(transaction_id=transaction_id).exists()
+            if exists:
+                continue
+
+            tx = PaymentTransaction.objects.create(
                 student=student,
                 course=course,
                 amount=amount,
                 currency="INR",
-                description=description,
-                course_fee=course_fee,
-                total_after_discount=total_after_discount,
-                discount=discount,
                 payment_status=pay.get("status"),
-                transaction_id=pay.get("transaction_id") or f"TXN{uuid.uuid4().hex[:8].upper()}",
+                transaction_id=transaction_id,
                 metadata={
                     "mode": pay.get("mode"),
                     "date": pay.get("date"),
@@ -590,158 +531,132 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 }
             )
 
-            created_transactions.append(transaction)
+            created_ids.append(tx.id)
 
-        # ================================================================
-        # RESPONSE
-        # ================================================================
         return Response({
             "success": True,
-            "message": "Payments created successfully",
-            "count": len(created_transactions),
-            "transaction_ids": [tx.transaction_id for tx in created_transactions]
+            "message": "Payments created",
+            "created_count": len(created_ids),
+            "created_ids": created_ids
         })
-    
-    # def update(self, request, pk=None):
-    #     try:
-    #         queryset = self.get_queryset()  # <-- no arguments here
-    #         instance = queryset.filter(pk=pk).first()
-    #         partial = request.method == "PATCH"
-    #         serializer = PaymentTransactionUpdateSerializer(instance, data=request.data, partial=partial, context={"request": request})
-    #         if serializer.is_valid():
-    #             serializer.save()
-    #             return Response({
-    #                 "success": True,
-    #                 "message": "Payment transaction updated successfully.",
-    #                 "data": serializer.data
-    #             }, status=200)
-    #         else:
-    #             return Response({"success": False, "message": serializer.errors}, status=200)
-    #     except Exception as e:
-    #         return Response({"success": False, "message": f"Error updating gateway: {str(e)}"}, status=200)
-
-    # def update(self, request, pk=None):
-
-    #     student_id = request.data.get("student_id")
-    #     course_id = request.data.get("course_id")
-    #     metadata = request.data.get("metadata", [])
-
-    #     student = Student.objects.filter(student_id=student_id).first()
-    #     course = Course.objects.filter(course_id=course_id).first()
-
-    #     if not student or not course:
-    #         return Response({
-    #             "success": False,
-    #             "message": "Invalid student or course"
-    #         }, status=400)
-
-    #     created_transactions = []
-
-    #     for pay in metadata:
-
-    #         # 🔥 NORMALIZE KEYS (IMPORTANT)
-    #         amount = float(pay.get("amount", 0))
-    #         mode = (pay.get("payment_mode")).lower()
-    #         status = pay.get("payment_status")
-    #         date = pay.get("payment_date")
-    #         transaction_id = pay.get("transaction_id")
-
-            
-    #         tx = PaymentTransaction.objects.create(
-    #             student=student,
-    #             course=course,
-    #             amount=amount,
-    #             currency="INR",
-    #             payment_status=status,
-    #             transaction_id=transaction_id,
-    #             metadata={
-    #                 "mode": mode,
-    #                 "date": date,
-    #                 # "transaction_id":transaction_id,
-
-    #             }
-    #         )
-
-
-    #         created_transactions.append(tx)
-
-        # return Response({
-        #     "success": True,
-        #     "message": "Payments updated successfully",
-        #     "count": len(created_transactions)
-        # })
-       
     def update(self, request, pk=None):
         student_id = request.data.get("student_id")
         course_id = request.data.get("course_id")
         metadata = request.data.get("metadata", [])
 
-        # ✅ Parse JSON if metadata is a string
         if isinstance(metadata, str):
             try:
                 metadata = json.loads(metadata)
             except json.JSONDecodeError:
-                return Response({
-                    "success": False,
-                    "message": "Invalid metadata format"
-                }, status=400)
+                return Response({"success": False, "message": "Invalid metadata"}, status=400)
 
         student = Student.objects.filter(student_id=student_id).first()
         course = Course.objects.filter(course_id=course_id).first()
 
         if not student or not course:
-            return Response({
-                "success": False,
-                "message": "Invalid student or course"
-            }, status=400)
+            return Response({"success": False, "message": "Invalid student or course"}, status=400)
 
-        created_transactions = []
+        created_ids = []
+        updated_ids = []
+
+        incoming_ids = []
 
         for pay in metadata:
-            # Now pay is a dictionary
-            amount = int(pay.get("amount", 0))  # ✅ Convert to int
-            mode = (pay.get("payment_mode") or "").lower()
-            status = pay.get("payment_status")
-            date = pay.get("payment_date")
-            transaction_id = pay.get("transaction_id") or f"TXN{uuid.uuid4().hex[:8].upper()}"
+            amount = float(pay.get("amount", 0))
+            transaction_id = pay.get("transaction_id")
 
-            tx = PaymentTransaction.objects.create(
+            mode = (pay.get("payment_mode") or "").lower()
+            status_val = pay.get("payment_status")
+            date = pay.get("payment_date")
+
+            if transaction_id:
+                incoming_ids.append(transaction_id)
+
+                tx = PaymentTransaction.objects.filter(transaction_id=transaction_id).first()
+
+                if tx:
+                    # ✅ UPDATE
+                    tx.amount = amount
+                    tx.payment_status = status_val
+                    tx.metadata = {"mode": mode, "date": date}
+                    tx.student = student
+                    tx.course = course
+                    tx.save()
+
+                    updated_ids.append(tx.id)
+                    continue
+
+            # ✅ CREATE (only if no transaction_id or not found)
+            new_tx = PaymentTransaction.objects.create(
                 student=student,
                 course=course,
                 amount=amount,
                 currency="INR",
-                payment_status=status,
-                transaction_id=transaction_id,
-                metadata={
-                    "mode": mode,
-                    "date": date,
-                }
+                payment_status=status_val,
+                transaction_id=transaction_id or f"TXN{uuid.uuid4().hex[:8].upper()}",
+                metadata={"mode": mode, "date": date}
             )
-            created_transactions.append(tx)
+
+            created_ids.append(new_tx.id)
+
+        # ✅ ARCHIVE removed transactions (VERY IMPORTANT)
+        PaymentTransaction.objects.filter(
+            student=student,
+            course=course,
+            is_archived=False
+        ).exclude(transaction_id__in=incoming_ids).update(is_archived=True)
 
         return Response({
             "success": True,
-            "message": "Payments updated successfully",
-            "count": len(created_transactions)
+            "message": "Payments synced successfully",
+            "created_count": len(created_ids),
+            "updated_count": len(updated_ids)
         })
     def destroy(self, request, pk=None):
         try:
             transaction = PaymentTransaction.objects.get(pk=pk)
-            transaction.is_archived = True   # soft delete
+
+            transaction.is_archived = True
             transaction.save()
-            return Response({"success": True, "message": "Payment deleted successfully"})
+
+            return Response({
+                "success": True,
+                "message": "Transaction deleted successfully"
+            })
+
         except PaymentTransaction.DoesNotExist:
-            return Response({"success": False, "message": "Transaction not found"}, status=404)
-        
-    def delete(self, request, student_id= None):
-        PaymentTransaction.objects.filter(
-            student_id=student_id,
-            is_archived=False
-        ).update(
-            is_archived=True,
-            
-        )
-        return Response({"success":True,"message":"Deleted successfully"})
+            return Response({
+                "success": False,
+                "message": "Transaction not found"
+            }, status=404)
+
+
+    # ✅ 2. Delete FULL student + all transactions
+    @action(detail=True, methods=['delete'], url_path='delete-student')
+    def delete_student(self, request, pk=None):
+        try:
+            student = Student.objects.get(student_id=pk)
+
+            # delete all transactions
+            PaymentTransaction.objects.filter(
+                student_id=pk,
+                is_archived=False
+            ).update(is_archived=True)
+
+            # delete student
+            student.is_archived = True
+            student.save()
+
+            return Response({
+                "success": True,
+                "message": "Student and all transactions deleted"
+            })
+
+        except Student.DoesNotExist:
+            return Response({
+                "success": False,
+                "message": "Student not found"
+            }, status=404)
 
 
 from django.conf import settings as django_settings
