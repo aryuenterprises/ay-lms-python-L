@@ -100,6 +100,7 @@ class CourseListSerializer(serializers.ModelSerializer):
     )
 
     course_pic_url = serializers.SerializerMethodField()
+    duration_list = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
@@ -113,7 +114,7 @@ class CourseListSerializer(serializers.ModelSerializer):
             "notes",
             "currency_type",
             "fee_type",
-            "duration",
+            "duration_list",
             "mode_of_delivery",
             "fee",
             "status",
@@ -123,14 +124,27 @@ class CourseListSerializer(serializers.ModelSerializer):
 
     def get_course_pic_url(self, obj):
         if obj.course_pic:
-            return f"https://portal.aryuacademy.com/api{obj.course_pic.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.course_pic.url}"
         return None
+    def get_duration_list(self,obj):
+        if obj.duration:
+            duration_value = obj.duration
+            duration_type = getattr(obj, "duration_type")  # default to month if field not set
+            return [{"duration":duration_value, "duration_type":duration_type}]
+        return []
+
+class CaseInsensitiveSlugRelatedField(serializers.SlugRelatedField):
+    def to_internal_value(self, data):
+        try:
+            return self.get_queryset().get(**{f"{self.slug_field}__iexact": data})
+        except self.get_queryset().model.DoesNotExist:
+            self.fail('does_not_exist', slug_name=self.slug_field, value=data)
 
 class CourseSerializer(serializers.ModelSerializer):
-    course_category = serializers.SlugRelatedField(
-        slug_field='category_name',
-        queryset=CourseCategory.objects.filter(is_archived=False),
-    )
+    course_category = CaseInsensitiveSlugRelatedField(
+    slug_field='category_name',
+    queryset=CourseCategory.objects.filter(is_archived=False),
+)
     category_details = CourseCategorySerializer(source='course_category', read_only=True)
     syllabus_info = serializers.SerializerMethodField()
     syllabus_url = serializers.SerializerMethodField()
@@ -140,6 +154,11 @@ class CourseSerializer(serializers.ModelSerializer):
     topic = serializers.SerializerMethodField()
     notes = serializers.SerializerMethodField()
     assignment = serializers.SerializerMethodField()
+    # duration_list = serializers.JSONField(write_only=True, required=False)
+    # duration_type = serializers.CharField(read_only=True)
+    duration_list = serializers.SerializerMethodField()
+
+
 
     class Meta:
         model = Course
@@ -147,7 +166,7 @@ class CourseSerializer(serializers.ModelSerializer):
             'course_id', 'course_name', 'course_category', 'category_details',
             'course_pic', 'course_pic_url', 'notes', 'currency_type', 'fee_type',
             'topic', 'syllabus', 'syllabus_url','syllabus_info', 'assignment', 'batches',
-            'duration', 'mode_of_delivery', 'fee', 'status', 'is_archived', 'is_featured', 'created_by', 'created_at'
+            'duration_list','mode_of_delivery', 'fee', 'status', 'is_archived', 'is_featured', 'created_by', 'created_at'
         ]
         
     def get_notes(self, obj):
@@ -179,6 +198,16 @@ class CourseSerializer(serializers.ModelSerializer):
             for note in notes_qs
         ]
 
+
+    def get_duration_list(self, obj):
+        if obj.duration and obj.duration_type:
+            return [
+                {
+                    "duration": obj.duration,
+                    "duration_type": obj.duration_type
+                }
+            ]
+        return []
     def get_batches(self, obj):
         batches_qs = obj.new_batches.filter(is_archived=False, status=True)
         return [
@@ -196,12 +225,12 @@ class CourseSerializer(serializers.ModelSerializer):
     
     def get_course_pic_url(self, obj):
         if obj.course_pic and hasattr(obj.course_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.course_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.course_pic.url
         return None
     
     def get_syllabus_url(self, obj):
         if obj.syllabus and hasattr(obj.syllabus, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.syllabus.url
+            return 'https://aylms.aryuprojects.com/api' + obj.syllabus.url
         return None
     
     def get_assignment(self, obj):
@@ -240,7 +269,7 @@ class CourseSerializer(serializers.ModelSerializer):
                     "name": filename,
                     "type": mimetype or "application/octet-stream",
                     "size": os.path.getsize(file_path),
-                    "url": 'https://portal.aryuacademy.com/api' + obj.syllabus.url,
+                    "url": 'https://aylms.aryuprojects.com/api' + obj.syllabus.url,
                     "missing": False
                 }
             }]
@@ -301,15 +330,42 @@ class CourseSerializer(serializers.ModelSerializer):
 
         return topic_data
     
-    def validate_duration(self, value):
-        if value:
-            try:
-                months = int(value)
-                if months < 1 or months > 12:
-                    raise serializers.ValidationError("Duration must be between 1 and 12 months.")
-            except ValueError:
-                raise serializers.ValidationError("Duration must be a number (months).")
-        return value
+    # def validate_duration(self, value):
+    #     if value:
+    #         try:
+    #             months = int(value)
+    #             if months < 1 or months > 12:
+    #                 raise serializers.ValidationError("Duration must be between 1 and 12 months.")
+    #         except ValueError:
+    #             raise serializers.ValidationError("Duration must be a number (months).")
+    #     return value
+    from rest_framework import serializers
+
+    def validate_duration(self, value, duration_type=None):
+        """
+        Validate duration based on duration_type ('month' or 'week').
+        - If month: must be between 1 and 12
+        - If week: must be between 1 and 52
+        """
+        if value is None:
+            return value  # allow empty if needed
+
+        try:
+            duration = int(value)
+        except ValueError:
+            raise serializers.ValidationError("Duration must be a number.")
+
+        if duration_type == "month":
+            if duration < 1 or duration > 12:
+                raise serializers.ValidationError("Duration must be between 1 and 12 months.")
+        elif duration_type == "week":
+            if duration < 1 or duration > 52:
+                raise serializers.ValidationError("Duration must be between 1 and 52 weeks.")
+        else:
+            raise serializers.ValidationError("Invalid duration_type. Must be 'month' or 'week'.")
+
+        return duration
+    
     def validate(self, data):
         course_name = data.get('course_name')
         request = self.context.get('request')
@@ -346,29 +402,48 @@ class CourseSerializer(serializers.ModelSerializer):
 
         return data
 
+
+
     def create(self, validated_data):
         request = self.context.get("request")
-        
+
+        # ✅ get from validated_data OR request.data
+        duration_list = validated_data.pop('duration_list', None)
+
+        if not duration_list and request:
+            raw = request.data.get('duration_list')
+            if raw:
+                try:
+                    duration_list = json.loads(raw)
+                except Exception:
+                    duration_list = None
+
+        # ✅ extract values
+        if duration_list:
+            duration_data = duration_list[0]
+
+            validated_data['duration'] = duration_data.get('duration')
+
+            validated_data['duration_type'] = (
+                duration_data.get('duration_type') or 'month'
+            )
+
+        # ✅ created_by logic
         if request and request.user:
-            role = getattr(request.user, "user_type", None)  # or from JWT payload
+            role = getattr(request.user, "user_type", None)
 
             if role in ["trainer", "admin"]:
                 validated_data["created_by"] = getattr(request.user, "trainer_id", None)
-                validated_data["created_by_type"] = role
-
             elif role == "super_admin":
                 validated_data["created_by"] = getattr(request.user, "user_id", None)
-                validated_data["created_by_type"] = role
-
             elif role == "student":
                 validated_data["created_by"] = getattr(request.user, "student_id", None)
-                validated_data["created_by_type"] = role
-
             else:
                 validated_data["created_by"] = getattr(request.user, "user_id", None)
-                validated_data["created_by_type"] = role
+
+            validated_data["created_by_type"] = role
+
         return super().create(validated_data)
-    
     def update(self, instance, validated_data):
         # Capture status before update
         old_status = instance.status

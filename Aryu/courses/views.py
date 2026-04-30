@@ -11,7 +11,8 @@ from django.contrib.auth.hashers import *
 from django.db.models import Q
 from aryuapp.mixins import LoggingMixin
 from aryuapp.models import ModulePermission, Student, Trainer
-from aryuapp.views import has_permission
+from aryuapp.views import has_permission,flatten_errors
+
 # Create your views here.
 
 
@@ -333,13 +334,25 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
                 "message": error_message,
                 "success": False
             }, status=status.HTTP_200_OK)
-
         self.perform_create(serializer)
+        instance = serializer.instance
+
+        # 🔥 HANDLE duration_list → map to fields
+        duration = request.data.get("duration_list[0][duration]")
+        duration_type = request.data.get("duration_list[0][duration_type]")
+
+        if duration and duration_type:
+            instance.duration = duration
+            instance.duration_type = duration_type
+            instance.save()
+
+        # 🔥 re-serialize
+        response_serializer = self.get_serializer(instance)
 
         return Response({
             "message": "Course added successfully",
             "success": True,
-            "data": serializer.data
+            "data": response_serializer.data   # ✅ FIXED
         }, status=status.HTTP_201_CREATED)
     
     def update(self, request, *args, **kwargs):
@@ -355,6 +368,8 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
             return Response({"success": False, "message": "You do not have permission"}, status=200)
 
         instance = self.get_object()
+        
+        
         serializer = self.get_serializer(instance, data=request.data, partial=partial, context={'request': request})
 
         if not serializer.is_valid():
@@ -392,10 +407,24 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
         # If validation passed, save changes
         self.perform_update(serializer)
 
+        instance = serializer.instance
+
+        # 🔥 HANDLE duration_list → map to fields
+        duration = request.data.get("duration_list[0][duration]")
+        duration_type = request.data.get("duration_list[0][duration_type]")
+
+        if duration and duration_type:
+            instance.duration = duration
+            instance.duration_type = duration_type
+            instance.save()
+
+        # 🔥 re-serialize
+        response_serializer = self.get_serializer(instance)
+
         return Response({
             "message": "Course Updated Successfully",
             "success": True,
-            "data": serializer.data
+            "data": response_serializer.data
         }, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['get'], url_path='batches')
