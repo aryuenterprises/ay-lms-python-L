@@ -182,6 +182,13 @@ class WebinarFeedbackSerializer(serializers.ModelSerializer):
 
         attrs["registration"] = registration
         return attrs
+    def validate_phone(self, value):
+        cleaned = ''.join(filter(str.isdigit, value))
+
+        if cleaned.startswith('91'):
+            cleaned = cleaned[2:]
+ 
+        return '91' + cleaned
 
 class WebinarlistFeedbackSerializer(serializers.ModelSerializer):
 

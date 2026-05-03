@@ -245,7 +245,7 @@ class WebinarFeedback(models.Model):
         blank=True,
         db_index=True
     )
-    phone = models.CharField(max_length=15)
+    phone = models.CharField(max_length=15,default="91")
 
      # Overall experience
     overall_rating = models.PositiveSmallIntegerField()  # 1–5
