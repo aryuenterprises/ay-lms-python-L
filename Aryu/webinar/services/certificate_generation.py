@@ -25,7 +25,7 @@ def fit_font(draw, text, font_path, max_width, start_size):
 
 def generate_certificate_image_and_save(certificate):
 
-    template_path = Path(settings.MEDIA_ROOT) / "certificates" / "AK2.png"
+    template_path = Path(settings.MEDIA_ROOT) / "certificates" / "AK20.png"
     # template_path = Path(settings.MEDIA_ROOT) / "jp.png"
     output_dir = Path(settings.MEDIA_ROOT) / "certificates"
 
