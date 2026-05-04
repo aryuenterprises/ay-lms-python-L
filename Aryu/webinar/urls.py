@@ -32,10 +32,10 @@ urlpatterns = [
     path("tickets/<int:pk>/reply/",PublicTicketViewSet.as_view({"post": "reply"}),name="webinar-ticket-reply"),
 
     # Webinar Session Management
-    path('<str:uuid>/session/',WebinarSessionViewSet.as_view({'get': 'retrieve'}),name='webinar-session'),
-    path('<uuid>/session/start/', WebinarSessionViewSet.as_view({"post": "start"}), name='webinar-session-start'),
-    path('<uuid>/session/end/', WebinarSessionViewSet.as_view({"post": "end"}), name='webinar-session-end'),
-    path("<uuid:uuid>/attendance/sync/",WebinarAttendanceViewSet.as_view({'get': 'list',"post": "sync"}),name="webinar-attendance-sync"),
+    path('<slug:slug>/session/',WebinarSessionViewSet.as_view({'get': 'retrieve'}),name='webinar-session'),
+    path('<slug:slug>/session/start/', WebinarSessionViewSet.as_view({"post": "start"}), name='webinar-session-start'),
+    path('<slug>/session/end/', WebinarSessionViewSet.as_view({"post": "end"}), name='webinar-session-end'),
+    path("<slug:slug>/attendance/sync/",WebinarAttendanceViewSet.as_view({'get': 'list',"post": "sync"}),name="webinar-attendance-sync"),
 
     # -------- FORMS --------
     path("forms/", FormViewSet.as_view({"get": "list","post": "create",}), name="form-list-create"),

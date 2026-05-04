@@ -1105,9 +1105,9 @@ class WebinarAttendanceViewSet(viewsets.ViewSet):
 
         return int(total)
 
-    def sync(self, request, uuid=None):
+    def sync(self, request, slug=None):
 
-        webinar = get_object_or_404(Webinar, uuid=uuid)
+        webinar = get_object_or_404(Webinar, slug=slug)
         session = webinar.session
 
         if not session.ended_at:
@@ -1248,8 +1248,8 @@ class WebinarAttendanceViewSet(viewsets.ViewSet):
             "message": "Attendance synced successfully"
         })
 
-    def list(self, request, uuid=None):
-        webinar = get_object_or_404(Webinar, uuid=uuid)
+    def list(self, request, slug=None):
+        webinar = get_object_or_404(Webinar, slug=slug)
 
         data = []
 
@@ -1383,8 +1383,8 @@ def _create_payment(self, request, webinar):
 class WebinarSessionViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
 
-    def retrieve(self, request, uuid=None):
-        webinar = get_object_or_404(Webinar, uuid=uuid)
+    def retrieve(self, request, slug=None):
+        webinar = get_object_or_404(Webinar, slug=slug)
         session = getattr(webinar, 'session', None)
 
         if not session:
@@ -1396,8 +1396,8 @@ class WebinarSessionViewSet(viewsets.ViewSet):
         serializer = WebinarSessionSerializer(session)
         return Response(serializer.data)
     
-    def start(self, request, uuid=None):
-        webinar = get_object_or_404(Webinar, uuid=uuid)
+    def start(self, request, slug=None):
+        webinar = get_object_or_404(Webinar, slug=slug)
 
         session, created = WebinarSession.objects.get_or_create(
             webinar=webinar,
@@ -1415,8 +1415,8 @@ class WebinarSessionViewSet(viewsets.ViewSet):
             "session_id": session.uuid
         })
     
-    def end(self, request, uuid=None):
-        webinar = get_object_or_404(Webinar, uuid=uuid)
+    def end(self, request, slug=None):
+        webinar = get_object_or_404(Webinar, slug=slug)
 
         session = WebinarSession.objects.filter(webinar=webinar).first()
 
