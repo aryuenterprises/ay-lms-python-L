@@ -43,6 +43,7 @@ from .utils import get_ticket_from_token
 from django.contrib.postgres.aggregates import JSONBAgg
 from django.db.models.functions import Coalesce, JSONObject, Concat
 from django.db.models.expressions import ExpressionWrapper
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -1041,20 +1042,34 @@ from .services.zoom_service import get_zoom_access_token
 def fetch_zoom_participants(meeting_id):
     token = get_zoom_access_token()
 
-    url = f"https://api.zoom.us/v2/report/meetings/{meeting_id}/participants"
-
     headers = {
         "Authorization": f"Bearer {token}"
     }
+
+    
+    resp = requests.get(
+        f"https://api.zoom.us/v2/past_meetings/{meeting_id}",
+        headers=headers,
+        timeout=10
+    )
+    resp.raise_for_status()
+
+    uuid = resp.json().get("uuid")
+
+    if not uuid:
+        raise Exception("Zoom UUID not found")
+
+    encoded_uuid = quote(uuid, safe="")
+
+    
+    url = f"https://api.zoom.us/v2/report/meetings/{encoded_uuid}/participants"
 
     participants = []
     next_page_token = None
 
     while True:
 
-        params = {
-            "page_size": 300
-        }
+        params = {"page_size": 300}
 
         if next_page_token:
             params["next_page_token"] = next_page_token
@@ -1065,7 +1080,6 @@ def fetch_zoom_participants(meeting_id):
         data = resp.json()
 
         participants.extend(data.get("participants", []))
-
         next_page_token = data.get("next_page_token")
 
         if not next_page_token:
@@ -1436,8 +1450,8 @@ class WebinarLifecycleViewSet(viewsets.ViewSet):
 
     @action(detail=True, methods=['post'])
     @transaction.atomic
-    def cancel(self, request, uuid=None):
-        webinar = get_object_or_404(Webinar, uuid=uuid)
+    def cancel(self, request, slug=None):
+        webinar = get_object_or_404(Webinar, slug=slug)
 
         if webinar.status in ['LIVE', 'COMPLETED']:
             return Response(
