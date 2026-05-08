@@ -341,7 +341,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         Args:
             pk: student_id
         """
-        student = Student.objects.filter(student_id=pk,is_archived=True).prefetch_related(
+        student = Student.objects.filter(student_id=pk,is_archived=False).prefetch_related(
             Prefetch(
                 "transactions",
                 queryset=PaymentTransaction.objects.select_related("course", "gateway")
@@ -548,63 +548,89 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             try:
                 metadata = json.loads(metadata)
             except json.JSONDecodeError:
-                return Response({"success": False, "message": "Invalid metadata"}, status=400)
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Invalid metadata"
+                    },
+                    status=400
+                )
 
-        student = Student.objects.filter(student_id=student_id).first()
-        course = Course.objects.filter(course_id=course_id).first()
+        student = Student.objects.filter(
+            student_id=student_id
+        ).first()
+
+        course = Course.objects.filter(
+            course_id=course_id
+        ).first()
 
         if not student or not course:
-            return Response({"success": False, "message": "Invalid student or course"}, status=400)
+            return Response(
+                {
+                    "success": False,
+                    "message": "Invalid student or course"
+                },
+                status=400
+            )
 
         created_ids = []
         updated_ids = []
 
-        incoming_ids = []
-
         for pay in metadata:
+
             amount = float(pay.get("amount", 0))
+
             transaction_id = pay.get("transaction_id")
 
-            mode = (pay.get("payment_mode") or "").lower()
+            mode = (
+                pay.get("payment_mode") or ""
+            ).lower()
+
             status_val = pay.get("payment_status")
+
             date = pay.get("payment_date")
 
+            tx = None
+
             if transaction_id:
-                incoming_ids.append(transaction_id)
+                tx = PaymentTransaction.objects.filter(
+                    transaction_id=transaction_id
+                ).first()
 
-                tx = PaymentTransaction.objects.filter(transaction_id=transaction_id).first()
+            # UPDATE EXISTING
+            if tx:
 
-                if tx:
-                    # ✅ UPDATE
-                    tx.amount = amount
-                    tx.payment_status = status_val
-                    tx.metadata = {"mode": mode, "date": date}
-                    tx.student = student
-                    tx.course = course
-                    tx.save()
+                tx.amount = amount
+                tx.payment_status = status_val
 
-                    updated_ids.append(tx.id)
-                    continue
+                tx.metadata = {
+                    "mode": mode,
+                    "date": date
+                }
 
-            # ✅ CREATE (only if no transaction_id or not found)
-            new_tx = PaymentTransaction.objects.create(
-                student=student,
-                course=course,
-                amount=amount,
-                currency="INR",
-                payment_status=status_val,
-                transaction_id=transaction_id or f"TXN{uuid.uuid4().hex[:8].upper()}",
-                metadata={"mode": mode, "date": date}
-            )
+                tx.student = student
+                tx.course = course
 
-            created_ids.append(new_tx.id)
+                tx.save()
 
-        # ✅ ARCHIVE removed transactions (VERY IMPORTANT)
-        PaymentTransaction.objects.filter(
-            student=student,
-            course=course,
-            is_archived=False
-        ).exclude(transaction_id__in=incoming_ids).update(is_archived=True)
+                updated_ids.append(tx.id)
+
+            else:
+                # CREATE NEW
+                new_tx = PaymentTransaction.objects.create(
+                    student=student,
+                    course=course,
+                    amount=amount,
+                    currency="INR",
+                    payment_status=status_val,
+                    transaction_id=transaction_id or f"TXN{uuid.uuid4().hex[:8].upper()}",
+                    metadata={
+                        "mode": mode,
+                        "date": date
+                    }
+                )
+
+                created_ids.append(new_tx.id)
 
         return Response({
             "success": True,
@@ -657,7 +683,6 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "success": False,
                 "message": "Student not found"
             }, status=404)
-
 
 from django.conf import settings as django_settings
 from stripe import _error as stripe_error
