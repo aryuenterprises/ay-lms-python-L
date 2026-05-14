@@ -124,7 +124,7 @@ class CourseListSerializer(serializers.ModelSerializer):
 
     def get_course_pic_url(self, obj):
         if obj.course_pic:
-            return f"https://aylms.aryuprojects.com/api{obj.course_pic.url}"
+            return f"https://portal.aryuacademy.com/api{obj.course_pic.url}"
         return None
     def get_duration_list(self,obj):
         if obj.duration:
@@ -225,12 +225,12 @@ class CourseSerializer(serializers.ModelSerializer):
     
     def get_course_pic_url(self, obj):
         if obj.course_pic and hasattr(obj.course_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.course_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.course_pic.url
         return None
     
     def get_syllabus_url(self, obj):
         if obj.syllabus and hasattr(obj.syllabus, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.syllabus.url
+            return 'https://portal.aryuacademy.com/api' + obj.syllabus.url
         return None
     
     def get_assignment(self, obj):
@@ -269,7 +269,7 @@ class CourseSerializer(serializers.ModelSerializer):
                     "name": filename,
                     "type": mimetype or "application/octet-stream",
                     "size": os.path.getsize(file_path),
-                    "url": 'https://aylms.aryuprojects.com/api' + obj.syllabus.url,
+                    "url": 'https://portal.aryuacademy.com/api' + obj.syllabus.url,
                     "missing": False
                 }
             }]
