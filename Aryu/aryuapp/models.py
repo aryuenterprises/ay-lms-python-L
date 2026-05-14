@@ -1,5 +1,5 @@
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
-from django.db import models, transaction
+from django.db import models
 from django.utils import timezone
 from django.contrib.postgres.fields import ArrayField
 from datetime import timedelta
@@ -20,19 +20,22 @@ def validate_image_or_svg(file):
 
 class Settings(models.Model):
     company_name = models.CharField(max_length=100, null=True, blank=True)
-    company_address = models.CharField(max_length=100, null=True, blank=True)
+    company_address = models.CharField(max_length=255, null=True, blank=True)
     company_contact = models.CharField(max_length=100, null=True, blank=True)
     company_email = models.CharField(max_length=100, null=True, blank=True)
     company_website = models.CharField(max_length=100, null=True, blank=True)
     bank_name = models.CharField(max_length=100, null=True, blank=True)
+    acc_name = models.CharField(max_length=255, null=True, blank=True)
     bank_branch = models.CharField(max_length=100, null=True, blank=True)
     bank_account_no = models.CharField(max_length=100, null=True, blank=True)
     bank_ifsc = models.CharField(max_length=100, null=True, blank=True)
+    upi_id = models.CharField(max_length=100, null=True, blank=True)
     general_logo = models.FileField(upload_to='logos/', null=True, blank=True, validators=[validate_image_or_svg])
     secondary_logo = models.FileField(upload_to='logos/', null=True, blank=True, validators=[validate_image_or_svg])
+    email_logo = models.FileField(upload_to='logos/', null=True, blank=True, validators=[validate_image_or_svg])
     signature = models.FileField(upload_to='signatures/', null=True, blank=True, validators=[validate_image_or_svg])
     gst_detail = models.CharField(max_length=100, null=True, blank=True)
-    declaration = models.TextField(max_length=100, null=True, blank=True)
+    declaration = models.TextField(max_length=500, null=True, blank=True)
     attendance_options = models.CharField(max_length=100, null=True, blank=True)
     deactivation_options = models.CharField(max_length=100, null=True, blank=True)
     payment_method = models.JSONField(default=list, blank=True)
@@ -43,9 +46,10 @@ class Settings(models.Model):
     created_by = models.CharField(max_length=100, null=True, blank=True)
     created_by_type = models.CharField(max_length=50, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = "settings"
+    gst_number = models.CharField(max_length=50, null=True, blank=True)
+    cgst_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=9)
+    sgst_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=9)
+    igst_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=18)
 
 class ReleaseNote(models.Model):
     version = models.CharField(max_length=20)  # e.g. "V1.0", "V1.1"
@@ -346,7 +350,7 @@ class Student(models.Model):
     last_name = models.CharField(max_length=255, null=True, blank=True)
     is_archived = models.BooleanField(default=False)
     gender = models.CharField(max_length=255, null=True, blank=True)
-    discount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount = models.DecimalField(max_digits=10, decimal_places=2, null =True)
     dob = models.DateField()
     email = models.EmailField( null=False, blank=False)
     contact_no = models.CharField(max_length=20, null=False, blank=False)
@@ -368,11 +372,15 @@ class Student(models.Model):
     reference_number = models.CharField(max_length=255, null=True, blank=True)
     student_type = models.CharField(max_length=30, null=False, blank=False)
     source_type = models.CharField(max_length=255,null=True,blank=False)
+    source_name = models.CharField(max_length = 250,null = True,blank=False)
     status = models.BooleanField(default=True, null=False, blank=False)
+    converter = models.CharField(default = True,null = False,blank = False)
     notes = GenericRelation("Note", related_query_name="student_notes")
     created_by = models.CharField(max_length=100, null=True, blank=True)
     created_by_type = models.CharField(max_length=50, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    payment_mode = models.CharField(max_length = 150 , blank=True,null= True)
+    stu_gst_number = models.CharField(max_length=50, null = True, blank=True)
 
     def save(self, *args, **kwargs):
         if self.email:
@@ -387,23 +395,11 @@ class Student(models.Model):
         month = current_date.strftime("%m")
         year = current_date.strftime("%y")
 
-        with transaction.atomic():
-            last_student = (
-                Student.objects
-                .select_for_update()
-                .filter(registration_id__startswith=f"{prefix}{month}{year}")
-                .order_by('-registration_id')
-                .first()
-            )
-
-            if last_student:
-                last_number = int(last_student.registration_id[-3:])
-                new_number = last_number + 1
-            else:
-                new_number = 1
-
-            return f"{prefix}{month}{year}{new_number:03d}"
-        
+        from .models import Student  # avoid circular import
+        students = Student.objects.filter(registration_id__contains=f"{month}{year}")
+        count = students.count() + 1 
+        number = (count - 1) % 999 + 1
+        return f"{prefix}{month}{year}{number:03d}"
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
 
@@ -421,6 +417,7 @@ class Employer(models.Model):
     created_by = models.CharField(max_length=100, null=True, blank=True)
     created_by_type = models.CharField(max_length=50, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    gst_number = models.CharField(max_length=50, null=True, blank=True)
 
     class Meta:
         db_table = 'client_company_details'
@@ -478,21 +475,49 @@ class Employer(models.Model):
 
 class SubAdmin(models.Model):
     """Manager or HR for a company."""
-    company = models.ForeignKey(Employer, on_delete=models.CASCADE, related_name='sub_admins')
+
+    company = models.ForeignKey(
+        Employer,
+        on_delete=models.CASCADE,
+        related_name='sub_admins'
+    )
+
     employer_id = models.AutoField(primary_key=True)
+
     role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True)
+
     full_name = models.CharField(max_length=255)
+
     email = models.EmailField(null=True, blank=True)
+
     phone_no = models.CharField(max_length=14, null=True, blank=True)
+
     username = models.CharField(max_length=50)
+
     password = models.CharField(max_length=128)
-    designation = models.CharField(max_length=50, default="sub_admin", null=True, blank=True)
+
+    designation = models.CharField(
+        max_length=50,
+        default="sub_admin",
+        null=True,
+        blank=True
+    )
+
     status = models.BooleanField(default=True, null=True, blank=True)
+
     notes = models.CharField(max_length=255, null=True, blank=True)
+
     is_archived = models.BooleanField(default=False)
+
     created_by = models.CharField(max_length=100, null=True, blank=True)
+
     created_by_type = models.CharField(max_length=50, null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
+
+    @property
+    def id(self):
+        return self.employer_id
 
     class Meta:
         db_table = 'sub_admins'
@@ -609,7 +634,11 @@ class Attendance(models.Model):
     )
     batch = models.ForeignKey(Batch, null=True, blank=True, on_delete=models.SET_NULL)
     date = models.DateTimeField(null=False, blank=False)
-    status = models.CharField(max_length=10)
+    status = models.CharField(max_length=10,choices =[("Login","Login"),
+                                                      ("Logout","Logout"),
+                                                      ("Breakin","Breakin"),
+                                                      ("Breakout","Breakout"),
+                                                      ])
     ip_address= models.GenericIPAddressField(null=True, blank=True)
     marked_by_admin = models.BooleanField(default=False)
 
