@@ -23,7 +23,7 @@ from payments.services.invoice_service import (
 )
 from aryuapp.utils import *
 from aryuapp.mixins import *
-from aryuapp.models import Settings
+from aryuapp.models import Settings, Employer
 from aryuapp.views import flatten_errors
 from collections import defaultdict
 
@@ -851,7 +851,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
             <!-- LOGO -->
             <img
-                src="https://portal.aryuacademy.com/api/media/logos/email_logo.png"
+                src="https://aylms.aryuprojects.com/api/media/logos/email_logo.png"
                 alt="Aryu Academy Private Limited"
                 style="
                     width:320px;
