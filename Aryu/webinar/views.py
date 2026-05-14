@@ -1036,6 +1036,23 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
 
         serializer = WebinarRegistrationSerializer(qs, many=True)
         return Response(serializer.data)
+    def destroy(self, request, pk=None, slug=None):
+
+        registration = get_object_or_404(
+            WebinarRegistration,
+            id=pk,
+            webinar__slug=slug
+        )
+
+        registration.delete()
+
+        return Response(
+            {
+                "status": True,
+                "message": "Registration deleted successfully"
+            },
+            status=status.HTTP_200_OK
+        )
 
 from .services.zoom_service import get_zoom_access_token
 

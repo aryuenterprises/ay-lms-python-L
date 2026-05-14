@@ -13,6 +13,7 @@ urlpatterns = [
     # Webinar Registration
     path('<slug:slug>/register/',WebinarRegistrationViewSet.as_view({'post': 'create'}),name='webinar-register'),
     path('<slug:slug>/registrations/',WebinarRegistrationViewSet.as_view({'get': 'list'}),name='webinar-registrations'),
+    path('<slug:slug>/registrations/<int:pk>',WebinarRegistrationViewSet.as_view({'delete':'destroy'}),name='webinar-registrations'),
 
     # Webinar Lifecycle
     path('<str:uuid>/cancel/',WebinarLifecycleViewSet.as_view({'post': 'cancel'}),name='webinar-cancel'),
