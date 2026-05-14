@@ -1,0 +1,1037 @@
+<!-- {% load static %} -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Tax Invoice</title>
+
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      @page {
+        size: A4;
+        margin: 5mm;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #fff;
+        font-family: Arial, sans-serif;
+      }
+
+      body {
+        width: 100%;
+      }
+
+      .invoice-wrapper {
+        width: 100%;
+        min-height: 287mm;
+        border: 1px solid #000;
+        padding: 2mm;
+        background: #fff;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      td,
+      th {
+        border: 1px solid #000;
+        padding: 2px 4px;
+        vertical-align: top;
+        font-size: 11px;
+        line-height: 1.25;
+      }
+
+      .service-item-row td {
+        border-bottom: 1px solid #000 !important;
+        vertical-align: top;
+      }
+
+      .no-border {
+        border: none !important;
+      }
+
+      .center {
+        text-align: center;
+      }
+
+      .right {
+        text-align: right;
+      }
+
+      .bold {
+        font-weight: bold;
+      }
+
+      .title {
+        font-size: 13px;
+        font-weight: bold;
+        text-align: center;
+        padding: 2px;
+      }
+
+      .header-left,
+      .header-right {
+        vertical-align: top;
+        padding: 0;
+        height: 158px;
+      }
+
+      .header-left {
+        width: 52%;
+      }
+
+      .header-right {
+        width: 48%;
+      }
+
+      .logo {
+        height: 100px;
+        padding: 4px 4px 2px 4px;
+        display: flex;
+        align-items: center;
+      }
+
+      .logo img {
+        width: 360px;
+        height: auto;
+        display: block;
+      }
+
+      .section-divider {
+        border-top: 1px solid #000;
+        height: 1px;
+        margin: 0;
+      }
+
+      .header-bottom-border {
+        position: relative;
+      }
+
+      .company-details {
+        height: 78px;
+        padding-top: 2px;
+        padding-bottom: 0;
+        margin-bottom: 0;
+      }
+
+      .invoice-info-table {
+        height: 100%;
+      }
+
+      .invoice-info-table tbody {
+        vertical-align: top;
+      }
+
+      .invoice-info-table tr {
+        height: 18px;
+      }
+
+      .invoice-info-table td {
+        line-height: 1.2;
+      }
+
+      .buyer-row td {
+        padding-top: 4px !important;
+        padding-bottom: 1px !important;
+      }
+
+      .address-row td {
+        padding-top: 20px !important;
+        padding-bottom: 0px !important;
+        line-height: 1.15;
+      }
+
+      .gstin-row td {
+        vertical-align: top;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+        line-height: 1.15;
+      }
+      .email-row td {
+        vertical-align: top;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+        line-height: 0.5;
+      }
+
+      .gstin-row {
+        height: 15px;
+      }
+
+      .email-row {
+        height: 15px;
+      }
+
+      .invoice-info-table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      .invoice-info-table td {
+        border: none;
+        padding: 1px 2px;
+        font-size: 11px;
+        vertical-align: top;
+      }
+
+      .label {
+        font-weight: bold;
+        width: 120px;
+        white-space: nowrap;
+      }
+
+      .colon {
+        width: 10px;
+        text-align: center;
+      }
+
+      .service-table th {
+        text-align: center;
+        font-weight: bold;
+        height: 24px;
+        vertical-align: middle;
+      }
+
+      .service-table td {
+        height: 26px;
+      }
+
+      .summary-container,
+      .summary-tax-column,
+      .summary-amount-column {
+        position: relative;
+      }
+
+      .summary-box {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+      .spacer-area {
+        height: 55px;
+      }
+
+      .summary-container .spacer-area {
+        height: 70px;
+      }
+
+      .summary-tax-column .spacer-area,
+      .summary-amount-column .spacer-area {
+        height: 70px;
+      }
+
+      /* =========================================
+   PERFECT HORIZONTAL TOTAL LINE ALIGNMENT
+   ========================================= */
+
+.empty-row td {
+  padding: 0 !important;
+  vertical-align: top;
+  position: relative;
+}
+
+/* Uniform structure for all columns */
+.invoice-line-cell,
+.summary-container,
+.summary-tax-column,
+.summary-amount-column {
+  position: relative;
+  padding: 0 !important;
+  vertical-align: top;
+  box-sizing: border-box;
+}
+
+/* Equal top spacing */
+.line-spacer,
+.summary-top-space {
+  height: 82px;
+}
+
+/* Flex layout */
+.summary-box {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+/* Equal row height everywhere */
+.summary-row {
+  height: 20px;
+  min-height: 20px;
+  line-height: 20px;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  padding: 0 8px;
+}
+
+/* Alignment per column */
+.summary-container .summary-row {
+  justify-content: flex-end;
+}
+
+.summary-tax-column .summary-row {
+  justify-content: center;
+}
+
+.summary-amount-column .summary-row {
+  justify-content: flex-end;
+}
+
+/* Text formatting */
+.summary-text {
+  width: 100%;
+  text-align: right;
+  font-weight: bold;
+  padding-right: 4px;
+}
+
+/* =========================================
+   SINGLE STRAIGHT LINE ACROSS ALL COLUMNS
+   ========================================= */
+
+.invoice-total-row-border,
+.summary-row.invoice-total-row-border {
+  border-top: 1px solid #000 !important;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+/* Right align invoice total amount */
+.summary-amount-column .invoice-total-row-border {
+  justify-content: flex-end !important;
+  text-align: right !important;
+  padding-right: 8px !important;
+}
+
+.summary-amount-column .invoice-total-text {
+  width: 100%;
+  text-align: right !important;
+  display: block;
+}
+/* Empty line cells */
+.invoice-line-cell > .invoice-total-row-border {
+  border-top: 1px solid #000 !important;
+  height: 0 !important;
+  margin-top: 60px; /* aligns with Invoice Value row */
+  width: 100%;
+  display: block;
+  padding: 0;
+}
+
+/* Total row content */
+.summary-row.invoice-total-row-border {
+  height: 20px;
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+}
+
+/* Invoice total text */
+.invoice-total-text {
+  font-weight: bold;
+  display: inline-block;
+  width: 100%;
+}
+
+/* Remove accidental gaps */
+.summary-box > div {
+  margin: 0;
+}
+
+/* Prevent wkhtmltopdf rendering gaps */
+table {
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+/* Prevent PDF anti-aliasing shifts */
+td,
+th,
+div,
+span {
+  box-sizing: border-box;
+}
+
+      .amount-row {
+        width: 100%;
+        box-sizing: border-box;
+      }
+
+      .amount-words {
+        padding: 4px;
+        line-height: 1.5;
+      }
+
+      .amount-words strong {
+        display: block;
+        margin-top: 2px;
+      }
+
+      .tax-table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+        margin-top: -1px;
+      }
+
+      .tax-table th,
+      .tax-table td {
+        border: 1px solid #000;
+        text-align: center;
+        vertical-align: middle;
+        padding: 3px 4px;
+        font-size: 9px;
+        word-break: break-word;
+        white-space: normal;
+      }
+
+      .note-section {
+        height: 118px;
+        padding: 6px;
+      }
+
+      .note-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 4px;
+      }
+
+      .note-table td {
+        border: none;
+        padding: 2px 4px;
+        font-size: 11px;
+        vertical-align: middle;
+      }
+
+      .note-table tr td:nth-child(1) {
+        width: 8%;
+      }
+
+      .note-table tr td:nth-child(2) {
+        width: 28%;
+      }
+
+      .note-table tr td:nth-child(3) {
+        width: 28%;
+      }
+
+      .note-table tr td:nth-child(4) {
+        width: 20%;
+        text-align: right;
+        padding-right: 10px;
+      }
+
+      .payment-summary {
+        width: 100%;
+        margin-top: 12px;
+      }
+
+      .payment-summary-row {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+        font-weight: bold;
+        font-size: 11px;
+        margin-bottom: 3px;
+      }
+
+      .payment-summary-label {
+        width: 120px;
+        text-align: right;
+        margin-right: 15px;
+      }
+
+      .payment-summary-value {
+        width: 80px;
+        text-align: right;
+        padding-right: 10px;
+      }
+
+      .bank-details {
+        width: 100%;
+      }
+
+      .bank-content {
+        display: table;
+        width: 100%;
+      }
+
+      .bank-left {
+        display: table-cell;
+        width: 78%;
+        vertical-align: top;
+        padding-right: 10px;
+      }
+
+      .bank-right {
+        display: table-cell;
+        width: 22%;
+        vertical-align: middle;
+        text-align: center;
+      }
+
+      .qr-code {
+        width: 78px;
+        height: 78px;
+        display: block;
+        margin: 0 auto;
+      }
+
+      .header-bottom-border {
+        border-bottom: 1px solid #000 !important;
+      }
+
+      .section-divider {
+        width: 100%;
+        border-top: 1px solid #000;
+        margin: 3px 0;
+      }
+
+      .footer-left {
+        height: 95px;
+        vertical-align: top;
+      }
+
+      .footer-right {
+        height: 95px;
+        vertical-align: top;
+        padding: 0;
+      }
+
+      .signature-wrapper {
+        height: 95px;
+        width: 100%;
+        position: relative;
+      }
+
+      .signature-content {
+        position: absolute;
+        right: 6px;
+        bottom: 6px;
+        text-align: right;
+      }
+
+      .company-name {
+        text-align: left;
+        padding-top: 5px;
+        padding-left: 6px;
+        font-size: 11px;
+      }
+
+      .computer-generated {
+        font-size: 11px;
+        font-weight: bold;
+        line-height: 1.3;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="invoice-wrapper">
+      <!-- MAIN HEADER TABLE -->
+
+      <table>
+        <!-- TITLE -->
+
+        <tr>
+          <td colspan="2" class="title">TAX INVOICE</td>
+        </tr>
+
+        <!-- HEADER CONTENT -->
+
+        <tr>
+          <!-- LEFT -->
+
+          <td class="header-left header-bottom-border">
+            <div class="logo">
+              <img
+                src="https://aylms.aryuprojects.com/api/media/logos/aryu_logo.png"
+                alt="Logo" />
+            </div>
+            <div class="section-divider"></div>
+            <div class="company-details">
+              {{ company.company_address|linebreaksbr }}<br />
+
+              <span class="bold">GSTIN/UIN</span> : {{ company.gst_number }}<br />
+
+              <span class="bold">Email -</span>
+              {{ company.company_email }} /
+
+              <span class="bold">PH -</span>
+              {{ company.company_contact }}
+            </div>
+          </td>
+
+          <!-- RIGHT -->
+
+          <td class="header-right header-bottom-border">
+            <table class="invoice-info-table">
+              <tr>
+                <td class="label">Invoice No</td>
+                <td class="colon">:</td>
+                <td>{{ transaction.invoice_no }}</td>
+              </tr>
+
+              <tr>
+                <td class="label">Invoice Date</td>
+                <td class="colon">:</td>
+                <td>{{ transaction.invoice_date|date:"d-m-Y" }}</td>
+              </tr>
+
+              <tr>
+                <td class="label">Place of Supply</td>
+                <td class="colon">:</td>
+                <td>{{ transaction.place_of_supply|default:"Chennai" }}</td>
+              </tr>
+
+              <!-- THIS ADDS THE LINE -->
+
+              <tr>
+                <td colspan="3" style="padding: 0">
+                  <div class="section-divider"></div>
+                </td>
+              </tr>
+
+              <tr class="buyer-row">
+                <td colspan="3" class="bold">Buyer (Bill to )</td>
+              </tr>
+
+              <tr class="address-row">
+                <td colspan="3" style="padding-left: 2px">
+                  <span class="bold"> {{ billing.name }}, </span><br />
+
+                  {{ billing.address|linebreaksbr }}
+                </td>
+              </tr>
+
+              <tr class="gstin-row">
+                <td class="label">GSTIN/UIN</td>
+                <td class="colon">:</td>
+                <td>{{ billing.gst|default:"Unregistered" }}</td>
+              </tr>
+
+              <tr class="email-row">
+                <td class="label">Email</td>
+                <td class="colon">:</td>
+                <td>
+                  {{ billing.email }} /
+
+                  <span class="bold"> PH - </span>
+
+                  {{ billing.phone }}.
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+
+      <!-- SERVICE TABLE -->
+
+      <table class="service-table">
+        <thead>
+          <tr>
+            <th style="width: 5%">Sl NO</th>
+
+            <th style="width: 43.7%">Description of service</th>
+
+            <th style="width: 12%">HSN/SAC</th>
+
+            <th style="width: 10%">Rate</th>
+
+            <th style="width: 10%">Tax %</th>
+
+            <th style="width: 13%">Amount</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          <tr class="service-item-row">
+            <td class="center">1</td>
+
+            <td>{{ description }}</td>
+
+            <td class="center">999293</td>
+
+            <td class="right">₹ {{ transaction.taxable_amount }}</td>
+
+            <td class="center">18%</td>
+
+            <td class="right">{{ transaction.taxable_amount }}</td>
+          </tr>
+
+          <!-- EMPTY SPACE -->
+
+          <tr class="empty-row">
+            <!-- SL NO -->
+
+            <td class="invoice-line-cell">
+              <div class="line-spacer"></div>
+              <div class="invoice-total-row-border">&nbsp;</div>
+            </td>
+
+            <!-- DESCRIPTION -->
+
+            <td class="summary-container invoice-line-cell">
+              <div class="summary-box">
+                <div style="height: 82px"></div>
+
+                <div class="summary-row">
+                  <span class="summary-text"> Taxable Value </span>
+                </div>
+
+                <div class="summary-row">
+                  <span class="summary-text"> Output CGST 9% </span>
+                </div>
+
+                <div class="summary-row">
+                  <span class="summary-text"> Output SGST 9% </span>
+                </div>
+
+                <div class="invoice-total-row-border">
+  <div class="summary-row">
+    <span class="summary-text invoice-total-text">
+      Invoice Value
+    </span>
+  </div>
+</div>
+              </div>
+            </td>
+
+            <!-- HSN -->
+
+            <td class="invoice-line-cell">
+              <div class="line-spacer"></div>
+              <div class="invoice-total-row-border">&nbsp;</div>
+            </td>
+
+            <!-- RATE -->
+
+            <td class="invoice-line-cell">
+              <div class="line-spacer"></div>
+              <div class="invoice-total-row-border">&nbsp;</div>
+            </td>
+
+            <!-- TAX -->
+
+            <td class="summary-tax-column invoice-line-cell">
+              <div class="summary-box">
+                <div style="height: 82px"></div>
+
+                <div class="summary-row"></div>
+
+                <div class="summary-row">9 %</div>
+
+                <div class="summary-row">9 %</div>
+
+                <div class="summary-row invoice-total-row-border"></div>
+              </div>
+            </td>
+
+            <!-- AMOUNT -->
+
+            <td class="summary-amount-column invoice-line-cell">
+              <div class="summary-box">
+                <div class="summary-top-space"></div>
+
+                <div class="summary-row">{{ transaction.taxable_amount }}</div>
+
+                <div class="summary-row">{{ transaction.cgst_amount }}</div>
+
+                <div class="summary-row">{{ transaction.sgst_amount }}</div>
+
+                <div class="summary-row invoice-total-row-border">
+                  <span class="invoice-total-text">
+                    {{ transaction.invoice_total }}
+                  </span>
+                </div>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- AMOUNT WORDS -->
+
+      <table>
+        <tr>
+          <td class="amount-words">
+            Amount Chargeable (in Words)
+
+            <strong> {{ context_amount_words|title }} Only </strong>
+          </td>
+        </tr>
+      </table>
+
+      <!-- TAX TABLE -->
+
+      <table class="tax-table">
+        <thead>
+          <tr>
+            <th style="width: 15%">HSN/SAC</th>
+
+            <th style="width: 24%">Taxable Value</th>
+
+            <th style="width: 12.5%">Rate of %</th>
+
+            <th style="width: 12.5%">IGST</th>
+
+            <th style="width: 11%">CGST</th>
+
+            <th style="width: 11%">SGST</th>
+
+            <th style="width: 13.5%">Total Tax amount</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          <!-- MAIN TAX ROW -->
+
+          <tr>
+            <td>{{ transaction.hsn_code|default:"999293" }}</td>
+
+            <td>{{ transaction.taxable_amount }}</td>
+
+            <td>9%</td>
+
+            <td>
+              {% if transaction.igst_amount %} {{ transaction.igst_amount }} {%
+              else %} - {% endif %}
+            </td>
+
+            <td>{{ transaction.cgst_amount }}</td>
+
+            <td>{{ transaction.sgst_amount }}</td>
+
+            <td>{{ transaction.total_tax_amount }}</td>
+          </tr>
+
+          <!-- EMPTY ROW -->
+
+          <tr>
+            <td>0</td>
+
+            <td>-</td>
+
+            <td>9%</td>
+
+            <td>-</td>
+
+            <td>-</td>
+
+            <td>-</td>
+
+            <td>-</td>
+          </tr>
+
+          <!-- TOTAL ROW -->
+
+          <tr class="bold">
+            <td>Total</td>
+
+            <td>{{ transaction.taxable_amount }}</td>
+
+            <td></td>
+
+            <td>
+              {% if transaction.igst_amount %} {{ transaction.igst_amount }} {%
+              else %} - {% endif %}
+            </td>
+
+            <td>{{ transaction.cgst_amount }}</td>
+
+            <td>{{ transaction.sgst_amount }}</td>
+
+            <td>{{ transaction.total_tax_amount }}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- TAX AMOUNT -->
+
+      <table>
+        <tr>
+          <td>
+            Tax amount (in words)
+
+            <span class="bold"> : {{ tax_amount_words|title }} Only. </span>
+          </td>
+        </tr>
+
+        <tr>
+          <td>
+            <span class="bold"> Company's PAN No </span>
+
+            : {{ company.pan_no|default:"ABECA6801B1" }}
+          </td>
+        </tr>
+      </table>
+
+      <!-- NOTE + BANK -->
+
+      <table>
+        <tr>
+          <!-- NOTE -->
+
+          <!-- NOTE -->
+
+          <td style="width: 52%" class="note-section">
+            <div class="bold">Note</div>
+
+            <table class="note-table">
+              <thead>
+                <tr>
+                  <td class="bold">SNo</td>
+                  <td class="bold">Invoice No</td>
+                  <td class="bold">Date</td>
+                  <td class="bold">Amount</td>
+                </tr>
+              </thead>
+
+              <tbody>
+                {% for payment in previous_transactions %}
+
+                <tr>
+                  <td>{{ forloop.counter }}</td>
+
+                  <td>{{ payment.invoice_no|default:"-" }}</td>
+
+                  <td>{{ payment.invoice_date|date:"d-m-Y" }}</td>
+
+                  <td>₹ {{ payment.amount }}</td>
+                </tr>
+
+                {% empty %}
+
+                <tr>
+                  <td>1</td>
+
+                  <td>{{ transaction.invoice_no }}</td>
+
+                  <td>{{ transaction.invoice_date|date:"d-m-Y" }}</td>
+
+                  <td>₹ {{ transaction.amount }}</td>
+                </tr>
+
+                {% endfor %}
+              </tbody>
+            </table>
+
+            <div class="payment-summary">
+              <div class="payment-summary-row">
+                <div class="payment-summary-label">Total Received</div>
+
+                <div class="payment-summary-value">₹ {{ total_received }}</div>
+              </div>
+
+              <div class="payment-summary-row">
+                <div class="payment-summary-label">Balance Due</div>
+
+                <div class="payment-summary-value">₹ {{ balance_due }}</div>
+              </div>
+            </div>
+          </td>
+
+          <!-- BANK -->
+
+          <td style="width: 48%">
+            <div class="bank-details">
+              <div class="bank-content">
+                <!-- LEFT -->
+
+                <div class="bank-left">
+                  <div class="bold" style="margin-bottom: 5px">
+                    Company's Bank Details
+                  </div>
+
+                  <table class="bank-table">
+                    <tr>
+                      <td class="bold">Ac Name</td>
+                      <td>: ARYU ACADEMY PRIVATE LIMITED</td>
+                    </tr>
+
+                    <tr>
+                      <td class="bold">Bank Name</td>
+                      <td>: {{ company.bank_name }}</td>
+                    </tr>
+
+                    <tr>
+                      <td class="bold">A/c No</td>
+                      <td>: {{ company.bank_account_no }}</td>
+                    </tr>
+
+                    <tr>
+                      <td class="bold">IFSC / BR</td>
+                      <td>: {{ company.bank_ifsc }}</td>
+                    </tr>
+
+                    <tr>
+                      <td class="bold">UPI ID</td>
+                      <td>: {{ company.upi_id }}</td>
+                    </tr>
+                  </table>
+                </div>
+
+                <!-- RIGHT -->
+
+                <div class="bank-right">
+                  <img
+                    src="file:///var/www/python-staging/Aryu/media/qr/qr.png"
+                    class="qr-code"
+                    alt="QR" />
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+      </table>
+
+      <!-- FOOTER -->
+
+      <table>
+        <tr>
+          <!-- DECLARATION -->
+
+          <td style="width: 52%" class="footer-left">
+            <div class="bold">Declaration</div>
+
+            <div style="margin-top: 6px; line-height: 1.4">
+              {{ company.declaration }}
+            </div>
+          </td>
+
+          <!-- SIGNATURE -->
+
+          <td style="width: 48%" class="footer-right">
+            <div class="signature-wrapper">
+              <div class="company-name">for {{ company.company_name }}</div>
+
+              <div class="signature-content">
+                <div class="computer-generated">
+                  Computer Generated Invoice<br />
+                  Signature Not Required
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </body>
+</html>

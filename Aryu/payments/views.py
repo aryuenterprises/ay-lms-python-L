@@ -18,7 +18,9 @@ from django.http import HttpResponse
 from django.utils import timezone
 from django.db.models import OuterRef, Subquery, F, Value, DecimalField,Prefetch,Q
 from django.db.models.functions import Coalesce
-
+from payments.services.invoice_service import (
+    InvoiceService
+)
 from aryuapp.utils import *
 from aryuapp.mixins import *
 from aryuapp.models import Settings
@@ -26,6 +28,10 @@ from aryuapp.views import flatten_errors
 from collections import defaultdict
 
 import json
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Create your views here.
 
 
@@ -134,17 +140,6 @@ def safe_float(value, default=0):
     except (ValueError, TypeError):
         return default
 class PaymentTransactionViewSet(viewsets.ViewSet):
-    """
-    ViewSet for handling payment transactions
-    
-    FIXED VERSION - Resolves issue where only 33 out of 63 students were showing
-    
-    Key fixes:
-    1. Proper query order (filter before prefetch)
-    2. Debug logging to track student counts
-    3. All students included regardless of transactions
-    4. Better handling of hierarchy filters
-    """
     
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
@@ -283,6 +278,25 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                         ]
                     })
 
+                companies = list(
+                    Employer.objects.filter(
+                        is_archived=False
+                    ).values(
+                        "company_id",
+                        "company_name"
+                    )
+                )
+
+                courses_list = list(
+                    Course.objects.filter(
+                        is_archived=False,
+                        status="Active"
+                    ).values(
+                        "course_id",
+                        "course_name"
+                    )
+                )
+
                 # ✅ FINAL STUDENT OBJECT
                 student_list.append({
                     "student_id": student.student_id,
@@ -290,7 +304,18 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                     "student_name": f"{student.first_name}".strip(),
                     "email": student.email,
                     "phone": student.contact_no,
-                    "courses": courses_data  # ✅ correct structure
+                    "courses": courses_data,  # ✅ correct structure
+                    "company_id": (
+                        getattr(student.employer, "company_id", None)
+                        if hasattr(student, "employer")
+                        else None
+                    ),
+
+                    "company_name": (
+                        getattr(student.employer, "company_name", None)
+                        if hasattr(student, "employer")
+                        else None
+                    ),
                 })
 
                
@@ -327,6 +352,8 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             "student_payment_summaries": serializer.data,
             "students_count": len(student_list),
             "students": student_list,
+            "companies": companies,
+            "courses_list": courses_list,
             "enabled_gateways": enabled_gateways,
             "meta": {
                 "total_students": len(student_list),
@@ -480,164 +507,76 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
     
 
     def create(self, request):
-        try:
-            student_id = int(str(request.data.get("student_id")).strip())
-            course_id = int(str(request.data.get("course_id")).strip())
-        except (TypeError, ValueError):
-            return Response({"success": False, "message": "Invalid student_id or course_id"}, status=400)
 
-        payments = request.data.get("payments", [])
-
-        if isinstance(payments, str):
-            try:
-                payments = json.loads(payments)
-            except Exception:
-                return Response({"success": False, "message": "Invalid payments format"}, status=400)
-
-        # if not isinstance(payments, list) or not payments:
-        #     return Response({"success": False, "message": "Payments must be a non-empty list"}, status=400)
-
-        student = Student.objects.filter(student_id=student_id).first()
-        course = Course.objects.filter(course_id=course_id).first()
-
-        if not student or not course:
-            return Response({"success": False, "message": "Student or Course not found"}, status=404)
-
-        created_ids = []
-
-        for pay in payments:
-            amount = float(pay.get("amount", 0))
-            if amount <= 0:
-                return Response({"success": False, "message": "Invalid amount"}, status=400)
-
-            transaction_id = pay.get("transaction_id") or f"TXN{uuid.uuid4().hex[:8].upper()}"
-
-            # ✅ prevent duplicate at create level
-            exists = PaymentTransaction.objects.filter(transaction_id=transaction_id).exists()
-            if exists:
-                continue
-
-            tx = PaymentTransaction.objects.create(
-                student=student,
-                course=course,
-                amount=amount,
-                currency="INR",
-                payment_status=pay.get("status"),
-                transaction_id=transaction_id,
-                metadata={
-                    "mode": pay.get("mode"),
-                    "date": pay.get("date"),
-                    "attachment": pay.get("attachment")
-                }
+        serializer = (
+            PaymentTransactionCreateSerializer(
+                data=request.data,
+                context={"request": request}
             )
+        )
 
-            created_ids.append(tx.id)
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        transaction = serializer.save()
 
         return Response({
             "success": True,
-            "message": "Payments created",
-            "created_count": len(created_ids),
-            "created_ids": created_ids
+            "message":
+            "Payment transaction created successfully",
+            "data":
+            PaymentTransactionDetailSerializer(
+                transaction,
+                context={"request": request}
+            ).data
         })
+    
+
     def update(self, request, pk=None):
-        student_id = request.data.get("student_id")
-        course_id = request.data.get("course_id")
-        metadata = request.data.get("metadata", [])
 
-        if isinstance(metadata, str):
-            try:
-                metadata = json.loads(metadata)
-            except json.JSONDecodeError:
-                return Response(
-                    {
-                        "success": False,
-                        "message": "Invalid metadata"
-                    },
-                    status=400
-                )
-
-        student = Student.objects.filter(
-            student_id=student_id
+        transaction = PaymentTransaction.objects.filter(
+            pk=pk,
+            is_archived=False
         ).first()
 
-        course = Course.objects.filter(
-            course_id=course_id
-        ).first()
+        if not transaction:
 
-        if not student or not course:
             return Response(
                 {
                     "success": False,
-                    "message": "Invalid student or course"
+                    "message": "Transaction not found"
+                },
+                status=404
+            )
+
+        serializer = PaymentTransactionUpdateSerializer(
+            transaction,
+            data=request.data,
+            partial=True,
+            context={"request": request}
+        )
+
+        if not serializer.is_valid():
+
+            return Response(
+                {
+                    "success": False,
+                    "errors": serializer.errors
                 },
                 status=400
             )
 
-        created_ids = []
-        updated_ids = []
+        serializer.save()
 
-        for pay in metadata:
-
-            amount = float(pay.get("amount", 0))
-
-            transaction_id = pay.get("transaction_id")
-
-            mode = (
-                pay.get("payment_mode") or ""
-            ).lower()
-
-            status_val = pay.get("payment_status")
-
-            date = pay.get("payment_date")
-
-            tx = None
-
-            if transaction_id:
-                tx = PaymentTransaction.objects.filter(
-                    transaction_id=transaction_id
-                ).first()
-
-            # UPDATE EXISTING
-            if tx:
-
-                tx.amount = amount
-                tx.payment_status = status_val
-
-                tx.metadata = {
-                    "mode": mode,
-                    "date": date
-                }
-
-                tx.student = student
-                tx.course = course
-
-                tx.save()
-
-                updated_ids.append(tx.id)
-
-            else:
-                # CREATE NEW
-                new_tx = PaymentTransaction.objects.create(
-                    student=student,
-                    course=course,
-                    amount=amount,
-                    currency="INR",
-                    payment_status=status_val,
-                    transaction_id=transaction_id or f"TXN{uuid.uuid4().hex[:8].upper()}",
-                    metadata={
-                        "mode": mode,
-                        "date": date
-                    }
-                )
-
-                created_ids.append(new_tx.id)
-
-        return Response({
-            "success": True,
-            "message": "Payments synced successfully",
-            "created_count": len(created_ids),
-            "updated_count": len(updated_ids)
-        })
+        return Response(
+            {
+                "success": True,
+                "message": "Transaction updated successfully",
+                "data": serializer.data
+            }
+        )
+    
     def destroy(self, request, pk=None):
         try:
             transaction = PaymentTransaction.objects.get(pk=pk)
@@ -657,7 +596,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             }, status=404)
 
 
-    # ✅ 2. Delete FULL student + all transactions
+    # 2. Delete FULL student + all transactions
     @action(detail=True, methods=['delete'], url_path='delete-student')
     def delete_student(self, request, pk=None):
         try:
@@ -668,10 +607,6 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 student_id=pk,
                 is_archived=False
             ).update(is_archived=True)
-
-            # delete student
-            student.is_archived = True
-            student.save()
 
             return Response({
                 "success": True,
@@ -684,8 +619,568 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "message": "Student not found"
             }, status=404)
 
-from django.conf import settings as django_settings
-from stripe import _error as stripe_error
+    @action(detail=False,methods=["post"],)
+    def generate_invoice(self, request):
+
+        serializer = GenerateInvoiceSerializer(
+            data=request.data
+        )
+
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        transaction = serializer.transaction
+
+        regenerate = serializer.validated_data.get(
+            "regenerate",
+            False
+        )
+
+        try:
+
+            transaction = (
+                InvoiceService.generate_invoice(
+                    transaction.id,
+                    regenerate=regenerate
+                )
+            )
+
+            invoice_url = None
+
+            if (
+                transaction.invoice
+                and hasattr(
+                    transaction.invoice,
+                    "url"
+                )
+            ):
+
+                invoice_url = (
+                    request.build_absolute_uri(
+                        transaction.invoice.url
+                    )
+                )
+
+            return Response(
+                {
+                    "success": True,
+                    "message": (
+                        "Invoice generated successfully"
+                    ),
+                    "data": {
+                        "transaction_id":
+                            transaction.id,
+
+                        "invoice_no":
+                            transaction.invoice_no,
+
+                        "invoice_url":
+                            invoice_url,
+
+                        "invoice_date":
+                            transaction.invoice_date,
+                    }
+                },
+                status=status.HTTP_200_OK
+            )
+
+        except Exception as e:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": str(e)
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=False,methods=["post"])
+    def send_invoice_email(self, request):
+
+        transaction_id = request.data.get(
+            "transaction_id"
+        )
+
+        if not transaction_id:
+
+            return Response(
+                {
+                    "success": False,
+                    "message":
+                    "transaction_id is required"
+                },
+                status=400
+            )
+
+        transaction = (
+            PaymentTransaction.objects
+            .select_related(
+                "student",
+                "employer",
+                "course"
+            )
+            .filter(
+                id=transaction_id,
+                is_archived=False
+            )
+            .first()
+        )
+
+        if not transaction:
+
+            return Response(
+                {
+                    "success": False,
+                    "message":
+                    "Transaction not found"
+                },
+                status=404
+            )
+
+        # =====================================================
+        # CHECK INVOICE
+        # =====================================================
+
+        if not transaction.invoice:
+
+            return Response(
+                {
+                    "success": False,
+                    "message":
+                    "Invoice not generated"
+                },
+                status=400
+            )
+
+        # =====================================================
+        # GET EMAIL + NAME
+        # =====================================================
+
+        recipient_email = None
+        customer_name = None
+
+        # STUDENT BILLING
+        if (
+            transaction.billing_type == "student"
+            and transaction.student
+        ):
+
+            recipient_email = (
+                transaction.student.email
+            )
+
+            customer_name = (
+                transaction.student.first_name
+            )
+
+        # COMPANY BILLING
+        elif (
+            transaction.billing_type == "company"
+            and transaction.employer
+        ):
+
+            recipient_email = (
+                transaction.employer.email
+            )
+
+            customer_name = (
+                transaction.employer.company_name
+            )
+
+        if not recipient_email:
+
+            return Response(
+                {
+                    "success": False,
+                    "message":
+                    "Recipient email not found"
+                },
+                status=400
+            )
+
+        # =====================================================
+        # EMAIL BODY
+        # =====================================================
+
+        subject = (
+            f"Aryu Academy Pvt Ltd - Invoice - "
+            f"{transaction.invoice_no}"
+        )
+
+        body = f"""
+<!DOCTYPE html>
+<html>
+
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Invoice Email</title>
+</head>
+
+<body style="
+    margin:0;
+    padding:0;
+    background-color:#eef1f7;
+    font-family:Arial, Helvetica, sans-serif;
+">
+
+<table width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="background:#eef1f7;padding:30px 15px;">
+
+<tr>
+<td align="center">
+
+<table width="650" cellpadding="0" cellspacing="0" border="0"
+       style="
+            width:100%;
+            max-width:650px;
+            background:#ffffff;
+            border-radius:14px;
+            overflow:hidden;
+            border:1px solid #e5e7eb;
+       ">
+
+    <!-- HEADER -->
+    <tr>
+        <td align="center"
+            style="
+                background:linear-gradient(135deg,#200A38,#430080);
+                padding:35px 25px;
+            ">
+
+            <!-- LOGO -->
+            <img
+                src="https://aylms.aryuprojects.com/api/media/logos/email_logo.png"
+                alt="Aryu Academy Private Limited"
+                style="
+                    width:320px;
+                    max-width:90%;
+                    height:auto;
+                    display:block;
+                    margin:0 auto;
+                    object-fit:contain;
+                "
+            />
+
+            <p style="
+                margin:10px 0 0 0;
+                color:#d8c9ff;
+                font-size:14px;
+                line-height:22px;
+            ">
+                Invoice & Payment Confirmation
+            </p>
+
+        </td>
+    </tr>
+
+    <!-- BODY -->
+    <tr>
+        <td style="padding:40px 35px;">
+
+            <p style="
+                margin:0 0 18px 0;
+                color:#111827;
+                font-size:16px;
+                line-height:28px;
+            ">
+                Dear <strong>{customer_name}</strong>,
+            </p>
+
+            <p style="
+                margin:0 0 25px 0;
+                color:#4b5563;
+                font-size:15px;
+                line-height:28px;
+            ">
+                Thank you for choosing
+                <strong style="color:#430080;">
+                    Aryu Academy
+                </strong>.
+
+                Your payment has been successfully received.
+                Please find your invoice attached with this email
+                for your reference and records.
+            </p>
+
+            <!-- HIGHLIGHT BOX -->
+            <table width="100%" cellpadding="0" cellspacing="0"
+                   style="
+                        background:#faf7ff;
+                        border:1px solid #e9d8fd;
+                        border-radius:12px;
+                        margin-bottom:30px;
+                   ">
+
+                <tr>
+                    <td style="padding:28px;">
+
+                        <table width="100%" cellpadding="0" cellspacing="0">
+
+                            <tr>
+                                <td style="
+                                    padding-bottom:16px;
+                                    color:#6b7280;
+                                    font-size:14px;
+                                    width:42%;
+                                ">
+                                    Invoice Number
+                                </td>
+
+                                <td style="
+                                    padding-bottom:16px;
+                                    color:#111827;
+                                    font-size:15px;
+                                    font-weight:700;
+                                ">
+                                    {transaction.invoice_no}
+                                </td>
+                            </tr>
+
+                            <tr>
+                                <td style="
+                                    padding-bottom:16px;
+                                    color:#6b7280;
+                                    font-size:14px;
+                                ">
+                                    Course
+                                </td>
+
+                                <td style="
+                                    padding-bottom:16px;
+                                    color:#111827;
+                                    font-size:15px;
+                                    font-weight:600;
+                                ">
+                                    {transaction.course.course_name if transaction.course else '-'}
+                                </td>
+                            </tr>
+
+                            <tr>
+                                <td style="
+                                    padding-bottom:16px;
+                                    color:#6b7280;
+                                    font-size:14px;
+                                ">
+                                    Billing Type
+                                </td>
+
+                                <td style="
+                                    padding-bottom:16px;
+                                    color:#111827;
+                                    font-size:15px;
+                                    font-weight:600;
+                                    text-transform:capitalize;
+                                ">
+                                    {transaction.billing_type}
+                                </td>
+                            </tr>
+
+                            <tr>
+                                <td style="
+                                    color:#6b7280;
+                                    font-size:14px;
+                                ">
+                                    Payment Amount
+                                </td>
+
+                                <td style="
+                                    color:#430080;
+                                    font-size:22px;
+                                    font-weight:700;
+                                ">
+                                    ₹{transaction.amount}
+                                </td>
+                            </tr>
+
+                        </table>
+
+                    </td>
+                </tr>
+
+            </table>
+
+            <p style="
+                margin:0 0 25px 0;
+                color:#4b5563;
+                font-size:14px;
+                line-height:26px;
+            ">
+                If you have any questions regarding this payment or invoice,
+                feel free to contact our support team.
+            </p>
+
+            <!-- BUTTON -->
+            <table cellpadding="0" cellspacing="0" border="0"
+                   style="margin:30px 0;">
+
+                <tr>
+                    <td align="center"
+                        style="
+                            border-radius:8px;
+                            background:#430080;
+                        ">
+
+                        <a href="https://aryuacademy.com/"
+                           target="_blank"
+                           style="
+                                display:inline-block;
+                                padding:14px 28px;
+                                color:#ffffff;
+                                font-size:14px;
+                                font-weight:600;
+                                text-decoration:none;
+                           ">
+                            Visit Our Website
+                        </a>
+
+                    </td>
+                </tr>
+
+            </table>
+
+            <!-- FOOTER -->
+            <hr style="
+                border:none;
+                border-top:1px solid #e5e7eb;
+                margin:35px 0 25px 0;
+            ">
+
+            <p style="
+                margin:0 0 15px 0;
+                color:#6b7280;
+                font-size:13px;
+                line-height:24px;
+            ">
+                This email and its attachments are confidential and intended
+                solely for the recipient.
+            </p>
+
+            <!-- SOCIAL LINKS -->
+            <table width="100%" cellpadding="0" cellspacing="0">
+
+                <tr>
+                    <td align="center">
+
+                        <a href="https://aryuacademy.com/"
+                           style="
+                                color:#430080;
+                                text-decoration:none;
+                                font-size:13px;
+                                margin:0 8px;
+                                font-weight:600;
+                           ">
+                           Website
+                        </a>
+
+                        <span style="color:#c4b5fd;">|</span>
+
+                        <a href="https://www.instagram.com/aryuacademyofficial/"
+                           style="
+                                color:#430080;
+                                text-decoration:none;
+                                font-size:13px;
+                                margin:0 8px;
+                                font-weight:600;
+                           ">
+                           Instagram
+                        </a>
+
+                        <span style="color:#c4b5fd;">|</span>
+
+                        <a href="https://www.facebook.com/aryuacademyofficial/"
+                           style="
+                                color:#430080;
+                                text-decoration:none;
+                                font-size:13px;
+                                margin:0 8px;
+                                font-weight:600;
+                           ">
+                           Facebook
+                        </a>
+
+                        <span style="color:#c4b5fd;">|</span>
+
+                        <a href="https://www.linkedin.com/company/aryuacademyofficial"
+                           style="
+                                color:#430080;
+                                text-decoration:none;
+                                font-size:13px;
+                                margin:0 8px;
+                                font-weight:600;
+                           ">
+                           LinkedIn
+                        </a>
+
+                    </td>
+                </tr>
+
+            </table>
+
+            <p style="
+                margin:25px 0 0 0;
+                text-align:center;
+                color:#9ca3af;
+                font-size:12px;
+                line-height:22px;
+            ">
+                © 2026 Aryu Academy. All rights reserved.
+            </p>
+
+        </td>
+    </tr>
+
+</table>
+
+</td>
+</tr>
+
+</table>
+
+</body>
+</html>
+"""
+
+        # =====================================================
+        # SEND EMAIL
+        # =====================================================
+
+        email = EmailMessage(
+            subject=subject,
+            body=body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=[recipient_email]
+        )
+        email.content_subtype = "html"
+        # ATTACH PDF
+        email.attach_file(
+            transaction.invoice.path
+        )
+        logger.warning(
+            f"EMAIL TRIGGERED FOR: {recipient_email}"
+        )
+        email.send(
+            fail_silently=False
+        )
+
+        return Response(
+            {
+                "success": True,
+                "message":
+                "Invoice email sent successfully",
+
+                "data": {
+                    "invoice_no":
+                        transaction.invoice_no,
+
+                    "sent_to":
+                        recipient_email
+                }
+            },
+            status=200
+        )
+
 class StripePaymentViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['post'])
@@ -779,60 +1274,6 @@ class StripePaymentViewSet(viewsets.ViewSet):
 
         return HttpResponse(status=200)
 
-    def generate_invoice(self, transaction):
-            student = transaction.student
-            settings_obj = Settings.objects.first()
-
-            # Convert amount to words
-            amount_words = num2words(transaction.amount, to='currency', lang='en_IN')
-
-            # Create Invoice object (auto-generates invoice_number)
-            invoice = Invoice.objects.create(
-                student=student,
-                buyer_name=student.full_name,
-                buyer_address=getattr(student, "address", ""),
-                buyer_mobile=getattr(student, "mobile", ""),
-                description=transaction.description,
-                quantity=1,
-                rate=transaction.amount,
-                amount=transaction.amount,
-                per="Nos",
-                amount_in_words=amount_words,
-                payment_terms="Immediate",
-                created_by=transaction.created_by,
-                created_by_type=transaction.created_by_type,
-            )
-
-            # Generate PDF
-            pdf_buffer = io.BytesIO()
-            pdf = canvas.Canvas(pdf_buffer, pagesize=A4)
-            pdf.setTitle(f"Invoice {invoice.invoice_number}")
-            pdf.drawString(50, 800, f"Invoice No: {invoice.invoice_number}")
-            pdf.drawString(50, 780, f"Date: {invoice.date}")
-            pdf.drawString(50, 760, f"Company: {settings_obj.company_name}")
-            pdf.drawString(50, 740, f"Bank: {settings_obj.bank_name} A/C: {settings_obj.bank_account_no} IFSC: {settings_obj.bank_ifsc}")
-            pdf.drawString(50, 720, f"Student: {invoice.buyer_name}")
-            pdf.drawString(50, 700, f"Description: {invoice.description}")
-            pdf.drawString(50, 680, f"Amount: {invoice.amount} INR ({invoice.amount_in_words})")
-            pdf.drawString(50, 660, f"Declaration: {settings_obj.declaration or ''}")
-            pdf.showPage()
-            pdf.save()
-            pdf_buffer.seek(0)
-
-            # Save PDF to invoice model
-            file_name = f"invoice_{invoice.invoice_number}.pdf"
-            invoice.pdf_file.save(file_name, pdf_buffer)
-            invoice.save()
-
-            # Send email to student
-            if student.email:
-                email = EmailMessage(
-                    subject=f"Invoice {invoice.invoice_number}",
-                    body=f"Dear {student.full_name},\n\nPlease find attached your invoice.",
-                    to=[student.email]
-                )
-                email.attach(file_name, pdf_buffer.getvalue(), 'application/pdf')
-                email.send()
 
 import paypalrestsdk
 
@@ -923,7 +1364,9 @@ class PayPalPaymentViewSet(viewsets.ViewSet):
                 transaction.transaction_id = resource.get('id')
                 transaction.save()
                 # Reuse your existing invoice generator
-                StripePaymentViewSet().generate_invoice(transaction)
+                InvoiceService.generate_invoice(
+                    transaction.id
+                )
 
         return HttpResponse(status=200)
 
@@ -1034,7 +1477,9 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 transaction.save()
 
                 # Generate invoice
-                StripePaymentViewSet().generate_invoice(transaction)
+                InvoiceService.generate_invoice(
+                    transaction.id
+                )
 
             return Response({"success": True, "message": "Payment verified successfully"})
         except razorpay.errors.SignatureVerificationError:
