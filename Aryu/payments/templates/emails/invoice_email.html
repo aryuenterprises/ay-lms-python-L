@@ -1,0 +1,34 @@
+<h2>Payment Successful</h2>
+
+<p>Dear {{ student.first_name }},</p>
+
+<p>
+Your payment has been received successfully.
+</p>
+
+<p>
+Please find the attached invoice PDF.
+</p>
+
+<br>
+
+<table border="1" cellpadding="10">
+    <tr>
+        <td>Transaction ID</td>
+        <td>{{ transaction.transaction_id }}</td>
+    </tr>
+
+    <tr>
+        <td>Course</td>
+        <td>{{ course.course_name }}</td>
+    </tr>
+
+    <tr>
+        <td>Amount</td>
+        <td>₹{{ transaction.amount }}</td>
+    </tr>
+</table>
+
+<br>
+
+<p>Thanks,<br>ARYU LMS</p>

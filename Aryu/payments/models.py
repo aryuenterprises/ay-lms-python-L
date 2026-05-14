@@ -1,5 +1,7 @@
 from django.db import models
 from django.contrib.contenttypes.fields import GenericRelation
+from django.db.models import Max
+from datetime import datetime
 # Create your models here.
 
 class PaymentGateway(models.Model):
@@ -27,10 +29,20 @@ class PaymentTransaction(models.Model):
     course = models.ForeignKey("courses.Course", on_delete=models.CASCADE, related_name="course_transactions", null=True, blank=True)
     course_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
+    webinar_registration = models.ForeignKey(
+        "webinar.WebinarRegistration",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+
+    billing_type = models.CharField(max_length=20,default="student")
+
+    employer = models.ForeignKey("aryuapp.Employer",on_delete=models.SET_NULL,null=True,blank=True)
+
     gateway = models.ForeignKey(PaymentGateway, on_delete=models.SET_NULL, null=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     
-    # ADD THIS
     discount = models.DecimalField(max_digits=10, decimal_places=2, null=True)
     total_after_discount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     currency = models.CharField(max_length=10, null=True, blank=True)
@@ -40,20 +52,76 @@ class PaymentTransaction(models.Model):
     attachment = models.FileField(upload_to='payment_attachments/', blank=True, null=True)
     description = models.TextField(blank=True, null=True)
     metadata = models.JSONField(blank=True, null=True)
-    order_id = models.CharField(max_length=255, blank=True, null=True)
     notes = GenericRelation("aryuapp.Note", related_query_name="payment_notes")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_archived = models.BooleanField(default=False)
+    order_id = models.CharField(max_length=255, blank=True, null=True)
+    phone = models.CharField(max_length = 100, null=True, blank=True)
+    invoice = models.FileField(upload_to="invoices/", null=True, blank=True)
+    screenshot = models.ImageField(upload_to="payment_screenshots/", null=True, blank=True)
+
+    invoice_no = models.CharField(max_length=50, null=True, blank=True, unique=True)
+    invoice_date = models.DateField(null=True, blank=True)
+
+    place_of_supply = models.CharField(max_length=100, null=True, blank=True)
+
+    taxable_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    cgst_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    sgst_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    igst_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    total_tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    invoice_total = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    amount_received = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    balance_due = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
     class Meta:
         indexes = [
             models.Index(fields=["student"]),
             models.Index(fields=["course"]),
             models.Index(fields=["id"]),
+            models.Index(fields=["invoice_no"]),
         ]
         db_table = 'aryuapp_paymenttransaction'
 
+    def generate_invoice_no(self):
+        now = datetime.now()
+
+        year = now.strftime("%y")   # 26
+        month = now.strftime("%m")  # 05
+
+        prefix = f"AA{year}{month}"
+
+        count = 1
+
+        while True:
+            invoice_no = f"{prefix}{count:02d}"
+
+            exists = PaymentTransaction.objects.filter(
+                invoice_no=invoice_no
+            ).exclude(id=self.id).exists()
+
+            if not exists:
+                return invoice_no
+
+            count += 1
+
+    def save(self, *args, **kwargs):
+
+        if not self.invoice_no:
+            self.invoice_no = self.generate_invoice_no()
+
+        if not self.invoice_date:
+            self.invoice_date = datetime.now().date()
+
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.student} - {self.amount} {self.currency} ({self.payment_status})"
