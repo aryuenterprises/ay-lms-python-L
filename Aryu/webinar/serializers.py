@@ -102,7 +102,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
         certificate = getattr(obj, "certificate", None)
 
         if certificate and certificate.certificate_file:
-            return 'https://aylms.aryuprojects.com/api' + certificate.certificate_file.url
+            return 'https://portal.aryuacademy.com/api' + certificate.certificate_file.url
 
         return None
 
@@ -281,7 +281,7 @@ class WebinarSerializer(serializers.ModelSerializer):
                 "profession": r.profession,
                 "payment_status": txn.payment_status if txn else "free",
                 "certificate_url": (
-                    "https://aylms.aryuprojects.com/api" + certificate.certificate_file.url
+                    "https://portal.aryuacademy.com/api" + certificate.certificate_file.url
                     if certificate and certificate.certificate_file else None
                 ),
                 "state": r.state,
