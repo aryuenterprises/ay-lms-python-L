@@ -170,6 +170,8 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 "profession": profession,
                 "state": state,
                 "city": city,
+                "source":request.data.get("source")
+                
             },
             description="Webinar payment via Razorpay Checkout",
         )   
@@ -234,8 +236,6 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         # Let webhook handle final status
 
         return Response({"success": True})
-
-
 
 class PublicWebinarViewSet(
     mixins.ListModelMixin,

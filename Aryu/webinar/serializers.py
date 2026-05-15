@@ -157,7 +157,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
             webinar=webinar,   # explicitly assign
             lead=lead,
             is_paid=False,
-            source=validated_data.get("source"),
+            # source=validated_data.get("source"),
             **validated_data
         )
 
