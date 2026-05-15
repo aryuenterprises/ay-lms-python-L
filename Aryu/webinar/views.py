@@ -184,7 +184,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             "currency": "INR",
             "webinar_title": webinar.title,
             "waba_link": webinar.waba_link,
-            "source":webinar.source
+            "source": request.data.get("source")
         })
 
         
@@ -365,7 +365,8 @@ class WebinarViewSet(
                             "certificate_sent",
                             "webinar_id",
                             "payment_transaction_id",
-                            "lead_id"
+                            "lead_id",
+                            "source",
                         )
                         .order_by("-registered_at")
                 ),
@@ -919,6 +920,7 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
                 "profession": meta.get("profession"),
                 "state": meta.get("state"),
                 "city": meta.get("city"),
+                "source":meta.get('source'),
                 "is_paid": True,
                 "payment_transaction": txn
             }
