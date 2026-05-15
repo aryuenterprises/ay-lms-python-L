@@ -1007,7 +1007,7 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
                 "profession": request.data.get("profession"),
                 "state": request.data.get("state"),
                 "city": request.data.get("city"),
-                # "source":request.data.get("source","webinar")
+                "source":request.data.get("source")
             }
         )
 
