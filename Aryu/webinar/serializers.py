@@ -48,6 +48,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
         source="webinar.waba_link",
         read_only=True
     )
+    source = serializers.SerializerMethodField()
 
     class Meta:
         model = WebinarRegistration
@@ -75,6 +76,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
             "logs",
             "registered_at",
             "certificate_sent",
+            "source",
         )
 
     def get_logs(self, obj):

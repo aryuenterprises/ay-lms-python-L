@@ -965,13 +965,10 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
         # FREE WEBINAR → DIRECT REGISTRATION
         # -----------------------------------
         if not webinar.is_paid:
-            data = request.data.copy()
-            data["source"] = request.data.get("source", "webinar")
             serializer = WebinarRegistrationSerializer(
-                data=data,
+                data=request.data,
                 context={"webinar": webinar}
             )
-
             serializer.is_valid(raise_exception=True)
             registration = serializer.save()
 
