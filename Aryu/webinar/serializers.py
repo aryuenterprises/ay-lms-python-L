@@ -48,7 +48,11 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
         source="webinar.waba_link",
         read_only=True
     )
-    source = serializers.SerializerMethodField()
+    source = serializers.CharField(
+    required=False,
+    allow_null=True,
+    allow_blank=True
+        )
 
     class Meta:
         model = WebinarRegistration
