@@ -136,7 +136,7 @@ class WebinarRegistration(models.Model):
     attended = models.BooleanField(default=False)
     source = models.CharField(
         max_length=100,
-        default='webinar'
+        default=True
     )
 
     registered_at = models.DateTimeField(auto_now_add=True)
