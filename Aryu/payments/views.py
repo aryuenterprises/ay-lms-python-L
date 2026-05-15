@@ -23,7 +23,7 @@ from payments.services.invoice_service import (
 )
 from aryuapp.utils import *
 from aryuapp.mixins import *
-from aryuapp.models import Settings, Employer
+from aryuapp.models import Settings
 from aryuapp.views import flatten_errors
 from collections import defaultdict
 
@@ -155,6 +155,16 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         user_type = getattr(user, "user_type", "")
         user_created_id = getattr(user, "trainer_id", None)
 
+        if getattr(user, "user_type", "") != "super_admin":
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized"
+                },
+                status=403
+            )
+
         if user_type == "super_admin":
             user_created_id = getattr(user, "user_id", None)
 
@@ -247,25 +257,27 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                         if tx.course_id == course.course_id
                     ]
 
-                    total_paid = sum(
+                    paid_amount = sum(
                         float(tx.amount)
                         for tx in txs
-                        if tx.payment_status and tx.payment_status.lower() == "success"
+                        if tx.payment_status and tx.payment_status.lower() in ["success", "done", "paid", "partial","advanced",]
                     )
 
                     course_fee = float(course.fee) if course and course.fee else 0
                     discount = float(getattr(student, "discount", 0))
-                    final_fee = course_fee - discount
-                    balance = final_fee - total_paid
+                    
+                    # Calculate new metrics
+                    total_after_discount = course_fee - discount
+                    due_amount = max(total_after_discount - paid_amount, 0.0)
 
                     courses_data.append({
                         "course_id": course.course_id,
                         "course_name": course.course_name,
                         "course_fee": course_fee,
                         "discount": discount,
-                        "final_fee": final_fee,
-                        "paid_amount": total_paid,
-                        "balance": balance,
+                        "total_after_discount": total_after_discount,   # Replaces final_fee
+                        "paid_amount": paid_amount,                     # Represents total paid
+                        "due_amount": due_amount,                       # Replaces balance
                         "transactions": [
                             {
                                 "transaction_id": tx.transaction_id,
@@ -361,6 +373,44 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             }
         })
 
+    def create(self, request):
+
+        user = request.user
+
+        if getattr(user, "user_type", "") != "super_admin":
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized"
+                },
+                status=403
+            )
+
+        serializer = (
+            PaymentTransactionCreateSerializer(
+                data=request.data,
+                context={"request": request}
+            )
+        )
+
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        transaction = serializer.save()
+
+        return Response({
+            "success": True,
+            "message":
+            "Payment transaction created successfully",
+            "data":
+            PaymentTransactionDetailSerializer(
+                transaction,
+                context={"request": request}
+            ).data
+        })
+     
     def retrieve(self, request, pk=None):
         """
         Retrieve detailed payment information for a single student
@@ -505,35 +555,19 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             "gatway": gateway_list  # Note: typo in original, keeping for compatibility
         })
     
-
-    def create(self, request):
-
-        serializer = (
-            PaymentTransactionCreateSerializer(
-                data=request.data,
-                context={"request": request}
-            )
-        )
-
-        serializer.is_valid(
-            raise_exception=True
-        )
-
-        transaction = serializer.save()
-
-        return Response({
-            "success": True,
-            "message":
-            "Payment transaction created successfully",
-            "data":
-            PaymentTransactionDetailSerializer(
-                transaction,
-                context={"request": request}
-            ).data
-        })
-    
-
     def update(self, request, pk=None):
+
+        user = request.user
+
+        if getattr(user, "user_type", "") != "super_admin":
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized"
+                },
+                status=403
+            )
 
         transaction = PaymentTransaction.objects.filter(
             pk=pk,
@@ -578,6 +612,19 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         )
     
     def destroy(self, request, pk=None):
+
+        user = request.user
+
+        if getattr(user, "user_type", "") != "super_admin":
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized"
+                },
+                status=403
+            )
+        
         try:
             transaction = PaymentTransaction.objects.get(pk=pk)
 
@@ -595,6 +642,60 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "message": "Transaction not found"
             }, status=404)
 
+    def student_payment_history(self, request, student_id=None):
+
+        # =========================================================
+        # FAST OPTIMIZED QUERYSET
+        # =========================================================
+        transactions = (
+            PaymentTransaction.objects
+            .filter(
+                student__student_id=student_id,
+                is_archived=False
+            )
+            .select_related("course")
+            .only(
+                "id",
+                "transaction_id",
+                "amount",
+                "payment_status",
+                "invoice_date",
+                "invoice",
+                "course__course_name"
+            )
+            .order_by("-invoice_date", "-created_at")
+        )
+
+        # =========================================================
+        # RESPONSE DATA
+        # =========================================================
+        payment_logs = [
+            {
+                "course_name": (
+                    tx.course.course_name
+                    if tx.course else None
+                ),
+
+                "invoice_date": tx.invoice_date,
+
+                "transaction_id": tx.transaction_id,
+
+                "amount": float(tx.amount or 0),
+
+                "payment_status": tx.payment_status,
+
+                "invoice_url": (
+                    "https://portal.aryuacademy.com/api" + tx.invoice.url
+                ) if tx.invoice and hasattr(tx.invoice, "url") else None
+            }
+            for tx in transactions
+        ]
+
+        return Response({
+            "success": True,
+            "count": len(payment_logs),
+            "payment_logs": payment_logs
+        })
 
     # 2. Delete FULL student + all transactions
     @action(detail=True, methods=['delete'], url_path='delete-student')
