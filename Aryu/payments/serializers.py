@@ -138,142 +138,6 @@ class GenerateInvoiceSerializer(serializers.Serializer):
 
         return value
 
-
-class PaymentTransactionUpdateSerializer(serializers.ModelSerializer):
-    total_course_fee = serializers.SerializerMethodField()
- 
-    class Meta:
-        model = PaymentTransaction
-        fields = [
-            "payment_mode",
-            "course",
-            "amount",
-            "discount",
-            "total_after_discount",
-            "currency",
-            "payment_status",
-            "transaction_id",
-            "attachment",
-            "description",
-            "metadata",
-            "total_course_fee",   # extra field to update course fee
-        ]
-        extra_kwargs = {
-            "course": {"required": False},
-            "amount": {"required": False},
-            "payment_mode": {"required": False},
-            "payment_status": {"required": False},
-            "transaction_id": {"required": False},
-            "attachment": {"required": False},
-            "description": {"required": False},
-            "metadata": {"required": False},
-            "discount": {"required": False},
-            "currency": {"required": False},
-            "total_after_discount": {"required": False},
-        }
-
-    def get_total_course_fee(self, obj):
-        if obj.course and hasattr(obj.course, 'fee'):
-            return obj.course.fee
-        return 0
-
-class PaymentTransactionDeleteSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = PaymentTransaction
-        fields = ["id", "is_archived"]
-        read_only_fields = ["id"]
-
-
-class PaymentCourseSerializer(serializers.Serializer):
-    course_id = serializers.IntegerField()
-    course_name = serializers.CharField()
-    course_fee = serializers.FloatField()
-    discount = serializers.FloatField()
-    final_fee = serializers.FloatField()
-    paid_amount = serializers.FloatField()
-    balance = serializers.FloatField()
-    transactions = PaymentTransactionDetailSerializer(many=True)
-
-
-class StudentPaymentSummarySerializer(serializers.ModelSerializer):
-    student_name = serializers.SerializerMethodField()
-    registration_id = serializers.SerializerMethodField()
-    discount = serializers.SerializerMethodField()
-   
-    courses = serializers.SerializerMethodField()  # NEW: nested per course
-
-    class Meta:
-        model = Student
-        fields = [
-            "student_id",
-            "registration_id",
-            "student_name",
-            "email",
-            "contact_no",
-            "discount",
-            # "payment_status",
-            # "payment_mode",
-            "courses",
-        ]
-
-    def get_student_name(self, obj):
-        return f"{obj.first_name} ".strip()
-
-    def get_registration_id(self, obj):
-        return obj.registration_id
-
-    def get_discount(self, obj):
-        return float(getattr(obj, "discount", 0))
-    
-
-    def get_courses(self, obj):
-        """
-        Build per-course summary with transactions
-        """
-        courses_data = []
-        
-
-        # Iterate over student's batches (or courses)
-        for batch in obj.new_batches.all():  # ✅ use .all()
-            course = getattr(batch, "course", None)
-            if not course:
-                continue
-
-            # Filter transactions belonging to this course
-            txs = [
-                tx for tx in obj.transactions.all()
-                if tx.course_id == course.course_id
-            ]
-
-            total_paid = sum(
-                float(tx.amount or 0) 
-                for tx in txs 
-                if tx.payment_status and tx.payment_status.lower() == "success"
-            )
-
-            course_fee = float(getattr(course, "fee", 0))
-            student_discount = float(getattr(obj, "discount", 0))
-            final_fee = course_fee - student_discount
-            balance = max(final_fee - total_paid, 0.0)
-
-            courses_data.append({
-                "course_id": course.course_id,
-                "course_name": course.course_name,
-                "course_fee": course_fee,
-                "discount": student_discount,
-                "final_fee": final_fee,
-                "paid_amount": total_paid,
-                "balance": balance,
-                "transactions": PaymentTransactionDetailSerializer(txs, many=True).data
-            })
-
-        return courses_data
-    
-class PaymentLogSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = PaymentLog
-        fields = '__all__'
-
 class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
 
     emi_installment_id = serializers.IntegerField(
@@ -364,6 +228,44 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
             )
 
         return None
+    
+    def validate(self, data):
+        student = data.get("student")
+        course = data.get("course")
+        amount = data.get("amount")
+
+        # 1. Validation for Course Payments
+        if student and course and amount:
+            course_fee = float(getattr(course, "fee", 0))
+            
+            # Check if a specific transaction discount is provided, otherwise use the student's global discount
+            tx_discount = data.get("discount")
+            discount = float(tx_discount) if tx_discount is not None else float(getattr(student, "discount", 0) or 0)
+            
+            total_after_discount = course_fee - discount
+            
+            # Fetch all valid transactions for THIS student and THIS specific course
+            existing_paid = PaymentTransaction.objects.filter(
+                student=student,
+                course=course,
+                is_archived=False,
+                payment_status__in=["success", "done", "paid", "pending"]
+            ).aggregate(total=Sum('amount'))['total'] or 0
+            
+            existing_paid = float(existing_paid)
+            incoming_amount = float(amount)
+
+            # 2. Block if it exceeds the remaining balance
+            if (existing_paid + incoming_amount) > total_after_discount:
+                allowed = max(0, total_after_discount - existing_paid)
+                raise serializers.ValidationError({
+                    "amount": f"Payment exceeds the total course fee after discount. "
+                              f"Final fee: ₹{total_after_discount}, Already paid: ₹{existing_paid}. "
+                              f"Maximum allowed payment is ₹{allowed}."
+                })
+        
+        return data
+    
 
     def create(self, validated_data):
 
@@ -525,6 +427,176 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
             )
 
         return transaction 
+
+class PaymentTransactionUpdateSerializer(serializers.ModelSerializer):
+    total_course_fee = serializers.SerializerMethodField()
+ 
+    class Meta:
+        model = PaymentTransaction
+        fields = [
+            "payment_mode",
+            "course",
+            "amount",
+            "discount",
+            "total_after_discount",
+            "currency",
+            "payment_status",
+            "transaction_id",
+            "invoice_date",
+            "attachment",
+            "description",
+            "metadata",
+            "total_course_fee",   # extra field to update course fee
+        ]
+        extra_kwargs = {
+            "course": {"required": False},
+            "amount": {"required": False},
+            "payment_mode": {"required": False},
+            "payment_status": {"required": False},
+            "transaction_id": {"required": False},
+            "attachment": {"required": False},
+            "description": {"required": False},
+            "metadata": {"required": False},
+            "discount": {"required": False},
+            "currency": {"required": False},
+            "total_after_discount": {"required": False},
+        }
+
+    def get_total_course_fee(self, obj):
+        if obj.course and hasattr(obj.course, 'fee'):
+            return obj.course.fee
+        return 0
+
+class PaymentTransactionDeleteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentTransaction
+        fields = ["id", "is_archived"]
+        read_only_fields = ["id"]
+
+
+class PaymentCourseSerializer(serializers.Serializer):
+    course_id = serializers.IntegerField()
+    course_name = serializers.CharField()
+    course_fee = serializers.FloatField()
+    discount = serializers.FloatField()
+    final_fee = serializers.FloatField()
+    paid_amount = serializers.FloatField()
+    balance = serializers.FloatField()
+    transactions = PaymentTransactionDetailSerializer(many=True)
+
+
+class StudentPaymentSummarySerializer(serializers.ModelSerializer):
+    student_name = serializers.SerializerMethodField()
+    registration_id = serializers.SerializerMethodField()
+    discount = serializers.SerializerMethodField()
+    aggregated_course_fee = serializers.SerializerMethodField()
+    aggregated_paid_amount = serializers.SerializerMethodField()
+    aggregated_due_amount = serializers.SerializerMethodField()
+    courses = serializers.SerializerMethodField()  # NEW: nested per course
+
+    class Meta:
+        model = Student
+        fields = [
+            "student_id",
+            "registration_id",
+            "student_name",
+            "email",
+            "contact_no",
+            "discount",
+            "aggregated_course_fee",   
+            "aggregated_paid_amount",  
+            "aggregated_due_amount",
+            "courses",
+        ]
+
+    def _get_course_calculations(self, obj):
+        """
+        Helper method to calculate the math ONCE per student and cache it.
+        This prevents DRF from running the loop 4 times for the 4 MethodFields.
+        """
+        if hasattr(obj, '_cached_payment_data'):
+            return obj._cached_payment_data
+
+        courses_data = []
+        total_course_fee = 0.0
+        total_paid = 0.0
+        total_due = 0.0
+
+        for batch in obj.new_batches.all():
+            course = getattr(batch, "course", None)
+            if not course:
+                continue
+
+            txs = [
+                tx for tx in obj.transactions.all()
+                if tx.course_id == course.course_id
+            ]
+
+            paid_amount = sum(
+                float(tx.amount or 0) 
+                for tx in txs 
+                if tx.payment_status and tx.payment_status.lower() in ["success", "done", "paid", "partial","advanced",]
+            )
+
+            course_fee = float(getattr(course, "fee", 0))
+            discount = float(getattr(obj, "discount", 0))
+            
+            # Calculate final numbers for the specific course
+            total_after_discount = course_fee - discount
+            due_amount = max(total_after_discount - paid_amount, 0.0)
+
+            # Add to the global aggregates
+            total_course_fee += total_after_discount
+            total_paid += paid_amount
+            total_due += due_amount
+
+            courses_data.append({
+                "course_id": course.course_id,
+                "course_name": course.course_name,
+                "course_fee": course_fee,
+                "discount": discount,
+                "total_after_discount": total_after_discount,
+                "paid_amount": paid_amount,
+                "due_amount": due_amount,
+                "transactions": PaymentTransactionDetailSerializer(txs, many=True).data
+            })
+
+        # Cache the results on the object so the next MethodField can just grab it
+        obj._cached_payment_data = {
+            "courses": courses_data,
+            "aggregated_course_fee": total_course_fee,
+            "aggregated_paid_amount": total_paid,
+            "aggregated_due_amount": total_due
+        }
+        
+        return obj._cached_payment_data
+
+    def get_student_name(self, obj):
+        return f"{obj.first_name} ".strip()
+
+    def get_registration_id(self, obj):
+        return obj.registration_id
+
+    def get_discount(self, obj):
+        return float(getattr(obj, "discount", 0))
+
+    def get_courses(self, obj):
+        return self._get_course_calculations(obj)["courses"]
+
+    def get_aggregated_course_fee(self, obj):
+        return self._get_course_calculations(obj)["aggregated_course_fee"]
+
+    def get_aggregated_paid_amount(self, obj):
+        return self._get_course_calculations(obj)["aggregated_paid_amount"]
+
+    def get_aggregated_due_amount(self, obj):
+        return self._get_course_calculations(obj)["aggregated_due_amount"] 
+
+
+class PaymentLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentLog
+        fields = '__all__'
 
 class StripePaymentSerializer(serializers.ModelSerializer):
     amount = serializers.DecimalField(max_digits=10, decimal_places=2)
