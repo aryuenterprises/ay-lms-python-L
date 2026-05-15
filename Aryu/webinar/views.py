@@ -509,7 +509,8 @@ class WebinarViewSet(
                 "total_hours_participated",
                 "payment_status",
                 "feedback_data",
-                "logs"
+                "logs",
+                "source"
             )
         )
 
