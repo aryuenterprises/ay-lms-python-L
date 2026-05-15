@@ -303,6 +303,7 @@ class WebinarSerializer(serializers.ModelSerializer):
                 ],
                 "registered_at": r.registered_at,
                 "certificate_sent": r.certificate_sent,
+                "source":r.source
             })
 
         return result

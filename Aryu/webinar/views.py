@@ -183,7 +183,8 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             "amount": int(float(amount) * 100),
             "currency": "INR",
             "webinar_title": webinar.title,
-            "waba_link": webinar.waba_link
+            "waba_link": webinar.waba_link,
+            "source":webinar.source
         })
 
         
@@ -1004,7 +1005,7 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
                 "profession": request.data.get("profession"),
                 "state": request.data.get("state"),
                 "city": request.data.get("city"),
-                "source":request.data.get("source","webinar")
+                # "source":request.data.get("source","webinar")
             }
         )
 
