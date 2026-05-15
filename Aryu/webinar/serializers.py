@@ -141,6 +141,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
 
         phone = validated_data.get('phone')
         email = validated_data.get('email')
+        source = validated_data.get('source')
 
         # Create or fetch Lead
         lead, created = Lead.objects.get_or_create(
