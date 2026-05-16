@@ -30,6 +30,12 @@ def serve_media(request, path):
     return JsonResponse({'success': False, 'message': 'File not found'}, status=404)
 
 def custom_404_handler(request, exception=None):
+    # if request.path.startswith('/api/'):
+    #     return JsonResponse({
+    #     'success': False, 
+    #     'message': 'Resource not found'
+    # }, status=404)
+
     return JsonResponse({
         'success': False, 
         'message': 'Resource not found'
