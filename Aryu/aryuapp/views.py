@@ -5108,6 +5108,8 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         
     @cache_api(prefix="student_profile", timeout=300)
     def retrieve(self, request, student_id=None):
+        user = request.user
+        user_type = getattr(user, 'user_type', None)
         try:
             student = Student.objects.get(student_id=student_id)
           
@@ -5116,6 +5118,12 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
                 "success": False,
                 "message": "Student not found"
             }, status=status.HTTP_200_OK)
+        
+        if user_type == "student" and str(student.student_id) != str(user.student_id):
+            return Response(
+                {"success": False, "message": "Unable to process request."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         serializer = StudentProfileSerializer(student, context={'request': request})
         return Response({
