@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from .models import *
 from .serializer import *
 from rest_framework.viewsets import ReadOnlyModelViewSet, ViewSet
-from rest_framework.exceptions import ValidationError, NotFound, AuthenticationFailed
+from rest_framework.exceptions import ValidationError, NotFound, AuthenticationFailed, PermissionDenied
 from .auth import CustomJWTAuthentication
 from rest_framework.filters import OrderingFilter
 from django_filters.rest_framework import DjangoFilterBackend
@@ -36,15 +36,23 @@ from django.conf import settings
 from django.contrib.auth.hashers import *
 from django.db.models import Q, Count, F, Max, ExpressionWrapper, Prefetch, DateField, Case, When,  IntegerField, Sum, Avg, Value, CharField,Subquery, Window
 import holidays
-from django.db.models.functions import Concat,Lag, JSONObject
+from django.db.models.functions import Concat,Lag, JSONObject, Coalesce
 from django.contrib.postgres.aggregates import JSONBAgg
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from .utils import *
 from .mixins import *
 from webinar.models import Webinar, WebinarRegistration, WebinarAttendanceSummary, WebinarFeedback
 from .services.dashboard.student_dashboard_service import StudentDashboardService
 from courses.models import Course, CourseCategory
 from batches.models import NewBatch, ClassSchedule, Batch, BatchCourseTrainer
+from core.permissions import verify_admin_privileges
 from payments.models import PaymentTransaction
+from rest_framework.authentication import SessionAuthentication
+from rest_framework.pagination import PageNumberPagination
+from core.views import apply_custom_throttle, secure_throttle
+import traceback
+import logging     
+logger = logging.getLogger(__name__)  
 
 
 class IsAdminOrSuperAdmin(BasePermission):
@@ -125,15 +133,15 @@ class SettingsViewSet(viewsets.ModelViewSet):
         return qs
 
     def list(self, request, *args, **kwargs):
-        user = request.user
 
-        allowed_types = ["super_admin", "admin"]
+        is_allowed, throttle_response = apply_custom_throttle(request, rate_limit=3, period=60)
+        if not is_allowed:
+            return throttle_response
 
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "You are not authorized to access this resource."
-            }, status=403)
+        db_user_type, error_response = verify_admin_privileges(request)
+        if error_response:
+            return error_response
+        
         queryset = self.get_queryset()
         serializer = self.get_serializer(queryset, many=True)
         datas = serializer.data
@@ -150,6 +158,16 @@ class SettingsViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
@@ -160,6 +178,16 @@ class SettingsViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
+
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
 
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
@@ -173,6 +201,16 @@ class SettingsViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
 
     def is_archived(self, request, pk=None):
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             instance = self.get_object()
             instance.is_archived = True
@@ -243,6 +281,16 @@ class CmsViewSet(viewsets.ModelViewSet):
             }, status=200)
 
     def list(self, request, *args, **kwargs):
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             queryset = self.filter_queryset(self.get_queryset())
             serializer = self.get_serializer(queryset, many=True)
@@ -255,6 +303,16 @@ class CmsViewSet(viewsets.ModelViewSet):
             return Response({'success': False, 'message': str(e)}, status=200)
 
     def create(self, request, *args, **kwargs):
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             serializer = self.get_serializer(data=request.data)
             if serializer.is_valid():
@@ -274,6 +332,16 @@ class CmsViewSet(viewsets.ModelViewSet):
             return Response({'success': False, 'message': str(e)}, status=200)
 
     def update(self, request, *args, **kwargs):
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         instance = self.get_object()
         if isinstance(instance, Response):
             return instance  # Return error response
@@ -297,6 +365,16 @@ class CmsViewSet(viewsets.ModelViewSet):
             return Response({'success': False, 'message': str(e)}, status=200)
 
     def is_archived(self, request, *args, **kwargs):
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         instance = self.get_object()
         if isinstance(instance, Response):
             return instance  # Return error response
@@ -367,6 +445,10 @@ class Login(LoggingMixin, APIView):
     permission_classes = [AllowAny] 
 
     def post(self, request):
+
+        is_allowed, throttle_response = apply_custom_throttle(request, rate_limit=3, period=60)
+        if not is_allowed:
+            return throttle_response
         try:
             username_or_email = request.data.get('username', '').rstrip()
             password = request.data.get('password', '').rstrip()
@@ -632,53 +714,106 @@ class UserViewSet(viewsets.ModelViewSet):
     lookup_field = "id"
 
     def get_queryset(self):
-        qs = super().get_queryset().filter(is_archived=False)  # exclude archived users
+        qs = super().get_queryset().filter(is_archived=False)
+        
+        # Data Isolation: Prevent standard admins from even viewing/querying Super Admins
+        requesting_user = self.request.user
+        if requesting_user.user_type == "admin":
+            qs = qs.exclude(user_type="super_admin")
+            
         role_id = self.request.query_params.get("role_id")
         if role_id:
             qs = qs.filter(role_id=role_id)
         return qs
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(
-            {"success": True, "message": "Users fetched successfully", "data": serializer.data},
-            status=status.HTTP_200_OK
-        )
-
+    @secure_throttle(rate_limit=5, period=60)
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data, context={"request": request})
+        user = request.user
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
+        payload = request.data.copy()
+        
+        # SECURE CREATE: Standard admin cannot create a Super Admin
+        if user.user_type == "admin" and payload.get("user_type") == "super_admin":
+            return Response({
+                "success": False,
+                "message": "Forbidden"
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = self.get_serializer(data=payload, context={"request": request})
         if serializer.is_valid():
             serializer.save()
-            return Response(
-                {"success": True, "message": "User created successfully", "data": serializer.data},
-                status=status.HTTP_200_OK
-            )
-        # Direct field errors instead of generic message
+            return Response({"success": True, "message": "User created successfully", "data": serializer.data}, status=status.HTTP_200_OK)
+            
         first_field, first_error = list(serializer.errors.items())[0]
-        return Response(
-            {"success": False, "message": f"{first_field} {first_error[0]}"},
-            status=status.HTTP_200_OK
-        )
+        return Response({"success": False, "message": f"{first_field}: {first_error[0]}"}, status=status.HTTP_400_BAD_REQUEST)
 
+
+    @secure_throttle(rate_limit=5, period=60)
     def update(self, request, *args, **kwargs):
-        partial = kwargs.pop("partial", True)
-        instance = self.get_object()
-        serializer = self.get_serializer(
-            instance, data=request.data, partial=partial, context={"request": request}
-        )
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(
-            {
-                "success": True,
-                "message": "User updated successfully",
-                "data": serializer.data
-            },
-            status=status.HTTP_200_OK
-        )
+        """ Handles PUT requests (Full Updates) """
+        user = request.user
+        instance = self.get_object() # Fetch the user targeted for the change
 
+        # 1. Base Role Permission Gate
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+            
+        payload = request.data.copy()
+        
+        # 2. Prevent Privileged Target Tampering
+        # An admin cannot modify an existing Super Admin account under any circumstance
+        if user.user_type == "admin" and instance.user_type == "super_admin":
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        # 3. Prevent Privilege Escalation
+        # An admin cannot elevate anyone (including themselves) to a "super_admin" status
+        if user.user_type == "admin" and payload.get("user_type") == "super_admin":
+            return Response({
+                "success": False, 
+                "message": "Forbidden"
+            }, status=status.HTTP_403_FORBIDDEN)
+            
+        return super().update(request, *args, **kwargs)
+
+    @secure_throttle(rate_limit=5, period=60)
+    def partial_update(self, request, *args, **kwargs):
+        """ Handles PATCH requests (Partial Updates) """
+        user = request.user
+        instance = self.get_object()
+
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+            
+        payload = request.data.copy()
+        
+        # Check target account authority
+        if user.user_type == "admin" and instance.user_type == "super_admin":
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        # Intercept inline role elevation injections via PATCH payload
+        if user.user_type == "admin" and payload.get("user_type") == "super_admin":
+            return Response({
+                "success": False, 
+                "message": "You cannot grant Super Admin privileges."
+            }, status=status.HTTP_403_FORBIDDEN)
+            
+        return super().partial_update(request, *args, **kwargs)
+    
+    @secure_throttle(rate_limit=5, period=60)
     def destroy(self, request, *args, **kwargs):
+
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         instance = self.get_object()
         instance.is_archived = True
         instance.save()
@@ -710,6 +845,17 @@ class RoleModulePermissionViewSet(viewsets.ViewSet):
             return RoleModulePermission.objects.none()
 
     def list(self, request):
+
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             qs = self.get_queryset()
             serializer = RoleModulePermissionSerializer(qs, many=True)
@@ -740,6 +886,16 @@ class RoleModulePermissionViewSet(viewsets.ViewSet):
             ]
         }
         """
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             role_id = request.data.get("role_id")
             module_permissions = request.data.get("module_permissions", [])
@@ -794,6 +950,16 @@ class RoleModulePermissionViewSet(viewsets.ViewSet):
 
         If "module_permissions" is empty or missing, all module permissions for the role will be cleared.
         """
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             role_id = request.data.get("role_id")
             module_permissions = request.data.get("module_permissions", [])
@@ -849,6 +1015,16 @@ class RoleModulePermissionViewSet(viewsets.ViewSet):
         
     def retrieve(self, request, pk=None):
         """Retrieve single role-module permission"""
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             role_module_perm = RoleModulePermission.objects.select_related("role", "module_permission").get(pk=pk)
             serializer = RoleModulePermissionSerializer(role_module_perm)
@@ -862,9 +1038,6 @@ class RoleViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
     lookup_field = "role_id"
-
-
-
 
     def get_queryset(self):
         try:
@@ -905,8 +1078,17 @@ class RoleViewSet(viewsets.ViewSet):
         except Exception:
             return Role.objects.none()
     
-
     def status_update(self,request,pk=None):
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             role = Role.objects.get(role_id=pk)
             role.status=not role.status
@@ -915,10 +1097,18 @@ class RoleViewSet(viewsets.ViewSet):
         except Exception as e:
             return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
 
-
-
     def list(self, request):
         """List all roles with module permissions"""
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             qs = self.get_queryset()
             data = []
@@ -937,6 +1127,16 @@ class RoleViewSet(viewsets.ViewSet):
             return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         serializer = self.serializer_class(
             data=request.data,
             context={'request': request}  # pass request here
@@ -951,7 +1151,16 @@ class RoleViewSet(viewsets.ViewSet):
         }, status=status.HTTP_200_OK)
 
     def update(self, request, pk=None):
-        """Update role name"""
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             role = Role.objects.get(role_id=pk)
             name = request.data.get("name")
@@ -968,6 +1177,16 @@ class RoleViewSet(viewsets.ViewSet):
     
     def retrieve(self, request, pk=None):
         """Retrieve single role with permissions"""
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             role = Role.objects.get(pk=pk)
             role_perms = RoleModulePermission.objects.filter(role=role).select_related("module_permission")
@@ -984,6 +1203,16 @@ class RoleViewSet(viewsets.ViewSet):
             return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
         
     def is_archived(self, request, pk=None):
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             role = Role.objects.get(role_id=pk)
             role.is_archived = True
@@ -1010,6 +1239,16 @@ class ModulePermissionViewSet(viewsets.ViewSet):
 
     def list(self, request):
         """List all modules with actions"""
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             qs = self.get_queryset()
             serializer = ModulePermissionSerializer(qs, many=True)
@@ -1026,6 +1265,16 @@ class ModulePermissionViewSet(viewsets.ViewSet):
             "actions": ["create","read","update","delete"]
         }
         """
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             module_name = request.data.get("module")
             actions = request.data.get("actions", [])
@@ -1043,6 +1292,16 @@ class ModulePermissionViewSet(viewsets.ViewSet):
             return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
 
     def update(self, request, pk=None):
+
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
         
         if not pk:
             return Response(
@@ -1077,6 +1336,16 @@ class ModulePermissionViewSet(viewsets.ViewSet):
         
     def retrieve(self, request, pk=None):
         """Retrieve single module permission by id"""
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             module = ModulePermission.objects.get(module_id=pk)
             serializer = ModulePermissionSerializer(module)
@@ -1087,6 +1356,16 @@ class ModulePermissionViewSet(viewsets.ViewSet):
             return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
     
     def is_archived(self, request, pk=None):
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             modules = ModulePermission.objects.get(module_id=pk)
             modules.is_archived = True
@@ -2158,14 +2437,22 @@ class UserDashboardView(APIView):
             "message": f"Dashboard for Company {company_name}",
             "data": data
         }, status=200)
-import traceback
-import logging     
-logger = logging.getLogger(__name__)  
+
 class ReportsViewSet(ViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
     
     def list(self, request):
+        user = request.user
+
+        allowed_types = ["super_admin", "admin"]
+
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         user = request.user
         user_type = getattr(user, "user_type", "").lower()
         admin_trainer_id = getattr(user, "trainer_id", None)
@@ -2232,6 +2519,10 @@ class ReportsViewSet(ViewSet):
         }, status=200)
 
     def get_reports(self, request):
+        db_user_type, error_response = verify_admin_privileges(request)
+        if error_response:
+            return error_response
+        
         user = request.user
         user_type = getattr(user, "user_type", "").lower()
         admin_trainer_id = getattr(user, "trainer_id", None)
@@ -4669,27 +4960,35 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         return StudentProfileSerializer  # Read-only profile view
     
     def partial_update(self, request, *args, **kwargs):
-
         try:
-            student = kwargs.get('student_id')
-            if not student:
+            student_id = kwargs.get('student_id')
+            if not student_id:
                 return Response({"success": False, "message": "Student ID missing"}, status=200)
 
             try:
-                student = Student.objects.get(student_id=student)
+                student = Student.objects.get(student_id=student_id)
             except Student.DoesNotExist:
                 return Response({"success": False, "message": "Student not found"}, status=200)
 
-            serializer = self.get_serializer(student, data=request.data, partial=True)
+            # -------------------------------------------------------------
+            # PROTECTION: Intercept payload and forcefully remove user_type/role
+            # -------------------------------------------------------------
+            payload = request.data.copy()  # Create a mutable copy of the request data
+            
+            # If they try to pass user_type or role in the payload, remove it quietly
+            # so it is ignored during serializer validation and saving.
+            payload.pop('user_type', None)
+            payload.pop('role', None)
+            payload.pop('role_id', None) # Extra check if you pass role as role_id
+            # -------------------------------------------------------------
+
+            serializer = self.get_serializer(student, data=payload, partial=True)
             user = request.user
 
             # Ensure module_id points to Students
             student_module = ModulePermission.objects.filter(module__iexact="Students").first()
             if not student_module:
                 return Response({"success": False, "message": "Students module not found"}, status=200)
-
-            # if not has_permission(user, module_id=student_module.module_id, actions=["update"]):
-            #     return Response({"success": False, "message": "You do not have permission"}, status=200)
 
             # Validate without raising exception
             if not serializer.is_valid():
@@ -4705,7 +5004,7 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
             student.refresh_from_db()
 
             # Save notes if provided in request
-            notes_text = request.data.get("notes")
+            notes_text = payload.get("notes")
             if notes_text:
                 mixin = NotesMixin()
                 mixin.save_notes(student, notes_text, request=request)
@@ -5913,18 +6212,24 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='admins')
     def list_admins(self, request):
         try:
-            user = request.user
-            user_created_id = getattr(user, "trainer_id", None)  # For admin
-            if user.user_type == "super_admin":
-                user_created_id = getattr(user, "user_id", None)  # Super admin
+            # =============================================================
+            # SECURE GATE 1: Verify 'super_admin' or 'admin' status directly from DB
+            # =============================================================
+            db_user = User.objects.filter(id=request.user.id, is_archived=False).first()
+            if not db_user or db_user.user_type not in ["super_admin", "admin"]:
+                return Response({
+                    "success": False,
+                    "message": "Unable to process request."
+                }, status=status.HTTP_403_FORBIDDEN) # Return true 403 HTTP code
 
+            user_type = db_user.user_type
+            user_created_id = getattr(db_user, "trainer_id", None) if user_type == "admin" else getattr(db_user, "user_id", None)
 
             # =============================
             # 1. Get admin IDs for super admin
             # =============================
             admin_ids = []
-            if user.user_type == "super_admin" and user_created_id:
-                # Get employee_id of admins created by this super admin
+            if user_type == "super_admin" and user_created_id:
                 admin_ids = list(
                     Trainer.objects.filter(
                         created_by=user_created_id,
@@ -5936,22 +6241,22 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
             # =============================
             # 2. Trainers queryset
             # =============================
-            trainers_qs = Trainer.objects.filter(user_type='admin',is_archived=False)
+            trainers_qs = Trainer.objects.filter(user_type='admin', is_archived=False).select_related('role')
 
-            if user.user_type == "super_admin":
+            if user_type == "super_admin":
                 trainers_qs = trainers_qs.filter(
                     Q(created_by_type="super_admin", created_by=user_created_id) |
                     Q(created_by_type="admin", created_by__in=admin_ids)
                 )
-            elif user.user_type == "admin" and user_created_id:
+            elif user_type == "admin" and user_created_id:
                 trainers_qs = trainers_qs.filter(
                     created_by=user_created_id,
                     created_by_type="admin"
                 )
 
-            # Select only required fields
             trainers_qs = trainers_qs.order_by("-trainer_id")
 
+            # Optimization: Map values efficiently
             trainer_data = [
                 {
                     "employee_id": t.employee_id,
@@ -5969,10 +6274,10 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                     'specialization': t.specialization,
                     'working_hours': t.working_hours,
                 }
-
                 for t in trainers_qs
             ]
-            trainers_count = trainers_qs.count()
+            
+            trainers_count = len(trainer_data)
             roles = Role.objects.filter(is_archived=False).values("role_id", "name")
             role = RoleSerializer(roles, many=True).data
 
@@ -5981,31 +6286,72 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                 "trainer_data": trainer_data,
                 "trainers_count": trainers_count,
                 "roles": role
-            }, status=200)
+            }, status=status.HTTP_200_OK)
 
         except Exception as e:
             return Response({
                 "success": False,
-                "message": str(e)
-            }, status=200)
+                "message": "An error occurred while processing your request." # Don't leak raw database exceptions to client
+            }, status=status.HTTP_400_BAD_REQUEST)
             
+
     @action(detail=False, methods=['get'], url_path='ad_employee/(?P<employee_id>[^/.]+)')
     def admin_profile(self, request, employee_id=None):
         try:
-            trainer = Trainer.objects.get(employee_id=employee_id, is_archived=False)
-        except Trainer.DoesNotExist:
+            # =============================================================
+            # SECURE GATE 2: CRITICAL - EXCLUSIVE Super Admin Verification
+            # =============================================================
+            db_user = User.objects.filter(id=request.user.id, is_archived=False).first()
+            if not db_user or db_user.user_type != "super_admin":
+                return Response({
+                    "success": False,
+                    "message": "Unable to process request."
+                }, status=status.HTTP_403_FORBIDDEN)
+
+            # Fetch the requested profile safely
+            try:
+                trainer = Trainer.objects.get(employee_id=employee_id, is_archived=False)
+            except Trainer.DoesNotExist:
+                return Response({
+                    "success": False,
+                    "message": "Requested profile data does not exist."
+                }, status=status.HTTP_404_NOT_FOUND)
+
+            # Data Integrity Check: Ensure this Super Admin actually owns/is permitted to view this target admin
+            user_created_id = getattr(db_user, "user_id", None)
+            
+            # Find the admin IDs created by this Super Admin to authenticate hierarchy tree
+            allowed_admin_ids = list(
+                Trainer.objects.filter(
+                    created_by=user_created_id,
+                    created_by_type="super_admin",
+                    is_archived=False
+                ).values_list("trainer_id", flat=True)
+            )
+
+            # Block request if the admin profile belongs to an entirely different hierarchy stream
+            is_owner = (trainer.created_by_type == "super_admin" and trainer.created_by == user_created_id)
+            is_sub_admin = (trainer.created_by_type == "admin" and trainer.created_by in allowed_admin_ids)
+            
+            if not (is_owner or is_sub_admin):
+                return Response({
+                    "success": False,
+                    "message": "Unable to process request."
+                }, status=status.HTTP_403_FORBIDDEN)
+
+            serializer = self.get_serializer(trainer)
             return Response({
-                "success": False,
-                "message": "Trainer not found."
+                "success": True,
+                "message": "Profile retrieved successfully.",
+                "data": serializer.data,
             }, status=status.HTTP_200_OK)
 
-        serializer = self.get_serializer(trainer)
-        return Response({
-            "success": True,
-            "message": "Trainer profile retrieved successfully.",
-            "data": serializer.data,
-        }, status=status.HTTP_200_OK)
-        
+        except Exception as e:
+            return Response({
+                "success": False,
+                "message": "Unable to safely retrieve profile information."
+            }, status=status.HTTP_400_BAD_REQUEST)        
+    
     @action(detail=True, methods=['get'], url_path='batches')
     def get_batches(self, request, employee_id=None):
         # self.get_object() will fetch the Trainer based on employee_id
@@ -7568,22 +7914,22 @@ class SubmissionViewSet(LoggingMixin, viewsets.ModelViewSet):
 
         # Serialize and save submission
         serializer = self.get_serializer(data=request.data)
+        
         if serializer.is_valid():
             serializer.save(student=student, assignment=assignment)
-            # Async virus scan triggered via signal
             return Response({
                 "success": True,
-                "message": "Submission created successfully. File will be scanned for viruses.",
+                "message": "Submission created successfully. File has passed security checks.",
                 "data": serializer.data
             }, status=status.HTTP_201_CREATED)
             
-        # Convert serializer.errors to a single message string
+        # Cleanly format the security validation errors to send back to the frontend
         error_messages = []
-        for field_errors in serializer.errors.values():
+        for field, field_errors in serializer.errors.items():
             if isinstance(field_errors, list):
-                error_messages.extend(field_errors)
+                # If it's a file error, we want to show it explicitly
+                error_messages.append(f"{field.capitalize()}: {field_errors[0]}")
             elif isinstance(field_errors, dict):
-                # nested serializer errors
                 for sub_errors in field_errors.values():
                     error_messages.extend(sub_errors)
 
@@ -7591,7 +7937,7 @@ class SubmissionViewSet(LoggingMixin, viewsets.ModelViewSet):
             "success": False,
             "message": error_messages[0] if error_messages else "Validation error"
         }, status=status.HTTP_200_OK)
-
+    
     @action(detail=False, methods=['get'], url_path='<registration_id>')
     def by_student(self, request, registration_id=None):
         try:
@@ -7716,213 +8062,795 @@ class AdminfullLogViewSet(ReadOnlyModelViewSet):
     ordering_fields = ['timestamp']
 
     def list(self, request, *args, **kwargs):
+        db_user_type, error_response = verify_admin_privileges(request)
+        if error_response:
+            return error_response
         user = getattr(request, 'user_data', None)
         if not user or user.get('user_type') != 'admin':
             return Response({'error': 'Unauthorized'}, status=status.HTTP_200_OK)
         return super().list(request, *args, **kwargs)
 
-from twilio.rest import Client
-from twilio.base.exceptions import TwilioRestException
-class LeadViewSet(viewsets.ModelViewSet, NotesMixin):
-    queryset = Lead.objects.filter(is_archived=False).order_by('-created_at')
-    serializer_class = LeadSerializer
-    permission_classes = [IsAuthenticated]
 
-    # ---------------- CREATE ----------------
-    def create(self, request, *args, **kwargs):
-        phone = request.data.get("phone")
+# =========================================================
+# THROTTLES
+# =========================================================
 
-        # Check for duplicate lead
-        if Lead.objects.filter(phone=phone, is_archived=False).exists():
-            return Response(
-                {"message": "Lead already exists"},
-                status=status.HTTP_200_OK
+class PublicLeadThrottle(AnonRateThrottle):
+    scope = "public_lead"
+
+
+class AdminLeadThrottle(UserRateThrottle):
+    scope = "admin_lead"
+
+
+# =========================================================
+# PAGINATION
+# =========================================================
+
+class LeadPagination(PageNumberPagination):
+
+    page_size = 25
+
+    page_size_query_param = "page_size"
+
+    max_page_size = 100
+
+
+# =========================================================
+# SECURITY MIXIN
+# =========================================================
+
+class LeadSecurityMixin:
+
+    blocked_patterns = [
+        "<script",
+        "javascript:",
+        "union select",
+        "drop table",
+        "--",
+        ";",
+        "onerror=",
+        "onload=",
+    ]
+
+    def validate_payload_security(self, request):
+
+        for _, value in request.data.items():
+
+            if not isinstance(value, str):
+                continue
+
+            lower_value = value.lower()
+
+            for pattern in self.blocked_patterns:
+
+                if pattern in lower_value:
+
+                    raise ValidationError(
+                        "Invalid payload detected."
+                    )
+
+    def validate_admin_access(self, request):
+
+        if not request.user.is_authenticated:
+            raise PermissionDenied(
+                "Authentication required."
             )
 
-        # Proceed with normal creation
-        response = super().create(request, *args, **kwargs)
+        if not (
+            request.user.is_staff or
+            request.user.is_superuser
+        ):
+            raise PermissionDenied(
+                "Access denied."
+            )
+
+    def get_client_ip(self, request):
+
+        x_forwarded_for = request.META.get(
+            "HTTP_X_FORWARDED_FOR"
+        )
+
+        if x_forwarded_for:
+            return x_forwarded_for.split(",")[0]
+
+        return request.META.get("REMOTE_ADDR")
+
+
+# =========================================================
+# MAIN ADMIN VIEWSET
+# =========================================================
+
+class LeadViewSet(
+    LeadSecurityMixin,
+    viewsets.ViewSet
+):
+
+
+    authentication_classes = [
+        CustomJWTAuthentication,
+        SessionAuthentication,
+    ]
+
+    permission_classes = [
+        IsAuthenticated
+    ]
+
+    throttle_classes = [
+        AdminLeadThrottle
+    ]
+
+    pagination_class = LeadPagination
+
+    # =====================================================
+    # INTERNAL HELPERS
+    # =====================================================
+
+    def paginate_queryset(self, queryset, request):
+
+        paginator = self.pagination_class()
+
+        paginated_queryset = paginator.paginate_queryset(
+            queryset,
+            request
+        )
+
+        return paginated_queryset, paginator
+
+    # =====================================================
+    # DIRECT LEADS QUERYSET
+    # =====================================================
+
+    def get_lead_queryset(self):
+
+        return (
+            Lead.objects
+            .select_related(
+                "followup_by",
+                "handled_by"
+            )
+            .only(
+                "id",
+                "name",
+                "phone",
+                "email",
+                "city",
+                "course",
+                "status",
+                "priority",
+                "lead_stage",
+                "source",
+                "created_at",
+                "followup_date",
+                "next_followup_date",
+                "followup_by",
+                "handled_by",
+                "no_of_calls",
+                "no_of_dms",
+                "created_by",
+                "created_by_type",
+            )
+            .annotate(
+                lead_origin=Value(
+                    "lead",
+                    output_field=CharField()
+                )
+            )
+            .filter(
+                is_archived=False
+            )
+            .order_by("-created_at")
+        )
+
+    # =====================================================
+    # WEBINAR REGISTRATION QUERYSET
+    # =====================================================
+
+    def get_webinar_queryset(self):
+
+        return (
+            WebinarRegistration.objects
+            .select_related("webinar")
+            .only(
+                "id",
+                "name",
+                "phone",
+                "email",
+                "course",
+                "webinar__title",
+            )
+            .annotate(
+
+                lead_origin=Value(
+                    "webinar",
+                    output_field=CharField()
+                ),
+
+                course_value=Coalesce(
+                    "course",
+                    "webinar__title",
+                    Value("Webinar"),
+                    output_field=CharField()
+                ),
+
+                status_value=Value(
+                    "webinar_registered",
+                    output_field=CharField()
+                ),
+
+                priority_value=Value(
+                    None,
+                    output_field=CharField()
+                ),
+
+                lead_stage_value=Value(
+                    None,
+                    output_field=CharField()
+                ),
+
+                source_value=Value(
+                    "webinar",
+                    output_field=CharField()
+                ),
+
+                created_by_value=Value(
+                    "system"
+                ),
+
+                created_by_type_value=Value(
+                    "webinar"
+                ),
+            )
+            .order_by("-registered_at")
+        )
+    # =====================================================
+    # COMBINED LEAD ENGINE
+    # =====================================================
+
+    def get_combined_leads(self):
+
+        direct_leads = list(
+            self.get_lead_queryset().values(
+                "id",
+                "name",
+                "phone",
+                "email",
+                "city",
+                "course",
+                "status",
+                "priority",
+                "lead_stage",
+                "source",
+                "created_at",
+                "followup_date",
+                "next_followup_date",
+                "no_of_calls",
+                "no_of_dms",
+                "created_by",
+                "created_by_type",
+                "lead_origin",
+            )
+        )
+
+        webinar_leads = list(
+            self.get_webinar_queryset().values(
+
+                "id",
+
+                "name",
+
+                "phone",
+
+                "email",
+
+                "course_value",
+
+                "status_value",
+
+                "priority_value",
+
+                "lead_stage_value",
+
+                "source_value",
+
+                "created_by_value",
+
+                "created_by_type_value",
+
+                "lead_origin",
+
+                "registered_at",
+            )
+        )
+        for lead in webinar_leads:
+
+            lead["course"] = lead.pop(
+                "course_value",
+                None
+            )
+
+            lead["status"] = lead.pop(
+                "status_value",
+                None
+            )
+
+            lead["priority"] = lead.pop(
+                "priority_value",
+                None
+            )
+
+            lead["lead_stage"] = lead.pop(
+                "lead_stage_value",
+                None
+            )
+
+            lead["source"] = lead.pop(
+                "source_value",
+                None
+            )
+
+            lead["created_by"] = lead.pop(
+                "created_by_value",
+                None
+            )
+
+            lead["created_by_type"] = lead.pop(
+                "created_by_type_value",
+                None
+            )
+
+            lead["created_at"] = lead.pop(
+                "registered_at",
+                None
+            )
+
+            lead["city"] = None
+
+            lead["followup_date"] = None
+
+            lead["next_followup_date"] = None
+
+            lead["no_of_calls"] = 0
+
+            lead["no_of_dms"] = 0
+
+        combined = direct_leads + webinar_leads
+
+        combined.sort(
+            key=lambda x: x["created_at"],
+            reverse=True
+        )
+
+        return combined
+
+    # =====================================================
+    # LIST LEADS
+    # =====================================================
+
+    def get_active_courses(self):
+
+        return list(
+            Course.objects
+            .filter(
+                status="Active",
+                is_archived=False
+            )
+            .values(
+                "course_id",
+                "course_name",
+            )
+        )
+
+    def list(self, request):
+
+        self.validate_admin_access(request)
+
+        cache_key = (
+            f"lead-engine:"
+            f"{request.user.id}:"
+            f"{request.query_params.urlencode()}"
+        )
+
+        cached_response = cache.get(cache_key)
+
+        if cached_response:
+            return Response(cached_response)
+
+        leads = self.get_combined_leads()
+
+        # =====================================
+        # SEARCH
+        # =====================================
+
+        search = request.query_params.get("search")
+
+        if search:
+
+            search = search.lower()
+
+            leads = [
+                lead for lead in leads
+                if (
+                    search in str(
+                        lead.get("name", "")
+                    ).lower()
+                    or
+                    search in str(
+                        lead.get("phone", "")
+                    ).lower()
+                    or
+                    search in str(
+                        lead.get("email", "")
+                    ).lower()
+                )
+            ]
+
+        # =====================================
+        # STATUS FILTER
+        # =====================================
+
+        status_filter = request.query_params.get(
+            "status"
+        )
+
+        if status_filter:
+
+            leads = [
+                lead for lead in leads
+                if lead.get("status") == status_filter
+            ]
+
+        # =====================================
+        # SOURCE FILTER
+        # =====================================
+
+        source_filter = request.query_params.get(
+            "source"
+        )
+
+        if source_filter:
+
+            leads = [
+                lead for lead in leads
+                if lead.get("source") == source_filter
+            ]
+
+        # =====================================
+        # CURSOR PAGINATION
+        # =====================================
+
+        paginated_queryset, paginator = (
+            self.paginate_queryset(
+                leads,
+                request
+            )
+        )
+
+        response_data = paginator.get_paginated_response(
+            paginated_queryset
+        ).data
+
+        response_data["courses"] = (
+            self.get_active_courses()
+        )
+
+        # =====================================
+        # SHORT CACHE
+        # =====================================
+
+        cache.set(
+            cache_key,
+            response_data,
+            timeout=20
+        )
+
+        return Response(response_data)
+
+    # =====================================================
+    # RETRIEVE
+    # =====================================================
+
+    def retrieve(self, request, pk=None):
+
+        self.validate_admin_access(request)
+
+        cache_key = f"lead-detail:{pk}"
+
+        cached_response = cache.get(cache_key)
+
+        if cached_response:
+            return Response(cached_response)
+
+        try:
+
+            lead = (
+                Lead.objects
+                .select_related(
+                    "followup_by",
+                    "handled_by"
+                )
+                .prefetch_related(
+                    "call_logs",
+                    "dm_logs",
+                    "followups",
+                    "status_history",
+                )
+                .get(
+                    pk=pk,
+                    is_archived=False
+                )
+            )
+
+            serializer = LeadSerializer(
+                lead,
+                context={
+                    "request": request
+                }
+            )
+
+            response_data = serializer.data
+
+            response_data["courses"] = (
+                self.get_active_courses()
+            )
+
+            cache.set(
+                cache_key,
+                response_data,
+                timeout=30
+            )
+
+            return Response(response_data)
+
+        except Lead.DoesNotExist:
+
+            webinar_registration = (
+                WebinarRegistration.objects
+                .select_related(
+                    "webinar"
+                )
+                .filter(
+                    id=pk
+                )
+                .first()
+            )
+
+            if not webinar_registration:
+
+                return Response(
+                    {
+                        "detail": "Lead not found."
+                    },
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            webinar_data = {
+                "id": webinar_registration.id,
+                "name": webinar_registration.name,
+                "phone": webinar_registration.phone,
+                "email": webinar_registration.email,
+                "course": webinar_registration.webinar.title,
+                "status": "webinar_registered",
+                "source": "webinar",
+                "created_at": webinar_registration.created_at,
+                "lead_origin": "webinar",
+            }
+
+            return Response(webinar_data)
+
+    # =====================================================
+    # CREATE LEAD
+    # =====================================================
+
+    @transaction.atomic
+    def create(self, request):
+
+        self.validate_admin_access(request)
+
+        self.validate_payload_security(request)
+
+        serializer = LeadSerializer(
+            data=request.data,
+            context={
+                "request": request
+            }
+        )
+
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        lead = serializer.save()
+
+        # =====================================
+        # CACHE INVALIDATION
+        # =====================================
+
+        cache.delete_pattern("lead-engine:*")
+
         return Response(
             {
                 "success": True,
-                "message": "Lead created successfully",
-                "data": response.data
+                "message": "Lead created successfully.",
+                "data": LeadSerializer(
+                    lead,
+                    context={
+                        "request": request
+                    }
+                ).data
             },
             status=status.HTTP_201_CREATED
         )
 
-    # ---------------- LIST ----------------
-    def list(self, request, *args, **kwargs):
-        queryset = self.queryset
-        serializer = self.get_serializer(queryset, many=True)
-        return Response({"success": True, "leads": serializer.data}, status=status.HTTP_200_OK)
+    # =====================================================
+    # UPDATE LEAD
+    # =====================================================
 
-    # ---------------- RETRIEVE ----------------
-    def retrieve(self, request, *args, **kwargs):
-        lead_id = self.kwargs.get('pk')
-        lead = Lead.objects.filter(pk=lead_id, is_archived=False).first()
-        if not lead:
-            return Response({"success": False, "message": "Lead not found"}, status=status.HTTP_200_OK)
-        serializer = self.get_serializer(lead)
-        return Response({"success": True, "lead": serializer.data}, status=status.HTTP_200_OK)
+    @transaction.atomic
+    def partial_update(self, request, pk=None):
 
-    # ---------------- UPDATE (Full + Partial + Notes) ----------------
-    def update(self, request, *args, **kwargs):
-        lead_id = self.kwargs.get('pk')
-        partial = kwargs.pop('partial', False)
-        lead = Lead.objects.filter(pk=lead_id, is_archived=False).first()
+        self.validate_admin_access(request)
 
-        if not lead:
-            return Response(
-                {"success": False, "message": "Lead not found"},
-                status=status.HTTP_200_OK
+        self.validate_payload_security(request)
+
+        try:
+
+            lead = Lead.objects.get(
+                pk=pk,
+                is_archived=False
             )
 
-        serializer = self.get_serializer(lead, data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)
+        except Lead.DoesNotExist:
+
+            return Response(
+                {
+                    "detail": "Lead not found."
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        serializer = LeadSerializer(
+            lead,
+            data=request.data,
+            partial=True,
+            context={
+                "request": request
+            }
+        )
+
+        serializer.is_valid(
+            raise_exception=True
+        )
+
         serializer.save()
 
-        notes_text = request.data.get("notes")
-        if notes_text:
-            self.save_notes(lead, notes_text, request=request)
-
-        notes_data = self.get_notes_reasons(lead, request=request)
+        cache.delete_pattern("lead-engine:*")
+        cache.delete(f"lead-detail:{pk}")
 
         return Response(
             {
                 "success": True,
-                "message": "Lead updated successfully",
-                "lead": serializer.data,
-                "notes": notes_data
-            },
-            status=status.HTTP_200_OK
+                "message": "Lead updated successfully.",
+                "data": serializer.data
+            }
         )
 
-    # ---------------- SOFT DELETE ----------------
-    def is_archived(self, request, *args, **kwargs):
-        lead_id = self.kwargs.get('pk')
-        lead = Lead.objects.filter(pk=lead_id, is_archived=False).first()
-        if not lead:
-            return Response({"success": False, "message": "Lead not found"}, status=status.HTTP_200_OK)
-        lead.is_archived = True
-        lead.save()
-        return Response({"success": True, "message": "Lead archived successfully"}, status=status.HTTP_200_OK)
-    
-    @action(detail=True, methods=['post'], url_path='call/(?P<call_id>[^/.]+)/notes')
-    def add_call_notes(self, request, pk=None, call_id=None):
+    # =====================================================
+    # SOFT DELETE
+    # =====================================================
 
-        lead = Lead.objects.filter(pk=pk, is_archived=False).first()
-        if not lead:
-            return Response(
-                {"success": False, "message": "Lead not found"},
-                status=status.HTTP_200_OK
-            )
+    @transaction.atomic
+    def destroy(self, request, pk=None):
 
-        call_log = LeadCallLog.objects.filter(id=call_id, lead=lead).first()
-        if not call_log:
-            return Response(
-                {"success": False, "message": "Call log not found"},
-                status=status.HTTP_200_OK
-            )
-
-        notes_text = request.data.get("notes")
-        if not notes_text:
-            return Response(
-                {"success": False, "message": "Note text required"},
-                status=status.HTTP_200_OK
-            )
-
-        # Use NotesMixin to save notes
-        self.save_notes(instance=call_log, notes_text=notes_text, request=request)
-
-        return Response({
-            "success": True,
-            "message": "Note added successfully",
-            "data": {
-                "call_log_id": call_log.id,
-                "lead_id": lead.id,
-                "note": notes_text,
-                "added_by": request.user.username,
-                "created_at": timezone.now()
-            }
-        }, status=status.HTTP_201_CREATED)
-
-    # ---------------- TWILIO CALL ----------------
-    
-    @action(detail=True, methods=['post'], url_path='call')
-    def call(self, request, pk=None):
-
-        lead = Lead.objects.filter(pk=pk, is_archived=False).first()
-        if not lead:
-            return Response({"success": False, "message": "Lead not found"}, status=200)
-
-        from django.contrib.auth import get_user_model
-        User = get_user_model()
-        user = User.objects.filter(id=request.user.user_id).first()
-
-        # The sales user’s phone number (must include country code)
-        # sales_person_phone = "+918838264338"  # TODO: Replace with logged-in user's number or profile field
-        sales_person_phone = "+919677377316"
-
-        lead_number = lead.phone
-        if not lead_number.startswith('+'):
-            lead_number = f"+91{lead_number}"  # Verified lead number
-
-        client = Client(settings.TWILIO_SID, settings.TWILIO_AUTH_TOKEN)
+        self.validate_admin_access(request)
 
         try:
-            # First call: sales person
-            call = client.calls.create(
-                to=sales_person_phone,
-                from_=settings.TWILIO_PHONE_NUMBER,  # Verified Twilio number
-                url=f"https://portal.aryuacademy.com/api/twilio/connect_customer?lead_phone={lead_number}"
+
+            lead = Lead.objects.get(
+                pk=pk,
+                is_archived=False
             )
 
-            # Log the call
-            log = LeadCallLog.objects.create(
-                lead=lead,
-                called_by=user,
-                call_status="initiated"
+        except Lead.DoesNotExist:
+
+            return Response(
+                {
+                    "detail": "Lead not found."
+                },
+                status=status.HTTP_404_NOT_FOUND
             )
 
-            serializer = LeadCallLogSerializer(log)
-            return Response({
+        lead.is_archived = True
+
+        lead.save(
+            update_fields=[
+                "is_archived"
+            ]
+        )
+
+        cache.delete_pattern("lead-engine:*")
+        cache.delete(f"lead-detail:{pk}")
+
+        return Response(
+            {
                 "success": True,
-                "message": "Call initiated",
-                "call_sid": call.sid,
-                "log": serializer.data
-            }, status=200)
+                "message": "Lead archived successfully."
+            }
+        )
 
-        except Exception as e:
-            return Response({"success": False, "message": str(e)}, status=200)
 
-    # ---------------- CALL LOGS ----------------
-    @action(detail=True, methods=['get'], url_path='call-logs')
-    def call_logs(self, request, pk=None):
-        lead = Lead.objects.filter(pk=pk, is_archived=False).first()
-        if not lead:
-            return Response({"success": False, "message": "Lead not found"}, status=status.HTTP_200_OK)
-        logs = lead.call_logs.all().order_by('-call_time')
-        serializer = LeadCallLogSerializer(logs, many=True)
-        return Response({"success": True, "call_logs": serializer.data})
+# =========================================================
+# PUBLIC VIEWSET
+# =========================================================
 
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def connect_customer(request):
+class PublicLeadViewSet(
+    LeadSecurityMixin,
+    viewsets.ViewSet
+):
 
-    lead_phone = request.GET.get('lead_phone')
+    authentication_classes = []
 
-    if not lead_phone:
-        return Response({'success': False, "message": "Missing lead_phone parameter"}, status=200)
+    permission_classes = [
+        AllowAny
+    ]
 
-    try:
-        response = VoiceResponse()
-        dial = Dial(callerId=settings.TWILIO_PHONE_NUMBER)
-        dial.number(lead_phone)
-        response.append(dial)
+    throttle_classes = [
+        PublicLeadThrottle
+    ]
 
-        return Response({'success': True, 'message': str(response)}, content_type='text/xml', status=200)
+    # =====================================================
+    # CREATE PUBLIC LEAD
+    # =====================================================
 
-    except Exception as e:
-        return Response({'success': False, "message": str(e)}, status=200)
+    @transaction.atomic
+    def create(self, request):
+
+        self.validate_payload_security(request)
+
+        # =====================================
+        # BOT HONEYPOT
+        # =====================================
+
+        if request.data.get("website"):
+
+            raise PermissionDenied(
+                "Bot detected."
+            )
+
+        client_ip = self.get_client_ip(request)
+
+        blocked = cache.get(
+            f"blocked-ip:{client_ip}"
+        )
+
+        if blocked:
+
+            raise PermissionDenied(
+                "Too many requests."
+            )
+
+        serializer = PublicLeadCreateSerializer(
+            data=request.data,
+            context={
+                "request": request
+            }
+        )
+
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        lead = serializer.save()
+
+        cache.delete_pattern("lead-engine:*")
+
+        return Response(
+            {
+                "success": True,
+                "message": "Lead submitted successfully.",
+                "lead_id": lead.id
+            },
+            status=status.HTTP_201_CREATED
+        )
 
 

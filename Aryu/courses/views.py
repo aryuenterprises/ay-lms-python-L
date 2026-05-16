@@ -12,7 +12,8 @@ from django.db.models import Q
 from aryuapp.mixins import LoggingMixin
 from aryuapp.models import ModulePermission, Student, Trainer
 from aryuapp.views import has_permission,flatten_errors
-
+from core.views import secure_throttle
+from core. permissions import verify_admin_privileges
 # Create your views here.
 
 
@@ -99,7 +100,13 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
             "message": message
         }, status=status.HTTP_200_OK)
 
+    @secure_throttle(rate_limit=5, period=60)
     def create(self, request, *args, **kwargs):
+        
+        db_user_type, error_response = verify_admin_privileges(request)
+        if error_response:
+            return error_response
+
         category_name = request.data.get('category_name', '').strip()
         user = request.user
 

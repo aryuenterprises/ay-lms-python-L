@@ -99,13 +99,18 @@ urlpatterns = [
    path('replies/<int:submission_id>', SubmissionReplyViewSet.as_view({'get': 'list', 'post': 'create'}), name='replies-by-submission'),
    path('alllogs', AdminfullLogViewSet.as_view({'get': 'list'})),
    path("tickets/", StudentTicketViewSet.as_view(), name="tickets"),
-   path('leads', LeadViewSet.as_view({'get':'list','post':'create'})),
-   path('leads/<int:pk>', LeadViewSet.as_view({'get':'retrieve','put':'update','patch':'partial_update'})),
-   path('leads/<int:pk>/archive', LeadViewSet.as_view({'patch':'is_archived'})),
-   path('leads/<int:pk>/call', LeadViewSet.as_view({'post':'call'})),
-   path('leads/<int:pk>/call-logs', LeadViewSet.as_view({'get':'call_logs'})),
-   path('leads/<int:pk>/call/<int:call_id>/notes', LeadViewSet.as_view({'post': 'add_call_notes'})),
-   path('twilio/connect_customer', connect_customer, name='connect_customer'),
+   
+   # LIST + CREATE
+   path("lead-engine/leads/",LeadViewSet.as_view({"get": "list","post": "create",}),name="lead-list-create"),
+
+   # DETAIL + UPDATE + DELETE
+   path("lead-engine/leads/<int:pk>/",LeadViewSet.as_view({"get": "retrieve","patch": "partial_update","delete": "destroy",}),name="lead-detail"),
+
+   # FULL UPDATE
+   path("lead-engine/leads/<int:pk>/update/",LeadViewSet.as_view({"put": "update",}),name="lead-update"),
+
+   # PUBLIC WEBSITE / WEBHOOK / META ADS
+   path("lead/submit/",PublicLeadViewSet.as_view({"post": "create",}),name="public-lead-submit"),
    
 
    ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

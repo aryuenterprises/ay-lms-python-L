@@ -63,17 +63,56 @@ class PaymentGatewayViewSet(viewsets.ViewSet):
         return qs.order_by("-created_at")
 
     def list(self, request):
+
+        user = request.user
+
+        if getattr(user, "user_type", "") != "super_admin":
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized"
+                },
+                status=403
+            )
+        
         queryset = self.get_queryset()
         serializer = PaymentGatewaySerializer(queryset, many=True)
         return Response({"success": True, "data": serializer.data})
 
     def create(self, request):
+
+        user = request.user
+
+        if getattr(user, "user_type", "") != "super_admin":
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized"
+                },
+                status=403
+            )
+        
         serializer = PaymentGatewaySerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response({"success": True, "message": "Payment gateway created successfully.", "data": serializer.data}, status=status.HTTP_201_CREATED)
 
     def retrieve(self, request, pk=None):
+
+        user = request.user
+
+        if getattr(user, "user_type", "") != "super_admin":
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized"
+                },
+                status=403
+            )
+        
         try:
             queryset = self.get_queryset()  # <-- no arguments here
             gateway = queryset.filter(pk=pk).first()
@@ -87,6 +126,19 @@ class PaymentGatewayViewSet(viewsets.ViewSet):
 
 
     def update(self, request, pk=None):
+
+        user = request.user
+
+        if getattr(user, "user_type", "") != "super_admin":
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized"
+                },
+                status=403
+            )
+        
         try:
             queryset = self.get_queryset()  # <-- no arguments here
             instance = queryset.filter(pk=pk).first()
@@ -108,6 +160,18 @@ class PaymentGatewayViewSet(viewsets.ViewSet):
             return Response({"success": False, "message": f"Error updating gateway: {str(e)}"}, status=200)
 
     def destroy(self, request, pk=None):
+
+        user = request.user
+
+        if getattr(user, "user_type", "") != "super_admin":
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized"
+                },
+                status=403
+            )
         """
         Soft delete (archive) instead of actual deletion.
         """
@@ -412,6 +476,18 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         })
      
     def retrieve(self, request, pk=None):
+
+        user = request.user
+
+        if getattr(user, "user_type", "") != "super_admin":
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized"
+                },
+                status=403
+            )
         """
         Retrieve detailed payment information for a single student
         
@@ -644,6 +720,37 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
     def student_payment_history(self, request, student_id=None):
 
+        user = request.user
+
+        if user.user_type != "student":
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized access"
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        logged_student_id = str(user.student.student_id)
+
+        if str(student_id) != logged_student_id:
+
+            # OPTIONAL SECURITY LOG
+            logger.warning(
+                f"Student ID tampering attempt | "
+                f"user={user.id} | "
+                f"requested={student_id} | "
+                f"actual={logged_student_id}"
+            )
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "You are not allowed to access other student payment records"
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         # =========================================================
         # FAST OPTIMIZED QUERYSET
         # =========================================================
@@ -700,6 +807,18 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
     # 2. Delete FULL student + all transactions
     @action(detail=True, methods=['delete'], url_path='delete-student')
     def delete_student(self, request, pk=None):
+        user = request.user
+
+        if getattr(user, "user_type", "") != "super_admin":
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized"
+                },
+                status=403
+            )
+        
         try:
             student = Student.objects.get(student_id=pk)
 
@@ -722,6 +841,18 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
     @action(detail=False,methods=["post"],)
     def generate_invoice(self, request):
+
+        user = request.user
+
+        if getattr(user, "user_type", "") != "super_admin":
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized"
+                },
+                status=403
+            )
 
         serializer = GenerateInvoiceSerializer(
             data=request.data
@@ -798,6 +929,18 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
     @action(detail=False,methods=["post"])
     def send_invoice_email(self, request):
+
+        user = request.user
+
+        if getattr(user, "user_type", "") != "super_admin":
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized"
+                },
+                status=403
+            )
 
         transaction_id = request.data.get(
             "transaction_id"
