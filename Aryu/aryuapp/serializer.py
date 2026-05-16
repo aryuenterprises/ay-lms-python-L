@@ -2453,6 +2453,65 @@ class TicketAttachmentSerializer(serializers.ModelSerializer):
         model = TicketAttachment
         fields = ["attachment_id", "file", "created_at"]
 
+    def validate_file(self, file):
+        """
+        SECURITY GATEWAY: Deep inspect uploaded files for malware, spoofing, and dangerous payloads.
+        """
+        if not file:
+            return file
+
+        # 1. Size Limit (e.g., 15 MB max to prevent DoS)
+        MAX_UPLOAD_SIZE = 15 * 1024 * 1024
+        if file.size > MAX_UPLOAD_SIZE:
+            raise serializers.ValidationError("File size exceeds the 15MB limit.")
+
+        # 2. Strict Extension Allowlist
+        ext = os.path.splitext(file.name)[1].lower()
+        allowed_extensions = {
+            # Code
+            '.py', '.js', '.ts', '.html', '.css', '.java', '.cpp', '.c', '.cs', '.php', '.rb',
+            # Documents / Archives
+            '.txt', '.pdf', '.zip', '.rar', '.tar', '.gz'
+        }
+        
+        if ext not in allowed_extensions:
+            raise serializers.ValidationError(
+                f"File extension '{ext}' is not permitted. Please upload code files or compress your project into a .zip archive."
+            )
+
+        # 3. Deep Content Inspection (Magic Number Check)
+        # Read the first 2048 bytes to determine the true file type
+        file_head = file.read(2048)
+        file.seek(0)  # CRITICAL: Reset the file pointer so Django can save it properly later
+
+        true_mime_type = magic.from_buffer(file_head, mime=True)
+
+        # 4. Block Dangerous MIME Types explicitly (Executables, Scripts, XML Forgery)
+        blocked_mimes = [
+            'application/x-dosexec',      # Windows .exe
+            'application/x-executable',   # Linux binaries
+            'application/x-sh',           # Shell scripts
+            'application/x-msdownload',   # Malicious DLLs/Binaries
+            'application/xml',            # XML (Prevents XXE attacks)
+            'text/xml',                   # XML
+            'image/svg+xml',              # SVG (Can contain malicious JavaScript XSS)
+        ]
+
+        if true_mime_type in blocked_mimes:
+            raise serializers.ValidationError(
+                "Security Alert: Upload blocked. This file type contains potentially executable or malicious content. "
+                "If you need to submit XML code, please compress it into a .zip file."
+            )
+
+        # 5. Sanity Check: Ensure the true MIME type roughly matches what we expect from coding files
+        # Code files usually register as 'text/plain', 'text/x-c', 'text/html', etc.
+        valid_mime_prefixes = ('text/', 'application/zip', 'application/x-rar', 'application/pdf', 'application/gzip', 'application/x-tar')
+        
+        if not true_mime_type.startswith(valid_mime_prefixes):
+            raise serializers.ValidationError("Security Alert: The file extension does not match its internal binary contents (Spoofed file).")
+
+        return file
+
     def get_file(self, obj):
         if obj.file and hasattr(obj.file, 'url'):
             return'https://portal.aryuacademy.com/api' +obj.file.url
