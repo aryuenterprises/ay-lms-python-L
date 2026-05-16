@@ -467,10 +467,10 @@ class Login(LoggingMixin, APIView):
             #     )
 
             if not username_or_email or not password:
-                return Response({'message': 'Username and password are required'}, status=status.HTTP_200_OK)
+                return Response({'message': 'Username and password are required'}, status=status.HTTP_406_NOT_ACCEPTABLE)
             
             if username_or_email != username_or_email.strip() or password != password.strip():
-                return Response({'success': False, 'message': 'Invalid username or password'}, status=200)
+                return Response({'success': False, 'message': 'Invalid username or password'}, status=status.HTTP_203_NON_AUTHORITATIVE_INFORMATION)
 
 
             user = User.objects.filter(

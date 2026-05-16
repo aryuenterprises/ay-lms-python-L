@@ -23,7 +23,7 @@ def apply_custom_throttle(request, rate_limit=5, period=60):
     Returns (True, None) if allowed, or (False, Response) if throttled.
     """
     ip_address = get_client_ip(request)
-    user_id = request.user.id if request.user and request.user.is_authenticated else "anonymous"
+    user_id = request.user.user_id if request.user and request.user.is_authenticated else "anonymous"
     
     # Create a unique cache key combining user context and IP address
     cache_key = f"throttle_{user_id}_{ip_address}_{request.path}"
