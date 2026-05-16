@@ -83,7 +83,7 @@ def verify_admin_privileges(request, allowed_types=["super_admin", "admin"]):
 
     try:
         # 2. HARD DATABASE GATE: Force read direct from disk state
-        db_user = User.objects.filter(id=user.id, is_archived=False).values('user_type').first()
+        db_user = User.objects.filter(id=user.user_id, is_archived=False).values('user_type').first()
         
         if not db_user or db_user['user_type'] not in allowed_types:
             return None, Response({
