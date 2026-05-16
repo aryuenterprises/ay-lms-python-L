@@ -14,7 +14,9 @@ import json
 import os
 from aryuapp.mixins import NotesMixin
 from django.conf import settings
+from django.db import transaction
 import jwt
+import magic
 import holidays
 from django.http import QueryDict
 import re
@@ -218,7 +220,10 @@ class UserSerializer(serializers.ModelSerializer):
     role_id = serializers.PrimaryKeyRelatedField(
         queryset=Role.objects.all(), source="role", write_only=True
     )
-    password = serializers.CharField(write_only=True, required=True, min_length=6)
+    
+    # Changed required=False so that profile updates without changing the password don't crash.
+    # Removed min_length=6 here so our strict validate_password logic handles length (8) exclusively.
+    password = serializers.CharField(write_only=True, required=False)
 
     class Meta:
         model = User
@@ -229,31 +234,60 @@ class UserSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at", "created_by"]
 
+    def validate_password(self, value):
+        """
+        DRF Field-Level Validation Hook. Automatically triggers on create and update
+        whenever the 'password' key is present in the payload.
+        """
+        if len(value) < 8:
+            raise serializers.ValidationError("Password must be at least 8 characters long.")
+
+        if not re.search(r'[A-Z]', value):
+            raise serializers.ValidationError("Password must contain at least one uppercase letter.")
+
+        if not re.search(r'[a-z]', value):
+            raise serializers.ValidationError("Password must contain at least one lowercase letter.")
+
+        if not re.search(r'\d', value):
+            raise serializers.ValidationError("Password must contain at least one number.")
+
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', value):
+            raise serializers.ValidationError("Password must contain at least one special character.")
+
+        return value
+
+    def validate(self, attrs):
+        """
+        Object-level validation. Ensure password is submitted during user creation.
+        """
+        # If we are creating a new instance, password must be present.
+        if not self.instance and 'password' not in attrs:
+            raise serializers.ValidationError({"password": "This field is required when creating a user."})
+        return attrs
+
     def create(self, validated_data):
         request = self.context.get("request")
         
         if request and request.user:
-            role = getattr(request.user, "user_type", None)  # or from JWT payload
+            role = getattr(request.user, "user_type", None)
 
             if role in ["trainer", "admin"]:
                 validated_data["created_by"] = getattr(request.user, "trainer_id", None)
                 validated_data["created_by_type"] = role
-
             elif role == "super_admin":
                 validated_data["created_by"] = getattr(request.user, "user_id", None)
                 validated_data["created_by_type"] = role
-
             elif role == "student":
                 validated_data["created_by"] = getattr(request.user, "student_id", None)
                 validated_data["created_by_type"] = role
-
             else:
                 validated_data["created_by"] = getattr(request.user, "user_id", None)
                 validated_data["created_by_type"] = role
                 
-        password = validated_data.pop("password")
+        password = validated_data.pop("password", None)
         user = User(**validated_data)
-        user.set_password(password)
+        if password:
+            user.set_password(password)
         user.save()
         return user
 
@@ -261,7 +295,7 @@ class UserSerializer(serializers.ModelSerializer):
         password = validated_data.pop("password", None)
 
         for attr, value in validated_data.items():
-            setattr(instance, attr, value)  # Only updates provided fields
+            setattr(instance, attr, value)
 
         if password:
             instance.set_password(password)
@@ -736,6 +770,46 @@ class StudentSerializer(serializers.ModelSerializer):
         unique_courses = {c.course_id: c for c in courses}.values()
 
         return CourseSerializer(unique_courses, many=True).data
+    
+    def validate_profile_pic(self, file):
+        """
+        SECURITY GATEWAY: Deep inspect profile pictures for spoofing, XSS, and massive file sizes.
+        """
+        if not file:
+            return file
+
+        # 1. Size Limit (e.g., 5 MB maximum to prevent Memory/DoS attacks)
+        MAX_IMAGE_SIZE = 5 * 1024 * 1024
+        if file.size > MAX_IMAGE_SIZE:
+            raise serializers.ValidationError("Profile picture size exceeds the 5MB limit.")
+
+        # 2. Strict Extension Allowlist (Block .svg, .gif, .tiff, etc.)
+        ext = os.path.splitext(file.name)[1].lower()
+        allowed_extensions = {'.jpg', '.jpeg', '.png'}
+        
+        if ext not in allowed_extensions:
+            raise serializers.ValidationError(
+                f"Security Alert: Extension '{ext}' is not permitted. Only standard images (JPG, PNG, WEBP) are allowed."
+            )
+
+        # 3. Deep Content Inspection (Magic Number Check)
+        # Read the binary header to ensure it's truly an image, not a renamed script.
+        file_head = file.read(2048)
+        file.seek(0)  # CRITICAL: Reset the file pointer so Django/Pillow can process it later
+
+        true_mime_type = magic.from_buffer(file_head, mime=True)
+        allowed_mimes = {'image/jpeg', 'image/png'}
+
+        if true_mime_type not in allowed_mimes:
+            raise serializers.ValidationError(
+                "Security Alert: The file's internal binary format does not match a secure image type (Spoofed file)."
+            )
+
+        # 4. Block SVG Explicitly (Prevents Stored XSS attacks via XML)
+        if 'svg' in true_mime_type.lower() or 'xml' in true_mime_type.lower():
+            raise serializers.ValidationError("Security Alert: SVG images are blocked due to XSS vulnerabilities.")
+
+        return file
 
     def validate_contact_no(self, value):
 
@@ -1378,6 +1452,46 @@ class StudentUpdateSerializer(serializers.ModelSerializer):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
             return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
+    
+    def validate_profile_pic(self, file):
+        """
+        SECURITY GATEWAY: Deep inspect profile pictures for spoofing, XSS, and massive file sizes.
+        """
+        if not file:
+            return file
+
+        # 1. Size Limit (e.g., 5 MB maximum to prevent Memory/DoS attacks)
+        MAX_IMAGE_SIZE = 5 * 1024 * 1024
+        if file.size > MAX_IMAGE_SIZE:
+            raise serializers.ValidationError("Profile picture size exceeds the 5MB limit.")
+
+        # 2. Strict Extension Allowlist (Block .svg, .gif, .tiff, etc.)
+        ext = os.path.splitext(file.name)[1].lower()
+        allowed_extensions = {'.jpg', '.jpeg', '.png'}
+        
+        if ext not in allowed_extensions:
+            raise serializers.ValidationError(
+                f"Security Alert: Extension '{ext}' is not permitted. Only standard images (JPG, PNG, WEBP) are allowed."
+            )
+
+        # 3. Deep Content Inspection (Magic Number Check)
+        # Read the binary header to ensure it's truly an image, not a renamed script.
+        file_head = file.read(2048)
+        file.seek(0)  # CRITICAL: Reset the file pointer so Django/Pillow can process it later
+
+        true_mime_type = magic.from_buffer(file_head, mime=True)
+        allowed_mimes = {'image/jpeg', 'image/png'}
+
+        if true_mime_type not in allowed_mimes:
+            raise serializers.ValidationError(
+                "Security Alert: The file's internal binary format does not match a secure image type (Spoofed file)."
+            )
+
+        # 4. Block SVG Explicitly (Prevents Stored XSS attacks via XML)
+        if 'svg' in true_mime_type.lower() or 'xml' in true_mime_type.lower():
+            raise serializers.ValidationError("Security Alert: SVG images are blocked due to XSS vulnerabilities.")
+
+        return file
 
     def validate_contact_no(self, value):
         value = value.strip()
@@ -2157,6 +2271,65 @@ class SubmissionSerializer(serializers.ModelSerializer):
         if obj.file and hasattr(obj.file, 'url'):
             return 'https://portal.aryuacademy.com/api' + obj.file.url
         return None
+
+    def validate_file(self, file):
+        """
+        SECURITY GATEWAY: Deep inspect uploaded files for malware, spoofing, and dangerous payloads.
+        """
+        if not file:
+            return file
+
+        # 1. Size Limit (e.g., 15 MB max to prevent DoS)
+        MAX_UPLOAD_SIZE = 15 * 1024 * 1024
+        if file.size > MAX_UPLOAD_SIZE:
+            raise serializers.ValidationError("File size exceeds the 15MB limit.")
+
+        # 2. Strict Extension Allowlist
+        ext = os.path.splitext(file.name)[1].lower()
+        allowed_extensions = {
+            # Code
+            '.py', '.js', '.ts', '.html', '.css', '.java', '.cpp', '.c', '.cs', '.php', '.rb',
+            # Documents / Archives
+            '.txt', '.pdf', '.zip', '.rar', '.tar', '.gz'
+        }
+        
+        if ext not in allowed_extensions:
+            raise serializers.ValidationError(
+                f"File extension '{ext}' is not permitted. Please upload code files or compress your project into a .zip archive."
+            )
+
+        # 3. Deep Content Inspection (Magic Number Check)
+        # Read the first 2048 bytes to determine the true file type
+        file_head = file.read(2048)
+        file.seek(0)  # CRITICAL: Reset the file pointer so Django can save it properly later
+
+        true_mime_type = magic.from_buffer(file_head, mime=True)
+
+        # 4. Block Dangerous MIME Types explicitly (Executables, Scripts, XML Forgery)
+        blocked_mimes = [
+            'application/x-dosexec',      # Windows .exe
+            'application/x-executable',   # Linux binaries
+            'application/x-sh',           # Shell scripts
+            'application/x-msdownload',   # Malicious DLLs/Binaries
+            'application/xml',            # XML (Prevents XXE attacks)
+            'text/xml',                   # XML
+            'image/svg+xml',              # SVG (Can contain malicious JavaScript XSS)
+        ]
+
+        if true_mime_type in blocked_mimes:
+            raise serializers.ValidationError(
+                "Security Alert: Upload blocked. This file type contains potentially executable or malicious content. "
+                "If you need to submit XML code, please compress it into a .zip file."
+            )
+
+        # 5. Sanity Check: Ensure the true MIME type roughly matches what we expect from coding files
+        # Code files usually register as 'text/plain', 'text/x-c', 'text/html', etc.
+        valid_mime_prefixes = ('text/', 'application/zip', 'application/x-rar', 'application/pdf', 'application/gzip', 'application/x-tar')
+        
+        if not true_mime_type.startswith(valid_mime_prefixes):
+            raise serializers.ValidationError("Security Alert: The file extension does not match its internal binary contents (Spoofed file).")
+
+        return file
     
     def validate(self, data):
         assignment = data.get('assignment')
@@ -2167,7 +2340,6 @@ class SubmissionSerializer(serializers.ModelSerializer):
         if not course:
             raise serializers.ValidationError({"assignment": "Invalid assignment, course not found."})
 
-        # Check course and category status
         if course.status == "Inactive":
             raise serializers.ValidationError({"course": "Cannot submit because this course is inactive."})
 
@@ -2436,53 +2608,577 @@ class UserActivityLogSerializer(serializers.ModelSerializer):
         model = UserActivityLog
         fields = '__all__'
 
+# COMMON MIXINS
+
+class SafeUserSerializer(serializers.ModelSerializer):
+
+    full_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "username",
+            "full_name",
+        ]
+
+    def get_full_name(self, obj):
+        return obj.get_full_name()
+
+
+# CHILD SERIALIZERS
+
 class LeadCallLogSerializer(serializers.ModelSerializer):
-    called_by_name = serializers.CharField(source='called_by.username', read_only=True)
-    notes = serializers.SerializerMethodField()
+
+    called_by_data = SafeUserSerializer(
+        source="called_by",
+        read_only=True
+    )
 
     class Meta:
         model = LeadCallLog
-        fields = ['id', 'lead', 'called_by', 'called_by_name', 'call_time', 'call_status', 'notes']
-        read_only_fields = ['call_time', 'called_by_name']
-
-    def get_notes(self, obj):
-        from aryuapp.models import Note
-        notes_qs = Note.objects.filter(
-            object_id=obj.pk,
-            content_type__model='leadcalllog'
-        ).order_by('-created_at')
-        return [
-            {
-                "note_id": note.id,
-                "reason": note.reason,
-                "created_by": note.created_by,
-                "status": note.status,
-                "created_at": note.created_at.strftime("%Y-%m-%d %H:%M"),
-            }
-            for note in notes_qs
+        fields = [
+            "id",
+            "call_time",
+            "duration_seconds",
+            "call_status",
+            "remarks",
+            "recording_url",
+            "next_followup_date",
+            "called_by",
+            "called_by_data",
         ]
+
+        read_only_fields = [
+            "id",
+            "call_time",
+        ]
+
+
+class LeadDMLogSerializer(serializers.ModelSerializer):
+
+    handled_by_data = SafeUserSerializer(
+        source="handled_by",
+        read_only=True
+    )
+
+    class Meta:
+        model = LeadDMLog
+        fields = [
+            "id",
+            "platform",
+            "message_direction",
+            "message",
+            "created_at",
+            "handled_by",
+            "handled_by_data",
+        ]
+
+        read_only_fields = [
+            "id",
+            "created_at",
+        ]
+
+
+class LeadStatusHistorySerializer(serializers.ModelSerializer):
+
+    changed_by_data = SafeUserSerializer(
+        source="changed_by",
+        read_only=True
+    )
+
+    class Meta:
+        model = LeadStatusHistory
+        fields = [
+            "id",
+            "old_status",
+            "new_status",
+            "remarks",
+            "created_at",
+            "changed_by",
+            "changed_by_data",
+        ]
+
+        read_only_fields = [
+            "id",
+            "created_at",
+        ]
+
+
+class LeadFollowUpSerializer(serializers.ModelSerializer):
+
+    assigned_to_data = SafeUserSerializer(
+        source="assigned_to",
+        read_only=True
+    )
+
+    class Meta:
+        model = LeadFollowUp
+        fields = [
+            "id",
+            "followup_date",
+            "followup_time",
+            "status",
+            "completed_at",
+            "assigned_to",
+            "assigned_to_data",
+        ]
+
+        read_only_fields = [
+            "id",
+            "completed_at",
+            "created_at",
+        ]
+
+
+# MAIN LEAD SERIALIZER
 
 class LeadSerializer(serializers.ModelSerializer):
-    call_logs = LeadCallLogSerializer(many=True, read_only=True)
-    notes = serializers.SerializerMethodField()
+
+    # USER DETAILS
+    # =========================
+
+    followup_by_data = SafeUserSerializer(
+        source="followup_by",
+        read_only=True
+    )
+
+    handled_by_data = SafeUserSerializer(
+        source="handled_by",
+        read_only=True
+    )
+
+    # COUNTS
+    # =========================
+
+    total_call_logs = serializers.SerializerMethodField()
+    total_dm_logs = serializers.SerializerMethodField()
+    total_followups = serializers.SerializerMethodField()
+
+    # DISPLAY HELPERS
+    # =========================
+
+    created_by_display = serializers.SerializerMethodField()
+
+    full_address = serializers.SerializerMethodField()
+
+    # NESTED DATA
+    # =========================
+
+    recent_call_logs = serializers.SerializerMethodField()
+    recent_dm_logs = serializers.SerializerMethodField()
+
     class Meta:
         model = Lead
-        fields = '__all__'
-        
-    def get_notes(self, obj):
-        from aryuapp.models import Note
-        notes_qs = Note.objects.filter(
-            object_id=obj.pk,
-            content_type__model='lead'
-        ).order_by('-created_at')
-        return [
-            {
-                "note_id": note.id,
-                "reason": note.reason,
-                "created_by": note.created_by,
-                "status": note.status,
-                "created_at": note.created_at.strftime("%Y-%m-%d %H:%M"),
-            }
-            for note in notes_qs
+
+        fields = [
+
+            # BASIC
+            "id",
+            "name",
+            "phone",
+            "alternate_phone",
+            "email",
+            "gender",
+            "qualification",
+            "user_type",
+
+            # ADDRESS
+            "address",
+            "city",
+            "state",
+            "country",
+            "pincode",
+            "full_address",
+
+            # COURSE
+            "course",
+            "course_interested_in",
+            "interested",
+            "reason_to_join",
+            "reason_not_joining",
+            "fee_discussed",
+            "expected_join_month",
+
+            # SOURCE
+            "source",
+            "source_campaign",
+            "source_platform",
+            "source_type",
+
+            # FOLLOWUP
+            "followup_by",
+            "followup_by_data",
+            "handled_by",
+            "handled_by_data",
+            "followup_date",
+            "next_followup_date",
+            "last_contacted_at",
+
+            # TRACKING
+            "no_of_dms",
+            "no_of_calls",
+            "no_of_followups",
+
+            # STATUS
+            "status",
+            "lead_stage",
+            "priority",
+
+            # FLAGS
+            "is_archived",
+            "is_duplicate",
+            "is_converted",
+
+            # SYSTEM
+            "joined_at",
+            "created_at",
+            "updated_at",
+
+            # CREATOR
+            "created_by",
+            "created_by_type",
+            "created_by_display",
+
+            # OPTIMIZED COUNTS
+            "total_call_logs",
+            "total_dm_logs",
+            "total_followups",
+
+            # RECENT ACTIVITY
+            "recent_call_logs",
+            "recent_dm_logs",
         ]
+
+        read_only_fields = [
+            "id",
+            "created_at",
+            "updated_at",
+            "is_duplicate",
+        ]
+
+        extra_kwargs = {
+            "phone": {
+                "required": True,
+            },
+            "email": {
+                "required": False,
+                "allow_null": True,
+                "allow_blank": True,
+            },
+            "name": {
+                "required": False,
+                "allow_null": True,
+                "allow_blank": True,
+            },
+        }
+
+    # VALIDATIONS
+    # =====================================================
+
+    def validate_phone(self, value):
+
+        value = value.strip()
+
+        cleaned = "".join(filter(str.isdigit, value))
+
+        if len(cleaned) < 10:
+            raise serializers.ValidationError(
+                "Invalid phone number."
+            )
+
+        return cleaned
+
+    def validate_email(self, value):
+
+        if value:
+            value = value.lower().strip()
+
+        return value
+
+    def validate(self, attrs):
+
+        request = self.context.get("request")
+
+        created_by = attrs.get("created_by")
+        created_by_type = attrs.get("created_by_type")
+
+        # PUBLIC API SECURITY
+        # ==========================================
+
+        if request and not request.user.is_authenticated:
+
+            allowed_public_types = [
+                "website",
+                "landing_page",
+                "meta_ads",
+                "facebook",
+                "instagram",
+                "whatsapp",
+                "api",
+                "webhook",
+            ]
+
+            if created_by_type:
+                if created_by_type.lower() not in allowed_public_types:
+                    raise serializers.ValidationError({
+                        "created_by_type": "Invalid public source type."
+                    })
+
+        # ADMIN CREATION
+        # ==========================================
+
+        if request and request.user.is_authenticated:
+
+            if not created_by:
+                attrs["created_by"] = str(request.user.id)
+
+            if not created_by_type:
+                if request.user.is_superuser:
+                    attrs["created_by_type"] = "super_admin"
+                else:
+                    attrs["created_by_type"] = "admin"
+
+        return attrs
+
+    # CREATE
+    # =====================================================
+
+    @transaction.atomic
+    def create(self, validated_data):
+
+        phone = validated_data.get("phone")
+
+        # DUPLICATE CHECK
+        # ==========================================
+
+        existing_lead = Lead.objects.filter(
+            phone=phone
+        ).first()
+
+        if existing_lead:
+            existing_lead.is_duplicate = True
+            existing_lead.save(update_fields=["is_duplicate"])
+
+        lead = Lead.objects.create(**validated_data)
+
+        # INITIAL STATUS HISTORY
+        # ==========================================
+
+        LeadStatusHistory.objects.create(
+            lead=lead,
+            old_status=None,
+            new_status=lead.status,
+            remarks="Lead Created"
+        )
+
+        return lead
+
+    # UPDATE
+    # =====================================================
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+
+        old_status = instance.status
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        instance.save()
+
+        # ==========================================
+        # STATUS TRACKING
+        # ==========================================
+
+        if old_status != instance.status:
+
+            request = self.context.get("request")
+
+            changed_by_user = None
+
+            if request and request.user.is_authenticated:
+
+                changed_by_user = User.objects.filter(
+                    id=request.user.user_id
+                ).first()
+
+            LeadStatusHistory.objects.create(
+                lead=instance,
+                old_status=old_status,
+                new_status=instance.status,
+                changed_by=changed_by_user,
+                remarks="Status Updated"
+            )
+
+        return instance
+
+    # =====================================================
+    # HELPER METHODS
+    # =====================================================
+
+    def get_total_call_logs(self, obj):
+        return getattr(
+            obj,
+            "call_logs_count",
+            obj.call_logs.count()
+        )
+
+    def get_total_dm_logs(self, obj):
+        return getattr(
+            obj,
+            "dm_logs_count",
+            obj.dm_logs.count()
+        )
+
+    def get_total_followups(self, obj):
+        return getattr(
+            obj,
+            "followups_count",
+            obj.followups.count()
+        )
+
+    def get_created_by_display(self, obj):
+
+        if obj.created_by_type and obj.created_by:
+            return f"{obj.created_by_type} - {obj.created_by}"
+
+        return None
+
+    def get_full_address(self, obj):
+
+        address_parts = [
+            obj.address,
+            obj.city,
+            obj.state,
+            obj.country,
+            obj.pincode,
+        ]
+
+        return ", ".join(
+            [part for part in address_parts if part]
+        )
+
+    def get_recent_call_logs(self, obj):
+
+        queryset = obj.call_logs.all()[:5]
+
+        return LeadCallLogSerializer(
+            queryset,
+            many=True
+        ).data
+
+    def get_recent_dm_logs(self, obj):
+
+        queryset = obj.dm_logs.all()[:5]
+
+        return LeadDMLogSerializer(
+            queryset,
+            many=True
+        ).data
+
+
+# LIGHTWEIGHT LIST SERIALIZER
+
+class LeadListSerializer(serializers.ModelSerializer):
+
+    followup_by_data = SafeUserSerializer(
+        source="followup_by",
+        read_only=True
+    )
+
+    handled_by_data = SafeUserSerializer(
+        source="handled_by",
+        read_only=True
+    )
+
+    call_logs = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Lead
+
+        fields = [
+            "id",
+            "name",
+            "phone",
+            "city",
+            "course",
+            "source",
+            "status",
+            "priority",
+            "lead_stage",
+            "call_logs",
+            "followup_date",
+            "next_followup_date",
+            "created_at",
+            "followup_by_data",
+            "handled_by_data",
+            "no_of_calls",
+            "no_of_dms",
+        ]
+
+    def get_call_logs(self, obj):
+
+        queryset = obj.call_logs.all()
+
+        return LeadCallLogSerializer(
+            queryset,
+            many=True
+        ).data
+
+
+# PUBLIC LEAD SERIALIZER
+
+class PublicLeadCreateSerializer(serializers.ModelSerializer):
+
+    """
+    Use this serializer for:
+    - Website Forms
+    - Meta Ads
+    - WhatsApp Webhooks
+    - Landing Pages
+    - Public APIs
+    """
+
+    class Meta:
+        model = Lead
+
+        fields = [
+            "name",
+            "phone",
+            "email",
+            "city",
+            "course",
+            "source",
+            "source_campaign",
+            "source_platform",
+            "source_type",
+            "created_by",
+            "created_by_type",
+        ]
+
+    def validate_phone(self, value):
+
+        cleaned = "".join(filter(str.isdigit, value))
+
+        if len(cleaned) < 10:
+            raise serializers.ValidationError(
+                "Invalid phone number."
+            )
+
+        return cleaned
+
+    def create(self, validated_data):
+
+        validated_data.setdefault(
+            "status",
+            "new"
+        )
+
+        validated_data.setdefault(
+            "created_by_type",
+            "public"
+        )
+
+        return Lead.objects.create(**validated_data)
 
