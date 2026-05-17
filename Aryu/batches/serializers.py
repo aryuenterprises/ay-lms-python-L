@@ -661,6 +661,13 @@ class NewBatchSerializer(serializers.ModelSerializer):
         queryset=Student.objects.filter(is_archived=False),
         required=False
     )
+    start_time = serializers.TimeField(
+        input_formats=['%I:%M:%S %p', '%H:%M:%S','%I:%M:%P']
+        )
+
+    end_time = serializers.TimeField(
+        input_formats=['%I:%M:%S %p', '%H:%M:%S' , '%I:%M:%P']
+        )
 
     class Meta:
         model = NewBatch
@@ -735,30 +742,47 @@ class NewBatchSerializer(serializers.ModelSerializer):
 
         return batch
 
-    def update(self, instance, validated_data):
-        students = validated_data.pop('students', None)
+    def update(self, request, batch_id=None):
 
-        # Update normal fields
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
+        try:
 
-        instance.save()
+            batch = NewBatch.objects.filter(
+                batch_id=batch_id,
+                is_archived=False
+            ).first()
 
-        # ---------- APPEND STUDENTS (not replace) ----------
-        if students is not None:
+            if not batch:
+                return Response({
+                    "success": False,
+                        "message": "Batch not found"
+                }, status=200)
 
-            existing_ids = set(instance.students.values_list("id", flat=True))
-            new_students = [s for s in students if s.id not in existing_ids]
+            serializer = NewBatchSerializer(
+                batch,
+                data=request.data,
+                partial=True,
+                context={"request": request}
+            )
 
-            # Slot validation
-            total_after_add = instance.students.count() + len(new_students)
+            if serializer.is_valid():
 
-            if total_after_add > instance.slots:
-                raise serializers.ValidationError({
-                    "students": f"Only {instance.slots} slots allowed. Already {instance.students.count()} filled."
-                })
+                serializer.save()
 
-            # ADD only (append)
-            instance.students.add(*new_students)
+                return Response({
+                    "success": True,
+                    "message": "Batch updated successfully",
+                    "data": serializer.data
+                }, status=200)
 
-        return instance
+            return Response({
+                "success": False,
+                "message": serializer.errors
+            }, status=200)
+
+        except Exception as e:
+
+            return Response({
+                "success": False,
+                "message": str(e)
+            }, status=200)
+            
