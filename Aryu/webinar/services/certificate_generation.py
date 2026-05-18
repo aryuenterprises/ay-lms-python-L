@@ -6,7 +6,7 @@ import logging
 from .webinar_emails import send_webinar_certificate_email
 logger = logging.getLogger(__name__)
 from .whatsapp import send_webinar_certificate_whatsapp
-
+from celery import shared_task
 
 def center_x(draw, text, font, img_width):
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -105,7 +105,7 @@ def convert_certificate_image_to_pdf(image_path: Path):
     image.save(pdf_path, "PDF", resolution=300.0)
 
     return pdf_path
-
+@shared_task
 def generate_and_send_certificate_pdf(certificate, phone):
     """
     Uses existing Certificate model fields only
