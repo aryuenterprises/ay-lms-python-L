@@ -6220,24 +6220,18 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='admins')
     def list_admins(self, request):
         try:
-            # =============================================================
-            # SECURE GATE 1: Verify 'super_admin' or 'admin' status directly from DB
-            # =============================================================
-            db_user = User.objects.filter(id=request.user.id, is_archived=False).first()
-            if not db_user or db_user.user_type not in ["super_admin", "admin"]:
-                return Response({
-                    "success": False,
-                    "message": "Unable to process request."
-                }, status=status.HTTP_403_FORBIDDEN) # Return true 403 HTTP code
+            user = request.user
+            user_created_id = getattr(user, "trainer_id", None)  # For admin
+            if user.user_type == "super_admin":
+                user_created_id = getattr(user, "user_id", None)  # Super admin
 
-            user_type = db_user.user_type
-            user_created_id = getattr(db_user, "trainer_id", None) if user_type == "admin" else getattr(db_user, "user_id", None)
 
             # =============================
             # 1. Get admin IDs for super admin
             # =============================
             admin_ids = []
-            if user_type == "super_admin" and user_created_id:
+            if user.user_type == "super_admin" and user_created_id:
+                # Get employee_id of admins created by this super admin
                 admin_ids = list(
                     Trainer.objects.filter(
                         created_by=user_created_id,
@@ -6249,22 +6243,22 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
             # =============================
             # 2. Trainers queryset
             # =============================
-            trainers_qs = Trainer.objects.filter(user_type='admin', is_archived=False).select_related('role')
+            trainers_qs = Trainer.objects.filter(user_type='admin',is_archived=False)
 
-            if user_type == "super_admin":
+            if user.user_type == "super_admin":
                 trainers_qs = trainers_qs.filter(
                     Q(created_by_type="super_admin", created_by=user_created_id) |
                     Q(created_by_type="admin", created_by__in=admin_ids)
                 )
-            elif user_type == "admin" and user_created_id:
+            elif user.user_type == "admin" and user_created_id:
                 trainers_qs = trainers_qs.filter(
                     created_by=user_created_id,
                     created_by_type="admin"
                 )
 
+            # Select only required fields
             trainers_qs = trainers_qs.order_by("-trainer_id")
 
-            # Optimization: Map values efficiently
             trainer_data = [
                 {
                     "employee_id": t.employee_id,
@@ -6282,10 +6276,10 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                     'specialization': t.specialization,
                     'working_hours': t.working_hours,
                 }
+
                 for t in trainers_qs
             ]
-            
-            trainers_count = len(trainer_data)
+            trainers_count = trainers_qs.count()
             roles = Role.objects.filter(is_archived=False).values("role_id", "name")
             role = RoleSerializer(roles, many=True).data
 
@@ -6294,15 +6288,14 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                 "trainer_data": trainer_data,
                 "trainers_count": trainers_count,
                 "roles": role
-            }, status=status.HTTP_200_OK)
+            }, status=200)
 
         except Exception as e:
             return Response({
                 "success": False,
-                "message": "An error occurred while processing your request." # Don't leak raw database exceptions to client
-            }, status=status.HTTP_400_BAD_REQUEST)
-            
-
+                "message": str(e)
+            }, status=200)
+         
     @action(detail=False, methods=['get'], url_path='ad_employee/(?P<employee_id>[^/.]+)')
     def admin_profile(self, request, employee_id=None):
         try:
