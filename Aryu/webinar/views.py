@@ -44,7 +44,7 @@ from django.contrib.postgres.aggregates import JSONBAgg
 from django.db.models.functions import Coalesce, JSONObject, Concat
 from django.db.models.expressions import ExpressionWrapper
 from urllib.parse import quote
-from celery import shared_task
+# from celery import shared_task
 logger = logging.getLogger(__name__)
 
 @csrf_exempt
@@ -1729,7 +1729,56 @@ class PublicTicketViewSet(viewsets.ViewSet):
 
 class WebinarCertificateViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
-    @shared_task
+    # @shared_task
+    # @action(detail=False, methods=["post"])
+    # def send(self, request):
+
+    #     webinar_uuid = request.data.get("webinar_uuid")
+    #     participant_ids = request.data.get("participant_ids", [])
+
+    #     webinar = Webinar.objects.get(uuid=webinar_uuid)
+
+    #     regs = WebinarRegistration.objects.select_related(
+    #         "webinar"
+    #     ).filter(
+    #         id__in=participant_ids,
+    #         webinar=webinar
+    #     )
+
+    #     user_id = getattr(request.user, "user_id", None)
+    #     user_type = getattr(request.user, "username", None)
+
+    #     sent_count = 0
+
+    #     for reg in regs:
+
+    #         certificate, _ = Certificate.objects.get_or_create(
+    #             webinar_registration=reg,
+    #             defaults={
+    #                 "student": getattr(reg, "student", None),
+    #                 "student_name": reg.name,
+    #                 "course_name": reg.webinar.title,
+    #                 "course_duration": "3 Hours",
+    #                 "created_by": user_id,
+    #                 "created_by_type": user_type
+    #             }
+    #         )
+
+    #         generate_and_send_certificate_pdf(
+    #             certificate=certificate,
+    #             phone=reg.phone
+    #         )
+
+    #         reg.certificate_sent = True
+    #         reg.save(update_fields=["certificate_sent"])
+
+    #         sent_count += 1
+
+    #     return Response({
+    #         "success": True,
+    #         "message": "Certificates sent successfully",
+    #         "count": sent_count
+    #     })
     @action(detail=False, methods=["post"])
     def send(self, request):
 
@@ -1752,31 +1801,17 @@ class WebinarCertificateViewSet(viewsets.ViewSet):
 
         for reg in regs:
 
-            certificate, _ = Certificate.objects.get_or_create(
-                webinar_registration=reg,
-                defaults={
-                    "student": getattr(reg, "student", None),
-                    "student_name": reg.name,
-                    "course_name": reg.webinar.title,
-                    "course_duration": "3 Hours",
-                    "created_by": user_id,
-                    "created_by_type": user_type
-                }
+            send_certificate_task.delay(
+                reg.id,
+                user_id,
+                user_type
             )
-
-            generate_and_send_certificate_pdf(
-                certificate=certificate,
-                phone=reg.phone
-            )
-
-            reg.certificate_sent = True
-            reg.save(update_fields=["certificate_sent"])
 
             sent_count += 1
 
         return Response({
             "success": True,
-            "message": "Certificates sent successfully",
+            "message": "Certificate processing started",
             "count": sent_count
         })
 
