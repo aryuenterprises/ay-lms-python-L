@@ -44,7 +44,7 @@ from django.contrib.postgres.aggregates import JSONBAgg
 from django.db.models.functions import Coalesce, JSONObject, Concat
 from django.db.models.expressions import ExpressionWrapper
 from urllib.parse import quote
-# from celery import shared_task
+from celery import shared_task
 logger = logging.getLogger(__name__)
 
 @csrf_exempt
@@ -1729,7 +1729,7 @@ class PublicTicketViewSet(viewsets.ViewSet):
 
 class WebinarCertificateViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
-    # @shared_task
+    @shared_task
     @action(detail=False, methods=["post"])
     def send(self, request):
 
