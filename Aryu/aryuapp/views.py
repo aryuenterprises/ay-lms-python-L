@@ -6279,7 +6279,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                 }
 
                 for t in trainers_qs
-            ]
+            ] 
             trainers_count = trainers_qs.count()
             roles = Role.objects.filter(is_archived=False)
             role = RoleSerializer(roles, many=True).data
@@ -6296,7 +6296,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
             return Response({
                 "success": False,
                 "message": str(e)
-            }, status=200)
+            }, status=500)
          
     @action(detail=False, methods=['get'], url_path='ad_employee/(?P<employee_id>[^/.]+)')
     def admin_profile(self, request, employee_id=None):
