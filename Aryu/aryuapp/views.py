@@ -53,6 +53,7 @@ from core.views import apply_custom_throttle, secure_throttle
 import traceback
 import logging     
 logger = logging.getLogger(__name__)  
+import traceback
 
 
 class IsAdminOrSuperAdmin(BasePermission):
@@ -6280,7 +6281,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                 for t in trainers_qs
             ]
             trainers_count = trainers_qs.count()
-            roles = Role.objects.filter(is_archived=False).values("role_id", "name")
+            roles = Role.objects.filter(is_archived=False)
             role = RoleSerializer(roles, many=True).data
 
             return Response({
@@ -6289,8 +6290,9 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                 "trainers_count": trainers_count,
                 "roles": role
             }, status=200)
-
+    
         except Exception as e:
+            traceback.print_exc()
             return Response({
                 "success": False,
                 "message": str(e)
