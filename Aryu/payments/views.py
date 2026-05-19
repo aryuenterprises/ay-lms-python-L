@@ -720,37 +720,6 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
     def student_payment_history(self, request, student_id=None):
 
-        user = request.user
-
-        if user.user_type != "student":
-            return Response(
-                {
-                    "success": False,
-                    "message": "Unauthorized access"
-                },
-                status=status.HTTP_403_FORBIDDEN
-            )
-
-        logged_student_id = str(user.student.student_id)
-
-        if str(student_id) != logged_student_id:
-
-            # OPTIONAL SECURITY LOG
-            logger.warning(
-                f"Student ID tampering attempt | "
-                f"user={user.id} | "
-                f"requested={student_id} | "
-                f"actual={logged_student_id}"
-            )
-
-            return Response(
-                {
-                    "success": False,
-                    "message": "You are not allowed to access other student payment records"
-                },
-                status=status.HTTP_403_FORBIDDEN
-            )
-
         # =========================================================
         # FAST OPTIMIZED QUERYSET
         # =========================================================
@@ -792,7 +761,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "payment_status": tx.payment_status,
 
                 "invoice_url": (
-                    "https://portal.aryuacademy.com/api" + tx.invoice.url
+                    "https://aylms.aryuprojects.com/api" + tx.invoice.url
                 ) if tx.invoice and hasattr(tx.invoice, "url") else None
             }
             for tx in transactions
