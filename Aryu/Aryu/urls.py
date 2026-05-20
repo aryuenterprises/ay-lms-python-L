@@ -51,6 +51,7 @@ urlpatterns = [
     path("accounts/social-complete/", SocialLoginCompleteAPIView.as_view()),
     path("api/live-quiz/", include("live_quiz.urls")),
     path("api/webinar/", include("webinar.urls")),
+    path("api/",include("resources.urls")),
 
     # PUBLIC LOGO URL
     re_path(r'^api/media/logos/(?P<filename>[^/]+)$', serve_logo_plus),
