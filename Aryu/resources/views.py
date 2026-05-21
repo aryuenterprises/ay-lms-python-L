@@ -1,6 +1,9 @@
 from rest_framework import status, viewsets
 from rest_framework.response import Response
 from rest_framework.permissions import  AllowAny
+from pypdf import PdfReader, PdfWriter
+from django.core.files.base import ContentFile
+from io import BytesIO
 from .models import *
 from .serializers import *
 # Create your views here.
@@ -28,7 +31,37 @@ class ResourcesViewset(viewsets.ModelViewSet):
     # CREATE
     def create(self, request, *args, **kwargs):
 
-        serializer = self.get_serializer(data=request.data)
+        data = request.data.copy()
+
+        uploaded_file = request.FILES.get("file")
+
+        if uploaded_file and uploaded_file.name.endswith(".pdf"):
+
+            reader = PdfReader(uploaded_file)
+            writer = PdfWriter()
+
+            for page in reader.pages:
+                writer.add_page(page)
+
+            # Set PDF metadata title
+            title = data.get("title", "Document")
+
+            writer.add_metadata({
+                "/Title": title
+            })
+
+            pdf_bytes = BytesIO()
+            writer.write(pdf_bytes)
+            pdf_bytes.seek(0)
+
+            updated_file = ContentFile(
+                pdf_bytes.read(),
+                name=uploaded_file.name
+            )
+
+            data["file"] = updated_file
+
+        serializer = self.get_serializer(data=data)
 
         if serializer.is_valid():
             serializer.save()
@@ -50,8 +83,6 @@ class ResourcesViewset(viewsets.ModelViewSet):
             },
             status=status.HTTP_400_BAD_REQUEST
         )
-    
-
     # PATCH / UPDATE
     def partial_update(self, request, *args, **kwargs):
 
