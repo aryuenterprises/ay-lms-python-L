@@ -1040,7 +1040,7 @@ class Lead(models.Model):
 
 
     # STATUS MANAGEMENT
-
+ 
     status = models.CharField(
         max_length=50,
         default="new",

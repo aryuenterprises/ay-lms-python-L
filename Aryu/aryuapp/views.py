@@ -8635,7 +8635,7 @@ class LeadViewSet(
                 "course": webinar_registration.webinar.title,
                 "status": "webinar_registered",
                 "source": "webinar",
-                "created_at": webinar_registration.created_at,
+                "registered_at": webinar_registration.registered_at,
                 "lead_origin": "webinar",
             }
 

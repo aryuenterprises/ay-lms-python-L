@@ -169,6 +169,10 @@ REST_FRAMEWORK = {
         'django_filters.rest_framework.DjangoFilterBackend'
     ],
     'EXCEPTION_HANDLER': 'aryuapp.exceptions.custom_exception_handler',
+    'DEFAULT_THROTTLE_RATES': {
+        'admin_lead': '100/day',
+        'public_lead': '20/day',
+    },
 }
 
 

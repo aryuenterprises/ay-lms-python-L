@@ -30,6 +30,10 @@ class CustomJWTAuthentication(BaseAuthentication):
                 self.role_name = payload.get("role_name")
                 self.permissions = payload.get("permissions", [])
                 self.is_authenticated = True
+                self.pk = payload.get("user_id")
+                self.id =  payload.get("user_id")
+                self.is_staff = self.user_type in ["admin", "super_admin"]
+                self.is_superuser = self.user_type == "superadmin"
 
                 # Attach IDs based on role
                 if self.user_type == "student":
