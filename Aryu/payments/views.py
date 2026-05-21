@@ -761,7 +761,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "payment_status": tx.payment_status,
 
                 "invoice_url": (
-                    "https://aylms.aryuprojects.com/api" + tx.invoice.url
+                    "https://portal.aryuacademy.com/api" + tx.invoice.url
                 ) if tx.invoice and hasattr(tx.invoice, "url") else None
             }
             for tx in transactions
