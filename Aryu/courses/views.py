@@ -109,7 +109,9 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
 
         category_name = request.data.get('category_name', '').strip()
         user = request.user
-
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
         category_module = ModulePermission.objects.filter(
             module__iexact="Category"
         ).only("module_id").first()
@@ -170,7 +172,8 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop('partial', False)
         user = request.user
-        
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
         # Ensure module_id points to Course Categories
         category_module = ModulePermission.objects.filter(module__iexact="Category").first()
         if not category_module:
@@ -207,6 +210,10 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['patch'], url_path='archive')
     def archive_category(self, request, *args, **kwargs):
+        user = request.user
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+            
         category = self.get_object()
         category.is_archived = True
         category.save()

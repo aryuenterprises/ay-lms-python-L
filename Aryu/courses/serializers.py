@@ -5,6 +5,10 @@ import mimetypes
 from django.apps import apps
 import os
 import re
+import uuid
+import magic
+import json
+import zipfile
 from aryuapp.models import Assignment
 
 
@@ -277,6 +281,69 @@ class CourseSerializer(serializers.ModelSerializer):
         except Exception:
             # Absolute safety net — API must never crash
             return []
+        
+    def validate_file(self, file):
+        """
+        DOCUMENT SECURITY GATEWAY: Strictly allows only PDFs and Word Documents.
+        """
+        if not file:
+            return file
+
+        # 1. DOS Protection
+        MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB is plenty for a resume
+        if file.size > MAX_UPLOAD_SIZE:
+            raise serializers.ValidationError("File size exceeds the 10MB limit.")
+
+        # 2. Filename Obliteration (Anti-Directory Traversal)
+        original_ext = os.path.splitext(file.name)[1].lower()
+        file.name = f"{uuid.uuid4().hex}{original_ext}"
+
+        # 3. Strict Extension Allowlist
+        allowed_extensions = {'.pdf', '.docx', '.doc'}
+        if original_ext not in allowed_extensions:
+            raise serializers.ValidationError(
+                f"Invalid format. Only PDF and Word documents are allowed."
+            )
+
+        # 4. Magic Byte Inspection (Anti-Spoofing)
+        file_head = file.read(2048)
+        file.seek(0)
+        true_mime_type = magic.from_buffer(file_head, mime=True)
+
+        valid_mimes = [
+            'application/pdf', 
+            'application/msword', # .doc
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' # .docx
+        ]
+        
+        if true_mime_type not in valid_mimes:
+            raise serializers.ValidationError(
+                "Security Alert: The file extension does not match its true binary format."
+            )
+
+        # 5. Deep Inspection for DOCX (Preventing XML/Zip attacks)
+        if original_ext == '.docx' or true_mime_type.endswith('document'):
+            try:
+                with zipfile.ZipFile(file, 'r') as zf:
+                    total_uncompressed_size = 0
+                    for info in zf.infolist():
+                        # Block Directory Traversal inside the DOCX
+                        if '..' in info.filename or info.filename.startswith('/'):
+                            raise serializers.ValidationError("Security Alert: Malformed DOCX file detected.")
+
+                        # Block Zip Bombs (e.g., stopping a 5MB DOCX from unzipping into 5GB of XML)
+                        total_uncompressed_size += info.file_size
+                        if total_uncompressed_size > (50 * 1024 * 1024): # 50 MB uncompressed limit
+                            raise serializers.ValidationError("Security Alert: DOCX decompression size exceeds safe limits.")
+            except zipfile.BadZipFile:
+                raise serializers.ValidationError("Security Alert: Corrupted or invalid Word Document.")
+            finally:
+                file.seek(0)
+
+        # Optional but highly recommended: Keep ClamAV active here if you have it installed,
+        # to scan the PDFs and DOCX files for known malware signatures before saving.
+
+        return file
 
     def validate_fee(self, value):
         if value is None:

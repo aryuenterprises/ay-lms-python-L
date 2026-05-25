@@ -17,6 +17,8 @@ from django.conf import settings
 from django.db import transaction
 import jwt
 import magic
+import uuid
+import zipfile
 import holidays
 from django.http import QueryDict
 import re
@@ -2274,60 +2276,64 @@ class SubmissionSerializer(serializers.ModelSerializer):
 
     def validate_file(self, file):
         """
-        SECURITY GATEWAY: Deep inspect uploaded files for malware, spoofing, and dangerous payloads.
+        DOCUMENT SECURITY GATEWAY: Strictly allows only PDFs and Word Documents.
         """
         if not file:
             return file
 
-        # 1. Size Limit (e.g., 15 MB max to prevent DoS)
-        MAX_UPLOAD_SIZE = 15 * 1024 * 1024
+        # 1. DOS Protection
+        MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB is plenty for a resume
         if file.size > MAX_UPLOAD_SIZE:
-            raise serializers.ValidationError("File size exceeds the 15MB limit.")
+            raise serializers.ValidationError("File size exceeds the 10MB limit.")
 
-        # 2. Strict Extension Allowlist
-        ext = os.path.splitext(file.name)[1].lower()
-        allowed_extensions = {
-            # Code
-            '.py', '.js', '.ts', '.html', '.css', '.java', '.cpp', '.c', '.cs', '.php', '.rb',
-            # Documents / Archives
-            '.txt', '.pdf', '.zip', '.rar', '.tar', '.gz'
-        }
-        
-        if ext not in allowed_extensions:
+        # 2. Filename Obliteration (Anti-Directory Traversal)
+        original_ext = os.path.splitext(file.name)[1].lower()
+        file.name = f"{uuid.uuid4().hex}{original_ext}"
+
+        # 3. Strict Extension Allowlist
+        allowed_extensions = {'.pdf', '.docx', '.doc'}
+        if original_ext not in allowed_extensions:
             raise serializers.ValidationError(
-                f"File extension '{ext}' is not permitted. Please upload code files or compress your project into a .zip archive."
+                f"Invalid format. Only PDF and Word documents are allowed."
             )
 
-        # 3. Deep Content Inspection (Magic Number Check)
-        # Read the first 2048 bytes to determine the true file type
+        # 4. Magic Byte Inspection (Anti-Spoofing)
         file_head = file.read(2048)
-        file.seek(0)  # CRITICAL: Reset the file pointer so Django can save it properly later
-
+        file.seek(0)
         true_mime_type = magic.from_buffer(file_head, mime=True)
 
-        # 4. Block Dangerous MIME Types explicitly (Executables, Scripts, XML Forgery)
-        blocked_mimes = [
-            'application/x-dosexec',      # Windows .exe
-            'application/x-executable',   # Linux binaries
-            'application/x-sh',           # Shell scripts
-            'application/x-msdownload',   # Malicious DLLs/Binaries
-            'application/xml',            # XML (Prevents XXE attacks)
-            'text/xml',                   # XML
-            'image/svg+xml',              # SVG (Can contain malicious JavaScript XSS)
+        valid_mimes = [
+            'application/pdf', 
+            'application/msword', # .doc
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' # .docx
         ]
-
-        if true_mime_type in blocked_mimes:
+        
+        if true_mime_type not in valid_mimes:
             raise serializers.ValidationError(
-                "Security Alert: Upload blocked. This file type contains potentially executable or malicious content. "
-                "If you need to submit XML code, please compress it into a .zip file."
+                "Security Alert: The file extension does not match its true binary format."
             )
 
-        # 5. Sanity Check: Ensure the true MIME type roughly matches what we expect from coding files
-        # Code files usually register as 'text/plain', 'text/x-c', 'text/html', etc.
-        valid_mime_prefixes = ('text/', 'application/zip', 'application/x-rar', 'application/pdf', 'application/gzip', 'application/x-tar')
-        
-        if not true_mime_type.startswith(valid_mime_prefixes):
-            raise serializers.ValidationError("Security Alert: The file extension does not match its internal binary contents (Spoofed file).")
+        # 5. Deep Inspection for DOCX (Preventing XML/Zip attacks)
+        if original_ext == '.docx' or true_mime_type.endswith('document'):
+            try:
+                with zipfile.ZipFile(file, 'r') as zf:
+                    total_uncompressed_size = 0
+                    for info in zf.infolist():
+                        # Block Directory Traversal inside the DOCX
+                        if '..' in info.filename or info.filename.startswith('/'):
+                            raise serializers.ValidationError("Security Alert: Malformed DOCX file detected.")
+
+                        # Block Zip Bombs (e.g., stopping a 5MB DOCX from unzipping into 5GB of XML)
+                        total_uncompressed_size += info.file_size
+                        if total_uncompressed_size > (50 * 1024 * 1024): # 50 MB uncompressed limit
+                            raise serializers.ValidationError("Security Alert: DOCX decompression size exceeds safe limits.")
+            except zipfile.BadZipFile:
+                raise serializers.ValidationError("Security Alert: Corrupted or invalid Word Document.")
+            finally:
+                file.seek(0)
+
+        # Optional but highly recommended: Keep ClamAV active here if you have it installed,
+        # to scan the PDFs and DOCX files for known malware signatures before saving.
 
         return file
     
