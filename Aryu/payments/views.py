@@ -484,7 +484,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             return Response(
                 {
                     "success": False,
-                    "message": "Unauthorized"
+                    "message": "Forbidden"
                 },
                 status=403
             )
@@ -696,7 +696,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             return Response(
                 {
                     "success": False,
-                    "message": "Unauthorized"
+                    "message": "Forbidden"
                 },
                 status=403
             )
@@ -719,6 +719,10 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             }, status=404)
 
     def student_payment_history(self, request, student_id=None):
+
+        user = request.user
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
         # =========================================================
         # FAST OPTIMIZED QUERYSET
@@ -783,7 +787,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             return Response(
                 {
                     "success": False,
-                    "message": "Unauthorized"
+                    "message": "Forbidden"
                 },
                 status=403
             )

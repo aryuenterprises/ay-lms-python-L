@@ -730,7 +730,7 @@ class UserViewSet(viewsets.ModelViewSet):
     @secure_throttle(rate_limit=5, period=60)
     def create(self, request, *args, **kwargs):
         user = request.user
-        if user.user_type not in ["super_admin", "admin"]:
+        if user.user_type not in ["super_admin"]:
             return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
         
         payload = request.data.copy()
@@ -3772,7 +3772,8 @@ class StudentRegistration(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         
         user = request.user
-        
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
         # Ensure module_id points to Students
         student_module = ModulePermission.objects.filter(module__iexact="Students").first()
         if not student_module:
@@ -4961,6 +4962,10 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         return StudentProfileSerializer  # Read-only profile view
     
     def partial_update(self, request, *args, **kwargs):
+        user = request.user
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             student_id = kwargs.get('student_id')
             if not student_id:
@@ -6030,6 +6035,10 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
         return queryset.order_by("employee_id")
   
     def retrieve(self, request, *args, **kwargs):
+        user = request.user
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             trainer = self.get_object()   # uses optimised get_queryset above
         except Trainer.DoesNotExist:
@@ -6077,7 +6086,10 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     # ── Create ───────────────────────────────────────────────────────────
  
     def create(self, request, *args, **kwargs):
-
+        user = request.user
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
         tutors_module = (
             ModulePermission.objects
             .filter(module__iexact="Tutors")
@@ -6136,6 +6148,10 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     # ── Update ───────────────────────────────────────────────────────────
  
     def update(self, request, *args, **kwargs):
+        user = request.user
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
         tutors_module = (
             ModulePermission.objects
             .filter(module__iexact="Tutors")
@@ -6176,6 +6192,10 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     
     @action(detail=True, methods=['get'], url_path='courses')
     def get_courses_taken(self, request, employee_id=None):
+        user = request.user
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             trainer = self.get_object()  # Trainer retrieved using lookup_field
         except Trainer.DoesNotExist:
@@ -6220,6 +6240,10 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
         
     @action(detail=False, methods=['get'], url_path='admins')
     def list_admins(self, request):
+        user = request.user
+        if user.user_type not in ["super_admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             user = request.user
             user_created_id = getattr(user, "trainer_id", None)  # For admin
@@ -6300,6 +6324,10 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
          
     @action(detail=False, methods=['get'], url_path='ad_employee/(?P<employee_id>[^/.]+)')
     def admin_profile(self, request, employee_id=None):
+        user = request.user
+        if user.user_type not in ["super_admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             # =============================================================
             # SECURE GATE 2: CRITICAL - EXCLUSIVE Super Admin Verification
@@ -6357,6 +6385,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     
     @action(detail=True, methods=['get'], url_path='batches')
     def get_batches(self, request, employee_id=None):
+        
         # self.get_object() will fetch the Trainer based on employee_id
         trainer = self.get_object()  # Trainer instance
 
@@ -7740,6 +7769,10 @@ class AssignmentViewSet(LoggingMixin, viewsets.ModelViewSet):
         return queryset
 
     def list(self, request, *args, **kwargs):
+        user = request.user
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
         queryset = self.get_queryset().filter(is_archived=False).order_by("id")
         serializer = self.get_serializer(queryset, many=True)
         return Response({
@@ -7769,6 +7802,10 @@ class AssignmentViewSet(LoggingMixin, viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
+        user = request.user
+        if user.user_type not in ["super_admin", "admin"]:
+            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
         try:
             course_id = request.data.get('course')
             
