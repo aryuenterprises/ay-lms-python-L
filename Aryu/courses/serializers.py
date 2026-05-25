@@ -282,7 +282,7 @@ class CourseSerializer(serializers.ModelSerializer):
             # Absolute safety net — API must never crash
             return []
         
-    def validate_file(self, file):
+    def validate_syllabus(self, file):
         """
         DOCUMENT SECURITY GATEWAY: Strictly allows only PDFs and Word Documents.
         """
