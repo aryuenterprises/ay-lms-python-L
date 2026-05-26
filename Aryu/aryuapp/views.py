@@ -54,6 +54,8 @@ import traceback
 import logging     
 logger = logging.getLogger(__name__)  
 import traceback
+from django.utils import timezone
+import pytz
 
 
 class IsAdminOrSuperAdmin(BasePermission):
@@ -4718,6 +4720,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             queryset = Attendance.objects.filter(
                 student__student_id=student_id
             )
+            ist = pytz.timezone("Asia/Kolkata")
 
             if month:
                 queryset = queryset.filter(date__month=int(month))
@@ -4741,7 +4744,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     att.student.student_id,
                     att.course.course_id,
                     batch_id,
-                    att.date.date()
+                    timezone.localtime(att.date,ist).date()
                 )
 
                 if key not in grouped:
@@ -4761,7 +4764,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                         'course_id': att.course.course_id,
                         'course_name': att.course.course_name,
 
-                        'date': att.date.strftime('%d-%m-%Y'),
+                        'date': timezone.localtime(att.date,ist).strftime('%d-%m-%Y'),,
 
                         'status': att.status,
 
@@ -4787,7 +4790,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 # LOGIN
                 if status_lower in ['login', 'present']:
 
-                    current['login_time'] = att.date.strftime('%I:%M %p')
+                    current['login_time'] = timezone.localtime(att.date,ist).strftime('%I:%M %p')
                     current['login_dt'] = att.date
 
                     current['status'] = 'Present'
@@ -4795,7 +4798,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 # LOGOUT
                 elif status_lower == 'logout':
 
-                    current['logout_time'] = att.date.strftime('%I:%M %p')
+                    current['logout_time'] = timezone.localtime(att.date,ist).strftime('%I:%M %p')
                     current['logout_dt'] = att.date
 
                     current['status'] = 'Present'
@@ -4803,13 +4806,13 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 # BREAK IN
                 elif status_lower == 'breakin':
 
-                    current['break_in'] = att.date.strftime('%I:%M %p')
+                    current['break_in'] = timezone.localtime(att.date,ist).strftime('%I:%M %p')
                     current['break_in_dt'] = att.date
 
                 # BREAK OUT
                 elif status_lower == 'breakout':
 
-                    current['break_out'] = att.date.strftime('%I:%M %p')
+                    current['break_out'] = timezone.localtime(att.date,ist).strftime('%I:%M %p')
                     current['break_out_dt'] = att.date
 
             logs = list(grouped.values())
@@ -4997,13 +5000,13 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
                 # REMOVE TEMP FIELDS
 
-                del item['login_dt']
+                item['login_dt']
 
-                del item['logout_dt']
+                item['logout_dt']
 
-                del item['break_in_dt']
+                item['break_in_dt']
 
-                del item['break_out_dt']
+                item['break_out_dt']
 
             return Response({
                 'success': True,
