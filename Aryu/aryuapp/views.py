@@ -4926,8 +4926,11 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
                 ).exists()
 
-                if not schedule_exists:
-
+                if (
+                    not schedule_exists
+                    and not item['login_dt']
+                    and not item['logout_dt']
+                ):
                     item['status'] = 'Holiday'
 
                 # ----------------------------------------
