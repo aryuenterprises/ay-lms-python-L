@@ -4894,10 +4894,10 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
                 # REMOVE TEMP FIELDS
 
-                del item['login_dt']
-                del item['logout_dt']
-                del item['break_in_dt']
-                del item['break_out_dt']
+                item['login_dt']
+                item['logout_dt']
+                item['break_in_dt']
+                item['break_out_dt']
             if not schedule_exists:
                 item['status'] = 'Holiday'
 

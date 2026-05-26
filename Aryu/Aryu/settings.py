@@ -208,18 +208,22 @@ CORS_ALLOWED_ORIGINS = [
     "https://portal.aryuacademy.com",
     "https://workshop.aryuacademy.com",
     "https://aryuacademy.com",
+    # "http://127.0.0.1:8000",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
     "https://portal.aryuacademy.com",
     "https://workshop.aryuacademy.com",
     "https://aryuacademy.com",
+    # "http://127.0.0.1:8000",
 ]
 
 ALLOWED_HOSTS = [
     "portal.aryuacademy.com",
     "workshop.aryuacademy.com",
     "aryuacademy.com",
+    # "localhost",
+    # "127.0.0.1",
 ]
 
 
