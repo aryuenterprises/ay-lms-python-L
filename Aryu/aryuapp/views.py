@@ -4764,7 +4764,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                         'course_id': att.course.course_id,
                         'course_name': att.course.course_name,
 
-                        'date': timezone.localtime(att.date,ist).strftime('%d-%m-%Y'),,
+                        'date': timezone.localtime(att.date,ist).strftime('%d-%m-%Y'),
 
                         'status': att.status,
 
