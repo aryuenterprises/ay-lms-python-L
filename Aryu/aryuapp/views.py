@@ -4725,20 +4725,24 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         ).order_by('date')
 
         if month:
-            queryset = queryset.filter(date__month=int(month))
+            queryset = queryset.filter(
+                date__month=int(month)
+            )
 
         if year:
-            queryset = queryset.filter(date__year=int(year))
+            queryset = queryset.filter(
+                date__year=int(year)
+            )
 
         ist = pytz.timezone("Asia/Kolkata")
 
         grouped = {}
 
-        for att in queryset:
+        # ======================================================
+        # GROUP ATTENDANCE
+        # ======================================================
 
-            # ----------------------------------------
-            # CONVERT TO IST
-            # ----------------------------------------
+        for att in queryset:
 
             serializer_data = AttendanceSerializer(att).data
 
@@ -4757,7 +4761,9 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             batch_title = None
 
             if att.new_batch_id:
+
                 batch_id = att.new_batch.batch_id
+
                 batch_title = att.new_batch.title
 
             # ----------------------------------------
@@ -4814,7 +4820,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
                     'net_time_spend': '-',
 
-                    # TEMP DATETIME FIELDS
+                    # TEMP FIELDS
 
                     'login_dt': None,
 
@@ -4893,14 +4899,14 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
         logs = list(grouped.values())
 
-        # ----------------------------------------
+        # ======================================================
         # CALCULATIONS
-        # ----------------------------------------
+        # ======================================================
 
         for item in logs:
 
             # ----------------------------------------
-            # CHECK SCHEDULE
+            # CHECK CLASS SCHEDULE
             # ----------------------------------------
 
             schedule_exists = ClassSchedule.objects.filter(
@@ -4918,7 +4924,9 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
             ).exists()
 
-            # HOLIDAY ONLY IF NO LOGIN
+            # ----------------------------------------
+            # HOLIDAY
+            # ----------------------------------------
 
             if (
                 not schedule_exists
@@ -4935,6 +4943,18 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
                 now_ist = timezone.now().astimezone(ist)
 
+                # SAME DATE CHECK
+
+                if now_ist.date() != item['login_dt'].date():
+
+                    now_ist = item['login_dt']
+
+                # NEGATIVE TIME CHECK
+
+                if now_ist < item['login_dt']:
+
+                    now_ist = item['login_dt']
+
                 item['logout_dt'] = now_ist
 
                 item['logout_time'] = (
@@ -4947,14 +4967,26 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
             if item['login_dt'] and item['logout_dt']:
 
-                total_seconds = int(
+                time_diff = (
+                    item['logout_dt']
+                    - item['login_dt']
+                ).total_seconds()
 
-                    (
-                        item['logout_dt']
-                        - item['login_dt']
-                    ).total_seconds()
+                # PREVENT NEGATIVE TIME
 
-                )
+                if time_diff < 0:
+
+                    time_diff = 0
+
+                    item['logout_dt'] = (
+                        item['login_dt']
+                    )
+
+                    item['logout_time'] = (
+                        item['login_time']
+                    )
+
+                total_seconds = int(time_diff)
 
                 # ----------------------------------------
                 # TOTAL BREAK
@@ -4964,27 +4996,35 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
                 for session in item['break_sessions']:
 
+                    break_diff = (
+                        session['break_out']
+                        - session['break_in']
+                    ).total_seconds()
+
+                    if break_diff < 0:
+
+                        break_diff = 0
+
                     total_break_seconds += int(
-
-                        (
-                            session['break_out']
-                            - session['break_in']
-                        ).total_seconds()
-
+                        break_diff
                     )
 
                 # ----------------------------------------
-                # NET TIME
+                # NET WORKING TIME
                 # ----------------------------------------
 
-                net_seconds = (
-                    total_seconds
-                    - total_break_seconds
+                net_seconds = max(
+                    total_seconds - total_break_seconds,
+                    0
                 )
 
-                # TOTAL TIME
+                # ----------------------------------------
+                # TOTAL TIME FORMAT
+                # ----------------------------------------
 
-                total_hours = total_seconds // 3600
+                total_hours = (
+                    total_seconds // 3600
+                )
 
                 total_minutes = (
                     total_seconds % 3600
@@ -4994,7 +5034,9 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     f"{total_hours:02}:{total_minutes:02} Hrs"
                 )
 
-                # BREAK TIME
+                # ----------------------------------------
+                # BREAK FORMAT
+                # ----------------------------------------
 
                 break_hours = (
                     total_break_seconds // 3600
@@ -5008,9 +5050,13 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     f"{break_hours:02}:{break_minutes:02} Hrs"
                 )
 
-                # NET WORKING TIME
+                # ----------------------------------------
+                # NET TIME FORMAT
+                # ----------------------------------------
 
-                net_hours = net_seconds // 3600
+                net_hours = (
+                    net_seconds // 3600
+                )
 
                 net_minutes = (
                     net_seconds % 3600
@@ -5043,138 +5089,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
             'data': logs
 
-        }, status=200) 
-    @action(detail=True, methods=['get'], url_path='status')
-    def attendance_status(self, request, student_id=None):
-        ist = pytz.timezone("Asia/Kolkata")
-        start_date_str = request.query_params.get("start_date")
-        end_date_str = request.query_params.get("end_date")
-
-        # Parse start and end dates
-        try:
-            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").astimezone(ist).date() if start_date_str else None
-            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date() if end_date_str else timezone.now().astimezone(ist).date()
-        except ValueError:
-            return Response({
-                "success": False,
-                "message": "Invalid date format. Use YYYY-MM-DD."
-            }, status=status.HTTP_200_OK)
-
-        # Fetch student
-        try:
-            student = Student.objects.get(student_id=student_id)
-        except Student.DoesNotExist:
-            return Response({
-                "success": False,
-                "message": "Student not found."
-            }, status=status.HTTP_200_OK)
-
-        # ---------------------------------------------------------------------
-        # SUPPORT BOTH: old BatchSchedule AND new NewBatch-generated schedules
-        # ---------------------------------------------------------------------
-
-        # OLD batch schedules (existing)
-        scheduled_old = ClassSchedule.objects.filter(
-            batch__batchcoursetrainer__student=student,
-            scheduled_date__lte=end_date,
-            is_archived=False
-        ).select_related("course", "batch", "trainer")
-
-        # NEW batch schedules
-        scheduled_new = ClassSchedule.objects.filter(
-            new_batch__students=student,
-            scheduled_date__lte=end_date,
-            is_archived=False
-        ).select_related("course", "new_batch", "trainer")
-
-        # Combine both
-        scheduled_classes = (scheduled_old | scheduled_new).order_by("-scheduled_date", "-start_time")
-
-        class_statuses = []
-        attended_count = 0
-        not_attended_count = 0
-
-        for sched in scheduled_classes:
-
-            # -----------------------------------------------------------------
-            # DETECT IF IT IS OLD BATCH OR NEW BATCH
-            # -----------------------------------------------------------------
-            using_new_batch = hasattr(sched, "new_batch") and sched.new_batch is not None
-
-            if using_new_batch:
-                batch_name = sched.new_batch.title
-                title = sched.new_batch.title
-                batch_obj = None
-                new_batch_obj = sched.new_batch
-            else:
-                batch_name = sched.batch.batch_name
-                title = sched.batch.title
-                batch_obj = sched.batch
-                new_batch_obj = None
-
-            # -----------------------------------------------------------------
-            # TRAINER attendance check
-            # -----------------------------------------------------------------
-            trainer_attendance = TrainerAttendance.objects.filter(
-                Q(
-                    course=sched.course,
-                    date__date=sched.scheduled_date,
-                    trainer=sched.trainer
-                ) & (Q(status__iexact="Login") | Q(status__iexact="Logout"))
-            ).exists()
-
-            if not trainer_attendance:
-                status_str = "Leave"
-            else:
-                # -------------------------------------------------------------
-                # STUDENT attendance check for both batch types
-                # -------------------------------------------------------------
-                if using_new_batch:
-                    student_attendance = Attendance.objects.filter(
-                        student=student,
-                        course=sched.course,
-                        new_batch=new_batch_obj,
-                        date__date=sched.scheduled_date
-                    ).exists()
-                else:
-                    student_attendance = Attendance.objects.filter(
-                        student=student,
-                        course=sched.course,
-                        batch=batch_obj,
-                        date__date=sched.scheduled_date
-                    ).exists()
-
-                status_str = "Present" if student_attendance else "Absent"
-
-                if student_attendance:
-                    attended_count += 1
-                else:
-                    not_attended_count += 1
-
-            class_statuses.append({
-                "id": sched.schedule_id,
-                "date": sched.scheduled_date.strftime("%Y-%m-%d"),
-                "start_time": sched.start_time.strftime("%I:%M %p"),
-                "course": sched.course.course_name,
-                "batch": batch_name,
-                "title": title,
-                "trainer": sched.trainer.full_name if sched.trainer else None,
-                "status": status_str
-            })
-
-        total_classes = attended_count + not_attended_count
-        attendance_percentage = (attended_count / total_classes * 100) if total_classes > 0 else 0
-
-        return Response({
-            "success": True,
-            "student": student.first_name + " " + student.last_name,
-            "total_classes": total_classes,
-            "attended": attended_count,
-            "not_attended": not_attended_count,
-            "attendance_percentage": round(attendance_percentage, 2),
-            "classes": class_statuses
-        }, status=status.HTTP_200_OK)
-
+        }, status=200)
 class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
     queryset = (
         Student.objects.all()
