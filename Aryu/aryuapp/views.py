@@ -55,7 +55,10 @@ import logging
 logger = logging.getLogger(__name__)  
 import traceback
 from django.utils import timezone
+from django.utils.timezone import make_aware
+from datetime import datetime
 import pytz
+
 
 
 class IsAdminOrSuperAdmin(BasePermission):
@@ -4708,312 +4711,339 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='full_logs/(?P<student_id>[^/.]+)')
     def full_logs(self, request, student_id=None):
 
-            if not student_id:
-                return Response({
-                    'success': False,
-                    'message': 'student_id is required'
-                }, status=200)
+        if not student_id:
+            return Response({
+                'success': False,
+                'message': 'student_id is required'
+            }, status=200)
 
-            month = request.query_params.get('month')
-            year = request.query_params.get('year')
+        month = request.query_params.get('month')
+        year = request.query_params.get('year')
 
-            queryset = Attendance.objects.filter(
-                student__student_id=student_id
+        queryset = Attendance.objects.filter(
+            student__student_id=student_id
+        ).order_by('date')
+
+        if month:
+            queryset = queryset.filter(date__month=int(month))
+
+        if year:
+            queryset = queryset.filter(date__year=int(year))
+
+        ist = pytz.timezone("Asia/Kolkata")
+
+        grouped = {}
+
+        for att in queryset:
+
+            # ----------------------------------------
+            # CONVERT TO IST
+            # ----------------------------------------
+
+            serializer_data = AttendanceSerializer(att).data
+
+            local_dt = datetime.strptime(
+                serializer_data['date'],
+                '%Y-%m-%d %I:%M:%S %p'
             )
-            ist = pytz.timezone("Asia/Kolkata")
 
-            if month:
-                queryset = queryset.filter(date__month=int(month))
+            local_dt = ist.localize(local_dt)
 
-            if year:
-                queryset = queryset.filter(date__year=int(year))
+            # ----------------------------------------
+            # BATCH
+            # ----------------------------------------
 
-            grouped = {}
+            batch_id = None
+            batch_title = None
 
-            for att in queryset.order_by('date'):
+            if att.new_batch_id:
+                batch_id = att.new_batch.batch_id
+                batch_title = att.new_batch.title
 
-                using_new_batch = att.new_batch_id is not None
+            # ----------------------------------------
+            # GROUP KEY
+            # ----------------------------------------
 
-                if using_new_batch:
+            key = (
+                att.student.student_id,
+                att.course.course_id,
+                batch_id,
+                local_dt.date()
+            )
 
-                    batch_id = att.new_batch.batch_id
+            # ----------------------------------------
+            # INITIALIZE
+            # ----------------------------------------
 
-                    batch_title = att.new_batch.title
+            if key not in grouped:
 
-                key = (
-                    att.student.student_id,
-                    att.course.course_id,
-                    batch_id,
-                    timezone.localtime(att.date,ist).date()
+                grouped[key] = {
+
+                    'attendance_id': att.id,
+
+                    'student_id': att.student.student_id,
+
+                    'student_name': (
+                        f"{att.student.first_name} "
+                        f"{att.student.last_name}"
+                    ),
+
+                    'batch_id': batch_id,
+
+                    'title': batch_title,
+
+                    'course_id': att.course.course_id,
+
+                    'course_name': att.course.course_name,
+
+                    'date': local_dt.strftime('%d-%m-%Y'),
+
+                    'status': 'Absent',
+
+                    'login_time': None,
+
+                    'logout_time': None,
+
+                    'break_in': None,
+
+                    'break_out': None,
+
+                    'time_spend': '-',
+
+                    'break_duration': '-',
+
+                    'net_time_spend': '-',
+
+                    # TEMP DATETIME FIELDS
+
+                    'login_dt': None,
+
+                    'logout_dt': None,
+
+                    'break_sessions': [],
+
+                    'current_break_in': None,
+                }
+
+            current = grouped[key]
+
+            status_lower = att.status.lower()
+
+            # ----------------------------------------
+            # LOGIN
+            # ----------------------------------------
+
+            if status_lower in ['login', 'present']:
+
+                current['login_time'] = (
+                    local_dt.strftime('%I:%M %p')
                 )
 
-                if key not in grouped:
+                current['login_dt'] = local_dt
 
-                    grouped[key] = {
-
-                        'attendance_id': att.id,
-
-                        'student_id': att.student.student_id,
-
-                        'student_name': f"{att.student.first_name} {att.student.last_name}",
-
-                        'batch_id': batch_id,
-
-                        'title': batch_title,
-
-                        'course_id': att.course.course_id,
-                        'course_name': att.course.course_name,
-
-                        'date': timezone.localtime(att.date,ist).strftime('%d-%m-%Y'),
-
-                        'status': att.status,
-
-                        'login_time': None,
-                        'logout_time': None,
-
-                        'break_in': None,
-                        'break_out': None,
-
-                        'time_spend': '-',
-                        'break_duration': '-',
-
-                        'login_dt': None,
-                        'logout_dt': None,
-                        'break_in_dt': None,
-                        'break_out_dt': None,
-                    }
-
-                current = grouped[key]
-
-                status_lower = att.status.lower()
-
-                # LOGIN
-                if status_lower in ['login', 'present']:
-
-                    current['login_time'] = timezone.localtime(att.date,ist).strftime('%I:%M %p')
-                    current['login_dt'] = att.date
-
-                    current['status'] = 'Present'
-
-                # LOGOUT
-                elif status_lower == 'logout':
-
-                    current['logout_time'] = timezone.localtime(att.date,ist).strftime('%I:%M %p')
-                    current['logout_dt'] = att.date
-
-                    current['status'] = 'Present'
-
-                # BREAK IN
-                elif status_lower == 'breakin':
-
-                    current['break_in'] = timezone.localtime(att.date,ist).strftime('%I:%M %p')
-                    current['break_in_dt'] = att.date
-
-                # BREAK OUT
-                elif status_lower == 'breakout':
-
-                    current['break_out'] = timezone.localtime(att.date,ist).strftime('%I:%M %p')
-                    current['break_out_dt'] = att.date
-
-            logs = list(grouped.values())
-            
+                current['status'] = 'Present'
 
             # ----------------------------------------
-            # CALCULATE TIME SPEND + BREAK DURATION
+            # LOGOUT
             # ----------------------------------------
 
-            for item in logs:
+            elif status_lower == 'logout':
+
+                current['logout_time'] = (
+                    local_dt.strftime('%I:%M %p')
+                )
+
+                current['logout_dt'] = local_dt
+
+                current['status'] = 'Present'
 
             # ----------------------------------------
-            # CHECK HOLIDAY USING CLASS SCHEDULE
+            # BREAK IN
             # ----------------------------------------
 
-                schedule_exists = ClassSchedule.objects.filter(
-                    new_batch_id=item['batch_id'],
-                    course_id=item['course_id'],
-                    scheduled_date=datetime.strptime(
-                        item['date'],
-                        '%d-%m-%Y'
-                    ).date(),
-                    is_archived=False
-                ).exists()
+            elif status_lower == 'breakin':
 
-                if not schedule_exists:
-                    item['status'] = 'Holiday'
+                current['break_in'] = (
+                    local_dt.strftime('%I:%M %p')
+                )
 
-                # ----------------------------------------
-                # TOTAL TIME
-                # ----------------------------------------
+                current['current_break_in'] = local_dt
 
-                if item['login_dt'] and item['logout_dt']:
+            # ----------------------------------------
+            # BREAK OUT
+            # ----------------------------------------
 
-                    total_seconds = int(
-                        (
-                            item['logout_dt'] -
-                            item['login_dt']
-                        ).total_seconds()
-                    )
+            elif status_lower == 'breakout':
 
-                    hours = total_seconds // 3600
+                current['break_out'] = (
+                    local_dt.strftime('%I:%M %p')
+                )
 
-                    minutes = (
-                        total_seconds % 3600
-                    ) // 60
+                if current['current_break_in']:
 
-                    item['time_spend'] = (
-                        f"{hours:02}:{minutes:02} Hrs"
-                    )
+                    current['break_sessions'].append({
 
-                # ----------------------------------------
-                # BREAK TIME
-                # ----------------------------------------
+                        'break_in': current['current_break_in'],
 
-                if item['break_in_dt'] and item['break_out_dt']:
+                        'break_out': local_dt
 
-                    break_seconds = int(
-                        (
-                            item['break_out_dt'] -
-                            item['break_in_dt']
-                        ).total_seconds()
-                    )
+                    })
 
-                    break_hours = break_seconds // 3600
+                    current['current_break_in'] = None
 
-                    break_minutes = (
-                        break_seconds % 3600
-                    ) // 60
+        logs = list(grouped.values())
 
-                    if break_hours > 0:
+        # ----------------------------------------
+        # CALCULATIONS
+        # ----------------------------------------
 
-                        item['break_duration'] = (
-                            f"{break_hours:02}:{break_minutes:02} Hrs"
-                        )
+        for item in logs:
 
-                    else:
+            # ----------------------------------------
+            # CHECK SCHEDULE
+            # ----------------------------------------
 
-                        item['break_duration'] = (
-                            f"{break_minutes:02} Min"
-                        )
+            schedule_exists = ClassSchedule.objects.filter(
 
-                # REMOVE TEMP FIELDS
+                new_batch_id=item['batch_id'],
 
-                item['login_dt']
-                item['logout_dt']
-                item['break_in_dt']
-                item['break_out_dt']
-            if not schedule_exists:
+                course_id=item['course_id'],
+
+                scheduled_date=datetime.strptime(
+                    item['date'],
+                    '%d-%m-%Y'
+                ).date(),
+
+                is_archived=False
+
+            ).exists()
+
+            # HOLIDAY ONLY IF NO LOGIN
+
+            if (
+                not schedule_exists
+                and not item['login_dt']
+            ):
+
                 item['status'] = 'Holiday'
 
             # ----------------------------------------
-            # CALCULATE TIME SPEND + BREAK DURATION
+            # AUTO LOGOUT
             # ----------------------------------------
 
-            for item in logs:
+            if item['login_dt'] and not item['logout_dt']:
+
+                now_ist = timezone.now().astimezone(ist)
+
+                item['logout_dt'] = now_ist
+
+                item['logout_time'] = (
+                    now_ist.strftime('%I:%M %p')
+                )
+
+            # ----------------------------------------
+            # TOTAL TIME
+            # ----------------------------------------
+
+            if item['login_dt'] and item['logout_dt']:
+
+                total_seconds = int(
+
+                    (
+                        item['logout_dt']
+                        - item['login_dt']
+                    ).total_seconds()
+
+                )
 
                 # ----------------------------------------
-                # CHECK HOLIDAY USING CLASS SCHEDULE
+                # TOTAL BREAK
                 # ----------------------------------------
 
-                schedule_exists = ClassSchedule.objects.filter(
+                total_break_seconds = 0
 
-                    new_batch_id=item['batch_id'],
+                for session in item['break_sessions']:
 
-                    course_id=item['course_id'],
+                    total_break_seconds += int(
 
-                    scheduled_date=datetime.strptime(
-                        item['date'],
-                        '%d-%m-%Y'
-                    ).date(),
+                        (
+                            session['break_out']
+                            - session['break_in']
+                        ).total_seconds()
 
-                    is_archived=False
-
-                ).exists()
-
-                if (
-                    not schedule_exists
-                    and not item['login_dt']
-                    and not item['logout_dt']
-                ):
-                    item['status'] = 'Holiday'
+                    )
 
                 # ----------------------------------------
+                # NET TIME
+                # ----------------------------------------
+
+                net_seconds = (
+                    total_seconds
+                    - total_break_seconds
+                )
+
                 # TOTAL TIME
-                # ----------------------------------------
 
-                if (
-                    item['login_dt']
-                    and item['logout_dt']
-                ):
+                total_hours = total_seconds // 3600
 
-                    total_seconds = int(
-                        (
-                            item['logout_dt']
-                            - item['login_dt']
-                        ).total_seconds()
-                    )
+                total_minutes = (
+                    total_seconds % 3600
+                ) // 60
 
-                    hours = total_seconds // 3600
+                item['time_spend'] = (
+                    f"{total_hours:02}:{total_minutes:02} Hrs"
+                )
 
-                    minutes = (
-                        total_seconds % 3600
-                    ) // 60
-
-                    item['time_spend'] = (
-                        f"{hours:02}:{minutes:02} Hrs"
-                    )
-
-                # ----------------------------------------
                 # BREAK TIME
-                # ----------------------------------------
 
-                if (
-                    item['break_in_dt']
-                    and item['break_out_dt']
-                ):
+                break_hours = (
+                    total_break_seconds // 3600
+                )
 
-                    break_seconds = int(
-                        (
-                            item['break_out_dt']
-                            - item['break_in_dt']
-                        ).total_seconds()
-                    )
+                break_minutes = (
+                    total_break_seconds % 3600
+                ) // 60
 
-                    break_hours = (
-                        break_seconds // 3600
-                    )
+                item['break_duration'] = (
+                    f"{break_hours:02}:{break_minutes:02} Hrs"
+                )
 
-                    break_minutes = (
-                        break_seconds % 3600
-                    ) // 60
+                # NET WORKING TIME
 
-                    if break_hours > 0:
+                net_hours = net_seconds // 3600
 
-                        item['break_duration'] = (
-                            f"{break_hours:02}:{break_minutes:02} Hrs"
-                        )
+                net_minutes = (
+                    net_seconds % 3600
+                ) // 60
 
-                    else:
+                item['net_time_spend'] = (
+                    f"{net_hours:02}:{net_minutes:02} Hrs"
+                )
 
-                        item['break_duration'] = (
-                            f"{break_minutes:02} Min"
-                        )
+            # ----------------------------------------
+            # REMOVE TEMP FIELDS
+            # ----------------------------------------
 
-                # REMOVE TEMP FIELDS
+            item.pop('login_dt', None)
 
-                item['login_dt']
+            item.pop('logout_dt', None)
 
-                item['logout_dt']
+            item.pop('current_break_in', None)
 
-                item['break_in_dt']
+            item.pop('break_sessions', None)
 
-                item['break_out_dt']
+        return Response({
 
-            return Response({
-                'success': True,
-                'message': f'Full attendance logs for student {student_id}',
-                'data': logs
-            }, status=200)
-        
+            'success': True,
+
+            'message': (
+                f'Full attendance logs for student '
+                f'{student_id}'
+            ),
+
+            'data': logs
+
+        }, status=200) 
     @action(detail=True, methods=['get'], url_path='status')
     def attendance_status(self, request, student_id=None):
         ist = pytz.timezone("Asia/Kolkata")

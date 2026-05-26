@@ -28,7 +28,7 @@ from courses.models import Course
 from courses.serializers import CourseSerializer, CourseSimpleSerializer,  StudentTopicStatusSerializer
 from batches.models import NewBatch, Batch, BatchCourseTrainer
 from batches.serializers import BatchSerializer
-
+from django.utils.timezone import make_aware
 
 class SettingsPicsSerializer(serializers.ModelSerializer):
     general_logo_url = serializers.SerializerMethodField()
@@ -1076,15 +1076,32 @@ class AttendanceSerializer(serializers.ModelSerializer):
 
     # Format date to IST
     def to_representation(self, instance):
+
         data = super().to_representation(instance)
+
         dt = instance.date
+
         ist = pytz.timezone("Asia/Kolkata")
 
-        if timezone.is_naive(dt):
-            dt = timezone.make_aware(dt, timezone=pytz.UTC)
+        # HANDLE NAIVE DATETIME
 
-        dt = timezone.localtime(dt, ist)
-        data['date'] = dt.strftime('%Y-%m-%d %H:%M:%S')
+        if timezone.is_naive(dt):
+
+            dt = make_aware(
+                dt,
+                timezone=pytz.UTC
+            )
+
+        # CONVERT TO IST
+
+        dt = dt.astimezone(ist)
+
+        # FORMAT
+
+        data['date'] = dt.strftime(
+            '%Y-%m-%d %I:%M:%S %p'
+        )
+
         return data
 
     # ---------------- VALIDATION -----------------
