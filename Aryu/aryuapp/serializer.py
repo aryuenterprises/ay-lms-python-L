@@ -28,6 +28,7 @@ from courses.models import Course
 from courses.serializers import CourseSerializer, CourseSimpleSerializer,  StudentTopicStatusSerializer
 from batches.models import NewBatch, Batch, BatchCourseTrainer
 from batches.serializers import BatchSerializer
+import requests
 from django.utils.timezone import make_aware
 
 class SettingsPicsSerializer(serializers.ModelSerializer):
@@ -3030,6 +3031,8 @@ class LeadSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
 
         phone = validated_data.get("phone")
+        name = validated_data.get('name')
+        email = validated_data.get('email')
 
         # DUPLICATE CHECK
         # ==========================================
@@ -3053,6 +3056,48 @@ class LeadSerializer(serializers.ModelSerializer):
             new_status=lead.status,
             remarks="Lead Created"
         )
+        # ==========================================
+        # TELECRM LEAD CREATE
+        # ==========================================
+
+        try:
+
+            url = f"https://next-api.telecrm.in/enterprise/6a13da730fbcb752673e080c/autoupdatelead"
+
+            headers = {
+                "Authorization": f"Bearer 2b5fa0b5-b45c-4150-ab6f-09a001575ca01779800797507:0d16d31d-e820-45fa-aafc-869ef640917d",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "fields": {
+                    "name": name,
+                    "phone": phone,
+                    "email": email
+                },
+                "actions": [
+                    {
+                        "type": "ACTION_1002",
+                        "fields": {
+                            "note": "Lead Created From Website"
+                        }
+                    }
+                ]
+            }
+
+            response = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=10
+            )
+
+            print("TeleCRM Status:", response.status_code)
+            print("TeleCRM Response:", response.json())
+
+        except Exception as e:
+            print("TeleCRM Error:", str(e))
+        
 
         return lead
 
@@ -3261,6 +3306,54 @@ class PublicLeadCreateSerializer(serializers.ModelSerializer):
             "created_by_type",
             "public"
         )
+        phone = validated_data.get("phone")
+        phone = "".join(filter(str.isdigit, str(phone)))
+        if len(phone) == 10:
+            phone = f"91{phone}"
+        name = validated_data.get('name')
+        email = validated_data.get('email')
+        # ==========================================
+        # TELECRM LEAD CREATE
+        # ==========================================
+
+        try:
+
+            url = f"https://next-api.telecrm.in/enterprise/6a13da730fbcb752673e080c/autoupdatelead"
+
+            headers = {
+                "Authorization": f"Bearer 2b5fa0b5-b45c-4150-ab6f-09a001575ca01779800797507:0d16d31d-e820-45fa-aafc-869ef640917d",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "fields": {
+                    "name": name,
+                    "phone": phone,
+                    "email": email
+                },
+                "actions": [
+                    {
+                        "type": "ACTION_1002",
+                        "fields": {
+                            "note": "Lead Created From Website"
+                        }
+                    }
+                ]
+            }
+
+            response = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=10
+            )
+
+            print("TeleCRM Status:", response.status_code)
+            print("TeleCRM Response:", response.json())
+
+        except Exception as e:
+            print("TeleCRM Error:", str(e))
 
         return Lead.objects.create(**validated_data)
+
 
