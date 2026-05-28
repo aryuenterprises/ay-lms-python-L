@@ -21,7 +21,7 @@ class EbookSEOSerializer(serializers.ModelSerializer):
 
     def get_seo_image_url(self, obj):
         if obj.seo_image and hasattr(obj.seo_image, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.seo_image.url
+            return 'https://portal.aryuacademy.com/api' + obj.seo_image.url
         return None
 
 
@@ -33,7 +33,7 @@ class EbookToolSerializer(serializers.ModelSerializer):
         fields = ['id', 'tool_title', 'tool_image','tool_image_url']
     def get_tool_image_url(self, obj):
         if obj.tool_image and hasattr(obj.tool_image, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.tool_image.url
+            return 'https://portal.aryuacademy.com/api' + obj.tool_image.url
         return None
 
 
@@ -119,12 +119,12 @@ class EbookSerializer(serializers.ModelSerializer):
 
     def get_ebook_image_url(self, obj):
         if obj.ebook_image and hasattr(obj.ebook_image, 'url'):
-            return 'https://aylms.aryuprojects.com/api/' + obj.ebook_image.url
+            return 'https://portal.aryuacademy.com/api/' + obj.ebook_image.url
         return None
     
     def get_pdf_url(self, obj):
         if obj.pdf and hasattr(obj.pdf, 'url'):
-            return 'https://aylms.aryuprojects.com/api/' + obj.pdf.url
+            return 'https://portal.aryuacademy.com/api/' + obj.pdf.url
         return None
     
     def get_participants_count(self, obj):
@@ -250,16 +250,16 @@ class PublicEbookListSerializer(serializers.ModelSerializer):
 
     def get_image(self, obj):
         if obj.ebook_image and hasattr(obj.ebook_image, 'url'):
-            return 'https://aylms.aryuprojects.com/api/' + obj.ebook_image.url
+            return 'https://portal.aryuacademy.com/api/' + obj.ebook_image.url
         return None
     def get_youtube_url(self, obj):
         if obj.youtube and hasattr(obj.youtube, 'url'):
-            return 'https://aylms.aryuprojects.com/api/' + obj.youtube.url
+            return 'https://portal.aryuacademy.com/api/' + obj.youtube.url
         return None
 
     def get_testimonial_url(self, obj):
         if obj.testimonial and hasattr(obj.testimonial, 'url'):
-            return 'https://aylms.aryuprojects.com/api/' + obj.testimonial.url
+            return 'https://portal.aryuacademy.com/api/' + obj.testimonial.url
         return None
     
     def get_language(self, obj):
@@ -419,7 +419,7 @@ class EbookRegistrationSerializer(serializers.ModelSerializer):
         return "ebookuser"
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
 
 class PaymentTransactionListSerializer(serializers.ModelSerializer):
