@@ -1,131 +1,211 @@
-from rest_framework import status, viewsets
+from rest_framework import (
+    status,
+    viewsets
+)
+
 from rest_framework.response import Response
-from rest_framework.permissions import  AllowAny
-from pypdf import PdfReader, PdfWriter
-from django.core.files.base import ContentFile
-from io import BytesIO
+
+from rest_framework.permissions import (
+    AllowAny
+)
+
 from .models import *
 from .serializers import *
-# Create your views here.
+
+
+# =====================================================
+# RESOURCE VIEWSET
+# =====================================================
+
 class ResourcesViewset(viewsets.ModelViewSet):
 
-    queryset = Resources.objects.all().order_by("-id")
-    serializer_class = ResourcesSerializers
+    queryset = (Resources.objects.all().order_by("-id"))
+    serializer_class = (ResourcesSerializers)
     permission_classes = [AllowAny]
     authentication_classes = []
-    #List
-    def list(self, request, *args, **kwargs):
+    def get_serializer_context(self):
 
-        queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, many=True)
+        return {
+            "request": self.request
+        }
 
-        return Response(
-            {
-                "status": True,
-                "message": "Resources list",
-                "data": serializer.data
-            },
-            status=status.HTTP_200_OK
-        )
-  
-    # CREATE
-    def create(self, request, *args, **kwargs):
 
-        data = request.data.copy()
+# =====================================================
+# FORM VIEWSET
+# =====================================================
 
-        uploaded_file = request.FILES.get("file")
+# class FormViewset(
+#     viewsets.ViewSet
+# ):
 
-        if uploaded_file and uploaded_file.name.endswith(".pdf"):
+#     permission_classes = [AllowAny]
 
-            reader = PdfReader(uploaded_file)
-            writer = PdfWriter()
+#     authentication_classes = []
 
-            for page in reader.pages:
-                writer.add_page(page)
+#     # ==========================================
+#     # CREATE
+#     # ==========================================
 
-            # Set PDF metadata title
-            title = data.get("title", "Document")
+#     def create(self, request):
 
-            writer.add_metadata({
-                "/Title": title
-            })
+        
 
-            pdf_bytes = BytesIO()
-            writer.write(pdf_bytes)
-            pdf_bytes.seek(0)
+#         resource_id = request.data.get(
+#             "resource_id"
+#         )
 
-            updated_file = ContentFile(
-                pdf_bytes.read(),
-                name=uploaded_file.name
-            )
+#         if not resource_id:
 
-            data["file"] = updated_file
+#             return Response(
+#                 {
+#                     "status": False,
+#                     "message":
+#                         "resource_id is required"
+#                 },
+#                 status=400
+#             )
 
-        serializer = self.get_serializer(data=data)
+#         resource = (
+#             Resources.objects
+#             .filter(id=resource_id)
+#             .first()
+#         )
 
-        if serializer.is_valid():
-            serializer.save()
+#         if not resource:
 
-            return Response(
-                {
-                    "status": True,
-                    "message": "Resources created successfully",
-                    "data": serializer.data
-                },
-                status=status.HTTP_201_CREATED
-            )
+#             return Response(
+#                 {
+#                     "status": False,
+#                     "message":
+#                         "Resource not found"
+#                 },
+#                 status=404
+#             )
 
-        return Response(
-            {
-                "status": False,
-                "message": "Validation error",
-                "errors": serializer.errors
-            },
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    # PATCH / UPDATE
-    def partial_update(self, request, *args, **kwargs):
+#         data = request.data.copy()
 
-        instance = self.get_object()
+#         data["resource"] = (
+#             resource.id
+#         )
 
-        serializer = self.get_serializer(
-            instance,
-            data=request.data,
-            partial=True
-        )
+#         serializer = FormSerializer(
+#             data=data
+#         )
 
-        if serializer.is_valid():
-            serializer.save()
+#         if serializer.is_valid():
 
-            return Response(
-                {
-                    "status": True,
-                    "message": "Resources updated successfully",
-                    "data": serializer.data
-                },
-                status=status.HTTP_200_OK
-            )
+#             form = serializer.save()
 
-        return Response(
-            {
-                "status": False,
-                "message": "Validation error",
-                "errors": serializer.errors
-            },
-            status=status.HTTP_400_BAD_REQUEST
-        )
+#             return Response(
+#                 {
+#                     "status": True,
 
-    # DELETE
-    def destroy(self, request, *args, **kwargs):
+#                     "message":
+#                         "Form submitted successfully",
 
-        instance = self.get_object()
-        instance.delete()
+#                     "download_url":
+#                         request.build_absolute_uri(
+#                             resource.file.url
+#                         ),
 
-        return Response(
-            {
-                "status": True,
-                "message": "Resource deleted successfully"
-            },
-            status=status.HTTP_200_OK
-        )
-   
+#                     "data":
+#                         FormSerializer(form).data
+#                 },
+#                 status=201
+#             )
+
+#         return Response(
+#             {
+#                 "status": False,
+#                 "errors":
+#                     serializer.errors
+#             },
+#             status=400
+#         )
+
+#     # ==========================================
+#     # LIST
+#     # ==========================================
+
+#     def list(self, request):
+
+#         queryset = (
+#             Form.objects.all()
+#             .order_by("-id")
+#         )
+
+#         serializer = FormSerializer(
+#             queryset,
+#             many=True
+#         )
+
+#         return Response(
+#             {
+#                 "status": True,
+#                 "data": serializer.data
+#             }
+#         )
+
+#     # ==========================================
+#     # RETRIEVE
+#     # ==========================================
+
+#     def retrieve(self, request, pk=None):
+
+#         form = Form.objects.filter(
+#             id=pk
+#         ).first()
+
+#         if not form:
+
+#             return Response(
+#                 {
+#                     "status": False,
+#                     "message":
+#                         "Form not found"
+#                 },
+#                 status=404
+#             )
+
+#         serializer = FormSerializer(
+#             form
+#         )
+
+#         return Response(
+#             {
+#                 "status": True,
+#                 "data": serializer.data
+#             }
+#         )
+
+#     # ==========================================
+#     # DELETE
+#     # ==========================================
+
+#     def destroy(self, request, pk=None):
+
+#         form = Form.objects.filter(
+#             id=pk
+#         ).first()
+
+#         if not form:
+
+#             return Response(
+#                 {
+#                     "status": False,
+#                     "message":
+#                         "Form not found"
+#                 },
+#                 status=404
+#             )
+
+#         form.delete()
+
+#         return Response(
+#             {
+#                 "status": True,
+#                 "message":
+#                     "Form deleted successfully"
+#             }
+#         )
+    
