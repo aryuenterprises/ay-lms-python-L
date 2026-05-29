@@ -121,36 +121,6 @@ class PaymentTransaction(models.Model):
 
             return f"{prefix}{next_number:04d}"
 
-
-    def save(self, *args, **kwargs):
-
-        successful_statuses = ["done", "success", "paid"]
-
-        if self.payment_status in successful_statuses:
-
-            if not self.invoice_date:
-                self.invoice_date = datetime.now().date()
-
-            if not self.invoice_no:
-
-                for _ in range(10):
-
-                    try:
-
-                        with transaction.atomic():
-
-                            self.invoice_no = self.generate_invoice_no()
-
-                            return super().save(*args, **kwargs)
-
-                    except Exception:
-
-                        self.invoice_no = None
-
-                raise Exception("Unable to generate unique invoice number")
-
-        return super().save(*args, **kwargs)
-
     def __str__(self):
         return f"{self.student} - {self.amount} {self.currency} ({self.payment_status})"
 
