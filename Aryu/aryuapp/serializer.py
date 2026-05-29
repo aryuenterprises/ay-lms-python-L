@@ -4,7 +4,7 @@ from django.contrib.auth.hashers import make_password
 from .utils import get_protected_file_url
 from decimal import Decimal, InvalidOperation
 import mimetypes
-from django.db.models import OuterRef, Subquery
+from django.db.models import OuterRef, Subquery,F
 from datetime import datetime, time
 from django.utils import timezone
 import calendar
@@ -1412,7 +1412,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         if trainer_courses:
             qs = qs.filter(course_id__in=trainer_courses)
 
-        qs = qs.order_by("latest_submitted_at").desc(nulls_last = False),"id"
+        qs = qs.order_by(F("latest_submitted_at").asc(nulls_last=True),"id")
 
         return AssignmentSerializer(
             qs, many=True,
