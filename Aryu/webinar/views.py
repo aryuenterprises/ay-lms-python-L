@@ -107,10 +107,10 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
 
     def _get_client(self):
+
         gateway = PaymentGateway.objects.filter(
             gatway_name__icontains="razorpay"
         ).first()
-
 
         if not gateway:
             return None, None
@@ -118,31 +118,72 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         client = razorpay.Client(
             auth=(gateway.public_key, gateway.secret_key)
         )
+
         return client, gateway
 
     @action(detail=False, methods=["post"])
     def create(self, request):
+
         amount = request.data.get("amount")
         webinar_id = request.data.get("webinar_id")
+        transaction_id = request.data.get("transaction_id")
+
         name = request.data.get("name")
         email = request.data.get("email")
         phone = request.data.get("phone")
         profession = request.data.get("profession")
         state = request.data.get("state")
         city = request.data.get("city")
+        source = request.data.get("source")
 
-        if not all([amount, webinar_id, phone]):
+        if not all([amount, webinar_id, phone, transaction_id]):
+
             return Response(
-                {"success": False, "message": "Missing required fields"},
+                {
+                    "success": False,
+                    "message": "Missing required fields"
+                },
                 status=400
             )
+
+        # -----------------------------------
+        # EXISTING TRANSACTION
+        # -----------------------------------
+
+        txn = PaymentTransaction.objects.filter(
+            id=transaction_id,
+            payment_status="pending"
+        ).first()
+
+        if not txn:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Invalid transaction"
+                },
+                status=400
+            )
+
+        # -----------------------------------
+        # RAZORPAY CLIENT
+        # -----------------------------------
 
         client, gateway = self._get_client()
+
         if not client:
+
             return Response(
-                {"success": False, "message": "Razorpay not configured"},
+                {
+                    "success": False,
+                    "message": "Razorpay not configured"
+                },
                 status=400
             )
+
+        # -----------------------------------
+        # CREATE ORDER
+        # -----------------------------------
 
         order = client.order.create({
             "amount": int(float(amount) * 100),
@@ -150,92 +191,67 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             "payment_capture": 1,
             "notes": {
                 "webinar_id": webinar_id,
+                "transaction_id": str(txn.id),
                 "name": name,
                 "email": email,
                 "phone": phone,
             }
         })
 
-        PaymentTransaction.objects.create(
-            gateway=gateway,
-            amount=amount,
-            currency="INR",
-            payment_status="pending",
-            order_id=order["id"],
-            metadata={
-                "webinar_id": webinar_id,
-                "name": name,
-                "email": email,
-                "phone": phone,
-                "profession": profession,
-                "state": state,
-                "city": city,
-                "source":request.data.get("source")
-                
-            },
-            description="Webinar payment via Razorpay Checkout",
-        )   
+        # -----------------------------------
+        # UPDATE SAME TRANSACTION
+        # -----------------------------------
 
-        webinar = get_object_or_404(Webinar, uuid=webinar_id)
+        txn.gateway = gateway
+        txn.currency = "INR"
+        txn.order_id = order["id"]
+
+        txn.metadata = {
+            "webinar_id": webinar_id,
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "profession": profession,
+            "state": state,
+            "city": city,
+            "source": source
+        }
+
+        txn.description = "Webinar payment via Razorpay Checkout"
+
+        txn.save(update_fields=[
+            "gateway",
+            "currency",
+            "order_id",
+            "metadata",
+            "description",
+        ])
+
+        # -----------------------------------
+        # WEBINAR
+        # -----------------------------------
+
+        webinar = get_object_or_404(
+            Webinar,
+            uuid=webinar_id
+        )
+
+        # -----------------------------------
+        # RESPONSE
+        # -----------------------------------
 
         return Response({
             "success": True,
+            "transaction_id": txn.id,
             "order_id": order["id"],
             "key": gateway.public_key,
             "amount": int(float(amount) * 100),
             "currency": "INR",
             "webinar_title": webinar.title,
             "waba_link": webinar.waba_link,
-            "source": request.data.get("source")
+            "source": source
         })
 
-        
-    # -------------------------
-    # Verify Razorpay Payment
-    # -------------------------
-    @csrf_exempt
-    @action(detail=False, methods=['post'], url_path="verify")
-    def verify_payment(self, request):
-        payment_id = request.data.get("razorpay_payment_id")
-        order_id = request.data.get("razorpay_order_id")
-        signature = request.data.get("razorpay_signature")
-
-        if not all([payment_id, order_id, signature]):
-            return Response(
-                {"success": False, "message": "Missing payment verification fields"},
-                status=400
-            )
-
-        gateway = PaymentGateway.objects.filter(
-            gatway_name__icontains="razorpay"
-        ).first()
-
-        if not gateway or not gateway.secret_key:
-            return Response(
-                {"success": False, "message": "Razorpay secret not configured"},
-                status=500
-            )
-
-        try:
-            razorpay_client = razorpay.Client(
-                auth=(gateway.public_key, gateway.secret_key)
-            )
-
-            razorpay_client.utility.verify_payment_signature({
-                "razorpay_payment_id": payment_id,
-                "razorpay_order_id": order_id,
-                "razorpay_signature": signature
-            })
-
-        except razorpay.errors.SignatureVerificationError:
-            return Response(
-                {"success": False, "message": "Invalid payment signature"},
-                status=400
-            )
-
-        # Let webhook handle final status
-
-        return Response({"success": True})
 
 class PublicWebinarViewSet(
     mixins.ListModelMixin,
