@@ -156,26 +156,6 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             }
         })
 
-        PaymentTransaction.objects.create(
-            gateway=gateway,
-            amount=amount,
-            currency="INR",
-            payment_status="pending",
-            order_id=order["id"],
-            metadata={
-                "webinar_id": webinar_id,
-                "name": name,
-                "email": email,
-                "phone": phone,
-                "profession": profession,
-                "state": state,
-                "city": city,
-                "source":request.data.get("source")
-                
-            },
-            description="Webinar payment via Razorpay Checkout",
-        )   
-
         webinar = get_object_or_404(Webinar, uuid=webinar_id)
 
         return Response({
