@@ -1,6 +1,6 @@
 from django.db import models
 from django.contrib.contenttypes.fields import GenericRelation
-from django.db.models import Max
+from django.db import transaction, IntegrityError
 from datetime import datetime
 # Create your models here.
 
@@ -102,6 +102,7 @@ class PaymentTransaction(models.Model):
 
         latest_invoice = (
             PaymentTransaction.objects
+            .select_for_update()
             .filter(invoice_no__startswith=prefix)
             .order_by("-invoice_no")
             .values_list("invoice_no", flat=True)
@@ -116,17 +117,39 @@ class PaymentTransaction(models.Model):
 
         return f"{prefix}{next_number:04d}"
 
+
     def save(self, *args, **kwargs):
 
-        if self.payment_status in ["done", "success", "paid"]:
+        successful_statuses = ["done", "success", "paid"]
 
-            if not self.invoice_no:
-                self.invoice_no = self.generate_invoice_no()
+        if self.payment_status in successful_statuses:
 
             if not self.invoice_date:
                 self.invoice_date = datetime.now().date()
 
-        super().save(*args, **kwargs)
+            # already generated
+            if self.invoice_no:
+                return super().save(*args, **kwargs)
+
+            # retry mechanism
+            for _ in range(5):
+
+                try:
+
+                    with transaction.atomic():
+
+                        self.invoice_no = self.generate_invoice_no()
+
+                        return super().save(*args, **kwargs)
+
+                except IntegrityError:
+
+                    # regenerate and retry
+                    self.invoice_no = None
+
+            raise IntegrityError("Unable to generate unique invoice number")
+
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.student} - {self.amount} {self.currency} ({self.payment_status})"
