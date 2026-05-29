@@ -1412,7 +1412,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         if trainer_courses:
             qs = qs.filter(course_id__in=trainer_courses)
 
-        qs = qs.order_by("-latest_submitted_at", "-id")
+        qs = qs.order_by("latest_submitted_at").desc(nulls_last = False),"id"
 
         return AssignmentSerializer(
             qs, many=True,
