@@ -92,34 +92,39 @@ class PaymentTransaction(models.Model):
         db_table = 'aryuapp_paymenttransaction'
 
     def generate_invoice_no(self):
+
         now = datetime.now()
 
-        year = now.strftime("%y")   # 26
-        month = now.strftime("%m")  # 05
+        year = now.strftime("%y")
+        month = now.strftime("%m")
 
         prefix = f"AA{year}{month}"
 
-        count = 1
+        latest_invoice = (
+            PaymentTransaction.objects
+            .filter(invoice_no__startswith=prefix)
+            .order_by("-invoice_no")
+            .values_list("invoice_no", flat=True)
+            .first()
+        )
 
-        while True:
-            invoice_no = f"{prefix}{count:02d}"
+        if latest_invoice:
+            last_number = int(latest_invoice[-4:])
+            next_number = last_number + 1
+        else:
+            next_number = 1
 
-            exists = PaymentTransaction.objects.filter(
-                invoice_no=invoice_no
-            ).exclude(id=self.id).exists()
-
-            if not exists:
-                return invoice_no
-
-            count += 1
+        return f"{prefix}{next_number:04d}"
 
     def save(self, *args, **kwargs):
 
-        if not self.invoice_no:
-            self.invoice_no = self.generate_invoice_no()
+        if self.payment_status in ["done", "success", "paid"]:
 
-        if not self.invoice_date:
-            self.invoice_date = datetime.now().date()
+            if not self.invoice_no:
+                self.invoice_no = self.generate_invoice_no()
+
+            if not self.invoice_date:
+                self.invoice_date = datetime.now().date()
 
         super().save(*args, **kwargs)
 
