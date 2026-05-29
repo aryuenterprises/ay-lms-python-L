@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.contenttypes.fields import GenericRelation
 from django.db import transaction, IntegrityError
+from django.db.models import Max
 from datetime import datetime
 # Create your models here.
 
@@ -100,22 +101,25 @@ class PaymentTransaction(models.Model):
 
         prefix = f"AA{year}{month}"
 
-        latest_invoice = (
-            PaymentTransaction.objects
-            .select_for_update()
-            .filter(invoice_no__startswith=prefix)
-            .order_by("-invoice_no")
-            .values_list("invoice_no", flat=True)
-            .first()
-        )
+        with transaction.atomic():
 
-        if latest_invoice:
-            last_number = int(latest_invoice[-4:])
+            latest_invoice = (
+                PaymentTransaction.objects
+                .select_for_update()
+                .filter(invoice_no__startswith=prefix)
+                .aggregate(
+                    max_invoice=Max("invoice_no")
+                )["max_invoice"]
+            )
+
+            if latest_invoice:
+                last_number = int(latest_invoice[-4:])
+            else:
+                last_number = 0
+
             next_number = last_number + 1
-        else:
-            next_number = 1
 
-        return f"{prefix}{next_number:04d}"
+            return f"{prefix}{next_number:04d}"
 
 
     def save(self, *args, **kwargs):
@@ -127,27 +131,23 @@ class PaymentTransaction(models.Model):
             if not self.invoice_date:
                 self.invoice_date = datetime.now().date()
 
-            # already generated
-            if self.invoice_no:
-                return super().save(*args, **kwargs)
+            if not self.invoice_no:
 
-            # retry mechanism
-            for _ in range(5):
+                for _ in range(10):
 
-                try:
+                    try:
 
-                    with transaction.atomic():
+                        with transaction.atomic():
 
-                        self.invoice_no = self.generate_invoice_no()
+                            self.invoice_no = self.generate_invoice_no()
 
-                        return super().save(*args, **kwargs)
+                            return super().save(*args, **kwargs)
 
-                except IntegrityError:
+                    except Exception:
 
-                    # regenerate and retry
-                    self.invoice_no = None
+                        self.invoice_no = None
 
-            raise IntegrityError("Unable to generate unique invoice number")
+                raise Exception("Unable to generate unique invoice number")
 
         return super().save(*args, **kwargs)
 
