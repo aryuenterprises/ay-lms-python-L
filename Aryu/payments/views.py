@@ -721,12 +721,40 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
     def student_payment_history(self, request, student_id=None):
 
         user = request.user
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
-        # =========================================================
-        # FAST OPTIMIZED QUERYSET
-        # =========================================================
+        if user.user_type not in ["student", "super_admin"]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unauthorized access"
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Restrict only students
+        if user.user_type == "student":
+
+            logged_student_id = str(user.student_id)
+
+            if str(student_id) != logged_student_id:
+
+                logger.warning(
+                    f"Student ID tampering attempt | "
+                    f"user={user.id} | "
+                    f"requested={student_id} | "
+                    f"actual={logged_student_id}"
+                )
+
+                return Response(
+                    {
+                        "success": False,
+                        "message": "You are not allowed to access other student payment records"
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        # super_admin skips validation and can view any student
+
         transactions = (
             PaymentTransaction.objects
             .filter(
@@ -745,27 +773,23 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             )
             .order_by("-invoice_date", "-created_at")
         )
+        student = Student.objects.get(student_id=student_id)
 
-        # =========================================================
-        # RESPONSE DATA
-        # =========================================================
+        serializer = StudentPaymentSummarySerializer(
+            student,
+            context={"request": request}
+        )
+
         payment_logs = [
             {
-                "course_name": (
-                    tx.course.course_name
-                    if tx.course else None
-                ),
-
+                "course_name": tx.course.course_name if tx.course else None,
+                "student_payment_summaries": serializer.data,
                 "invoice_date": tx.invoice_date,
-
                 "transaction_id": tx.transaction_id,
-
                 "amount": float(tx.amount or 0),
-
                 "payment_status": tx.payment_status,
-
                 "invoice_url": (
-                    "https://portal.aryuacademy.com/api" + tx.invoice.url
+                    "https://aylms.aryuprojects.com/api" + tx.invoice.url
                 ) if tx.invoice and hasattr(tx.invoice, "url") else None
             }
             for tx in transactions
@@ -776,7 +800,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             "count": len(payment_logs),
             "payment_logs": payment_logs
         })
-
+    
     # 2. Delete FULL student + all transactions
     @action(detail=True, methods=['delete'], url_path='delete-student')
     def delete_student(self, request, pk=None):
