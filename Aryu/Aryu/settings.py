@@ -41,7 +41,7 @@ INSTALLED_APPS = [
 
     'rest_framework',
     'rest_framework.authtoken',
-    'django.contrib.postgres',
+    "rest_framework_simplejwt.token_blacklist",
 
     'dj_rest_auth',
     'dj_rest_auth.registration',
@@ -52,8 +52,13 @@ INSTALLED_APPS = [
     'allauth.socialaccount',
     "allauth.socialaccount.providers.github",
     "allauth.socialaccount.providers.google",
+    "rest_framework_simplejwt",
     # "captcha",
     'django_crontab',
+    'django.contrib.postgres',
+    "django_celery_beat",
+    "drf_spectacular",
+    
     
     'django_countries',
     'channels',
