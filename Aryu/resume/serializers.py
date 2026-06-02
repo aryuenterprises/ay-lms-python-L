@@ -4,6 +4,7 @@ from payments.models import PaymentTransaction
 from .models import ResumeRegistration,Contact,Subscription,PaymentHistory, UserSubscription, UserResume, ResumeTemplate
 from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework.exceptions import AuthenticationFailed
 from django.utils.timezone import now
 
@@ -25,42 +26,65 @@ class ContactSerializers(serializers.ModelSerializer):
         model = Contact
         fields ="__all__"
 
-class CustomTokenRefreshSerializer(serializers.Serializer):
-    # Accept the 'refresh' key exactly like standard Simple JWT
-    refresh = serializers.CharField()
+class CustomTokenRefreshSerializer(TokenRefreshSerializer):
 
     def validate(self, attrs):
+
         refresh_token_string = attrs.get("refresh")
 
         try:
-            # 1. Validate and decode the incoming token string
-            decoded_token = UntypedToken(refresh_token_string)
-            
-            # 2. Extract the identifier (usually 'user_id' in the token payload)
-            user_id = decoded_token.get("user_id")
-            if not user_id:
-                raise AuthenticationFailed("Invalid token payload: missing user identifier.")
 
-            # 3. Query your CUSTOM ResumeRegistration table instead of auth.User
-            user_profile = ResumeRegistration.objects.get(
-                id=user_id, 
-                status=True,      # Ensure user is active
-                is_deleted=False  # Ensure user is not soft-deleted
+            # Decode refresh token
+            refresh = RefreshToken(refresh_token_string)
+
+            user_id = refresh.get("user_id")
+
+            if not user_id:
+                raise AuthenticationFailed(
+                    "Invalid token payload."
+                )
+
+            # Validate user
+            user = ResumeRegistration.objects.get(
+                id=user_id,
+                status=True,
+                is_deleted=False
             )
 
-        except ResumeRegistration.DoesNotExist:
-            # Captures when the custom user record is missing, inactive, or deleted
-            raise AuthenticationFailed("Session invalid: Registered user does not exist or is deactivated.")
-        except (TokenError, InvalidToken) as e:
-            # Captures expired or tampered-with refresh tokens
-            raise InvalidToken({"detail": "Token is invalid or expired."})
+            # Create new access token
+            access_token = str(refresh.access_token)
 
-        # 4. If the user exists and is valid, generate a brand-new access token
-        refresh_token_obj = RefreshToken(refresh_token_string)
-        
-        return {
-            "access": str(refresh_token_obj.access_token),
-        }
+            response_data = {
+                "access_token": access_token,
+            }
+
+            # OPTIONAL REFRESH ROTATION
+            # Create new refresh token manually
+
+            new_refresh = RefreshToken()
+
+            new_refresh["user_id"] = user.id
+            new_refresh["id"] = user.id
+
+            new_refresh["email"] = user.email
+            new_refresh["user_type"] = "resume_user"
+
+            new_refresh["first_name"] = user.first_name
+            new_refresh["last_name"] = user.last_name
+
+            response_data["refresh_token"] = str(new_refresh)
+
+            return response_data
+
+        except ResumeRegistration.DoesNotExist:
+            raise AuthenticationFailed(
+                "User inactive or deleted."
+            )
+
+        except (TokenError, InvalidToken):
+            raise InvalidToken(
+                {"detail": "Token invalid or expired."}
+            )
 
 class SubscriptionSerializer(serializers.ModelSerializer):
 
@@ -197,13 +221,60 @@ class IncrementalSectionUpdateSerializer(serializers.Serializer):
 
 class DashboardSubscriptionSerializer(serializers.ModelSerializer):
 
-    validity_type = serializers.SerializerMethodField()
-    expires_at = serializers.SerializerMethodField()
+    name = serializers.CharField(
+        source="subscription.name"
+    )
+
+    slug = serializers.CharField(
+        source="subscription.slug"
+    )
+
+    description = serializers.CharField(
+        source="subscription.description"
+    )
+
+    price = serializers.DecimalField(
+        source="subscription.price",
+        max_digits=10,
+        decimal_places=2
+    )
+
+    discount_price = serializers.DecimalField(
+        source="subscription.discount_price",
+        max_digits=10,
+        decimal_places=2,
+        allow_null=True
+    )
+
+    billing_type = serializers.CharField(
+        source="subscription.billing_type"
+    )
+
+    duration_days = serializers.IntegerField(
+        source="subscription.duration_days"
+    )
+
+    limit = serializers.CharField(
+        source="subscription.limit"
+    )
+
+    validity = serializers.SerializerMethodField()
+
+    expires_at = serializers.DateTimeField(
+        source="end_date",
+        allow_null=True
+    )
+
     days_remaining = serializers.SerializerMethodField()
-    purchased_at = serializers.SerializerMethodField()
+
+    purchased_at = serializers.DateTimeField(
+        source="start_date"
+    )
 
     class Meta:
-        model = Subscription
+
+        model = UserSubscription
+
         fields = [
             'name',
             'slug',
@@ -213,62 +284,39 @@ class DashboardSubscriptionSerializer(serializers.ModelSerializer):
             'billing_type',
             'duration_days',
             'limit',
-            'validity_type',
+            'validity',
             'expires_at',
             'days_remaining',
             'purchased_at'
         ]
 
-    def get_validity_type(self, obj):
+    # ----------------------------------------
+    # VALIDITY
+    # ----------------------------------------
 
-        return (
-            "Lifetime"
-            if obj.billing_type == "lifetime"
-            else "Limited"
-        )
+    def get_validity(self, obj):
 
-    def get_expires_at(self, obj):
+        if obj.subscription.billing_type == "lifetime":
+            return "Lifetime"
 
-        current_subscription = self.context.get(
-            "current_subscription"
-        )
+        return f"{obj.subscription.duration_days} Days"
 
-        if current_subscription:
-            return current_subscription.end_date
-
-        return None
+    # ----------------------------------------
+    # DAYS REMAINING
+    # ----------------------------------------
 
     def get_days_remaining(self, obj):
 
-        current_subscription = self.context.get(
-            "current_subscription"
-        )
-
-        if (
-            not current_subscription or
-            not current_subscription.end_date
-        ):
+        if not obj.end_date:
             return None
 
         remaining = (
-            current_subscription.end_date - now()
+            obj.end_date.date()
+            - now().date()
         ).days
 
         return max(remaining, 0)
-
-    def get_purchased_at(self, obj):
-
-        current_subscription = self.context.get(
-            "current_subscription"
-        )
-
-        user = self.context.get("user")
-
-        if current_subscription:
-            return current_subscription.start_date
-
-        return user.created_at
-
+    
 class DashboardCurrentSubscriptionSerializer(serializers.Serializer):
     plan_name = serializers.CharField()
     slug = serializers.CharField()
@@ -300,6 +348,105 @@ class DashboardCurrentSubscriptionSerializer(serializers.Serializer):
         remaining = (obj.end_date - now()).days
 
         return max(remaining, 0)
+
+class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
+
+    plan_name = serializers.CharField(
+        source="subscription.name"
+    )
+
+    amount = serializers.SerializerMethodField()
+
+    currency = serializers.SerializerMethodField()
+
+    payment_status = serializers.SerializerMethodField()
+
+    payment_mode = serializers.SerializerMethodField()
+
+    invoice_no = serializers.SerializerMethodField()
+
+    invoice_date = serializers.SerializerMethodField()
+
+
+    class Meta:
+
+        model = UserSubscription
+
+        fields = [
+            "id",
+            "plan_name",
+            "amount",
+            "currency",
+            "payment_status",
+            "payment_mode",
+            "invoice_no",
+            "invoice_date",
+        ]
+
+    # ----------------------------------------
+    # AMOUNT
+    # ----------------------------------------
+
+    def get_amount(self, obj):
+
+        if obj.payment_transaction:
+            return obj.payment_transaction.amount
+
+        return "0.00"
+
+    # ----------------------------------------
+    # CURRENCY
+    # ----------------------------------------
+
+    def get_currency(self, obj):
+
+        if obj.payment_transaction:
+            return obj.payment_transaction.currency
+
+        return "INR"
+
+    # ----------------------------------------
+    # PAYMENT STATUS
+    # ----------------------------------------
+
+    def get_payment_status(self, obj):
+
+        if obj.payment_transaction:
+            return obj.payment_transaction.payment_status
+
+        return "free"
+
+    # ----------------------------------------
+    # PAYMENT MODE
+    # ----------------------------------------
+
+    def get_payment_mode(self, obj):
+
+        if obj.payment_transaction:
+            return obj.payment_transaction.payment_mode
+
+        return "free"
+
+    # ----------------------------------------
+    # INVOICE
+    # ----------------------------------------
+
+    def get_invoice_no(self, obj):
+
+        if obj.payment_transaction:
+            return obj.payment_transaction.invoice_no
+
+        return "free"
+
+    def get_invoice_date(self, obj):
+
+        if (
+            obj.payment_transaction and
+            obj.payment_transaction.invoice_date
+        ):
+            return obj.payment_transaction.invoice_date
+
+        return obj.start_date
     
 class DashboardTransactionSerializer(serializers.ModelSerializer):
     """Returns safe transaction history for the user."""

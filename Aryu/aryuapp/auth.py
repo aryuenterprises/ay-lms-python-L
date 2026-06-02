@@ -3,8 +3,9 @@ import jwt
 from django.conf import settings
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
+from django.conf import settings
 
-SECRET_KEY = 'django-insecure-e-ar=#hq&(q0ujnwofc!%8#in(2z1osso65+(8i+&elo=cn4$k'
+SECRET_KEY = settings.SECRET_KEY
 
 class CustomJWTAuthentication(BaseAuthentication):
     def authenticate(self, request):
@@ -30,37 +31,122 @@ class CustomJWTAuthentication(BaseAuthentication):
                 self.role_name = payload.get("role_name")
                 self.permissions = payload.get("permissions", [])
                 self.is_authenticated = True
-                self.pk = payload.get("user_id")
-                self.id =  payload.get("user_id")
-                self.is_staff = self.user_type in ["admin", "super_admin"]
-                self.is_superuser = self.user_type == "superadmin"
 
-                # Attach IDs based on role
+                # =================================================
+                # REQUIRED FOR DRF
+                # =================================================
+
+                self.id = payload.get("user_id")
+
+                self.pk = payload.get("user_id")
+
+                # =================================================
+                # ADMIN FLAGS
+                # =================================================
+
+                self.is_staff = (
+                    self.user_type in ["admin", "super_admin"]
+                )
+
+                self.is_superuser = (
+                    self.user_type == "super_admin"
+                )
+
+                # =================================================
+                # USER TYPE DATA
+                # =================================================
+
                 if self.user_type == "student":
-                    self.registration_id = payload.get("registration_id")
-                    self.student_id = payload.get("student_id")
-                    self.first_name = payload.get("first_name")
-                    
+
+                    self.registration_id = payload.get(
+                        "registration_id"
+                    )
+
+                    self.student_id = payload.get(
+                        "student_id"
+                    )
+
+                    self.first_name = payload.get(
+                        "first_name"
+                    )
+
                 elif self.user_type == "tutor":
-                    self.trainer_id = payload.get("trainer_id")
-                    self.employee_id = payload.get("employee_id")
-                    self.full_name = payload.get("full_name")
+
+                    self.trainer_id = payload.get(
+                        "trainer_id"
+                    )
+
+                    self.employee_id = payload.get(
+                        "employee_id"
+                    )
+
+                    self.full_name = payload.get(
+                        "full_name"
+                    )
+                elif self.user_type == "resume_user":
+                    self.first_name = payload.get(
+                        "first_name"
+                    )
+                    self.last_name = payload.get(
+                        "last_name"
+                    )
+                    self.email = payload.get(
+                        "email"
+                    )
+                    self.id = payload.get(
+                        "id"
+                    )
 
                 elif self.user_type == "admin":
-                    self.admin_id = payload.get("employee_id")
-                    self.trainer_id = payload.get("trainer_id")
-                    self.full_name = payload.get("full_name")
+
+                    self.admin_id = payload.get(
+                        "employee_id"
+                    )
+
+                    self.trainer_id = payload.get(
+                        "trainer_id"
+                    )
+
+                    self.full_name = payload.get(
+                        "full_name"
+                    )
 
                 elif self.user_type == "employer":
-                    self.employer_id = payload.get("employer_id")
-                    self.company_name = payload.get("company_name")
-                    self.full_name = payload.get("full_name")
 
-                elif self.user_type == "superadmin":
+                    self.employer_id = payload.get(
+                        "employer_id"
+                    )
+
+                    self.company_name = payload.get(
+                        "company_name"
+                    )
+
+                    self.full_name = payload.get(
+                        "full_name"
+                    )
+
+                elif self.user_type == "super_admin":
+
                     self.admin_id = payload.get("admin_id")
                     self.username = payload.get("username")
                     self.user_id = payload.get("user_id")
                     self.full_name = payload.get("full_name")
+
+            # =====================================================
+            # OPTIONAL HELPERS
+            # =====================================================
+
+            def __str__(self):
+
+                return self.username or "JWTUser"
+
+            def has_perm(self, perm, obj=None):
+
+                return perm in self.permissions
+
+            def has_module_perms(self, app_label):
+
+                return True
 
         user = JWTUser(payload)
         # store raw payload in request if you want

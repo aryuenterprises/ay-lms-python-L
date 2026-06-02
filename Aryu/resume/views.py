@@ -22,7 +22,9 @@ from decimal import Decimal
 from django.utils import timezone
 from rest_framework.decorators import action, api_view,permission_classes
 from rest_framework_simplejwt.tokens import RefreshToken
+from playwright.async_api import async_playwright
 from aryuapp.auth import CustomJWTAuthentication
+import asyncio
 from django.core.mail import EmailMultiAlternatives
 from django.core import signing
 from django.core.signing import BadSignature, SignatureExpired
@@ -128,6 +130,35 @@ class AuthViewSet(viewsets.ViewSet):
             country=data.get("country"),
             is_verified=False,
         )
+        free_plan = Subscription.objects.get(
+            name="free",
+            is_active=True,
+            is_deleted=False
+        )
+
+        start_date = timezone.now()
+
+        end_date = (
+            start_date +
+            timedelta(days=free_plan.duration_days)
+        )
+
+        user_subscription = UserSubscription.objects.create(
+
+            user=user,
+
+            subscription=free_plan,
+
+            start_date=start_date,
+
+            end_date=end_date,
+
+            status="active"
+        )
+
+        user.current_subscription = user_subscription
+
+        user.save(update_fields=["current_subscription"])
 
         token = signing.dumps(
             {
@@ -138,7 +169,7 @@ class AuthViewSet(viewsets.ViewSet):
         )
 
         verification_link = (
-            "https://portal.aryuacademy.com"
+            "https://aylms.aryuprojects.com"
             f"/api/resume/auth/verify-email/?token={token}"
         )
 
@@ -192,7 +223,7 @@ class AuthViewSet(viewsets.ViewSet):
                   padding: 45px 5px;
                 ">
                 <img
-                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -513,7 +544,7 @@ https://aryuacademy.com
         )
 
         verification_link = (
-            "https://portal.aryuacademy.com"
+            "https://aylms.aryuprojects.com"
             f"/api/resume/auth/verify-email/?token={token}"
         )
 
@@ -571,7 +602,7 @@ https://aryuacademy.com
                   padding: 45px 5px;
                 ">
                 <img
-                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -894,7 +925,7 @@ https://aryuacademy.com
             )
 
         try:
-            # optimized query
+
             user = ResumeRegistration.objects.select_related(
                 "current_subscription"
             ).only(
@@ -904,13 +935,12 @@ https://aryuacademy.com
                 "is_verified",
                 "first_name",
                 "last_name",
-                "current_subscription"
+                "current_subscription",
             ).get(email=email)
 
         except ResumeRegistration.DoesNotExist:
 
-            # fake password hash check
-            # prevents timing attack
+            # Prevent timing attack
             check_password(password, make_password("dummy_password"))
 
             return Response(
@@ -918,24 +948,31 @@ https://aryuacademy.com
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        # check password securely
+        # Password check
         if not check_password(password, user.password):
             return Response(
                 {"error": "Invalid credentials"},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        # block unverified login
+        # Email verification
         if not user.is_verified:
             return Response(
                 {"error": "Please verify your email first"},
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        refresh = RefreshToken.for_user(user)
+        # CREATE REFRESH TOKEN MANUALLY
+        refresh = RefreshToken()
 
         refresh["user_id"] = user.id
+        refresh["id"] = user.id
+
         refresh["email"] = user.email
+        refresh["user_type"] = "resume_user"
+
+        refresh["first_name"] = user.first_name
+        refresh["last_name"] = user.last_name
 
         access_token = str(refresh.access_token)
         refresh_token = str(refresh)
@@ -943,6 +980,7 @@ https://aryuacademy.com
         return Response(
             {
                 "message": "Login successful",
+
                 "access_token": access_token,
                 "refresh_token": refresh_token,
 
@@ -951,6 +989,7 @@ https://aryuacademy.com
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "email": user.email,
+                    "user": "resume_user",
                 }
             },
             status=status.HTTP_200_OK
@@ -1099,7 +1138,7 @@ https://aryuacademy.com
                 ">
 
                 <img
-                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -1588,22 +1627,29 @@ https://aryuacademy.com
         )
 
 class CustomTokenRefreshView(APIView):
-    permission_classes = [AllowAny] # Anyone can hit this endpoint to refresh their session
+
+    permission_classes = [AllowAny]
     serializer_class = CustomTokenRefreshSerializer
 
     def post(self, request, *args, **kwargs):
-        serializer = self.serializer_class(data=request.data)
-        
-        # This will call our custom validate() function and catch any errors cleanly
-        if serializer.is_valid(raise_exception=True):
-            return Response(serializer.validated_data, status=status.HTTP_200_OK)
+
+        serializer = self.serializer_class(
+            data=request.data
+        )
+
+        serializer.is_valid(raise_exception=True)
+
+        return Response(
+            serializer.validated_data,
+            status=status.HTTP_200_OK
+        )
 
 class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
     queryset = ResumeRegistration.objects.all().order_by("-id")
     serializer_class = ResumeRegistrationSerializers
+    authentication_classes = [CustomJWTAuthentication]
     permission_classes = [AllowAny]
-    authentication_classes = []
 
 
     # CREATE
@@ -1636,8 +1682,9 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
     # LIST
     def list(self, request, *args, **kwargs):
+        
         user = request.user
-
+        
         allowed_types = ["super_admin", "admin"]
 
         if user.user_type not in allowed_types:
@@ -1645,7 +1692,7 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
                 "success": False,
                 "message": "Unable to process request."
             }, status=status.HTTP_403_FORBIDDEN)
-        
+            
 
         queryset = self.get_queryset()
         serializer = self.get_serializer(queryset, many=True)
@@ -1658,6 +1705,7 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
+    
 
 
     # PATCH / UPDATE
@@ -1751,34 +1799,19 @@ class UserDashboardView(APIView):
         # GET CURRENT PLAN
         # --------------------------------------------
 
-        current_subscription = (
-            user.current_subscription
-            if (
-                user.current_subscription and
-                user.current_subscription.status == "active"
-            )
-            else None
-        )
+        current_subscription = UserSubscription.objects.select_related(
+            "subscription"
+        ).filter(
+            user=user,
+            status="active"
+        ).order_by("-id").first()
 
-        # paid plan OR fallback free plan from DB
-        subscription_obj = (
-            current_subscription.subscription
-            if current_subscription
-            else Subscription.objects.get(
-                name="free",
-                is_active=True,
-                is_deleted=False
-            )
+        current_plan_name = (
+            current_subscription.subscription.name
         )
-
-        current_plan_name = subscription_obj.name
 
         plan_details = DashboardSubscriptionSerializer(
-            subscription_obj,
-            context={
-                "current_subscription": current_subscription,
-                "user": user
-            }
+            current_subscription
         ).data
 
         resumes = UserResume.objects.filter(
@@ -1797,14 +1830,16 @@ class UserDashboardView(APIView):
 
         resume_count = resumes.count()
 
-        transactions = PaymentTransaction.objects.filter(
-            resume_registration_id=user_id,
-            is_archived=False
+        transactions = UserSubscription.objects.select_related(
+            "subscription",
+            "payment_transaction"
+        ).filter(
+            user=user
         ).order_by(
-            '-created_at'
+            "-created_at"
         )
 
-        transaction_data = DashboardTransactionSerializer(
+        transaction_data = DashboardSubscriptionHistorySerializer(
             transactions,
             many=True
         ).data
@@ -1820,7 +1855,10 @@ class UserDashboardView(APIView):
                 "first_name": user.first_name,
                 "last_name": user.last_name,
                 "email": user.email,
-                "phone": user.phone
+                "phone": user.phone,
+                "country":user.country,
+                "city":user.city,
+                "state":user.state
             },
 
             "subscription": {
@@ -1844,6 +1882,13 @@ class ResumePaymentViewSet(viewsets.ViewSet):
     authentication_classes = [CustomJWTAuthentication]
 
     permission_classes = [permissions.IsAuthenticated]
+
+    def _has_used_free_plan(self, user, subscription):
+
+        return UserSubscription.objects.filter(
+            user=user,
+            subscription=subscription
+        ).exists()
 
     # =========================================
     # GET RAZORPAY CLIENT
@@ -1891,14 +1936,19 @@ class ResumePaymentViewSet(viewsets.ViewSet):
                     "success": False,
                     "message": "Subscription required"
                 },
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
+
+        # ==================================================
+        # GET SUBSCRIPTION
+        # ==================================================
 
         subscription = get_object_or_404(
 
             Subscription.objects.only(
                 "id",
                 "name",
+                "slug",
                 "price",
                 "discount_price",
                 "duration_days",
@@ -1910,9 +1960,55 @@ class ResumePaymentViewSet(viewsets.ViewSet):
             is_active=True
         )
 
-        # =====================================
+        # ==================================================
+        # PREVENT REBUY ACTIVE PLAN
+        # ==================================================
+
+        active_subscription = UserSubscription.objects.filter(
+            user_id=request.user.id,
+            subscription=subscription,
+            status="active"
+        ).exists()
+
+        if active_subscription:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        "You already have an active subscription."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ==================================================
+        # FREE PLAN VALIDATION
+        # ==================================================
+
+        if subscription.slug == "free":
+
+            already_used = self._has_used_free_plan(
+                request.user,
+                subscription
+            )
+
+            if already_used:
+
+                return Response(
+                    {
+                        "success": False,
+                        "message": (
+                            "Free plan already used. "
+                            "Please upgrade to continue."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # ==================================================
         # NEVER TRUST FRONTEND AMOUNT
-        # =====================================
+        # ==================================================
 
         final_amount = (
             subscription.discount_price
@@ -1929,8 +2025,12 @@ class ResumePaymentViewSet(viewsets.ViewSet):
                     "success": False,
                     "message": "Invalid amount"
                 },
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
+
+        # ==================================================
+        # GET RAZORPAY CLIENT
+        # ==================================================
 
         client, gateway = self._get_client()
 
@@ -1939,82 +2039,87 @@ class ResumePaymentViewSet(viewsets.ViewSet):
             return Response(
                 {
                     "success": False,
-                    "message": "Gateway unavailable"
+                    "message": "Payment gateway unavailable"
                 },
-                status=500
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-        # =====================================
-        # PREVENT DUPLICATE PENDING TXN
-        # =====================================
+        # ==================================================
+        # EXPIRE OLD PENDING TRANSACTIONS
+        # ==================================================
 
-        existing_txn = PaymentTransaction.objects.filter(
+        PaymentTransaction.objects.filter(
 
             resume_registration_id=request.user.id,
-
-            subscription=subscription,
 
             payment_status__in=[
                 "created",
                 "pending"
             ]
 
-        ).order_by("-id").first()
+        ).exclude(
 
-        if existing_txn:
+            payment_status="done"
 
-            return Response({
+        ).update(
 
-                "success": True,
+            payment_status="expired"
+        )
 
-                "message": "Existing pending order",
-
-                "order_id": existing_txn.order_id,
-
-                "transaction_id": existing_txn.id,
-
-                "amount": int(existing_txn.amount * 100),
-
-                "currency": "INR",
-
-                "key": gateway.public_key
-            })
-
-        # =====================================
+        # ==================================================
         # UNIQUE RECEIPT
-        # =====================================
+        # ==================================================
 
         receipt = (
             f"resume_"
             f"{request.user.id}_"
-            f"{uuid.uuid4().hex[:10]}"
+            f"{uuid.uuid4().hex[:12]}"
         )
 
-        # =====================================
-        # CREATE ORDER
-        # =====================================
+        # ==================================================
+        # ALWAYS CREATE NEW ORDER
+        # NEVER REUSE OLD RAZORPAY ORDERS
+        # ==================================================
 
-        razorpay_order = client.order.create({
+        try:
 
-            "amount": int(final_amount * 100),
+            razorpay_order = client.order.create({
 
-            "currency": "INR",
+                "amount": int(final_amount * 100),
 
-            "payment_capture": 1,
+                "currency": "INR",
 
-            "receipt": receipt,
+                "receipt": receipt,
 
-            "notes": {
+                "notes": {
 
-                "user_id": str(request.user.id),
+                    "user_id": str(request.user.id),
 
-                "subscription_id": str(subscription.id)
-            }
-        })
+                    "subscription_id": str(subscription.id),
 
-        # =====================================
+                    "module": "resume"
+                }
+            })
+
+        except Exception as e:
+
+            logger.exception(
+                f"Razorpay order creation failed: {str(e)}"
+            )
+
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        "Unable to create payment order."
+                    )
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        # ==================================================
         # CREATE TRANSACTION
-        # =====================================
+        # ==================================================
 
         txn = PaymentTransaction.objects.create(
 
@@ -2047,12 +2152,23 @@ class ResumePaymentViewSet(viewsets.ViewSet):
                     subscription.duration_days
                 ),
 
+                "razorpay_order_id": (
+                    razorpay_order["id"]
+                ),
+
+                "receipt": receipt
             }
         )
+
+        # ==================================================
+        # SUCCESS RESPONSE
+        # ==================================================
 
         return Response({
 
             "success": True,
+
+            "message": "Order created successfully",
 
             "order_id": razorpay_order["id"],
 
@@ -2063,7 +2179,17 @@ class ResumePaymentViewSet(viewsets.ViewSet):
             "amount": int(final_amount * 100),
 
             "currency": "INR",
+
+            "subscription": {
+
+                "id": subscription.id,
+
+                "name": subscription.name,
+
+                "slug": subscription.slug
+            }
         })
+
 
     # =========================================
     # VERIFY PAYMENT
@@ -2155,7 +2281,6 @@ class ResumePaymentViewSet(viewsets.ViewSet):
                 "Webhook processing pending."
             )
         })
-
 
 @csrf_exempt
 @api_view(["POST"])
@@ -2729,6 +2854,31 @@ class SubscriptionViewSet(viewsets.ViewSet):
             status=status.HTTP_200_OK
         )
 
+class PublicSubscriptionPlansView(APIView):
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    @secure_throttle(rate_limit=20, period=60)
+    def get(self, request):
+
+        subscriptions = Subscription.objects.filter(
+            is_active=True
+        ).order_by("order")
+
+        serializer = SubscriptionSerializer(
+            subscriptions,
+            many=True
+        )
+
+        return Response(
+            {
+                "success": True,
+                "plans": serializer.data
+            },
+            status=status.HTTP_200_OK
+        )
+
 class ResumeTransactionViewSet(viewsets.ViewSet):
 
     def list(self, request):
@@ -2979,10 +3129,10 @@ class UserResumeViewSet(viewsets.ViewSet):
         Optimized queryset leveraging select_related to avoid N+1 queries 
         when fetching template and user details.
         """
-        return UserResume.objects.filter(user=self.request.user).select_related(
+        return UserResume.objects.filter(user_id=self.request.user.id).select_related(
             'template', 
             'user__current_subscription__subscription'
-        )
+        ).order_by("-created_at")
 
     def list(self, request):
         """
@@ -3014,7 +3164,10 @@ class UserResumeViewSet(viewsets.ViewSet):
             template = get_object_or_404(ResumeTemplate, id=template_id, is_active=True)
             
             # Extract user's active limits
-            user_sub = getattr(request.user, 'current_subscription', None)
+            user_sub = UserSubscription.objects.filter(
+                user_id=request.user.id,
+                status="active"
+            ).select_related("subscription").first()
             user_tier = user_sub.subscription.limit if (user_sub and user_sub.status == 'active') else 'free'
             
             # Simple fallback validation logic hierarchy
@@ -3028,9 +3181,18 @@ class UserResumeViewSet(viewsets.ViewSet):
         # 2. Extract context data for validation
         serializer = UserResumeSerializer(data=request.data)
         if serializer.is_valid():
-            # Inject authenticated user directly (ignores spoofed frontend fields)
-            serializer.save(user=request.user)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+            resume_user = get_object_or_404(
+                ResumeRegistration,
+                id=request.user.id
+            )
+
+            serializer.save(user=resume_user)
+
+            return Response(
+                serializer.data,
+                status=status.HTTP_201_CREATED
+            )
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -3212,59 +3374,111 @@ class PaymentHistoryViewset(viewsets.ModelViewSet):
 
 
 class GeneratePDFView(APIView):
-    # Only allow logged-in users to generate PDFs (Security)
-    permission_classes = [permissions.IsAuthenticated] 
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    MAX_HTML_SIZE = 2 * 1024 * 1024  # 2MB
+
+    async def generate_pdf_async(self, html_content):
+
+        async with async_playwright() as p:
+
+            browser = await p.chromium.launch(
+
+                headless=True,
+
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                ]
+            )
+
+            page = await browser.new_page(
+
+                viewport={
+                    "width": 794,
+                    "height": 1123
+                }
+            )
+
+            # IMPORTANT
+            # wait_until networkidle gives proper rendering
+
+            await page.set_content(
+                html_content,
+                wait_until="networkidle"
+            )
+
+            # FORCE A4 PRINT
+            await page.emulate_media(media="print")
+
+            pdf_bytes = await page.pdf(
+
+                format="A4",
+
+                print_background=True,
+
+                margin={
+                    "top": "0mm",
+                    "right": "0mm",
+                    "bottom": "0mm",
+                    "left": "0mm",
+                },
+
+                prefer_css_page_size=True
+            )
+
+            await browser.close()
+
+            return pdf_bytes
 
     def post(self, request, *args, **kwargs):
-        # 1. Extract HTML from request payload
-        html_content = request.data.get('html')
-        
+
+        html_content = request.data.get("html")
+
         if not html_content:
-            raise ValidationError({"detail": "HTML content is required."})
-            
-        # 2. Security: Limit payload size to prevent Denial of Service (DoS) attacks.
-        # This blocks users from sending massive 50MB HTML strings to crash your server.
-        if len(html_content) > 1024 * 1024 * 2:  # 2MB limit
-            raise ValidationError({"detail": "HTML payload is too large. Maximum size is 2MB."})
+
+            raise ValidationError({
+                "detail": "HTML content is required."
+            })
+
+        if len(html_content) > self.MAX_HTML_SIZE:
+
+            raise ValidationError({
+                "detail": (
+                    "HTML payload too large. "
+                    "Maximum size is 2MB."
+                )
+            })
 
         try:
-            # 3. Create an in-memory byte buffer. 
-            # No files are saved to disk, making this extremely fast and clean.
-            pdf_buffer = io.BytesIO()
-            
-            # 4. Define base styles specifically for print formats (Optional but recommended)
-            # This ensures the resume defaults to A4 size with standard margins
-            print_styles = CSS(string='''
-                @page { 
-                    size: A4; 
-                    margin: 1cm; 
-                }
-                body {
-                    -webkit-print-color-adjust: exact;
-                    print-color-adjust: exact;
-                }
-            ''')
 
-            # 5. Convert HTML string to PDF
-            HTML(string=html_content).write_pdf(
-                pdf_buffer,
-                stylesheets=[print_styles]
+            pdf_bytes = asyncio.run(
+                self.generate_pdf_async(html_content)
             )
-            
-            # 6. Reset buffer pointer to the beginning so it can be read by the response
-            pdf_buffer.seek(0)
-            
-            # 7. Return directly to frontend as a Blob/Binary file response
-            response = HttpResponse(pdf_buffer, content_type='application/pdf')
-            
-            # 'attachment' tells the browser to download it. 
-            # The filename here is generic; your React frontend will override this 
-            # with the actual candidate's name based on your React code.
-            response['Content-Disposition'] = 'attachment; filename="resume.pdf"'
-            
+
+            response = HttpResponse(
+                pdf_bytes,
+                content_type="application/pdf"
+            )
+
+            response[
+                "Content-Disposition"
+            ] = 'attachment; filename="resume.pdf"'
+
             return response
-            
+
         except Exception as e:
-            # Log the actual error for your developers, but return a clean error to the user
-            logger.error(f"PDF Generation failed: {str(e)}")
-            return Response({"detail": "An error occurred while generating the PDF."}, status=500)
+
+            logger.exception(
+                f"PDF generation failed: {str(e)}"
+            )
+
+            return Response(
+                {
+                    "detail": (
+                        "Failed to generate PDF."
+                    )
+                },
+                status=500
+            )

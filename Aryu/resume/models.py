@@ -55,7 +55,6 @@ class ResumeRegistration(models.Model):
     def __str__(self):
         return self.first_name
     
-
 class Contact(models.Model):
     full_name = models.CharField(max_length = 100)
     email = models.EmailField(null = True,blank=True)

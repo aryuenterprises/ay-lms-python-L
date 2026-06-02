@@ -484,7 +484,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             return Response(
                 {
                     "success": False,
-                    "message": "Forbidden"
+                    "message": "Unauthorized"
                 },
                 status=403
             )
@@ -696,7 +696,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             return Response(
                 {
                     "success": False,
-                    "message": "Forbidden"
+                    "message": "Unauthorized"
                 },
                 status=403
             )
@@ -811,7 +811,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             return Response(
                 {
                     "success": False,
-                    "message": "Forbidden"
+                    "message": "Unauthorized"
                 },
                 status=403
             )
@@ -1092,7 +1092,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
             <!-- LOGO -->
             <img
-                src="https://portal.aryuacademy.com/api/media/logos/email_logo.png"
+                src="https://aylms.aryuprojects.com/api/media/logos/email_logo.png"
                 alt="Aryu Academy Private Limited"
                 style="
                     width:320px;
