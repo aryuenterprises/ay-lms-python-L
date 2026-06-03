@@ -48,7 +48,7 @@ urlpatterns = [
     path("subscription-history/",SubscriptionViewSet.as_view({"get": "subscription_history"}),name="subscription-history"),
     path("create-plan/",SubscriptionViewSet.as_view({"post": "create_plan"}),name="create-plan"),
     path("update-plan/<int:plan_id>/",SubscriptionViewSet.as_view({"patch": "update_plan"}),name="update-plan"),
-    path("delete-plan/<int:plan_id>/",SubscriptionViewSet.as_view({"patch": "delete_plan"}),name="delete-plan"),
+    path("delete-plan/<int:plan_id>/",SubscriptionViewSet.as_view({"delete": "delete_plan"}),name="delete-plan"),
 
     #PaymentHistoru Urls
     path('paymenthistory',PaymentHistoryViewset.as_view({'get':'list'})),

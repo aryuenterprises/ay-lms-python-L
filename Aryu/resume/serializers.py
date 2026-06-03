@@ -132,8 +132,7 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         return instance
 
     def get_final_price(self, obj):
-
-        return obj.final_price or obj.price
+        return obj.discount_price if obj.discount_price else obj.price
 
 class UserSubscriptionSerializer(
     serializers.ModelSerializer
