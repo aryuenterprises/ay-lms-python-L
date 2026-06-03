@@ -2978,6 +2978,7 @@ class PublicSubscriptionPlansViewSet(viewsets.ViewSet):
             status=status.HTTP_200_OK
         )
 
+
 class ResumeTransactionViewSet(viewsets.ViewSet):
 
     def list(self, request):
