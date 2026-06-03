@@ -135,7 +135,6 @@ class SubscriptionSerializer(serializers.ModelSerializer):
 
         return obj.final_price or obj.price
 
-
 class UserSubscriptionSerializer(
     serializers.ModelSerializer
 ):
