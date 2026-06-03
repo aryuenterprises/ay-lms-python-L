@@ -90,8 +90,8 @@ class Subscription(models.Model):
         default="monthly"
     )
 
-    duration_days = models.IntegerField(
-        default=30
+    duration_days = models.CharField(
+        max_length=150,null = True, blank = True
     )
 
     limit = models.CharField(

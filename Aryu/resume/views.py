@@ -138,9 +138,25 @@ class AuthViewSet(viewsets.ViewSet):
 
         start_date = timezone.now()
 
-        end_date = (
-            start_date +
-            timedelta(days=free_plan.duration_days)
+        duration = str(free_plan.duration_days).strip()
+
+        if duration.lower() == "lifetime":
+            end_date = None
+        else:
+            days = int(duration.split()[0])
+            end_date = start_date + timedelta(days=days)
+
+        user_subscription = UserSubscription.objects.create(
+
+            user=user,
+
+            subscription=free_plan,
+
+            start_date=start_date,
+
+            end_date=end_date,
+
+            status="active"
         )
 
         user_subscription = UserSubscription.objects.create(
