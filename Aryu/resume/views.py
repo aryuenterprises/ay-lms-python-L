@@ -2870,13 +2870,14 @@ class SubscriptionViewSet(viewsets.ViewSet):
             status=status.HTTP_200_OK
         )
 
-class PublicSubscriptionPlansView(APIView):
+class PublicSubscriptionPlansViewSet(viewsets.ViewSet):
 
     permission_classes = [AllowAny]
     authentication_classes = []
 
+    # LIST
     @secure_throttle(rate_limit=20, period=60)
-    def get(self, request):
+    def list(self, request):
 
         subscriptions = Subscription.objects.filter(
             is_active=True
@@ -2891,6 +2892,88 @@ class PublicSubscriptionPlansView(APIView):
             {
                 "success": True,
                 "plans": serializer.data
+            },
+            status=status.HTTP_200_OK
+        )
+
+    # CREATE
+    @secure_throttle(rate_limit=10, period=60)
+    def create(self, request):
+
+        serializer = SubscriptionSerializer(
+            data=request.data
+        )
+
+        if serializer.is_valid():
+
+            serializer.save()
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "Subscription created successfully",
+                    "plan": serializer.data
+                },
+                status=status.HTTP_201_CREATED
+            )
+
+        return Response(
+            {
+                "success": False,
+                "errors": serializer.errors
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # UPDATE
+    @secure_throttle(rate_limit=10, period=60)
+    def update(self, request, pk=None):
+
+            subscription = get_object_or_404(
+                Subscription,
+                id=pk
+            )
+
+            serializer = SubscriptionSerializer(
+                subscription,
+                data=request.data,
+                partial=True
+            )
+
+            if serializer.is_valid():
+                serializer.save()
+
+                return Response(
+                    {
+                        "success": True,
+                        "message": "Subscription updated successfully",
+                        "plan": serializer.data
+                    },
+                    status=status.HTTP_200_OK
+                )
+
+            return Response(
+                {
+                    "success": False,
+                    "errors": serializer.errors
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    # DELETE
+    @secure_throttle(rate_limit=10, period=60)
+    def destroy(self, request, pk=None):
+
+        subscription = get_object_or_404(
+            Subscription,
+            id=pk
+        )
+
+        subscription.delete()
+
+        return Response(
+            {
+                "success": True,
+                "message": "Subscription deleted successfully"
             },
             status=status.HTTP_200_OK
         )

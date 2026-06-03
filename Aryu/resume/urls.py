@@ -42,7 +42,8 @@ urlpatterns = [
 
     #Subscription Urls
     path("plans/",SubscriptionViewSet.as_view({"get": "plans"}),name="subscription-plans"),
-    path("pricing-plans/",PublicSubscriptionPlansView.as_view(),name="resume-plans"),
+    path("pricing-plans/",PublicSubscriptionPlansViewSet.as_view({"get":"list","post":"create"})),
+    path("pricing-plans/<int:pk>",PublicSubscriptionPlansViewSet.as_view({"patch":"update","delete":"destroy"})),
     path("my-subscription/",SubscriptionViewSet.as_view({"get": "my_subscription"}),name="my-subscription"),
     path("subscription-history/",SubscriptionViewSet.as_view({"get": "subscription_history"}),name="subscription-history"),
     path("create-plan/",SubscriptionViewSet.as_view({"post": "create_plan"}),name="create-plan"),
