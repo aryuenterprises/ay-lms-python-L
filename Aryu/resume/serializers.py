@@ -91,11 +91,8 @@ class SubscriptionSerializer(serializers.ModelSerializer):
     final_price = serializers.SerializerMethodField()
 
     class Meta:
-
         model = Subscription
-
         fields = [
-
             "id",
             "name",
             "slug",
@@ -109,13 +106,34 @@ class SubscriptionSerializer(serializers.ModelSerializer):
             "is_active"
         ]
 
+    def create(self, validated_data):
+
+        validated_data["final_price"] = (
+            validated_data.get("discount_price")
+            or validated_data.get("price")
+        )
+
+        return Subscription.objects.create(**validated_data)
+
+    def update(self, instance, validated_data):
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        instance.final_price = (
+            validated_data.get("discount_price")
+            or instance.discount_price
+            or validated_data.get("price")
+            or instance.price
+        )
+
+        instance.save()
+
+        return instance
+
     def get_final_price(self, obj):
 
-        if obj.discount_price:
-
-            return obj.discount_price
-
-        return obj.price
+        return obj.final_price or obj.price
 
 
 class UserSubscriptionSerializer(
