@@ -255,13 +255,15 @@ CORS_ALLOW_METHODS = (
     "PUT",
 )
 
-EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+MAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+DEFAULT_FROM_EMAIL = 'support@aryuacademy.com'
 EMAIL_HOST = "smtp.hostinger.com"
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = "info@aryuacademy.com"
-EMAIL_HOST_PASSWORD = "SgSVEp?ev5|"
-DEFAULT_FROM_EMAIL = "Aryu Academy <info@aryuacademy.com>"
+EMAIL_HOST_USER = "support@aryuacademy.com"
+EMAIL_HOST_PASSWORD = "A/cMu5nqYs16"
+# DEFAULT_FROM_EMAIL = "Aryu Academy <support@aryuacademy.com>"
+
 
 
 SITE_ID = 1
