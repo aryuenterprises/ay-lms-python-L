@@ -41,7 +41,7 @@ import io
 import logging
 from rest_framework.exceptions import ValidationError
 from weasyprint import HTML, CSS
-from celery import shared_task
+# from celery import shared_task
 
 logger = logging.getLogger(__name__)
 
@@ -1661,6 +1661,7 @@ class CustomTokenRefreshView(APIView):
             status=status.HTTP_200_OK
         )
 
+from .task import resume_reg
 class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
     queryset = ResumeRegistration.objects.all().order_by("-id")
@@ -1894,7 +1895,7 @@ class UserDashboardView(APIView):
 
         }, status=status.HTTP_200_OK)
 
-@shared_task
+
 class ResumePaymentViewSet(viewsets.ViewSet):
 
     authentication_classes = [CustomJWTAuthentication]
@@ -2613,8 +2614,10 @@ class SubscriptionViewSet(viewsets.ViewSet):
     @secure_throttle(rate_limit=10, period=60)
     @action(detail=False,methods=["post"],url_path="create-plan")
     def create_plan(self, request):
+        user = request.user
+        allowed_types = ["super_admin", "admin"]
 
-        if not self._is_admin(request):
+        if user.user_type not in allowed_types:
 
             return Response(
                 {
