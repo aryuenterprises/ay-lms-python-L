@@ -23,12 +23,18 @@ class PaymentGateway(models.Model):
 
     def __str__(self):
         return f"{self.gatway_name} ({'Enabled' if not self.is_archived else 'Disabled'})"
-
 class PaymentTransaction(models.Model):
 
     student = models.ForeignKey("aryuapp.Student", on_delete=models.CASCADE, related_name="transactions", null=True, blank=True)
     course = models.ForeignKey("courses.Course", on_delete=models.CASCADE, related_name="course_transactions", null=True, blank=True)
     course_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    ebookregistration = models.ForeignKey(
+        "ebook.EbookRegistration",
+        on_delete=models.CASCADE,
+        related_name="transactions",
+        null=True,
+        blank=True
+    )
 
     webinar_registration = models.ForeignKey(
         "webinar.WebinarRegistration",
@@ -83,43 +89,66 @@ class PaymentTransaction(models.Model):
 
     balance_due = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
+    resume_registration = models.ForeignKey(
+        "resume.ResumeRegistration",
+        on_delete=models.CASCADE,
+        related_name="transactions",
+        null=True,
+        blank=True
+    )
+
+    subscription = models.ForeignKey(
+        "resume.Subscription",
+        on_delete=models.SET_NULL,
+        related_name="transactions",
+        null=True,
+        blank=True
+    ) 
+
     class Meta:
         indexes = [
             models.Index(fields=["student"]),
             models.Index(fields=["course"]),
             models.Index(fields=["id"]),
             models.Index(fields=["invoice_no"]),
+            models.Index(fields=["resume_registration"]),
+            models.Index(fields=["subscription"]),
+            models.Index(fields=["payment_status"]),
+            models.Index(fields=["created_at"]),
         ]
         db_table = 'aryuapp_paymenttransaction'
 
     def generate_invoice_no(self):
-
         now = datetime.now()
 
-        year = now.strftime("%y")
-        month = now.strftime("%m")
+        year = now.strftime("%y")   # 26
+        month = now.strftime("%m")  # 05
 
         prefix = f"AA{year}{month}"
 
-        with transaction.atomic():
+        count = 1
 
-            latest_invoice = (
-                PaymentTransaction.objects
-                .select_for_update()
-                .filter(invoice_no__startswith=prefix)
-                .aggregate(
-                    max_invoice=Max("invoice_no")
-                )["max_invoice"]
-            )
+        while True:
+            invoice_no = f"{prefix}{count:02d}"
 
-            if latest_invoice:
-                last_number = int(latest_invoice[-4:])
-            else:
-                last_number = 0
+            exists = PaymentTransaction.objects.filter(
+                invoice_no=invoice_no
+            ).exclude(id=self.id).exists()
 
-            next_number = last_number + 1
+            if not exists:
+                return invoice_no
 
-            return f"{prefix}{next_number:04d}"
+            count += 1
+
+    def save(self, *args, **kwargs):
+
+        if not self.invoice_no:
+            self.invoice_no = self.generate_invoice_no()
+
+        if not self.invoice_date:
+            self.invoice_date = datetime.now().date()
+
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.student} - {self.amount} {self.currency} ({self.payment_status})"

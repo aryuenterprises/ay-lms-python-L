@@ -2475,9 +2475,9 @@ def resume_razorpay_webhook(request):
 
 class SubscriptionViewSet(viewsets.ViewSet):
 
-    authentication_classes = [CustomJWTAuthentication]
-
     permission_classes = [permissions.IsAuthenticated]
+
+    authentication_classes = [CustomJWTAuthentication]
 
     @secure_throttle(rate_limit=20, period=60)
     @action(detail=False,methods=["get"],url_path="plans")
@@ -2614,10 +2614,7 @@ class SubscriptionViewSet(viewsets.ViewSet):
     @secure_throttle(rate_limit=10, period=60)
     @action(detail=False,methods=["post"],url_path="create-plan")
     def create_plan(self, request):
-        user = request.user
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
+        if not self._is_admin(request):
 
             return Response(
                 {
