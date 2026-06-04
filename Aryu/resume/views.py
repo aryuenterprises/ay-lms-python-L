@@ -185,7 +185,7 @@ class AuthViewSet(viewsets.ViewSet):
         )
 
         verification_link = (
-            "https://aylms.aryuprojects.com"
+            "https://portal.aryuacademy.com"
             f"/api/resume/auth/verify-email/?token={token}"
         )
 
@@ -239,7 +239,7 @@ class AuthViewSet(viewsets.ViewSet):
                   padding: 45px 5px;
                 ">
                 <img
-                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
+                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -560,7 +560,7 @@ https://aryuacademy.com
         )
 
         verification_link = (
-            "https://aylms.aryuprojects.com"
+            "https://portal.aryuacademy.com"
             f"/api/resume/auth/verify-email/?token={token}"
         )
 
@@ -618,7 +618,7 @@ https://aryuacademy.com
                   padding: 45px 5px;
                 ">
                 <img
-                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
+                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -1154,7 +1154,7 @@ https://aryuacademy.com
                 ">
 
                 <img
-                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
+                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
