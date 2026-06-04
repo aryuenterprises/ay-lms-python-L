@@ -194,7 +194,7 @@ def send_webinar_certificate_whatsapp(certificate, phone):
 
     pdf_url = certificate.certificate_file.url
     if not pdf_url.startswith("http"):
-        pdf_url = f"https://aylms.aryuprojects.com/api{pdf_url}"
+        pdf_url = f"https://portal.aryuacademy.com/api{pdf_url}"
 
     print(f"Certificate PDF URL: {pdf_url}")
 

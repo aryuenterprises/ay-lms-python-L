@@ -789,7 +789,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "amount": float(tx.amount or 0),
                 "payment_status": tx.payment_status,
                 "invoice_url": (
-                    "https://aylms.aryuprojects.com/api" + tx.invoice.url
+                    "https://portal.aryuacademy.com/api" + tx.invoice.url
                 ) if tx.invoice and hasattr(tx.invoice, "url") else None
             }
             for tx in transactions
@@ -1092,7 +1092,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
             <!-- LOGO -->
             <img
-                src="https://aylms.aryuprojects.com/api/media/logos/email_logo.png"
+                src="https://portal.aryuacademy.com/api/media/logos/email_logo.png"
                 alt="Aryu Academy Private Limited"
                 style="
                     width:320px;
