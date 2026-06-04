@@ -41,6 +41,7 @@ import io
 import logging
 from rest_framework.exceptions import ValidationError
 from weasyprint import HTML, CSS
+from celery import shared_task
 
 logger = logging.getLogger(__name__)
 
@@ -1893,6 +1894,7 @@ class UserDashboardView(APIView):
 
         }, status=status.HTTP_200_OK)
 
+@shared_task
 class ResumePaymentViewSet(viewsets.ViewSet):
 
     authentication_classes = [CustomJWTAuthentication]
