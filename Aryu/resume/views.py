@@ -1661,7 +1661,7 @@ class CustomTokenRefreshView(APIView):
             status=status.HTTP_200_OK
         )
 
-from .task import resume_reg
+from .tasks import resume_reg
 class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
     queryset = ResumeRegistration.objects.all().order_by("-id")
@@ -1671,30 +1671,34 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
 
     # CREATE
+    from .tasks import resume_reg
+
+    import time
+
     @secure_throttle(rate_limit=5, period=60)
     def create(self, request, *args, **kwargs):
 
+        start = time.time()
+
         serializer = self.get_serializer(data=request.data)
 
-        if serializer.is_valid():
-            serializer.save()
+        t1 = time.time()
+        serializer.is_valid(raise_exception=True)
 
-            return Response(
-                {
-                    "status": True,
-                    "message": "Resume registration created successfully",
-                    "data": serializer.data
-                },
-                status=status.HTTP_201_CREATED
-            )
+        t2 = time.time()
+        registration = serializer.save()
+
+        t3 = time.time()
+        resume_reg.delay(registration.id)
+        
 
         return Response(
             {
-                "status": False,
-                "message": "Validation error",
-                "errors": serializer.errors
+                "status": True,
+                "message": "Resume registration created successfully",
+                "data": serializer.data
             },
-            status=status.HTTP_400_BAD_REQUEST
+            status=status.HTTP_201_CREATED
         )
 
 
