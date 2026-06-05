@@ -266,7 +266,7 @@ class DashboardSubscriptionSerializer(serializers.ModelSerializer):
         source="subscription.billing_type"
     )
 
-    duration_days = serializers.IntegerField(
+    duration_days = serializers.CharField(
         source="subscription.duration_days"
     )
 
