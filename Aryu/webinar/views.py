@@ -1027,6 +1027,15 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
                 "source":request.data.get("source")
             }
         )
+        registration = WebinarRegistration.objects.create(
+            webinar=webinar,
+            name=request.data.get("name"),
+            email=request.data.get("email"),
+            phone=phone,
+            profession=request.data.get("profession"),
+            is_paid=False,
+            payment_transaction=txn
+        )
 
         return self._create_payment(request, webinar, txn)
 
