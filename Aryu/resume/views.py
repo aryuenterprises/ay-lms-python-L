@@ -41,6 +41,8 @@ import io
 import logging
 from rest_framework.exceptions import ValidationError
 from weasyprint import HTML, CSS
+from django.db.models import Q
+from django.utils.timezone import now
 # from celery import shared_task
 
 logger = logging.getLogger(__name__)
