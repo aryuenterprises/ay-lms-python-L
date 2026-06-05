@@ -3536,106 +3536,80 @@ class PaymentHistoryViewset(viewsets.ModelViewSet):
 
 
 class GeneratePDFView(APIView):
-
     permission_classes = [permissions.IsAuthenticated]
-
     MAX_HTML_SIZE = 2 * 1024 * 1024  # 2MB
-
+    
     async def generate_pdf_async(self, html_content):
-
         async with async_playwright() as p:
-
             browser = await p.chromium.launch(
-
                 headless=True,
-
                 args=[
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                 ]
             )
-
             page = await browser.new_page(
-
                 viewport={
                     "width": 794,
                     "height": 1123
-                }
+                },
+                device_scale_factor=3  # 👈 ADD THIS — 288 DPI for print quality
             )
-
-            # IMPORTANT
-            # wait_until networkidle gives proper rendering
-
+            
             await page.set_content(
                 html_content,
                 wait_until="networkidle"
             )
-
-            # FORCE A4 PRINT
+            
+            # Wait for fonts to fully load
+            await page.evaluate("document.fonts.ready")  # 👈 ADD THIS
+            await page.wait_for_timeout(300)              # 👈 ADD THIS - small buffer
+            
             await page.emulate_media(media="print")
-
+            
             pdf_bytes = await page.pdf(
-
                 format="A4",
-
                 print_background=True,
-
                 margin={
                     "top": "0mm",
                     "right": "0mm",
                     "bottom": "0mm",
                     "left": "0mm",
                 },
-
                 prefer_css_page_size=True
             )
-
             await browser.close()
-
             return pdf_bytes
 
     def post(self, request, *args, **kwargs):
-
         html_content = request.data.get("html")
-
         if not html_content:
-
             raise ValidationError({
                 "detail": "HTML content is required."
             })
-
         if len(html_content) > self.MAX_HTML_SIZE:
-
             raise ValidationError({
                 "detail": (
                     "HTML payload too large. "
                     "Maximum size is 2MB."
                 )
             })
-
         try:
-
             pdf_bytes = asyncio.run(
                 self.generate_pdf_async(html_content)
             )
-
             response = HttpResponse(
                 pdf_bytes,
                 content_type="application/pdf"
             )
-
             response[
                 "Content-Disposition"
             ] = 'attachment; filename="resume.pdf"'
-
             return response
-
         except Exception as e:
-
             logger.exception(
                 f"PDF generation failed: {str(e)}"
             )
-
             return Response(
                 {
                     "detail": (
