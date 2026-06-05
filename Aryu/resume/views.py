@@ -1798,13 +1798,6 @@ class UserDashboardView(APIView):
         try:
             user = ResumeRegistration.objects.select_related(
                 'current_subscription__subscription'
-            ).only(
-                'id',
-                'first_name',
-                'last_name',
-                'email',
-                'phone',
-                'current_subscription'
             ).get(
                 id=user_id,
                 is_deleted=False
@@ -1817,8 +1810,9 @@ class UserDashboardView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+
         # --------------------------------------------
-        # GET CURRENT PLAN
+        # GET CURRENT ACTIVE PLAN
         # --------------------------------------------
 
         current_subscription = UserSubscription.objects.select_related(
@@ -1826,15 +1820,67 @@ class UserDashboardView(APIView):
         ).filter(
             user=user,
             status="active"
-        ).order_by("-id").first()
+        ).filter(
+            Q(end_date__gt=now()) |
+            Q(end_date__isnull=True)
+        ).order_by(
+            "-id"
+        ).first()
 
-        current_plan_name = (
-            current_subscription.subscription.name
-        )
+        # --------------------------------------------
+        # GET LATEST SUBSCRIPTION (ACTIVE OR EXPIRED)
+        # --------------------------------------------
 
-        plan_details = DashboardSubscriptionSerializer(
-            current_subscription
-        ).data
+        latest_subscription = UserSubscription.objects.select_related(
+            "subscription"
+        ).filter(
+            user=user
+        ).order_by(
+            "-id"
+        ).first()
+
+        # --------------------------------------------
+        # PREPARE SUBSCRIPTION DATA
+        # --------------------------------------------
+
+        if current_subscription:
+
+            subscription_data = {
+                "current_plan": current_subscription.subscription.name,
+                "plan_details": DashboardSubscriptionSerializer(
+                    current_subscription
+                ).data,
+                "message": None,
+                "is_expired": False
+            }
+
+        elif latest_subscription:
+
+            plan_details = DashboardSubscriptionSerializer(
+                latest_subscription
+            ).data
+
+            plan_details["days_remaining"] = 0
+
+            subscription_data = {
+                "current_plan": "",  # Empty because no active plan
+                "plan_details": plan_details,  # Last plan details
+                "message": "Your subscription has expired. Subscribe to a new plan to continue.",
+                "is_expired": True
+            }
+
+        else:
+
+            subscription_data = {
+                "current_plan": "",
+                "plan_details": {},
+                "message": "No active subscription found. Please subscribe to a plan.",
+                "is_expired": True
+            }
+
+        # --------------------------------------------
+        # RESUMES
+        # --------------------------------------------
 
         resumes = UserResume.objects.filter(
             user_id=user_id,
@@ -1852,6 +1898,10 @@ class UserDashboardView(APIView):
 
         resume_count = resumes.count()
 
+        # --------------------------------------------
+        # TRANSACTIONS
+        # --------------------------------------------
+
         transactions = UserSubscription.objects.select_related(
             "subscription",
             "payment_transaction"
@@ -1866,10 +1916,18 @@ class UserDashboardView(APIView):
             many=True
         ).data
 
+        # --------------------------------------------
+        # TEMPLATE COUNT
+        # --------------------------------------------
+
         available_templates_count = ResumeTemplate.objects.filter(
             is_active=True,
             is_deleted=False
         ).count()
+
+        # --------------------------------------------
+        # RESPONSE
+        # --------------------------------------------
 
         return Response({
 
@@ -1878,15 +1936,12 @@ class UserDashboardView(APIView):
                 "last_name": user.last_name,
                 "email": user.email,
                 "phone": user.phone,
-                "country":user.country,
-                "city":user.city,
-                "state":user.state
+                "country": user.country,
+                "city": user.city,
+                "state": user.state
             },
 
-            "subscription": {
-                "current_plan": current_plan_name,
-                "plan_details": plan_details
-            },
+            "subscription": subscription_data,
 
             "statistics": {
                 "total_resumes_created": resume_count,
@@ -1898,7 +1953,6 @@ class UserDashboardView(APIView):
             "transactions": transaction_data
 
         }, status=status.HTTP_200_OK)
-
 
 class ResumePaymentViewSet(viewsets.ViewSet):
 
