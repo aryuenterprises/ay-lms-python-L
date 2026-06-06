@@ -143,7 +143,6 @@ class WebinarRegistration(models.Model):
     registered_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ('webinar', 'phone')
         indexes = [
             models.Index(fields=["-registered_at"]),
             models.Index(fields=["webinar"]),

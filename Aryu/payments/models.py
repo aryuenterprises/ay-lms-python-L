@@ -23,6 +23,7 @@ class PaymentGateway(models.Model):
 
     def __str__(self):
         return f"{self.gatway_name} ({'Enabled' if not self.is_archived else 'Disabled'})"
+    
 class PaymentTransaction(models.Model):
 
     student = models.ForeignKey("aryuapp.Student", on_delete=models.CASCADE, related_name="transactions", null=True, blank=True)

@@ -975,7 +975,7 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
 
         phone = request.data.get("phone")
 
-        if WebinarRegistration.objects.filter(webinar=webinar, phone=phone).exists():
+        if WebinarRegistration.objects.filter(webinar=webinar, phone=phone, is_paid=True).exists():
             return Response(
                 {"message": "Already registered"},
                 status=status.HTTP_400_BAD_REQUEST
