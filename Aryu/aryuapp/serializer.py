@@ -1074,6 +1074,8 @@ class AttendanceSerializer(serializers.ModelSerializer):
 
     def get_student_name(self, obj):
         return f"{obj.student.first_name} {obj.student.last_name}"
+    def validate_status(self,obj):
+        return value
 
     # Format date to IST
     def to_representation(self, instance):

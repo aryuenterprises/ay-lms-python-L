@@ -4867,37 +4867,25 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             # BREAK IN
             # ----------------------------------------
 
-            elif status_lower == 'breakin':
+            elif status_lower in ['breakin', 'break in']:
 
-                current['break_in'] = (
-                    local_dt.strftime('%I:%M %p')
-                )
-
+                current['break_in'] = local_dt.strftime('%I:%M %p')
                 current['current_break_in'] = local_dt
 
-            # ----------------------------------------
-            # BREAK OUT
-            # ----------------------------------------
+            elif status_lower in ['breakout', 'break out']:
 
-            elif status_lower == 'breakout':
-
-                current['break_out'] = (
-                    local_dt.strftime('%I:%M %p')
-                )
+                current['break_out'] = local_dt.strftime('%I:%M %p')
 
                 if current['current_break_in']:
-
                     current['break_sessions'].append({
-
                         'break_in': current['current_break_in'],
-
                         'break_out': local_dt
-
                     })
 
                     current['current_break_in'] = None
+                    logs = list(grouped.values())
 
-        logs = list(grouped.values())
+        # logs = list(grouped.values())
 
         # ======================================================
         # CALCULATIONS

@@ -634,11 +634,7 @@ class Attendance(models.Model):
     )
     batch = models.ForeignKey(Batch, null=True, blank=True, on_delete=models.SET_NULL)
     date = models.DateTimeField(null=False, blank=False)
-    status = models.CharField(max_length=10,choices =[("Login","Login"),
-                                                      ("Logout","Logout"),
-                                                      ("Breakin","Breakin"),
-                                                      ("Breakout","Breakout"),
-                                                      ])
+    status = models.CharField(max_length=10)
     ip_address= models.GenericIPAddressField(null=True, blank=True)
     marked_by_admin = models.BooleanField(default=False)
 
