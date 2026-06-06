@@ -4883,7 +4883,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     })
 
                     current['current_break_in'] = None
-                    logs = list(grouped.values())
+                    # logs = list(grouped.values())
 
         # logs = list(grouped.values())
 
