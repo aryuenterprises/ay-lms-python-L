@@ -134,7 +134,7 @@ class AuthViewSet(viewsets.ViewSet):
             is_verified=False,
         )
         free_plan = Subscription.objects.get(
-            name="free",
+            name="Free",
             is_active=True,
             is_deleted=False
         )
