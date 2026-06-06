@@ -1,4 +1,4 @@
-pip install channels-redis paypalrestsdk reportlab pyclamd pytesseract Pillow django_ratelimit django_countries django_filter dj_rest_auth django-cors-headers django-allauth channels psycopg2-binary pytz stripe twilio holidays razorpay num2words djangorestframework Django qrcode django_redis django-axes captcha django_crontab 
+pip install channels-redis paypalrestsdk playwright djangorestframework-simplejwt celery weasyprint python-magic-bin reportlab pyclamd pytesseract Pillow django_ratelimit django_countries django_filter dj_rest_auth django-cors-headers django-allauth channels psycopg2-binary pytz stripe twilio holidays razorpay num2words djangorestframework Django qrcode django_redis django-axes captcha django_crontab 
 
 
 for ai installation
