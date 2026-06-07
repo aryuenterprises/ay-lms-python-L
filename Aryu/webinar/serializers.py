@@ -431,9 +431,10 @@ class WebinarListSerializer(serializers.ModelSerializer):
         if obj.webinar_image:
             return f"https://portal.aryuacademy.com/api{obj.webinar_image.url}"
         return None
-
     def get_participants_count(self, obj):
-        return obj.participants_count
+            return obj.registrations.filter(
+                payment_transaction__payment_status="done"
+            ).count()
     
     def get_pending_seats(self, obj):
         return max(obj.seats_available - obj.participants_count, 0)
