@@ -315,7 +315,9 @@ class WebinarSerializer(serializers.ModelSerializer):
         return result
 
     def get_participants_count(self, obj):
-        return getattr(obj, "participants_count", 0)
+        return obj.registrations.filter(
+            payment_transaction__payment_status="done"
+        ).count()
 
     def get_pending_seats(self, obj):
         registered = getattr(obj, "participants_count", 0)
