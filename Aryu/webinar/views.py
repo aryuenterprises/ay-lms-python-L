@@ -562,7 +562,7 @@ class WebinarViewSet(
                 registrations__payment_transaction__payment_status="done"
             ),
             distinct=True
-        ),
+        )
 
         data = {
             "uuid": webinar.uuid,
