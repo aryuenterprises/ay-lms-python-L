@@ -556,11 +556,13 @@ class WebinarViewSet(
 
         participants = list(registrations)
 
-        participants_count = sum(
-            1
-            for participant in participants
-            if str(participant.get("payment_status", "")).lower() == "done"
-        )
+        participants_count=Count(
+            "registrations",
+            filter=Q(
+                registrations__payment_transaction__payment_status="done"
+            ),
+            distinct=True
+        ),
 
         data = {
             "uuid": webinar.uuid,
