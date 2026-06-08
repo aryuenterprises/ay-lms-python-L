@@ -66,7 +66,7 @@ class Subscription(models.Model):
 
     name = models.CharField(max_length=100)
 
-    slug = models.SlugField(unique=True, null=True, blank=True)
+    slug = models.CharField(max_length = 255, null=True, blank=True)
 
     description = models.TextField(
         null=True,
