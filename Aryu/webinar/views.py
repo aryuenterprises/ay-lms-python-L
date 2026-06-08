@@ -89,6 +89,20 @@ def razorpay_webhook(request):
             txn.payment_status = "done"
             txn.transaction_id = entity["id"]
             txn.save()
+            registration = WebinarRegistration.objects.filter(
+                phone=txn.metadata.get("phone"),
+                webinar__uuid=txn.metadata.get("webinar_id")
+            ).first()
+
+            if registration:
+                registration.is_paid = True
+                registration.payment_transaction = txn
+                registration.save(
+                    update_fields=[
+                        "is_paid",
+                        "payment_transaction"
+                    ]
+                )
 
             WebinarRegistrationViewSet.create_registration_from_transaction(txn)
 
@@ -1031,15 +1045,27 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
                 "source":request.data.get("source")
             }
         )
-        registration = WebinarRegistration.objects.create(
+        registration = WebinarRegistration.objects.filter(
             webinar=webinar,
-            name=request.data.get("name"),
-            email=request.data.get("email"),
-            phone=phone,
-            profession=request.data.get("profession"),
-            is_paid=False,
-            payment_transaction=txn
-        )
+            phone=phone
+        ).first()
+
+        if registration:
+            registration.payment_transaction = txn
+            registration.name = request.data.get("name")
+            registration.email = request.data.get("email")
+            registration.profession = request.data.get("profession")
+            registration.save()
+        else:
+            registration = WebinarRegistration.objects.create(
+                webinar=webinar,
+                name=request.data.get("name"),
+                email=request.data.get("email"),
+                phone=phone,
+                profession=request.data.get("profession"),
+                is_paid=False,
+                payment_transaction=txn
+            )
 
         return self._create_payment(request, webinar, txn)
 
