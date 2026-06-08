@@ -2726,44 +2726,21 @@ class SubscriptionViewSet(viewsets.ViewSet):
             )
 
         subscription = Subscription.objects.create(
-
             name=validated_data["name"],
-
             slug=validated_data["slug"],
-
-            description=validated_data.get(
-                "description"
-            ),
-
+            description=validated_data.get("description"),
             price=validated_data["price"],
-
-            discount_price=validated_data.get(
-                "discount_price"
-            ),
-
-            billing_type=validated_data[
-                "billing_type"
-            ],
-
-            duration_days=validated_data[
-                "duration_days"
-            ],
-
-            limit=validated_data.get(
-                "limit",
-                "free"
-            ),
-
-            order=validated_data.get(
-                "order",
-                0
-            ),
-
-            is_active=validated_data.get(
-                "is_active",
-                True
-            )
+            discount_price=validated_data.get("discount_price"),
+            billing_type=validated_data["billing_type"],
+            duration_days=validated_data["duration_days"],
+            limit=validated_data.get("limit", "free"),
+            order=validated_data.get("order", 0),
+            is_active=validated_data.get("is_active", True),
         )
+
+        if not validated_data.get("order"):
+            subscription.order = subscription.id
+            subscription.save(update_fields=["order"])
 
         response_serializer = SubscriptionSerializer(
             subscription
