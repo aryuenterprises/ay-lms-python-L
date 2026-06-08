@@ -507,6 +507,7 @@ class Login(LoggingMixin, APIView):
                 payload = {
                     "user_id": user.id,
                     "username": user.username,
+                    "created_at": user.created_at.isoformat() if user.created_at else None,
                     "name": user.full_name,
                     "user_type": user.user_type,
                     "attendance_type": system_settings.attendance_options if system_settings else None,
@@ -524,6 +525,7 @@ class Login(LoggingMixin, APIView):
                     "user": {
                         "user_id": user.id,
                         "username": user.username,
+                        "created_at": user.created_at,
                         "name": user.full_name,
                         "user_type": user.user_type,
                         "attendance_type": system_settings .attendance_options if system_settings  else None,

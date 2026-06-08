@@ -50,6 +50,13 @@ class Settings(models.Model):
     cgst_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=9)
     sgst_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=9)
     igst_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=18)
+    DATE_FORMAT_CHOICES = [("DD-MM-YYYY", "DD-MM-YYYY"),("MM-DD-YYYY", "MM-DD-YYYY"),("YYYY-MM-DD", "YYYY-MM-DD"),("DD/MM/YYYY", "DD/MM/YYYY"),("DD/MM/YY","DD/MM/YY")]
+    TIME_FORMAT_CHOICES = [("12", "12 Hours"),("24", "24 Hours"),]
+    PHONE_FORMAT_CHOICES = [("INDIA", "India (+91)"),("US", "US (+1)"),("RAW", "Raw Number"),]
+    date_format = models.CharField(max_length=20,choices=DATE_FORMAT_CHOICES,default="DD-MM-YYYY")
+    time_format = models.CharField(max_length=10,choices=TIME_FORMAT_CHOICES,default="24")
+    phone_format = models.CharField(max_length=20,choices=PHONE_FORMAT_CHOICES,default="INDIA")
+
 
 class ReleaseNote(models.Model):
     version = models.CharField(max_length=20)  # e.g. "V1.0", "V1.1"
