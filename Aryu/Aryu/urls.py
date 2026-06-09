@@ -54,6 +54,7 @@ urlpatterns = [
     path("api/",include("resources.urls")),
     path("api/resume/",include("resume.urls")),
     path("api/",include("ebook.urls")),
+    path("api/",include("lead.urls")),
 
     # PUBLIC LOGO URL
     re_path(r'^api/media/logos/(?P<filename>[^/]+)$', serve_logo_plus),

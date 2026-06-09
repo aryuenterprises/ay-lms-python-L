@@ -8,7 +8,8 @@ from django.db import transaction
 from django.utils import timezone
 import re
 import json
-from aryuapp.models import Lead, StudentTicket, TicketAttachment, TicketReply, Certificate
+from aryuapp.models import StudentTicket, TicketAttachment, TicketReply, Certificate
+from lead.models import Lead
 from django.utils.text import slugify
 
 

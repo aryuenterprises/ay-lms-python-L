@@ -75,6 +75,7 @@ INSTALLED_APPS = [
     "resources",
     "resume",
     "ebook",
+    'lead',
 ]
 
 ASGI_APPLICATION = "Aryu.asgi.application"

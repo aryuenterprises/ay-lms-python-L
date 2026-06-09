@@ -5,7 +5,8 @@ from datetime import timedelta
 from django.conf import settings
 import jwt
 
-from aryuapp.models import Student, Settings, Lead
+from aryuapp.models import Student, Settings
+from lead.models import Lead
 
 class SocialLoginCompleteAPIView(APIView):
     permission_classes = []
