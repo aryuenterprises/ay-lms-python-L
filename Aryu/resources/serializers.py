@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from .models import *
-from aryuapp.serializer import LeadSerializer
+from lead.serializers import LeadSerializer
 
 # =====================================================
 # RESOURCE SERIALIZER

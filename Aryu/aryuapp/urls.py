@@ -99,19 +99,6 @@ urlpatterns = [
    path('replies/<int:submission_id>', SubmissionReplyViewSet.as_view({'get': 'list', 'post': 'create'}), name='replies-by-submission'),
    path('alllogs', AdminfullLogViewSet.as_view({'get': 'list'})),
    path("tickets/", StudentTicketViewSet.as_view(), name="tickets"),
-   
-   # LIST + CREATE
-   path("lead-engine/leads/",LeadViewSet.as_view({"get": "list","post": "create",}),name="lead-list-create"),
-
-   # DETAIL + UPDATE + DELETE
-   path("lead-engine/leads/<int:pk>/",LeadViewSet.as_view({"get": "retrieve","patch": "partial_update","delete": "destroy",}),name="lead-detail"),
-
-   # FULL UPDATE
-   path("lead-engine/leads/<int:pk>/update/",LeadViewSet.as_view({"put": "update",}),name="lead-update"),
-
-   # PUBLIC WEBSITE / WEBHOOK / META ADS
-   path("lead/submit/",PublicLeadViewSet.as_view({"post": "create",}),name="public-lead-submit"),
-   
 
    ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
