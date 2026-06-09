@@ -55,17 +55,17 @@ class Resources(models.Model):
 # FORM
 # =====================================================
 
-# class Form(models.Model):
+class Form(models.Model):
 
-#     resource = models.ForeignKey(Resources,on_delete=models.CASCADE,related_name="resource_forms")
-#     name = models.CharField(max_length=250)
-#     email = models.EmailField()
-#     phone = models.CharField(max_length=15,null=True,blank=True)
-#     city = models.CharField(max_length=255,null=True,blank=True)
-#     interesed_course = models.BooleanField(default=True)
-#     prefered_course = models.CharField(max_length=255,null=True,blank=True)
-#     created_at = models.DateTimeField(auto_now_add=True)
+    resource = models.ForeignKey(Resources,on_delete=models.CASCADE,related_name="resource_forms")
+    name = models.CharField(max_length=250)
+    email = models.EmailField()
+    phone = models.CharField(max_length=15,null=True,blank=True)
+    city = models.CharField(max_length=255,null=True,blank=True)
+    interesed_course = models.BooleanField(default=True)
+    prefered_course = models.CharField(max_length=255,null=True,blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
-#     def __str__(self):
+    def __str__(self):
 
-#         return self.name
+        return self.name

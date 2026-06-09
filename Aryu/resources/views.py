@@ -17,12 +17,23 @@ from .serializers import *
 # RESOURCE VIEWSET
 # =====================================================
 
-class ResourcesViewset(viewsets.ModelViewSet):
+class ResourcesViewset(
+    viewsets.ModelViewSet
+):
 
-    queryset = (Resources.objects.all().order_by("-id"))
-    serializer_class = (ResourcesSerializers)
+    queryset = (
+        Resources.objects.all()
+        .order_by("-id")
+    )
+
+    serializer_class = (
+        ResourcesSerializers
+    )
+
     permission_classes = [AllowAny]
+
     authentication_classes = []
+
     def get_serializer_context(self):
 
         return {
@@ -34,178 +45,177 @@ class ResourcesViewset(viewsets.ModelViewSet):
 # FORM VIEWSET
 # =====================================================
 
-# class FormViewset(
-#     viewsets.ViewSet
-# ):
+class FormViewset(
+    viewsets.ViewSet
+):
 
-#     permission_classes = [AllowAny]
+    permission_classes = [AllowAny]
 
-#     authentication_classes = []
+    authentication_classes = []
 
-#     # ==========================================
-#     # CREATE
-#     # ==========================================
+    # ==========================================
+    # CREATE
+    # ==========================================
 
-#     def create(self, request):
+    def create(self, request):
 
         
 
-#         resource_id = request.data.get(
-#             "resource_id"
-#         )
+        resource_id = request.data.get(
+            "resource_id"
+        )
 
-#         if not resource_id:
+        if not resource_id:
 
-#             return Response(
-#                 {
-#                     "status": False,
-#                     "message":
-#                         "resource_id is required"
-#                 },
-#                 status=400
-#             )
+            return Response(
+                {
+                    "status": False,
+                    "message":
+                        "resource_id is required"
+                },
+                status=400
+            )
 
-#         resource = (
-#             Resources.objects
-#             .filter(id=resource_id)
-#             .first()
-#         )
+        resource = (
+            Resources.objects
+            .filter(id=resource_id)
+            .first()
+        )
 
-#         if not resource:
+        if not resource:
 
-#             return Response(
-#                 {
-#                     "status": False,
-#                     "message":
-#                         "Resource not found"
-#                 },
-#                 status=404
-#             )
+            return Response(
+                {
+                    "status": False,
+                    "message":
+                        "Resource not found"
+                },
+                status=404
+            )
 
-#         data = request.data.copy()
+        data = request.data.copy()
 
-#         data["resource"] = (
-#             resource.id
-#         )
+        data["resource"] = (
+            resource.id
+        )
 
-#         serializer = FormSerializer(
-#             data=data
-#         )
+        serializer = FormSerializer(
+            data=data
+        )
 
-#         if serializer.is_valid():
+        if serializer.is_valid():
 
-#             form = serializer.save()
+            form = serializer.save()
 
-#             return Response(
-#                 {
-#                     "status": True,
+            return Response(
+                {
+                    "status": True,
 
-#                     "message":
-#                         "Form submitted successfully",
+                    "message":
+                        "Form submitted successfully",
 
-#                     "download_url":
-#                         request.build_absolute_uri(
-#                             resource.file.url
-#                         ),
+                    "download_url":
+                        request.build_absolute_uri(
+                            resource.file.url
+                        ),
 
-#                     "data":
-#                         FormSerializer(form).data
-#                 },
-#                 status=201
-#             )
+                    "data":
+                        FormSerializer(form).data
+                },
+                status=201
+            )
 
-#         return Response(
-#             {
-#                 "status": False,
-#                 "errors":
-#                     serializer.errors
-#             },
-#             status=400
-#         )
+        return Response(
+            {
+                "status": False,
+                "errors":
+                    serializer.errors
+            },
+            status=400
+        )
 
-#     # ==========================================
-#     # LIST
-#     # ==========================================
+    # ==========================================
+    # LIST
+    # ==========================================
 
-#     def list(self, request):
+    def list(self, request):
 
-#         queryset = (
-#             Form.objects.all()
-#             .order_by("-id")
-#         )
+        queryset = (
+            Form.objects.all()
+            .order_by("-id")
+        )
 
-#         serializer = FormSerializer(
-#             queryset,
-#             many=True
-#         )
+        serializer = FormSerializer(
+            queryset,
+            many=True
+        )
 
-#         return Response(
-#             {
-#                 "status": True,
-#                 "data": serializer.data
-#             }
-#         )
+        return Response(
+            {
+                "status": True,
+                "data": serializer.data
+            }
+        )
 
-#     # ==========================================
-#     # RETRIEVE
-#     # ==========================================
+    # ==========================================
+    # RETRIEVE
+    # ==========================================
 
-#     def retrieve(self, request, pk=None):
+    def retrieve(self, request, pk=None):
 
-#         form = Form.objects.filter(
-#             id=pk
-#         ).first()
+        form = Form.objects.filter(
+            id=pk
+        ).first()
 
-#         if not form:
+        if not form:
 
-#             return Response(
-#                 {
-#                     "status": False,
-#                     "message":
-#                         "Form not found"
-#                 },
-#                 status=404
-#             )
+            return Response(
+                {
+                    "status": False,
+                    "message":
+                        "Form not found"
+                },
+                status=404
+            )
 
-#         serializer = FormSerializer(
-#             form
-#         )
+        serializer = FormSerializer(
+            form
+        )
 
-#         return Response(
-#             {
-#                 "status": True,
-#                 "data": serializer.data
-#             }
-#         )
+        return Response(
+            {
+                "status": True,
+                "data": serializer.data
+            }
+        )
 
-#     # ==========================================
-#     # DELETE
-#     # ==========================================
+    # ==========================================
+    # DELETE
+    # ==========================================
 
-#     def destroy(self, request, pk=None):
+    def destroy(self, request, pk=None):
 
-#         form = Form.objects.filter(
-#             id=pk
-#         ).first()
+        form = Form.objects.filter(
+            id=pk
+        ).first()
 
-#         if not form:
+        if not form:
 
-#             return Response(
-#                 {
-#                     "status": False,
-#                     "message":
-#                         "Form not found"
-#                 },
-#                 status=404
-#             )
+            return Response(
+                {
+                    "status": False,
+                    "message":
+                        "Form not found"
+                },
+                status=404
+            )
 
-#         form.delete()
+        form.delete()
 
-#         return Response(
-#             {
-#                 "status": True,
-#                 "message":
-#                     "Form deleted successfully"
-#             }
-#         )
-    
+        return Response(
+            {
+                "status": True,
+                "message":
+                    "Form deleted successfully"
+            }
+        )
