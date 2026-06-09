@@ -58,7 +58,7 @@ class LeadCallLogSerializer(serializers.ModelSerializer):
 
         if obj.recording_url and hasattr(obj.recording_url, "url"):
             return (
-                "https://aylms.aryuprojects.com/api"
+                "https://portal.aryuacademy.com/api"
                 + obj.recording_url.url
             )
 
