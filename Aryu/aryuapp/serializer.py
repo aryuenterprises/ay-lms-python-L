@@ -1709,6 +1709,84 @@ class CertificateSerializer(serializers.ModelSerializer):
                 validated_data["created_by_type"] = role
         return super().create(validated_data)
 
+class PublicTrainerRegisterSerializer(serializers.ModelSerializer):
+    employee_id = serializers.CharField(read_only=True)
+    
+
+    class Meta:
+        model  = Trainer
+        read_only_fields = ["employee_id"]
+        fields = [
+            # ── Identity ──────────────────────────────────────────────────
+            "trainer_id", "employee_id", "role",
+            "username", "password",
+            "full_name", "user_type", "tutor_type", 'dob',
+ 
+            # ── Contact / Profile ─────────────────────────────────────────
+            "profile_pic",
+            "email", "contact_no", "gender",
+            "address", "city", "state", "country", "pincode",
+ 
+            # ── Professional ──────────────────────────────────────────────
+            "specialization", "working_hours", "experience",
+            "last_company", "joining_date",
+            "linkedin_profile", "short_bio",
+ 
+            # ── Financial ─────────────────────────────────────────────────
+            "salary", "salary_type",
+            "account_no", "account_holder_name",
+            "bank_name", "ifsc_code",
+            "upi_id", "gpay_no",
+ 
+            # ── Documents ─────────────────────────────────────────────────
+            "aadhar_card", "pan_card", "resume", "certificate", "photo",
+ 
+            # ── Status / Meta ─────────────────────────────────────────────
+            "status", "is_archived",
+            "created_at", "created_by",
+        ]
+        extra_kwargs = {
+            "password": {
+                "write_only": True,
+                "required":   False,
+                "allow_blank": True,
+            },
+            "full_name": {
+                "error_messages": {
+                    "max_length": "Full Name cannot exceed 255 characters."
+                }
+            },
+            "username": {
+                "error_messages": {
+                    "max_length": "Username cannot exceed 255 characters."
+                }
+            },
+            "working_hours": {
+                "error_messages": {
+                    "max_length": "Working Hours cannot exceed 255 characters."
+                }
+            },
+        }
+
+    def validate_email(self, value):
+        if Trainer.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("Email already registered")
+        return value.lower()
+    
+    def create(self, validated_data):
+        password = validated_data.pop("password")
+
+        trainer = Trainer(
+            **validated_data,
+            password=make_password(password),
+            status="Pending",
+            # user_type ="tutor",
+            created_by_type = "Public"
+        )
+
+        trainer.save()
+        return trainer
+
 
 class TrainerSerializer(serializers.ModelSerializer):
  

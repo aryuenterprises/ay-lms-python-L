@@ -56,6 +56,7 @@ urlpatterns = [
    path('certificate', CertificateViewSet.as_view({'get': 'list', 'post': 'create'})),
    path('certificates/<str:student_id>', CertificateViewSet.as_view({'get': 'student_certificates'})),
    path('trainers', TrainerViewSet.as_view({'get': 'list','post': 'create',})),
+   path("public-trainers-registration",PublicTrainerRegisterAPIView.as_view(),name="public-trainer-register"),
    path('tutor-signup',TutorSignupView.as_view()),
    path('trainers/<str:employee_id>', TrainerViewSet.as_view({'get': 'retrieve','patch': 'partial_update','put': 'update','delete': 'destroy',})),
    path('trainer/<str:employee_id>/courses', TrainerViewSet.as_view({'get': 'get_courses_taken'})),
