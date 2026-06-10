@@ -6117,7 +6117,48 @@ class CertificateViewSet(viewsets.ModelViewSet):
 #     email.content_subtype = "html"
 #     email.send(fail_silently=False)    
 
+class RegisterThrottle(AnonRateThrottle):
+    rate = "5/hour"
 
+
+class PublicTrainerRegisterAPIView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []          # 🔥 no auth
+    throttle_classes = [RegisterThrottle]
+
+    def post(self, request):
+        serializer = PublicTrainerRegisterSerializer(data=request.data)
+
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "success": False,
+                    "message": serializer.errors
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            with transaction.atomic():
+                trainer = serializer.save()
+
+        except IntegrityError:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Registration failed. Try again."
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        return Response(
+            {
+                "success": True,
+                "message": "Registration successful. Await admin approval.",
+                "trainer_id": trainer.trainer_id
+            },
+            status=status.HTTP_201_CREATED
+        )
 
 def _trainer_prefetches():
     """
