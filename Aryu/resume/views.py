@@ -44,6 +44,9 @@ from weasyprint import HTML, CSS
 from django.db.models import Q
 from django.utils.timezone import now
 # from celery import shared_task
+from .tasks import resume_reg
+
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -1673,9 +1676,7 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
 
     # CREATE
-    from .tasks import resume_reg
-
-    import time
+    
 
     @secure_throttle(rate_limit=5, period=60)
     def create(self, request, *args, **kwargs):
