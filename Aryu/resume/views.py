@@ -2352,14 +2352,17 @@ class ResumePaymentViewSet(viewsets.ViewSet):
             )
 
         # =========================================
-        # ACTIVATE SUBSCRIPTION
+        # GET TRANSACTION
         # =========================================
 
         txn = PaymentTransaction.objects.filter(
             order_id=order_id
-        ).select_related("subscription").first()
+        ).select_related(
+            "subscription"
+        ).first()
 
         if not txn:
+
             return Response(
                 {
                     "success": False,
@@ -2368,37 +2371,91 @@ class ResumePaymentViewSet(viewsets.ViewSet):
                 status=404
             )
 
+        # =========================================
+        # GET ACTUAL USER MODEL
+        # =========================================
+
+        user = ResumeRegistration.objects.filter(
+            id=request.user.id
+        ).first()
+
+        if not user:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "User not found"
+                },
+                status=404
+            )
+
+        # =========================================
+        # UPDATE TRANSACTION
+        # =========================================
+
         txn.payment_status = "done"
+
+        # only if field exists
+        # txn.payment_id = payment_id
+
         txn.save()
 
-        # Expire old active subscriptions
-        UserSubscription.objects.filter(
-            user=request.user,
-            status="active"
-        ).update(status="expired")
+        # =========================================
+        # EXPIRE OLD ACTIVE SUBSCRIPTIONS
+        # =========================================
 
-        # Create new active subscription
-        UserSubscription.objects.create(
-            user=request.user,
+        UserSubscription.objects.filter(
+            user=user,
+            status="active"
+        ).update(
+            status="expired"
+        )
+
+        # =========================================
+        # CALCULATE END DATE
+        # =========================================
+
+        duration = int(
+            str(txn.subscription.duration_days)
+            .replace("Days", "")
+            .replace("Day", "")
+            .strip()
+        )
+
+        end_date = timezone.now() + timedelta(
+            days=duration
+        )
+
+        # =========================================
+        # CREATE NEW ACTIVE SUBSCRIPTION
+        # =========================================
+
+        new_subscription = UserSubscription.objects.create(
+            user=user,
             subscription=txn.subscription,
             payment_transaction=txn,
             status="active",
             start_date=timezone.now(),
-            end_date=timezone.now() + timedelta(
-                days=txn.subscription.duration_days
-            )
+            end_date=end_date
         )
 
-        # Update current subscription on user
-        request.user.current_subscription = txn.subscription
-        request.user.save(
+        # =========================================
+        # UPDATE USER CURRENT PLAN
+        # =========================================
+
+        user.current_subscription = new_subscription
+
+        user.save(
             update_fields=["current_subscription"]
         )
 
-        return Response({
-            "success": True,
-            "message": "Subscription activated successfully"
-        })
+        return Response(
+            {
+                "success": True,
+                "message": "Subscription activated successfully",
+                "subscription_id": new_subscription.id
+            }
+        )
 @csrf_exempt
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
