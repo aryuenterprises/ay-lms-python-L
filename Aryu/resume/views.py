@@ -2351,16 +2351,54 @@ class ResumePaymentViewSet(viewsets.ViewSet):
                 status=400
             )
 
-        return Response({
+        # =========================================
+        # ACTIVATE SUBSCRIPTION
+        # =========================================
 
-            "success": True,
+        txn = PaymentTransaction.objects.filter(
+            order_id=order_id
+        ).select_related("subscription").first()
 
-            "message": (
-                "Payment verification success. "
-                "Webhook processing pending."
+        if not txn:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Transaction not found"
+                },
+                status=404
             )
-        })
 
+        txn.payment_status = "done"
+        txn.save()
+
+        # Expire old active subscriptions
+        UserSubscription.objects.filter(
+            user=request.user,
+            status="active"
+        ).update(status="expired")
+
+        # Create new active subscription
+        UserSubscription.objects.create(
+            user=request.user,
+            subscription=txn.subscription,
+            payment_transaction=txn,
+            status="active",
+            start_date=timezone.now(),
+            end_date=timezone.now() + timedelta(
+                days=txn.subscription.duration_days
+            )
+        )
+
+        # Update current subscription on user
+        request.user.current_subscription = txn.subscription
+        request.user.save(
+            update_fields=["current_subscription"]
+        )
+
+        return Response({
+            "success": True,
+            "message": "Subscription activated successfully"
+        })
 @csrf_exempt
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
