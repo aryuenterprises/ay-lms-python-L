@@ -15,6 +15,7 @@ from django.db.models.functions import TruncMonth
 from django.utils import timezone
 from rest_framework.decorators import action
 import csv
+import re
 import io
 import mimetypes
 import openpyxl
@@ -137,6 +138,120 @@ class LeadViewSet(
     parser_classes = [MultiPartParser, JSONParser]
 
     pagination_class = LeadPagination
+
+    def normalize_header(self, header):
+        if header is None:
+            return ""
+
+        return re.sub(
+            r"[^a-z0-9]",
+            "",
+            str(header).strip().lower(),
+        )
+
+
+    def sanitize_excel_value(self, value):
+        if value is None:
+            return None
+
+        value = str(value).strip()
+
+        if value.startswith(("=", "+", "-", "@")):
+            value = "'" + value
+
+        return value
+
+
+    COLUMN_MAPPING = {
+        "name": [
+            "name",
+            "fullname",
+            "full_name",
+            "studentname",
+            "student_name",
+            "candidate",
+            "candidatename",
+        ],
+
+        "phone": [
+            "phone",
+            "mobile",
+            "mobileno",
+            "mobile_no",
+            "mobilenumber",
+            "phone_number",
+            "phonenumber",
+            "phoneno",
+            "contact",
+            "contactnumber",
+            "contact_no",
+        ],
+
+        "email": [
+            "email",
+            "emailid",
+            "email_id",
+            "mail",
+        ],
+
+        "city": [
+            "city",
+        ],
+
+        "state": [
+            "state",
+        ],
+
+        "course": [
+            "course",
+            "coursename",
+            "course_name",
+            "courseinterested",
+            "course_interested",
+            "interestedcourse",
+        ],
+    }
+
+    COLUMN_MAPPING = {
+        "name": [
+            "name",
+            "fullname",
+            "studentname",
+            "candidate",
+        ],
+
+        "phone": [
+            "phone",
+            "mobileno",
+            "mobile",
+            "mobilephone",
+            "phonenumber",
+            "phoneno",
+            "contact",
+            "contactnumber",
+        ],
+
+        "email": [
+            "email",
+            "emailid",
+            "mail",
+        ],
+
+        "city": [
+            "city",
+        ],
+
+        "state": [
+            "state",
+        ],
+
+        "course": [
+            "course",
+            "coursename",
+            "courseinterested",
+            "interestedcourse",
+        ],
+    }
 
     # =====================================================
     # INTERNAL HELPERS
@@ -638,34 +753,48 @@ class LeadViewSet(
             # REQUIRED COLUMNS
             # =============================================
 
+            first_row = rows[0]
+
+            header_mapping = {}
+
+            for uploaded_header in first_row.keys():
+
+                normalized = self.normalize_header(uploaded_header)
+
+                for internal_name, aliases in self.COLUMN_MAPPING.items():
+
+                    alias_set = {
+                        self.normalize_header(alias)
+                        for alias in aliases
+                    }
+
+                    if normalized in alias_set:
+                        header_mapping[internal_name] = uploaded_header
+                        break
+
+
             required_columns = [
                 "name",
-                "phone"
+                "phone",
             ]
 
-            if not rows:
+            missing = [
+                col
+                for col in required_columns
+                if col not in header_mapping
+            ]
+
+            if missing:
 
                 return Response(
                     {
-                        "detail": "File is empty."
+                        "detail": (
+                            "Missing required columns: "
+                            + ", ".join(missing)
+                        )
                     },
-                    status=status.HTTP_400_BAD_REQUEST
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-
-            first_row = rows[0]
-
-            for column in required_columns:
-
-                if column not in first_row:
-
-                    return Response(
-                        {
-                            "detail": (
-                                f"Missing required column: {column}"
-                            )
-                        },
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
 
             # =============================================
             # EXISTING PHONES
@@ -687,7 +816,10 @@ class LeadViewSet(
             for row in rows:
 
                 phone = str(
-                    row.get("phone", "")
+                    row.get(
+                        header_mapping["phone"],
+                        "",
+                    )
                 ).strip()
 
                 phone = "".join(
@@ -741,14 +873,18 @@ class LeadViewSet(
 
                     Lead(
 
-                        name=sanitize(
-                            row.get("name")
+                        name=self.sanitize_excel_value(
+                            row.get(
+                                header_mapping["name"]
+                            )
                         ),
 
                         phone=phone,
 
-                        email=sanitize(
-                            row.get("email")
+                        email=self.sanitize_excel_value(
+                            row.get(
+                                header_mapping.get("email")
+                            )
                         ),
 
                         city=sanitize(
@@ -759,8 +895,10 @@ class LeadViewSet(
                             row.get("state")
                         ),
 
-                        course=sanitize(
-                            row.get("course")
+                        course=self.sanitize_excel_value(
+                            row.get(
+                                header_mapping.get("course")
+                            )
                         ),
 
                         source="bulk_upload",
@@ -820,6 +958,7 @@ class LeadViewSet(
         finally:
 
             cache.delete(cache_key)
+    
     
     # =====================================================
     # UPDATE LEAD
