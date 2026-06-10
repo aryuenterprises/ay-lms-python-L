@@ -163,119 +163,119 @@ MIDDLEWARE = [
 ]
 
 
-# REST_FRAMEWORK = {
-#     'DEFAULT_RENDERER_CLASSES': [
-#         'rest_framework.renderers.JSONRenderer',
-#     ],
-#     'DEFAULT_AUTHENTICATION_CLASSES': [
-#         'aryuapp.auth.CustomJWTAuthentication',
-#     ],
-#     'DEFAULT_FILTER_BACKENDS': [
-#         'django_filters.rest_framework.DjangoFilterBackend'
-#     ],
-#     'EXCEPTION_HANDLER': 'aryuapp.exceptions.custom_exception_handler',
-#     'DEFAULT_THROTTLE_RATES': {
-#         'admin_lead': '100/day',
-#         'public_lead': '20/day',
-#     },
-# }
 REST_FRAMEWORK = {
-
-    # AUTHENTICATION
-
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "aryuapp.auth.CustomJWTAuthentication",
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
     ],
-    # "DEFAULT_AUTHENTICATION_CLASSES": [
-    #     "resume.auth.CustomJWTAuthentication",
-    # ],
-
-    # PERMISSIONS
-
-    "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.IsAuthenticated",
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'aryuapp.auth.CustomJWTAuthentication',
     ],
-
-    # FILTERS
-
-    "DEFAULT_FILTER_BACKENDS": [
-        "django_filters.rest_framework.DjangoFilterBackend",
+    'DEFAULT_FILTER_BACKENDS': [
+        'django_filters.rest_framework.DjangoFilterBackend'
     ],
-
-    # EXCEPTION HANDLER
-
-    "EXCEPTION_HANDLER":
-        "aryuapp.exceptions.custom_exception_handler",
-
-    # THROTTLING
-
-    "DEFAULT_THROTTLE_CLASSES": [
-
-        # Public APIs
-        "rest_framework.throttling.AnonRateThrottle",
-
-        # Authenticated APIs
-        "rest_framework.throttling.UserRateThrottle",
-    ],
-
-    "DEFAULT_THROTTLE_RATES": {
-
-        # =============================================
-        # DEFAULT
-        # =============================================
-
-        "anon": "20/min",
-        "user": "2000/min",
-
-        # =============================================
-        # CUSTOM SCOPES
-        # =============================================
-
-        # Lead Admin APIs
-        "admin_lead": "3000/min",
-
-        # Public Lead Submission
-        "public_lead": "60/min",
-
-        # Login Protection
-        "login": "10/min",
-
-        # OTP APIs
-        "otp": "5/min",
-
-        # AI APIs
-        "ai": "30/min",
+    'EXCEPTION_HANDLER': 'aryuapp.exceptions.custom_exception_handler',
+    'DEFAULT_THROTTLE_RATES': {
+        'admin_lead': '100/day',
+        'public_lead': '20/day',
     },
-
-    # PAGINATION
-
-    "DEFAULT_PAGINATION_CLASS":
-        "rest_framework.pagination.PageNumberPagination",
-
-    "PAGE_SIZE": 25,
-
-    # RENDERERS
-
-    "DEFAULT_RENDERER_CLASSES": [
-        "rest_framework.renderers.JSONRenderer",
-    ],
-
-    # PARSERS
-
-    "DEFAULT_PARSER_CLASSES": [
-        "rest_framework.parsers.JSONParser",
-        "rest_framework.parsers.MultiPartParser",
-        "rest_framework.parsers.FormParser",
-    ],
-
-    # SECURITY
-
-    "DEFAULT_VERSIONING_CLASS":
-        "rest_framework.versioning.NamespaceVersioning",
-
-    "DEFAULT_SCHEMA_CLASS":
-        "drf_spectacular.openapi.AutoSchema",
 }
+# REST_FRAMEWORK = {
+
+#     # AUTHENTICATION
+
+#     "DEFAULT_AUTHENTICATION_CLASSES": [
+#         "aryuapp.auth.CustomJWTAuthentication",
+#     ],
+#     # "DEFAULT_AUTHENTICATION_CLASSES": [
+#     #     "resume.auth.CustomJWTAuthentication",
+#     # ],
+
+#     # PERMISSIONS
+
+#     "DEFAULT_PERMISSION_CLASSES": [
+#         "rest_framework.permissions.IsAuthenticated",
+#     ],
+
+#     # FILTERS
+
+#     "DEFAULT_FILTER_BACKENDS": [
+#         "django_filters.rest_framework.DjangoFilterBackend",
+#     ],
+
+#     # EXCEPTION HANDLER
+
+#     "EXCEPTION_HANDLER":
+#         "aryuapp.exceptions.custom_exception_handler",
+
+#     # THROTTLING
+
+#     "DEFAULT_THROTTLE_CLASSES": [
+
+#         # Public APIs
+#         "rest_framework.throttling.AnonRateThrottle",
+
+#         # Authenticated APIs
+#         "rest_framework.throttling.UserRateThrottle",
+#     ],
+
+#     "DEFAULT_THROTTLE_RATES": {
+
+#         # =============================================
+#         # DEFAULT
+#         # =============================================
+
+#         "anon": "20/min",
+#         "user": "2000/min",
+
+#         # =============================================
+#         # CUSTOM SCOPES
+#         # =============================================
+
+#         # Lead Admin APIs
+#         "admin_lead": "3000/min",
+
+#         # Public Lead Submission
+#         "public_lead": "60/min",
+
+#         # Login Protection
+#         "login": "10/min",
+
+#         # OTP APIs
+#         "otp": "5/min",
+
+#         # AI APIs
+#         "ai": "30/min",
+#     },
+
+#     # PAGINATION
+
+#     "DEFAULT_PAGINATION_CLASS":
+#         "rest_framework.pagination.PageNumberPagination",
+
+#     "PAGE_SIZE": 25,
+
+#     # RENDERERS
+
+#     "DEFAULT_RENDERER_CLASSES": [
+#         "rest_framework.renderers.JSONRenderer",
+#     ],
+
+#     # PARSERS
+
+#     "DEFAULT_PARSER_CLASSES": [
+#         "rest_framework.parsers.JSONParser",
+#         "rest_framework.parsers.MultiPartParser",
+#         "rest_framework.parsers.FormParser",
+#     ],
+
+#     # SECURITY
+
+#     "DEFAULT_VERSIONING_CLASS":
+#         "rest_framework.versioning.NamespaceVersioning",
+
+#     "DEFAULT_SCHEMA_CLASS":
+#         "drf_spectacular.openapi.AutoSchema",
+# }
 
 
 
