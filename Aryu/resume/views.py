@@ -2416,16 +2416,19 @@ class ResumePaymentViewSet(viewsets.ViewSet):
         # CALCULATE END DATE
         # =========================================
 
-        duration = int(
-            str(txn.subscription.duration_days)
-            .replace("Days", "")
-            .replace("Day", "")
-            .strip()
-        )
+        duration_value = str(txn.subscription.duration_days).strip()
 
-        end_date = timezone.now() + timedelta(
-            days=duration
-        )
+        if duration_value.lower() in ["lifetime", "life time"]:
+            end_date = None
+        else:
+            duration = int(
+                duration_value
+                .replace("Days", "")
+                .replace("Day", "")
+                .strip()
+            )
+
+            end_date = timezone.now() + timedelta(days=duration)
 
         # =========================================
         # CREATE NEW ACTIVE SUBSCRIPTION
@@ -2457,6 +2460,7 @@ class ResumePaymentViewSet(viewsets.ViewSet):
                 "subscription_id": new_subscription.id
             }
         )
+    
 @csrf_exempt
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
