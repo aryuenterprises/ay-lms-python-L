@@ -340,7 +340,7 @@ class DashboardCurrentSubscriptionSerializer(serializers.Serializer):
     price = serializers.DecimalField(max_digits=10, decimal_places=2)
     discount_price = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True)
     billing_type = serializers.CharField()
-    duration_days = serializers.IntegerField()
+    duration_days = serializers.CharField()
     limit = serializers.IntegerField()
 
     validity_type = serializers.SerializerMethodField()
