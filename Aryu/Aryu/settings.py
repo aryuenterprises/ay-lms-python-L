@@ -175,7 +175,7 @@ REST_FRAMEWORK = {
     ],
     'EXCEPTION_HANDLER': 'aryuapp.exceptions.custom_exception_handler',
     'DEFAULT_THROTTLE_RATES': {
-        'admin_lead': '5000/day',
+        'admin_lead': '50000/day',
         'public_lead': '20/day',
     },
 }
