@@ -424,7 +424,7 @@ DATABASES = {
         'NAME': 'aylms_live',  
         'USER': 'aylms_live',
         'PASSWORD':'KfdW543FDdfg',
-        'HOST': '69.62.78.109',   
+        'HOST': '187.127.178.144',   
         'PORT': '5432',  
         'AUTOCOMMIT': True,
         'CONN_MAX_AGE': 60,
