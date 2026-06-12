@@ -15,14 +15,14 @@ from django.db.models.functions import TruncMonth
 from django.utils import timezone
 from rest_framework.decorators import action
 import csv
-import re
 import io
 import mimetypes
+import re
 import openpyxl
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, JSONParser, FormParser
 from rest_framework.authentication import SessionAuthentication
-from rest_framework.pagination import PageNumberPagination
+from rest_framework.pagination import CursorPagination
 
 # Create your views here.
 
@@ -42,12 +42,10 @@ class AdminLeadThrottle(UserRateThrottle):
 # PAGINATION
 # =========================================================
 
-class LeadPagination(PageNumberPagination):
-
+class LeadPagination(CursorPagination):
     page_size = 25
-
+    ordering = "-created_at"
     page_size_query_param = "page_size"
-
     max_page_size = 100
 
 
@@ -57,29 +55,18 @@ class LeadPagination(PageNumberPagination):
 
 class LeadSecurityMixin:
 
-    blocked_patterns = [
-        "<script",
-        "javascript:",
-        "union select",
-        "drop table",
-        "--",
-        ";",
-        "onerror=",
-        "onload=",
-    ]
+    BLOCKED_REGEX = re.compile(
+        r"<script|javascript:|union\s+select|drop\s+table|--|;|onerror=|onload=",
+        re.IGNORECASE,
+    )
 
     def validate_payload_security(self, request):
 
-        for _, value in request.data.items():
+        for value in request.data.values():
 
-            if not isinstance(value, str):
-                continue
+            if isinstance(value, str):
 
-            lower_value = value.lower()
-
-            for pattern in self.blocked_patterns:
-
-                if pattern in lower_value:
+                if self.BLOCKED_REGEX.search(value):
 
                     raise ValidationError(
                         "Invalid payload detected."
@@ -93,8 +80,8 @@ class LeadSecurityMixin:
             )
 
         if not (
-            request.user.is_staff or
-            request.user.is_superuser
+            request.user.is_staff
+            or request.user.is_superuser
         ):
             raise PermissionDenied(
                 "Access denied."
@@ -107,7 +94,7 @@ class LeadSecurityMixin:
         )
 
         if x_forwarded_for:
-            return x_forwarded_for.split(",")[0]
+            return x_forwarded_for.split(",")[0].strip()
 
         return request.META.get("REMOTE_ADDR")
 
@@ -139,120 +126,6 @@ class LeadViewSet(
 
     pagination_class = LeadPagination
 
-    def normalize_header(self, header):
-        if header is None:
-            return ""
-
-        return re.sub(
-            r"[^a-z0-9]",
-            "",
-            str(header).strip().lower(),
-        )
-
-
-    def sanitize_excel_value(self, value):
-        if value is None:
-            return None
-
-        value = str(value).strip()
-
-        if value.startswith(("=", "+", "-", "@")):
-            value = "'" + value
-
-        return value
-
-
-    COLUMN_MAPPING = {
-        "name": [
-            "name",
-            "fullname",
-            "full_name",
-            "studentname",
-            "student_name",
-            "candidate",
-            "candidatename",
-        ],
-
-        "phone": [
-            "phone",
-            "mobile",
-            "mobileno",
-            "mobile_no",
-            "mobilenumber",
-            "phone_number",
-            "phonenumber",
-            "phoneno",
-            "contact",
-            "contactnumber",
-            "contact_no",
-        ],
-
-        "email": [
-            "email",
-            "emailid",
-            "email_id",
-            "mail",
-        ],
-
-        "city": [
-            "city",
-        ],
-
-        "state": [
-            "state",
-        ],
-
-        "course": [
-            "course",
-            "coursename",
-            "course_name",
-            "courseinterested",
-            "course_interested",
-            "interestedcourse",
-        ],
-    }
-
-    COLUMN_MAPPING = {
-        "name": [
-            "name",
-            "fullname",
-            "studentname",
-            "candidate",
-        ],
-
-        "phone": [
-            "phone",
-            "mobileno",
-            "mobile",
-            "mobilephone",
-            "phonenumber",
-            "phoneno",
-            "contact",
-            "contactnumber",
-        ],
-
-        "email": [
-            "email",
-            "emailid",
-            "mail",
-        ],
-
-        "city": [
-            "city",
-        ],
-
-        "state": [
-            "state",
-        ],
-
-        "course": [
-            "course",
-            "coursename",
-            "courseinterested",
-            "interestedcourse",
-        ],
-    }
-
     # =====================================================
     # INTERNAL HELPERS
     # =====================================================
@@ -273,57 +146,64 @@ class LeadViewSet(
     # =====================================================
 
     def get_lead_queryset(self):
+
         return (
+
             Lead.objects
-            .select_related(
-                "followup_by",
-                "handled_by"
+
+            .filter(
+                is_archived=False
             )
-            .only(
-                "id",
-                "name",
-                "phone",
-                "email",
-                "city",
-                "course",
-                "status",
-                "priority",
-                "lead_stage",
-                "source",
-                "created_at",
-                "followup_date",
-                "next_followup_date",
-                "followup_by",
-                "handled_by",
-                "no_of_calls",
-                "no_of_dms",
-                "created_by",
-                "created_by_type",
-            )
+
             .annotate(
                 lead_origin=Value(
                     "lead",
                     output_field=CharField()
                 )
             )
-            .filter(
-                is_archived=False
-            )
+
             .order_by("-created_at")
+
         )
 
     def get_active_courses(self):
-        return list(
-            Course.objects
-            .filter(
+
+        cache_key = "active_courses"
+
+        courses = cache.get(cache_key)
+
+        if courses is not None:
+            return courses
+
+        courses = list(
+
+            Course.objects.filter(
+
                 status="Active",
+
                 is_archived=False
-            )
-            .values(
+
+            ).values(
+
                 "course_id",
-                "course_name",
+
+                "course_name"
+
             )
+
         )
+
+        cache.set(
+
+            cache_key,
+
+            courses,
+
+            timeout=600
+
+        )
+
+        return courses
 
     def list(self, request):
         self.validate_admin_access(request)
@@ -331,7 +211,7 @@ class LeadViewSet(
         cache_key = (
             f"lead-engine:"
             f"{request.user.id}:"
-            f"{request.query_params.urlencode()}"
+            f"{hash(request.get_full_path())}"
         )
 
         cached_response = cache.get(cache_key)
@@ -345,12 +225,22 @@ class LeadViewSet(
         # SEARCH
         # =====================================
         search = request.query_params.get("search")
+
         if search:
-            leads_queryset = leads_queryset.filter(
-                Q(name__icontains=search) |
-                Q(phone__icontains=search) |
-                Q(email__icontains=search)
-            )
+
+            search = search.strip()
+
+            if search.isdigit():
+
+                leads_queryset = leads_queryset.filter(phone__startswith=search)
+
+            elif "@" in search:
+
+                leads_queryset = leads_queryset.filter(email__iexact=search)
+
+            else:
+
+                leads_queryset = leads_queryset.filter(name__istartswith=search)
 
         # =====================================
         # STATUS FILTER
@@ -411,7 +301,7 @@ class LeadViewSet(
         cache.set(
             cache_key,
             response_data,
-            timeout=20
+            timeout=60
         )
 
         return Response(response_data)
@@ -753,48 +643,34 @@ class LeadViewSet(
             # REQUIRED COLUMNS
             # =============================================
 
-            first_row = rows[0]
-
-            header_mapping = {}
-
-            for uploaded_header in first_row.keys():
-
-                normalized = self.normalize_header(uploaded_header)
-
-                for internal_name, aliases in self.COLUMN_MAPPING.items():
-
-                    alias_set = {
-                        self.normalize_header(alias)
-                        for alias in aliases
-                    }
-
-                    if normalized in alias_set:
-                        header_mapping[internal_name] = uploaded_header
-                        break
-
-
             required_columns = [
                 "name",
-                "phone",
+                "phone"
             ]
 
-            missing = [
-                col
-                for col in required_columns
-                if col not in header_mapping
-            ]
-
-            if missing:
+            if not rows:
 
                 return Response(
                     {
-                        "detail": (
-                            "Missing required columns: "
-                            + ", ".join(missing)
-                        )
+                        "detail": "File is empty."
                     },
-                    status=status.HTTP_400_BAD_REQUEST,
+                    status=status.HTTP_400_BAD_REQUEST
                 )
+
+            first_row = rows[0]
+
+            for column in required_columns:
+
+                if column not in first_row:
+
+                    return Response(
+                        {
+                            "detail": (
+                                f"Missing required column: {column}"
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
 
             # =============================================
             # EXISTING PHONES
@@ -816,10 +692,7 @@ class LeadViewSet(
             for row in rows:
 
                 phone = str(
-                    row.get(
-                        header_mapping["phone"],
-                        "",
-                    )
+                    row.get("phone", "")
                 ).strip()
 
                 phone = "".join(
@@ -873,18 +746,14 @@ class LeadViewSet(
 
                     Lead(
 
-                        name=self.sanitize_excel_value(
-                            row.get(
-                                header_mapping["name"]
-                            )
+                        name=sanitize(
+                            row.get("name")
                         ),
 
                         phone=phone,
 
-                        email=self.sanitize_excel_value(
-                            row.get(
-                                header_mapping.get("email")
-                            )
+                        email=sanitize(
+                            row.get("email")
                         ),
 
                         city=sanitize(
@@ -895,10 +764,8 @@ class LeadViewSet(
                             row.get("state")
                         ),
 
-                        course=self.sanitize_excel_value(
-                            row.get(
-                                header_mapping.get("course")
-                            )
+                        course=sanitize(
+                            row.get("course")
                         ),
 
                         source="bulk_upload",
@@ -958,7 +825,6 @@ class LeadViewSet(
         finally:
 
             cache.delete(cache_key)
-    
     
     # =====================================================
     # UPDATE LEAD

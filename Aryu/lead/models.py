@@ -192,6 +192,11 @@ class Lead(models.Model):
         db_table = 'aryuapp_lead'
         indexes = [
             models.Index(fields=["phone"]),
+            models.Index(fields=["email"]),
+            models.Index(fields=["source"]),
+            models.Index(fields=["created_at"]),
+            models.Index(fields=["status", "-created_at"]),
+            models.Index(fields=["source", "-created_at"]),
             models.Index(fields=["status"]),
             models.Index(fields=["followup_date"]),
             models.Index(fields=["next_followup_date"]),
