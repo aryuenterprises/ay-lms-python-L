@@ -245,7 +245,7 @@ class Trainer(models.Model):
     account_no = models.BigIntegerField(null=True, blank=True)
     account_holder_name = models.CharField(null=True, blank=True)
     bank_name = models.CharField(null=True, blank=True)
-    ifsc_code = models.CharField(max_length=15,null=True, blank=True)
+    ifsc_code = models.CharField(max_length=20,null=True, blank=True)
     upi_id = models.CharField(null=True, blank=True)
     gpay_no = models.BigIntegerField(null=True, blank=True)
 

@@ -45,7 +45,7 @@ from django.db.models import Q
 from django.utils.timezone import now
 # from celery import shared_task
 from .tasks import resume_reg
-
+from collections import defaultdict
 import time
 
 logger = logging.getLogger(__name__)
@@ -1693,6 +1693,12 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
         t3 = time.time()
         resume_reg.delay(registration.id)
+        PaymentHistory.objects.create(
+            user=registration,
+            plan_name="Free",
+            price=0,
+            payment_status="free"
+        )
         
 
         return Response(
@@ -1911,8 +1917,11 @@ class UserDashboardView(APIView):
         ).filter(
             user=user
         ).order_by(
+            "subscription__name",
             "-created_at"
-        )
+        ).distinct(
+            "subscription__name"
+            )   
 
         transaction_data = DashboardSubscriptionHistorySerializer(
             transactions,
@@ -2400,6 +2409,12 @@ class ResumePaymentViewSet(viewsets.ViewSet):
         # txn.payment_id = payment_id
 
         txn.save()
+        PaymentHistory.objects.create(
+            user=user,
+            plan_name=txn.subscription.name,  # adjust field name
+            price=txn.amount,
+            payment_status="done"
+        )
 
         # =========================================
         # EXPIRE OLD ACTIVE SUBSCRIPTIONS
@@ -3584,34 +3599,64 @@ class ContactViewset(viewsets.ModelViewSet):
         )
     
 class PaymentHistoryViewset(viewsets.ModelViewSet):
-    queryset = PaymentHistory.objects.all().order_by("-id")
+    queryset = PaymentHistory.objects.select_related(
+        "user"
+    ).order_by("-id")
+
     serializer_class = PaymentHistorySerializers
-    #List
+
+   
+
     def list(self, request, *args, **kwargs):
+
         user = request.user
 
         allowed_types = ["super_admin", "admin"]
 
         if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unable to process request."
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, many=True)
+
+        grouped_data = defaultdict(list)
+
+        for item in queryset:
+
+            grouped_data[item.user.id].append({
+                "id": item.id,
+                "plan_name": item.plan_name,
+                "price": str(item.price),
+                "payment_status": item.payment_status,
+                "created_at": item.created_at
+            })
+
+        response_data = []
+
+        for user_id, transactions in grouped_data.items():
+
+            user_obj = ResumeRegistration.objects.get(id=user_id)
+
+            response_data.append({
+                "user_id": user_id,
+                "user_name": f"{user_obj.first_name} {user_obj.last_name}",
+                "transactions": transactions
+            })
 
         return Response(
             {
                 "status": True,
-                "message": "Contact list",
-                "data": serializer.data
+                "message": "Payment history list",
+                "data": response_data
             },
             status=status.HTTP_200_OK
         )
-
-
+    
 class GeneratePDFView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     MAX_HTML_SIZE = 2 * 1024 * 1024  # 2MB

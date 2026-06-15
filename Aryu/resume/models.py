@@ -235,8 +235,28 @@ class UserResume(models.Model):
 
 
 class PaymentHistory(models.Model):
-    name = models.CharField(max_length = 100)
-    plan = models.DecimalField(max_digits=5 ,decimal_places=2)
-    price = models.DecimalField(max_digits =5,decimal_places=2)
-    date = models.DateTimeField(auto_now_add=True)
-    created_at = models.DateTimeField(auto_now_add = True)
+    user = models.ForeignKey(
+        ResumeRegistration,
+        on_delete=models.CASCADE,
+        related_name="payment_histories"
+    )
+
+    plan_name = models.CharField(max_length=100)
+
+    price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2
+    )
+
+    payment_status = models.CharField(
+        max_length=20,
+        default="free"
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True
+    )
+
+    def __str__(self):
+        return f"{self.user.first_name} - {self.plan_name}"
+    

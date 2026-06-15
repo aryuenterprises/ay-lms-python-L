@@ -490,7 +490,19 @@ class DashboardResumeSerializer(serializers.ModelSerializer):
         ]
 
 class PaymentHistorySerializers(serializers.ModelSerializer):
+    user_name = serializers.SerializerMethodField()
 
     class Meta:
         model = PaymentHistory
-        fields = "__all__"
+        fields = [
+            "id",
+            "user",
+            "user_name",
+            "plan_name",
+            "price",
+            "payment_status",
+            "created_at"
+        ]
+
+    def get_user_name(self, obj):
+        return f"{obj.user.first_name} {obj.user.last_name}"
