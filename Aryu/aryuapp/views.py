@@ -5664,6 +5664,152 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
             "message": "Course removed successfully"
         })
 
+class StudentusertypeViewSet(viewsets.ViewSet):
+    def get(self, request):
+        student_id = request.GET.get('student_id')
+
+        queryset = Studentusertype.objects.filter(is_active=True)
+
+        if student_id:
+            queryset = queryset.filter(student_id=student_id)
+
+        serializer =StudentusertypeSerializer(queryset, many=True)
+
+        return Response({
+            "success": True,
+            "data": serializer.data
+        })
+
+    def post(self, request):
+        serializer = StudentusertypeSerializer(data=request.data)
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                "success": True,
+                "message": "User type created successfully",
+                "data": serializer.data
+            })
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, student_id=None):
+        try:
+            obj = Studentusertype.objects.get(id=student_id)
+        except Studentusertype.DoesNotExist:
+            return Response({
+                "success": False,
+                "message": "Record not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = StudentusertypeSerializer(
+            obj,
+            data=request.data,
+            partial=True
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                "success": True,
+                "message": "Updated successfully",
+                "data": serializer.data
+            })
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    def delete(self, request, *args, **kwargs):
+        obj_id = kwargs.get('pk') or kwargs.get('student_id')
+
+        try:
+            obj = Studentusertype.objects.get(id=obj_id)
+            obj.delete()
+
+            return Response({
+                "success": True,
+                "message": "Deleted successfully"
+            })
+
+        except Studentusertype.DoesNotExist:
+            return Response({
+                "success": False,
+                "message": "Record not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+class StudentsubusertypeViewset(viewsets.ViewSet):
+    def get(self, request):
+        student_id = request.GET.get('student_id')
+        user_type = request.GET.get('user_type')
+
+        queryset = Studentsubusertype.objects.filter(is_active=True)
+
+        if student_id:
+            queryset = queryset.filter(student_id=student_id)
+
+        if user_type:
+            queryset = queryset.filter(user_type=user_type)
+
+        serializer = StudentsubusertypeSerializer(queryset, many=True)
+
+        return Response({
+            "success": True,
+            "data": serializer.data
+        })
+
+    def post(self, request):
+        serializer = StudentsubusertypeSerializer(data=request.data)
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                "success": True,
+                "message": "User type created successfully",
+                "data": serializer.data
+            })
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, student_id=None):
+        try:
+            obj = Studentsubusertype.objects.get(id=student_id)
+        except Studentsubusertype.DoesNotExist:
+            return Response({
+                "success": False,
+                "message": "Record not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = StudentsubusertypeSerializer(
+            obj,
+            data=request.data,
+            partial=True
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                "success": True,
+                "message": "Updated successfully",
+                "data": serializer.data
+            })
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, *args, **kwargs):
+        obj_id = kwargs.get('pk') or kwargs.get('student_id')
+
+        try:
+            obj = Studentsubusertype.objects.get(id=obj_id)
+            obj.delete()
+
+            return Response({
+                "success": True,
+                "message": "Deleted successfully"
+            })
+
+        except Studentsubusertype.DoesNotExist:
+            return Response({
+                "success": False,
+                "message": "Record not found"
+            }, status=status.HTTP_404_NOT_FOUND)
 
 class TrainerStudentMappingAPI(APIView):
 

@@ -1589,6 +1589,26 @@ class StudentUpdateSerializer(serializers.ModelSerializer):
 
         return instance
 
+class StudentusertypeSerializer(serializers.ModelSerializer):
+    # student_id = serializers.PrimaryKeyRelatedField(
+    #     queryset=Student.objects.all(),
+    #     source='student'
+    # )
+
+    class Meta:
+        model = Studentusertype
+        fields ="__all__"
+
+class StudentsubusertypeSerializer(serializers.ModelSerializer):
+    # student_id = serializers.PrimaryKeyRelatedField(
+    #     queryset=Student.objects.all(),
+    #     source='student'
+    # )
+
+    class Meta:
+        model = Studentsubusertype
+        fields = "__all__"
+
 class RecordingSerializer(serializers.ModelSerializer):
     created_date = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
     class Meta:

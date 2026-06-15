@@ -410,6 +410,19 @@ class Student(models.Model):
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
 
+class Studentusertype(models.Model):
+    student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True)
+    user_type = models.CharField(null = True ,blank = True)
+    is_active = models.BooleanField(default=True, null=False, blank=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+class Studentsubusertype(models.Model):
+    student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True)
+    user_type = models.CharField(null = True,blank = True)
+    name = models.CharField(null = True, blank=True)
+    is_active = models.BooleanField(default=True, null=False, blank=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
 class Employer(models.Model):
     """ Represents a company """
     company_id = models.AutoField(primary_key=True)
