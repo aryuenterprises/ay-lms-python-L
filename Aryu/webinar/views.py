@@ -44,6 +44,8 @@ from django.contrib.postgres.aggregates import JSONBAgg
 from django.db.models.functions import Coalesce, JSONObject, Concat
 from django.db.models.expressions import ExpressionWrapper
 from urllib.parse import quote
+from django.db.models import DecimalField
+
 # from celery import shared_task
 logger = logging.getLogger(__name__)
 
@@ -456,6 +458,11 @@ class WebinarViewSet(
                     F("payment_transaction__payment_status"),
                     Value("free")
                 ),
+                amount=Coalesce(
+                    F("payment_transaction__amount"),
+                    Value(Decimal("0.00")),
+                    output_field=DecimalField(max_digits=10, decimal_places=2)
+                ),
 
                 certificate_url=Case(
                     When(
@@ -540,7 +547,8 @@ class WebinarViewSet(
                 "payment_status",
                 "feedback_data",
                 "logs",
-                "source"
+                "source",
+                "amount"
             )
         )
 
