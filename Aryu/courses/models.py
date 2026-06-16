@@ -76,7 +76,7 @@ class Course(models.Model):
     course_name = models.CharField(max_length=255, null=True, blank=True)
     course_pic = models.ImageField(upload_to="courses/", null=True, blank=True)
     syllabus = models.FileField(upload_to="syllabus/", null=True, blank=True)
-    duration = models.CharField(max_length=3, null=True, blank=True)
+    duration = models.CharField(max_length=255, null=True, blank=True)
     duration_type = models.CharField(max_length=150,null=True,blank=True)
     start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)

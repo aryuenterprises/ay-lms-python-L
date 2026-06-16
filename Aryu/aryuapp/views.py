@@ -55,7 +55,7 @@ import logging
 logger = logging.getLogger(__name__)  
 import traceback
 from django.utils import timezone
-from django.utils.timezone import make_aware
+from .certificate_filler import generate_and_send_certificate_pdf
 from datetime import datetime
 import pytz
 
@@ -6297,11 +6297,11 @@ class CertificateViewSet(viewsets.ModelViewSet):
             # certificate_number is automatically generated
             # by the model's save() method
 
-            student_name=f'{student.first_name} {student.last_name}',  # Change if your field name differs
+            student_name=student.first_name,  # Change if your field name differs
 
             course_name=course.course_name,
 
-            course_duration=f"{batch.start_date} - {batch.end_date}",
+            course_duration=course.duration,
 
             organization_name=request.data.get(
                 "organization_name",
@@ -6318,6 +6318,8 @@ class CertificateViewSet(viewsets.ModelViewSet):
                 else "admin"
             ),
         )
+
+        generate_and_send_certificate_pdf(certificate.id)
 
         serializer = self.get_serializer(certificate)
 

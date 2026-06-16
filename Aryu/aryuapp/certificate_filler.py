@@ -1,75 +1,135 @@
-import re
-import os
+from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
+from django.core.files import File
+from django.conf import settings
+from .models import Certificate
+import logging
+logger = logging.getLogger(__name__)
+from celery import shared_task
 
-def fill_certificate_template(template_path, output_path, replacements, font_path):
-    """
-    Replaces placeholders like {{ Name }} in a certificate template image with actual values.
-    """
+def center_x(draw, text, font, img_width):
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+    return (img_width - text_width) // 2
 
-    # Load template image
+
+def fit_font(draw, text, font_path, max_width, start_size):
+    size = start_size
+    font = ImageFont.truetype(str(font_path), size)
+    while draw.textbbox((0, 0), text, font=font)[2] > max_width and size > 18:
+        size -= 1
+        font = ImageFont.truetype(str(font_path), size)
+    return font
+
+
+def generate_certificate_image_and_save(certificate):
+
+    template_path = Path(settings.MEDIA_ROOT) / "certificates" / "course_completion_certificate.png"
+    # template_path = Path(settings.MEDIA_ROOT) / "jp.png"
+    output_dir = Path(settings.MEDIA_ROOT) / "certificates"
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = output_dir / f"{certificate.certificate_number}.png"
+
     img = Image.open(template_path).convert("RGBA")
     draw = ImageDraw.Draw(img)
 
-    # Font settings (adjust as needed)
-    base_font_size = 40
-    font = ImageFont.truetype(font_path, base_font_size)
+    img_width, img_height = img.size
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    # font_path = "C:/Windows/Fonts/arialbd.ttf"
 
-    # Define approximate positions for known placeholders
-    placeholder_positions = {
-        "Student_Name": (850, 430),
-        "Course_Name": (850, 550),
-        "Duration": (850, 600),
-        "Issuing_Date": (320, 850),
-        "Signature": (1350, 850)
-    }
+    name = certificate.student_name.title()
+    course = certificate.course_name
 
-    # Function to auto-adjust font size to fit within width limit
-    def fit_text_to_width(draw, text, font_path, max_width, start_size=60):
-        font_size = start_size
-        font = ImageFont.truetype(font_path, font_size)
-        text_width = draw.textlength(text, font=font)
-        while text_width > max_width and font_size > 10:
-            font_size -= 2
-            font = ImageFont.truetype(font_path, font_size)
-            text_width = draw.textlength(text, font=font)
-        return font
+    name_font = fit_font(draw, name, font_path, img_width * 0.45, 54)
+    course_font = fit_font(draw, course, font_path, img_width * 0.45, 44)
+    small_font = ImageFont.truetype(str(font_path), 30)
+    large_font = ImageFont.truetype(str(font_path), 18)
 
-    # Iterate through placeholders and draw text
-    for key, value in replacements.items():
-        if key not in placeholder_positions:
-            print(f"⚠️ Skipping unknown placeholder: {key}")
-            continue
+    draw.text((int(img_width * 0.184), int(img_height * 0.136)),
+              certificate.certificate_number, fill="black", font=large_font)
 
-        x, y = placeholder_positions[key]
+    name_y = int(img_height * 0.43)
+    draw.text((center_x(draw, name, name_font, img_width), name_y),name,fill="black",font=name_font)
 
-        # Remove curly braces manually if still in template text
-        clean_text = re.sub(r"[\{\}]+", "", str(value)).strip()
+    course_y = name_y + 170
+    # draw.text((int(img_width * 0.280), course_y),
+    #           course, fill="black", font=course_font)
 
-        # Adjust font size dynamically
-        font = fit_text_to_width(draw, clean_text, font_path, 500)
 
-        # Draw the text centered horizontally
-        text_width = draw.textlength(clean_text, font=font)
-        draw.text((x - text_width / 2, y), clean_text, fill=(0, 0, 0), font=font)
+    draw.text(
+        (center_x(draw, course, course_font, img_width), course_y),
+        course,
+        fill="black",
+        font=course_font
+    )
+    
+    date_y = 0.635
 
-        print(f"✅ Filled '{key}' with '{clean_text}' at position ({x}, {y})")
+    draw.text((int(img_width * 0.570), int(img_height * date_y)),
+              certificate.course_duration,
+              fill="black", font=small_font)
 
-    # Save output image
     img.save(output_path)
-    print(f"\n🎉 Certificate saved to: {output_path}")
 
-if __name__ == "__main__":
-    template_path = r"D:\LMS - Summa\ay-lms-python\Aryu\aryuapp\static\aryuapp\img\certificate of Completion (3).png"
-    output_path = r"D:\LMS - Summa\ay-lms-python\Aryu\aryuapp\static\aryuapp\img\certificate_filled_final.png"
-    font_path = r"C:\Windows\Fonts\arialbd.ttf"  # bold Arial font looks better for certificates
+    return output_path
 
-    replacements = {
-        "Student_Name": "John Doe",
-        "Course_Name": "Japanese Level 1",
-        "Duration": "Jan 2024 - Mar 2024",
-        "Issuing_Date": "27 Oct 2025",
-        "Signature": "Mr. Tanaka"
-    }
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
 
-    fill_certificate_template(template_path, output_path, replacements, font_path)
+
+def center_x(draw, text, font, img_width):
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+    return (img_width - text_width) // 2
+
+
+def fit_font(draw, text, font_path, max_width, start_size):
+    size = start_size
+    font = ImageFont.truetype(str(font_path), size)
+    while draw.textbbox((0, 0), text, font=font)[2] > max_width and size > 18:
+        size -= 1
+        font = ImageFont.truetype(str(font_path), size)
+    return font
+
+
+def convert_certificate_image_to_pdf(image_path: Path):
+    """
+    Takes a PNG certificate image and converts it to PDF
+    """
+    pdf_path = image_path.with_suffix(".pdf")
+
+    image = Image.open(image_path).convert("RGB")
+    image.save(pdf_path, "PDF", resolution=300.0)
+
+    return pdf_path
+
+def generate_and_send_certificate_pdf(certificate_id):
+    """
+    Generate certificate image and PDF, then save it to the Certificate model.
+    """
+
+    certificate = Certificate.objects.get(pk=certificate_id)
+
+    # Generate certificate image
+    image_path = generate_certificate_image_and_save(certificate)
+
+    # Convert image to PDF
+    pdf_path = convert_certificate_image_to_pdf(Path(image_path))
+
+    # Save PDF to certificate_file
+    with open(pdf_path, "rb") as f:
+        certificate.certificate_file.save(
+            pdf_path.name,
+            File(f),
+            save=True
+        )
+
+    logger.info(
+        "Certificate PDF generated successfully for certificate %s",
+        certificate.certificate_number
+    )
+
+    return certificate.certificate_file.path
+
