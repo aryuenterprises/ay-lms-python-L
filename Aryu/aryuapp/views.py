@@ -6228,6 +6228,108 @@ class CertificateViewSet(viewsets.ModelViewSet):
             "data": serializer.data
         }, status=status.HTTP_200_OK)
     
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+
+        student_id = request.data.get("student")
+
+        if not student_id:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Student ID is required."
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            student = Student.objects.get(student_id=student_id)
+
+        except Student.DoesNotExist:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Student not found."
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Prevent duplicate certificates
+        if Certificate.objects.filter(
+            student=student,
+            is_archived=False
+        ).exists():
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Certificate already exists for this student."
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get student's active batch
+        batch = (
+            student.new_batches
+            .filter(
+                is_archived=False,
+                status=True
+            )
+            .select_related("course")
+            .first()
+        )
+
+        if not batch:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Student is not assigned to any active batch."
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        course = batch.course
+
+        certificate = Certificate.objects.create(
+
+            student=student,
+
+            # certificate_number is automatically generated
+            # by the model's save() method
+
+            student_name=f'{student.first_name} {student.last_name}',  # Change if your field name differs
+
+            course_name=course.course_name,
+
+            course_duration=f"{batch.start_date} - {batch.end_date}",
+
+            organization_name=request.data.get(
+                "organization_name",
+                "Aryu Academy"
+            ),
+
+            notes=request.data.get("notes"),
+
+            created_by=str(request.user.id),
+
+            created_by_type=(
+                "super_admin"
+                if request.user.is_superuser
+                else "admin"
+            ),
+        )
+
+        serializer = self.get_serializer(certificate)
+
+        return Response(
+            {
+                "success": True,
+                "message": "Certificate created successfully.",
+                "data": serializer.data,
+            },
+            status=status.HTTP_201_CREATED
+        )
+    
     @action(detail=False, methods=['get'], url_path='<student_id>' )
     def student_certificates(self, request, student_id=None):
         certificates = Certificate.objects.filter(student=student_id)
