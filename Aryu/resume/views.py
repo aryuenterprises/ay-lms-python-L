@@ -47,6 +47,9 @@ from django.utils.timezone import now
 from .tasks import resume_reg
 from collections import defaultdict
 import time
+import os
+import requests
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -136,11 +139,20 @@ class AuthViewSet(viewsets.ViewSet):
             country=data.get("country"),
             is_verified=False,
         )
-        free_plan = Subscription.objects.get(
-            name="Free",
+        free_plan = Subscription.objects.filter(
+            name__iexact="Free",
             is_active=True,
             is_deleted=False
-        )
+        ).first()
+
+        if not free_plan:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Free subscription plan not configured."
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
         start_date = timezone.now()
 
@@ -165,22 +177,15 @@ class AuthViewSet(viewsets.ViewSet):
             status="active"
         )
 
-        user_subscription = UserSubscription.objects.create(
-
-            user=user,
-
-            subscription=free_plan,
-
-            start_date=start_date,
-
-            end_date=end_date,
-
-            status="active"
-        )
-
         user.current_subscription = user_subscription
 
         user.save(update_fields=["current_subscription"])
+        PaymentHistory.objects.create(
+            user=user,
+            plan_name="Free",
+            price=0,
+            payment_status="free"
+        )
 
         token = signing.dumps(
             {
@@ -933,11 +938,85 @@ https://aryuacademy.com
     # LOGIN
     # =========================
 
+    def get_client_ip(self, request):
+
+        x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
+
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(",")[0]
+        else:
+            ip = request.META.get("REMOTE_ADDR")
+
+        return ip
+    
+    def verify_turnstile_token(self, token: str, client_ip: str = None) -> dict:
+        print("LOGIN VERIFY METHOD EXECUTED")
+        print("SECRET:", repr(settings.TURNSTILE_SECRET_KEY))
+
+        secret_key = settings.TURNSTILE_SECRET_KEY
+
+        verification_data = {
+            "secret": secret_key,
+            "response": token,
+        }
+
+        response = requests.post(
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+            data=verification_data,
+            timeout=10
+        )
+
+        print("CLOUDFLARE RESPONSE:", response.text)
+        print("VERIFY TOKEN LENGTH:", len(token))
+        print("VERIFY TOKEN FIRST 100:", token[:100])
+        print("VERIFY TOKEN LAST 100:", token[-100:])
+
+        return response.json()
+        
     @action(detail=False, methods=["post"], url_path="login")
     @secure_throttle(rate_limit=5, period=60)
     def login(self, request):
 
-        email = str(request.data.get("email", "")).strip().lower()
+        # =====================================
+        # TURNSTILE VERIFICATION
+        # =====================================
+
+        turnstile_token = request.data.get("turnstileToken")
+
+        if not turnstile_token:
+            return Response(
+                {
+                    "error": "Security verification required"
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        client_ip = self.get_client_ip(request)
+
+        verification_result = self.verify_turnstile_token(
+            turnstile_token,
+            client_ip
+        )
+
+        print("TURNSTILE RESULT:", verification_result)
+
+        if not verification_result.get("success"):
+            return Response(
+                {
+                    "error": "Security verification failed",
+                    "details": verification_result
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # =====================================
+        # LOGIN LOGIC
+        # =====================================
+
+        email = str(
+            request.data.get("email", "")
+        ).strip().lower()
+
         password = request.data.get("password")
 
         if not email or not password:
@@ -962,50 +1041,49 @@ https://aryuacademy.com
 
         except ResumeRegistration.DoesNotExist:
 
-            # Prevent timing attack
-            check_password(password, make_password("dummy_password"))
+            check_password(
+                password,
+                make_password("dummy_password")
+            )
 
             return Response(
                 {"error": "Invalid credentials"},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        # Password check
         if not check_password(password, user.password):
             return Response(
                 {"error": "Invalid credentials"},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        # Email verification
         if not user.is_verified:
             return Response(
                 {"error": "Please verify your email first"},
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # CREATE REFRESH TOKEN MANUALLY
         refresh = RefreshToken()
 
         refresh["user_id"] = user.id
         refresh["id"] = user.id
-
         refresh["email"] = user.email
         refresh["user_type"] = "resume_user"
-
         refresh["first_name"] = user.first_name
         refresh["last_name"] = user.last_name
 
         access_token = str(refresh.access_token)
         refresh_token = str(refresh)
+        print("TOKEN TYPE:", type(turnstile_token))
+        print("TOKEN LENGTH:", len(turnstile_token))
+        print("TOKEN FIRST 100:", turnstile_token[:100])
+        print("TOKEN LAST 100:", turnstile_token[-100:])
 
         return Response(
             {
                 "message": "Login successful",
-
                 "access_token": access_token,
                 "refresh_token": refresh_token,
-
                 "user": {
                     "id": user.id,
                     "first_name": user.first_name,
@@ -1016,7 +1094,7 @@ https://aryuacademy.com
             },
             status=status.HTTP_200_OK
         )
-
+    
     @staticmethod
     def generate_secure_otp(length=6):
 
@@ -1667,6 +1745,16 @@ class CustomTokenRefreshView(APIView):
         )
 
 from .tasks import resume_reg
+
+
+# import os
+# import requests
+# from django.core.cache import cache
+# from rest_framework import status, viewsets
+# from rest_framework.permissions import AllowAny
+# from rest_framework.response import Response
+# from rest_framework.exceptions import PermissionDenied
+
 class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
     queryset = ResumeRegistration.objects.all().order_by("-id")
@@ -1674,14 +1762,137 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
     authentication_classes = [CustomJWTAuthentication]
     permission_classes = [AllowAny]
 
-
-    # CREATE
+    # =====================================================
+    # TURNSTILE VERIFICATION METHOD
+    # =====================================================
     
+    def verify_turnstile_token(self, token: str, client_ip: str = None) -> dict:
+        secret_key = settings.TURNSTILE_SECRET_KEY
+
+        print("TURNSTILE SECRET:", repr(secret_key))
+        print("SECRET LENGTH:", len(secret_key) if secret_key else 0)
+        print("TOKEN LENGTH:", len(token) if token else 0)
+
+        verification_data = {
+            "secret": secret_key,
+            "response": token,
+        }
+
+        print("VERIFICATION DATA:", verification_data)
+
+        try:
+            response = requests.post(
+                "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                data=verification_data,
+                timeout=10
+            )
+
+            print("STATUS CODE:", response.status_code)
+            print("RAW RESPONSE:", response.text)
+
+            result = response.json()
+
+            print("FULL TURNSTILE RESPONSE:", result)
+
+            return result
+
+        except requests.exceptions.Timeout:
+            print("Turnstile verification timeout")
+            return {
+                "success": False,
+                "error": "Verification timeout"
+            }
+
+        except Exception as e:
+            print(f"Turnstile verification error: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    def get_client_ip(self, request):
+        """Extract client IP address from request"""
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(',')[0]
+        else:
+            ip = request.META.get('REMOTE_ADDR')
+        return ip
+
+    # =====================================================
+    # CREATE (REGISTRATION) - WITH TURNSTILE
+    # =====================================================
 
     @secure_throttle(rate_limit=5, period=60)
     def create(self, request, *args, **kwargs):
 
         start = time.time()
+
+        # =====================================
+        # STEP 1: TURNSTILE VERIFICATION (ADD THIS)
+        # =====================================
+        
+        # Get the Turnstile token from request
+        turnstile_token = request.data.get("turnstileToken")
+        
+        # Check if token is present
+        if not turnstile_token:
+            return Response(
+                {
+                    "status": False,
+                    "message": "Security verification required. Please complete the verification check."
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Get client IP for additional security
+        client_ip = self.get_client_ip(request)
+        
+        # Verify the token with Cloudflare
+        verification_result = self.verify_turnstile_token(turnstile_token, client_ip)
+        
+        # Check if verification succeeded
+        if not verification_result.get("success"):
+            # Get error details for logging
+            error_codes = verification_result.get("error-codes", [])
+            error_msg = f"Turnstile verification failed: {', '.join(error_codes)}"
+            print(f"Bot blocked during registration: {error_msg} - IP: {client_ip}")
+            
+            return Response(
+                {
+                    "status": False,
+                    "message": "Security check failed. Please refresh the page and try again."
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Optional: Check the score (0.0 = bot, 1.0 = human)
+        score = verification_result.get("score", 0)
+        if score < 0.7:  # Stricter threshold for registration (0.7 recommended)
+            print(f"Suspicious registration attempt - Score: {score} - IP: {client_ip}")
+            return Response(
+                {
+                    "status": False,
+                    "message": "Suspicious activity detected. Please try again."
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Optional: Verify hostname matches your domain
+        expected_hostnames = ["aylms.aryuprojects.com", "localhost", "yourdomain.com"]
+        hostname = verification_result.get("hostname")
+        if hostname not in expected_hostnames:
+            print(f"Invalid hostname for registration: {hostname} - IP: {client_ip}")
+            return Response(
+                {
+                    "status": False,
+                    "message": "Invalid request source."
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # =====================================
+        # STEP 2: EXISTING REGISTRATION LOGIC
+        # =====================================
 
         serializer = self.get_serializer(data=request.data)
 
@@ -1711,7 +1922,10 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
         )
 
 
-    # LIST
+    # =====================================================
+    # LIST (UNCHANGED)
+    # =====================================================
+    
     def list(self, request, *args, **kwargs):
         
         user = request.user
@@ -1738,8 +1952,10 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
         )
     
 
+    # =====================================================
+    # UPDATE (UNCHANGED)
+    # =====================================================
 
-    # PATCH / UPDATE
     def partial_update(self, request, *args, **kwargs):
 
         instance = self.get_object()
@@ -1772,7 +1988,10 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
         )
 
 
-    # DELETE
+    # =====================================================
+    # DELETE (UNCHANGED)
+    # =====================================================
+    
     @secure_throttle(rate_limit=5, period=60)
     def destroy(self, request, *args, **kwargs):
         user = request.user
@@ -1795,7 +2014,7 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
-
+    
 class UserDashboardView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
