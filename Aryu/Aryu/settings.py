@@ -1,6 +1,13 @@
 from pathlib import Path
 import os
 from corsheaders.defaults import default_headers
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+load_dotenv(BASE_DIR.parent / ".env")
+
+TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY")
 
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
