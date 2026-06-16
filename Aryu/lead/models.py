@@ -8,11 +8,11 @@ class Lead(models.Model):
 
     # BASIC INFO
 
-    name = models.CharField(max_length=150, blank=True, null=True)
+    name = models.CharField(max_length=150, blank=True, null=True, db_index=True)
     phone = models.CharField(max_length=20, db_index=True)
     alternate_phone = models.CharField(max_length=20, blank=True, null=True)
 
-    email = models.EmailField(blank=True, null=True)
+    email = models.EmailField(blank=True, null=True, db_index=True)
 
     gender = models.CharField(
         max_length=20,
@@ -139,7 +139,7 @@ class Lead(models.Model):
 
     status = models.CharField(
         max_length=50,
-        default="new",
+        default="fresh",
         db_index=True
     )
 
@@ -167,7 +167,7 @@ class Lead(models.Model):
 
     # SYSTEM FLAGS
 
-    is_archived = models.BooleanField(default=False)
+    is_archived = models.BooleanField(default=False, db_index=True)
 
     is_duplicate = models.BooleanField(default=False)
 
@@ -178,7 +178,7 @@ class Lead(models.Model):
 
     joined_at = models.DateTimeField(blank=True, null=True)
 
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     created_by = models.CharField(max_length=100, null=True, blank=True)
     created_by_type = models.CharField(max_length=50, null=True, blank=True)
 
@@ -189,17 +189,66 @@ class Lead(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
-        db_table = 'aryuapp_lead'
+        db_table = "aryuapp_lead"
+
         indexes = [
-            models.Index(fields=["phone"]),
-            models.Index(fields=["email"]),
-            models.Index(fields=["source"]),
-            models.Index(fields=["created_at"]),
-            models.Index(fields=["status", "-created_at"]),
-            models.Index(fields=["source", "-created_at"]),
-            models.Index(fields=["status"]),
-            models.Index(fields=["followup_date"]),
-            models.Index(fields=["next_followup_date"]),
+
+            # Single-column indexes
+            models.Index(fields=["phone"], name="lead_phone_idx"),
+            models.Index(fields=["email"], name="lead_email_idx"),
+            models.Index(fields=["status"], name="lead_status_idx"),
+            models.Index(fields=["source"], name="lead_source_idx"),
+            models.Index(fields=["created_at"], name="lead_created_idx"),
+            models.Index(fields=["followup_date"], name="lead_followup_idx"),
+            models.Index(fields=["next_followup_date"], name="lead_next_followup_idx"),
+
+            # For default listing
+            models.Index(
+                fields=["is_archived", "-created_at"],
+                name="lead_archive_created_idx",
+            ),
+
+            # Status + latest
+            models.Index(
+                fields=["status", "-created_at"],
+                name="lead_status_created_idx",
+            ),
+
+            # Source + latest
+            models.Index(
+                fields=["source", "-created_at"],
+                name="lead_source_created_idx",
+            ),
+
+            # Search by phone with archive filter
+            models.Index(
+                fields=["is_archived", "phone"],
+                name="lead_archive_phone_idx",
+            ),
+
+            # Search by email with archive filter
+            models.Index(
+                fields=["is_archived", "email"],
+                name="lead_archive_email_idx",
+            ),
+
+            # Search by name with archive filter
+            models.Index(
+                fields=["is_archived", "name"],
+                name="lead_archive_name_idx",
+            ),
+
+            # Dashboard filters
+            models.Index(
+                fields=["is_archived", "status", "-created_at"],
+                name="lead_archive_status_idx",
+            ),
+
+            models.Index(
+                fields=["is_archived", "source", "-created_at"],
+                name="lead_archive_source_idx",
+            ),
+
         ]
 
     def __str__(self):

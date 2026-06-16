@@ -12,6 +12,8 @@ urlpatterns = [
    path("lead/bulk-upload/",LeadViewSet.as_view({"post": "bulk_upload",}),name="lead-bulk-create"),
    path("lead/<int:pk>/add_call_log/",LeadViewSet.as_view({"post": "add_call_log",}),name="add-call-log"),
 
+   path("lead-reports/export/",LeadReportViewSet.as_view({"get": "list","post": "create",}),name="lead-reports"),
+
    # DETAIL + UPDATE + DELETE
    path("lead-engine/leads/<int:pk>/",LeadViewSet.as_view({"get": "retrieve","patch": "partial_update","delete": "destroy",}),name="lead-detail"),
 
