@@ -23,6 +23,7 @@ from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, JSONParser, FormParser
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.pagination import CursorPagination
+from .services import ReportService
 
 # Create your views here.
 
@@ -155,10 +156,30 @@ class LeadViewSet(
                 is_archived=False
             )
 
+            .only(
+                "id",
+                "name",
+                "phone",
+                "email",
+                "city",
+                "course",
+                "status",
+                "priority",
+                "lead_stage",
+                "source",
+                "created_at",
+                "followup_date",
+                "next_followup_date",
+                "no_of_calls",
+                "no_of_dms",
+                "created_by",
+                "created_by_type",
+            )
+
             .annotate(
                 lead_origin=Value(
                     "lead",
-                    output_field=CharField()
+                    output_field=CharField(),
                 )
             )
 
@@ -378,7 +399,7 @@ class LeadViewSet(
                     "call_type": log.call_type,
                     "duration_seconds": log.duration_seconds,
                     "recording": (
-                        "https://portal.aryuacademy.com/api" + log.recording_url.url
+                        "https://aylms.aryuprojects.com/api" + log.recording_url.url
                         if log.recording_url and hasattr(log.recording_url, "url")
                         else None
                     ),
@@ -400,7 +421,7 @@ class LeadViewSet(
                 {
                     "type": "status",
                     "title": (
-                        f"{history.old_status or 'New'} → "
+                        f"{history.old_status or 'Fresh'} → "
                         f"{history.new_status}"
                     ),
                     "description": history.remarks,
@@ -592,7 +613,14 @@ class LeadViewSet(
                 reader = csv.DictReader(decoded_file)
 
                 for row in reader:
-                    rows.append(row)
+
+                    normalized_row = {
+                        str(key).strip().lower(): value
+                        for key, value in row.items()
+                        if key is not None
+                    }
+
+                    rows.append(normalized_row)
 
             # =============================================
             # XLSX PARSER
@@ -609,7 +637,8 @@ class LeadViewSet(
                 sheet = workbook.active
 
                 headers = [
-                    str(cell).strip()
+                    str(cell).strip().lower()
+                    if cell is not None else ""
                     for cell in next(
                         sheet.iter_rows(values_only=True)
                     )
@@ -621,7 +650,10 @@ class LeadViewSet(
                 ):
 
                     rows.append(
-                        dict(zip(headers, row))
+                        {
+                            header: value
+                            for header, value in zip(headers, row)
+                        }
                     )
 
             # =============================================
@@ -647,6 +679,11 @@ class LeadViewSet(
                 "name",
                 "phone"
             ]
+
+            row.get("name")
+            row.get("email")
+            row.get("phone")
+            row.get("course")
 
             if not rows:
 
@@ -676,11 +713,32 @@ class LeadViewSet(
             # EXISTING PHONES
             # =============================================
 
+            phones = []
+
+            for row in rows:
+
+                phone = str(row.get("phone", "")).strip()
+
+                phone = "".join(filter(str.isdigit, phone))
+
+                if len(phone) >= 10:
+
+                    phones.append(phone[-10:])
+
             existing_phones = set(
-                Lead.objects.values_list(
+
+                Lead.objects.filter(
+
+                    phone__in=phones
+
+                ).values_list(
+
                     "phone",
-                    flat=True
+
+                    flat=True,
+
                 )
+
             )
 
             bulk_leads = []
@@ -770,7 +828,7 @@ class LeadViewSet(
 
                         source="bulk_upload",
 
-                        status="new",
+                        status="fresh",
 
                         created_by=str(
                             request.user.id
@@ -984,7 +1042,7 @@ class LeadDashboard(LeadSecurityMixin,viewsets.ViewSet):
         ).count()
 
         new_leads = leads.filter(
-            status__iexact="new"
+            status__iexact="fresh"
         ).count()
 
         duplicate_leads = leads.filter(
@@ -1161,3 +1219,60 @@ class PublicLeadViewSet(
             status=status.HTTP_201_CREATED
         )
  
+class LeadReportViewSet(viewsets.ViewSet):
+    """
+    Generic Reports API.
+
+    POST /api/v1/reports/export/
+    """
+
+    authentication_classes = [CustomJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    service = ReportService()
+
+    def list(self, request):
+        data = self.service.get_report_dashboard_data()
+
+        return Response(
+            {
+                "success": True,
+                "data": data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def create(self, request):
+        serializer = ReportRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        validated_data = serializer.validated_data
+
+        report_type = validated_data["report_type"]
+        filters = validated_data.get("filters", {})
+        pagination = validated_data.get(
+            "pagination",
+            {
+                "page": 1,
+                "page_size": 50,
+            },
+        )
+
+        result = self.service.dispatch(
+            report_type=report_type,
+            filters=filters,
+            pagination=pagination,
+        )
+
+        return Response(
+            {
+                "success": True,
+                "report_type": report_type,
+                "count": result["count"],
+                "page": pagination.get("page", 1),
+                "page_size": pagination.get("page_size", 50),
+                "results": result["results"],
+            },
+            status=status.HTTP_200_OK,
+        )
+    

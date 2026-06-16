@@ -1,8 +1,10 @@
+from __future__ import annotations
 from .models import *
 from rest_framework import serializers
 import requests
 from aryuapp.models import User
 from django.db import transaction
+
 
 # COMMON MIXINS
 
@@ -58,7 +60,7 @@ class LeadCallLogSerializer(serializers.ModelSerializer):
 
         if obj.recording_url and hasattr(obj.recording_url, "url"):
             return (
-                "https://portal.aryuacademy.com/api"
+                "https://aylms.aryuprojects.com/api"
                 + obj.recording_url.url
             )
 
@@ -685,3 +687,387 @@ class PublicLeadCreateSerializer(serializers.ModelSerializer):
             print("TeleCRM Error:", str(e))
 
         return Lead.objects.create(**validated_data)
+
+# ---------------------------------------------------------------------------
+# Request payload serializers
+# ---------------------------------------------------------------------------
+ 
+ 
+class PaginationInputSerializer(serializers.Serializer):
+    """Validates the ``pagination`` block in the request body."""
+ 
+    page = serializers.IntegerField(default=1, min_value=1)
+    page_size = serializers.IntegerField(default=50, min_value=1)
+ 
+ 
+class FilterInputSerializer(serializers.Serializer):
+    """
+    Validates the ``filters`` block in the request body.
+ 
+    All fields are optional; missing keys mean "no filter applied".
+    """
+ 
+    from_date = serializers.DateField(required=False, allow_null=True)
+    to_date = serializers.DateField(required=False, allow_null=True)
+ 
+    # List-type filters
+    status = serializers.ListField(
+        child=serializers.CharField(max_length=100),
+        required=False,
+        allow_empty=True,
+        allow_null=True,
+    )
+    source = serializers.ListField(
+        child=serializers.CharField(max_length=200),
+        required=False,
+        allow_empty=True,
+        allow_null=True,
+    )
+ 
+    # Scalar filters
+    followup_by = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1
+    )
+    handled_by = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1
+    )
+    assigned_to = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1
+    )
+    course = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, max_length=255
+    )
+    priority = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, max_length=50
+    )
+    call_status = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, max_length=100
+    )
+    platform = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, max_length=100
+    )
+ 
+    # Boolean filters
+    is_converted = serializers.BooleanField(required=False, allow_null=True)
+    is_archived = serializers.BooleanField(required=False, allow_null=True)
+    is_duplicate = serializers.BooleanField(required=False, allow_null=True)
+ 
+    def validate(self, attrs: dict) -> dict:
+        from_date = attrs.get("from_date")
+        to_date = attrs.get("to_date")
+        if from_date and to_date and from_date > to_date:
+            raise serializers.ValidationError(
+                {"to_date": "to_date must be on or after from_date."}
+            )
+        return attrs
+ 
+ 
+class ReportRequestSerializer(serializers.Serializer):
+    """Top-level request body validator."""
+ 
+    from .constants import VALID_REPORT_TYPES, MSG_INVALID_REPORT_TYPE
+ 
+    report_type = serializers.CharField(max_length=100)
+    filters = FilterInputSerializer(required=False, allow_null=True, default=dict)
+    pagination = PaginationInputSerializer(required=False, default=dict)
+ 
+    def validate_report_type(self, value: str) -> str:
+        from .constants import VALID_REPORT_TYPES, MSG_INVALID_REPORT_TYPE
+ 
+        if value not in VALID_REPORT_TYPES:
+            raise serializers.ValidationError(MSG_INVALID_REPORT_TYPE)
+        return value
+ 
+ 
+# ---------------------------------------------------------------------------
+# Lead export serializer  (ModelSerializer)
+# ---------------------------------------------------------------------------
+ 
+ 
+class LeadExportSerializer(serializers.ModelSerializer):
+    """
+    Full lead export serializer.
+ 
+    Relies on ``select_related`` being applied in the service layer.
+    """
+ 
+    followup_by = serializers.SerializerMethodField()
+    handled_by = serializers.SerializerMethodField()
+    created_by = serializers.CharField(read_only=True)
+ 
+    class Meta:
+        # Imported inline to avoid top-level import issues in standalone files.
+ 
+        model = Lead
+        fields = [
+            "id",
+            "name",
+            "phone",
+            "alternate_phone",
+            "email",
+            "gender",
+            "qualification",
+            "course",
+            "course_interested_in",
+            "interested",
+            "status",
+            "lead_stage",
+            "priority",
+            "source",
+            "source_campaign",
+            "source_platform",
+            "source_type",
+            "followup_date",
+            "next_followup_date",
+            "fee_discussed",
+            "expected_join_month",
+            "no_of_calls",
+            "no_of_dms",
+            "no_of_followups",
+            "is_converted",
+            "is_duplicate",
+            "is_archived",
+            "joined_at",
+            "created_at",
+            "updated_at",
+            "created_by",
+            "created_by_type",
+            "followup_by",
+            "handled_by",
+        ]
+ 
+    def get_followup_by(self, obj) -> dict | None:
+        user = obj.followup_by
+        if user is None:
+            return None
+        return {"id": user.id, "name": getattr(user, "get_full_name", lambda: str(user))()}
+ 
+    def get_handled_by(self, obj) -> dict | None:
+        user = obj.handled_by
+        if user is None:
+            return None
+        return {"id": user.id, "name": getattr(user, "get_full_name", lambda: str(user))()}
+ 
+    def get_created_by(self, obj):
+        if not obj.created_by:
+            return None
+
+        return {
+            "id": None,
+            "name": obj.created_by,
+        }
+ 
+ 
+# ---------------------------------------------------------------------------
+# Converted leads serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class ConvertedLeadSerializer(serializers.Serializer):
+    """Converted leads with ``days_to_convert`` annotation."""
+ 
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    phone = serializers.CharField()
+    email = serializers.EmailField(allow_null=True)
+    course = serializers.CharField(allow_null=True)
+    status = serializers.CharField()
+    source = serializers.CharField(allow_null=True)
+    joined_at = serializers.DateTimeField(allow_null=True)
+    created_at = serializers.DateTimeField()
+    days_to_convert = serializers.IntegerField(allow_null=True)
+ 
+ 
+# ---------------------------------------------------------------------------
+# Call report serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class CallReportSerializer(serializers.Serializer):
+    """Per-call-log row serializer."""
+ 
+    id = serializers.IntegerField()
+    lead_id = serializers.IntegerField(source="lead_id")
+    lead_name = serializers.CharField(source="lead__name", allow_null=True)
+    phone = serializers.CharField(source="lead__phone", allow_null=True)
+    called_by = serializers.CharField(allow_null=True)
+    call_time = serializers.DateTimeField()
+    duration_seconds = serializers.IntegerField(allow_null=True)
+    duration_minutes = serializers.FloatField(allow_null=True)
+    call_status = serializers.CharField(allow_null=True)
+    call_type = serializers.CharField(allow_null=True)
+    remarks = serializers.CharField(allow_null=True)
+    next_followup_date = serializers.DateField(allow_null=True)
+    recording_url = serializers.URLField(allow_null=True, allow_blank=True)
+ 
+ 
+# ---------------------------------------------------------------------------
+# Call summary serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class CallSummarySerializer(serializers.Serializer):
+    """Aggregated per-user call statistics."""
+ 
+    user = serializers.CharField(allow_null=True)
+    total_calls = serializers.IntegerField()
+    total_duration_seconds = serializers.IntegerField(allow_null=True)
+    total_duration_minutes = serializers.FloatField(allow_null=True)
+    average_call_duration = serializers.FloatField(allow_null=True)
+    longest_call_duration = serializers.IntegerField(allow_null=True)
+ 
+ 
+# ---------------------------------------------------------------------------
+# Daily call report serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class DailyCallReportSerializer(serializers.Serializer):
+    date = serializers.DateField()
+    total_calls = serializers.IntegerField()
+    unique_leads = serializers.IntegerField()
+    total_duration = serializers.IntegerField(allow_null=True)
+ 
+ 
+# ---------------------------------------------------------------------------
+# Lead source report serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class LeadSourceReportSerializer(serializers.Serializer):
+    source = serializers.CharField(allow_null=True)
+    total_leads = serializers.IntegerField()
+    converted = serializers.IntegerField()
+    pending = serializers.IntegerField()
+    conversion_percentage = serializers.FloatField()
+ 
+ 
+# ---------------------------------------------------------------------------
+# Lead status report serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class LeadStatusReportSerializer(serializers.Serializer):
+    status = serializers.CharField(allow_null=True)
+    count = serializers.IntegerField()
+ 
+ 
+# ---------------------------------------------------------------------------
+# Follow-up report serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class FollowUpReportSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    lead_id = serializers.IntegerField()
+    lead_name = serializers.CharField(allow_null=True)
+    assigned_to = serializers.CharField(allow_null=True)
+    followup_date = serializers.DateField()
+    status = serializers.CharField(allow_null=True)
+    completed_at = serializers.DateTimeField(allow_null=True)
+ 
+ 
+# ---------------------------------------------------------------------------
+# Overdue follow-up serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class OverdueFollowUpSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    lead_id = serializers.IntegerField()
+    lead_name = serializers.CharField(allow_null=True)
+    assigned_to = serializers.CharField(allow_null=True)
+    followup_date = serializers.DateField()
+    days_overdue = serializers.IntegerField()
+ 
+ 
+# ---------------------------------------------------------------------------
+# DM report serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class DMReportSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    lead_id = serializers.IntegerField()
+    lead_name = serializers.CharField(allow_null=True)
+    handled_by = serializers.CharField(allow_null=True)
+    platform = serializers.CharField(allow_null=True)
+    direction = serializers.CharField(allow_null=True)
+    message = serializers.CharField(allow_null=True)
+    created_at = serializers.DateTimeField()
+ 
+ 
+# ---------------------------------------------------------------------------
+# Status history report serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class StatusHistoryReportSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    lead_id = serializers.IntegerField()
+    lead_name = serializers.CharField(allow_null=True)
+    old_status = serializers.CharField(allow_null=True)
+    new_status = serializers.CharField(allow_null=True)
+    changed_by = serializers.CharField(allow_null=True)
+    remarks = serializers.CharField(allow_null=True)
+    created_at = serializers.DateTimeField()
+ 
+ 
+# ---------------------------------------------------------------------------
+# Lead creation report serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class LeadCreationReportSerializer(serializers.Serializer):
+    date = serializers.DateField()
+    total_created = serializers.IntegerField()
+ 
+ 
+# ---------------------------------------------------------------------------
+# Conversion report serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class ConversionReportSerializer(serializers.Serializer):
+    date = serializers.DateField()
+    converted_count = serializers.IntegerField()
+ 
+ 
+# ---------------------------------------------------------------------------
+# Funnel report serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class FunnelReportSerializer(serializers.Serializer):
+    new = serializers.IntegerField()
+    contacted = serializers.IntegerField()
+    interested = serializers.IntegerField()
+    followup = serializers.IntegerField()
+    converted = serializers.IntegerField()
+    lost = serializers.IntegerField()
+ 
+ 
+# ---------------------------------------------------------------------------
+# Course report serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class CourseReportSerializer(serializers.Serializer):
+    course = serializers.CharField(allow_null=True)
+    total = serializers.IntegerField()
+    converted = serializers.IntegerField()
+    pending = serializers.IntegerField()
+    conversion_percentage = serializers.FloatField()
+ 
+ 
+# ---------------------------------------------------------------------------
+# User assignment report serializer
+# ---------------------------------------------------------------------------
+ 
+ 
+class UserAssignmentReportSerializer(serializers.Serializer):
+    user = serializers.CharField(allow_null=True)
+    assigned_leads = serializers.IntegerField()
+    converted = serializers.IntegerField()
+    pending = serializers.IntegerField()
+
