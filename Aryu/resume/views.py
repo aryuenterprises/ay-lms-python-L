@@ -386,7 +386,7 @@ class AuthViewSet(viewsets.ViewSet):
                       text-decoration: none;
                       font-weight: 600;
                     ">
-                    Aryu Academy Pvt.
+                    Aryu Academy Pvt. Ltd.
                   </a>
                 </p>
 
@@ -447,7 +447,7 @@ class AuthViewSet(viewsets.ViewSet):
 
         email_message = EmailMultiAlternatives(
 
-            subject=f"{user.first_name}, complete your Pass ATS registration",
+            subject=f"{user.first_name}, complete your PassATS registration",
 
             body=f"""
 Hello {user.first_name},
@@ -478,12 +478,12 @@ https://aryuacademy.com
         # send email
         email_message = EmailMultiAlternatives(
 
-        subject=f"{user.first_name}, verify your PassAts account",
+        subject=f"{user.first_name}, verify your PassATS account",
 
         body=f"""
         Hello {user.first_name},
 
-        Please verify your PassAts account:
+        Please verify your PassATS account:
 
         {verification_link}
 
@@ -765,7 +765,7 @@ https://aryuacademy.com
                       text-decoration: none;
                       font-weight: 600;
                     ">
-                    Aryu Academy Pvt.
+                    Aryu Academy Pvt. Ltd.
                   </a>
                 </p>
 
@@ -826,7 +826,7 @@ https://aryuacademy.com
 
         email_message = EmailMultiAlternatives(
 
-            subject=f"{user.first_name}, complete your Pass ATS registration",
+            subject=f"{user.first_name}, complete your PassATS registration",
 
             body=f"""
     Hello {user.first_name},
@@ -1193,7 +1193,7 @@ https://aryuacademy.com
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reset Your Pass ATS Password</title>
+<title>Reset Your PassATS Password</title>
 </head>
 
 <body
@@ -1286,7 +1286,7 @@ https://aryuacademy.com
                     line-height: 30px;
                     color: #475569;
                   ">
-                  We received a request to reset your Pass ATS account password.
+                  We received a request to reset your PassATS account password.
                 </p>
 
                 <p
@@ -1410,7 +1410,7 @@ https://aryuacademy.com
                       font-weight: 600;
                     ">
 
-                    Aryu Academy Pvt.
+                    Aryu Academy Pvt. Ltd.
 
                   </a>
 
