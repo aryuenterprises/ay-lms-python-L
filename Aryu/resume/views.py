@@ -207,7 +207,7 @@ class AuthViewSet(viewsets.ViewSet):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Verify Your Pass ATS Account</title>
+<title>Verify Your PassATS Account</title>
 </head>
 
 <body
@@ -293,7 +293,7 @@ class AuthViewSet(viewsets.ViewSet):
                     line-height: 30px;
                     color: #475569;
                   ">
-                  Thank you for creating your Pass ATS account. Please verify
+                  Thank you for creating your PassATS account. Please verify
                   your email address to activate your account securely.
                 </p>
 
@@ -386,7 +386,7 @@ class AuthViewSet(viewsets.ViewSet):
                       text-decoration: none;
                       font-weight: 600;
                     ">
-                    Aryu Academy Pvt Ltd.
+                    Aryu Academy Pvt.
                   </a>
                 </p>
 
@@ -452,7 +452,7 @@ class AuthViewSet(viewsets.ViewSet):
             body=f"""
 Hello {user.first_name},
 
-Please verify your Pass ATS account:
+Please verify your PassATS account:
 
 {verification_link}
 
@@ -478,12 +478,12 @@ https://aryuacademy.com
         # send email
         email_message = EmailMultiAlternatives(
 
-        subject=f"{user.first_name}, verify your Pass Ats account",
+        subject=f"{user.first_name}, verify your PassAts account",
 
         body=f"""
         Hello {user.first_name},
 
-        Please verify your Pass Ats account:
+        Please verify your PassAts account:
 
         {verification_link}
 
@@ -586,7 +586,7 @@ https://aryuacademy.com
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Verify Your Pass ATS Account</title>
+<title>Verify Your PassATS Account</title>
 </head>
 
 <body
@@ -672,7 +672,7 @@ https://aryuacademy.com
                     line-height: 30px;
                     color: #475569;
                   ">
-                  Thank you for creating your Pass ATS account. Please verify
+                  Thank you for creating your PassATS account. Please verify
                   your email address to activate your account securely.
                 </p>
 
@@ -765,7 +765,7 @@ https://aryuacademy.com
                       text-decoration: none;
                       font-weight: 600;
                     ">
-                    Aryu Academy Pvt Ltd.
+                    Aryu Academy Pvt.
                   </a>
                 </p>
 
@@ -831,7 +831,7 @@ https://aryuacademy.com
             body=f"""
     Hello {user.first_name},
 
-    Please verify your Pass ATS account:
+    Please verify your PassATS account:
 
     {verification_link}
 
@@ -883,12 +883,15 @@ https://aryuacademy.com
 
         token = request.GET.get("token")
 
+        logger.info(f"TOKEN: {token}")
+
         if not token:
+            logger.error('no token')
             return Response(
                 {"error": "Invalid verification link"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
+        
         try:
 
             data = signing.loads(
@@ -913,17 +916,17 @@ https://aryuacademy.com
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        except (BadSignature, ResumeRegistration.DoesNotExist):
+        except (BadSignature, ResumeRegistration.DoesNotExist) as msg:
 
             return Response(
-                {"error": "Invalid verification link"},
+                {"error": msg},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         if user.is_verified:
 
             return redirect(
-            "https://passats.aryuacademy.com/login"
+            "https://passats.aryuacademy.com/email-verified"
         )
 
         user.is_verified = True
@@ -931,7 +934,7 @@ https://aryuacademy.com
         user.save(update_fields=["is_verified"])
 
         return redirect(
-            "https://passats.aryuacademy.com/login"
+            "https://passats.aryuacademy.com/email-verified"
         )
 
     # =========================
@@ -1407,7 +1410,7 @@ https://aryuacademy.com
                       font-weight: 600;
                     ">
 
-                    Aryu Academy Pvt Ltd.
+                    Aryu Academy Pvt.
 
                   </a>
 
