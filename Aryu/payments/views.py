@@ -324,7 +324,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                     paid_amount = sum(
                         float(tx.amount)
                         for tx in txs
-                        if tx.payment_status and tx.payment_status.lower() in ["success", "done", "paid", "partial","advanced",]
+                        if tx.payment_status and tx.payment_status.lower() in ["success", "done", "paid", "partial","advanced","complete"]
                     )
 
                     course_fee = float(course.fee) if course and course.fee else 0

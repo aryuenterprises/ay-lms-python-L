@@ -249,7 +249,7 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
                 student=student,
                 course=course,
                 is_archived=False,
-                payment_status__in=["success", "done", "paid", "pending"]
+                payment_status__in=["success", "done", "paid", "pending","complete"]
             ).aggregate(total=Sum('amount'))['total'] or 0
             
             existing_paid = float(existing_paid)
@@ -535,7 +535,7 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
             paid_amount = sum(
                 float(tx.amount or 0) 
                 for tx in txs 
-                if tx.payment_status and tx.payment_status.lower() in ["success", "done", "paid", "partial","advanced",]
+                if tx.payment_status and tx.payment_status.lower() in ["success", "done", "paid", "partial","advanced","complete"]
             )
 
             course_fee = float(getattr(course, "fee", 0))
