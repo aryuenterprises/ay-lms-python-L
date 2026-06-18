@@ -788,6 +788,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "transaction_id": tx.transaction_id,
                 "amount": float(tx.amount or 0),
                 "payment_status": tx.payment_status,
+                "payment_mode": tx.metadata.get("mode") if tx.metadata else None, 
                 "invoice_url": (
                     "https://portal.aryuacademy.com/api" + tx.invoice.url
                 ) if tx.invoice and hasattr(tx.invoice, "url") else None
