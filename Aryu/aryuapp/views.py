@@ -58,7 +58,7 @@ from django.utils import timezone
 from .certificate_filler import generate_and_send_certificate_pdf
 from datetime import datetime
 import pytz
-
+from rest_framework_simplejwt.tokens import RefreshToken
 
 
 class IsAdminOrSuperAdmin(BasePermission):
