@@ -1155,8 +1155,14 @@ https://aryuacademy.com
         except ResumeRegistration.DoesNotExist:
 
             return Response(
-                generic_response,
-                status=status.HTTP_200_OK
+                # generic_response,
+                # status=status.HTTP_200_OK
+                {
+                "success":False,
+                "message":"No account found with this email address."
+                },
+                status=status.HTTP_404_NOT_FOUND
+
             )
 
         # generate secure OTP
