@@ -451,10 +451,6 @@ class Login(LoggingMixin, APIView):
     permission_classes = [AllowAny] 
 
     def post(self, request):
-
-        is_allowed, throttle_response = apply_custom_throttle(request, rate_limit=3, period=60)
-        if not is_allowed:
-            return throttle_response
         try:
             username_or_email = request.data.get('username', '').rstrip()
             password = request.data.get('password', '').rstrip()
@@ -473,10 +469,10 @@ class Login(LoggingMixin, APIView):
             #     )
 
             if not username_or_email or not password:
-                return Response({'message': 'Username and password are required'}, status=status.HTTP_406_NOT_ACCEPTABLE)
+                return Response({'message': 'Username and password are required'}, status=status.HTTP_200_OK)
             
             if username_or_email != username_or_email.strip() or password != password.strip():
-                return Response({'success': False, 'message': 'Invalid username or password'}, status=status.HTTP_203_NON_AUTHORITATIVE_INFORMATION)
+                return Response({'success': False, 'message': 'Invalid username or password'}, status=200)
 
 
             user = User.objects.filter(
@@ -504,39 +500,78 @@ class Login(LoggingMixin, APIView):
                             "allowed_actions": rm.allowed_actions
                         })
 
-                payload = {
-                    "user_id": user.id,
-                    "username": user.username,
-                    "created_at": user.created_at.isoformat() if user.created_at else None,
-                    "name": user.full_name,
-                    "user_type": user.user_type,
-                    "attendance_type": system_settings.attendance_options if system_settings else None,
-                    "role_id": role.role_id if role else None,
-                    "role_name": role.name if role else None,
-                    "permissions": role_permissions,
-                    "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
-                }
-                token = jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+                refresh = RefreshToken()
 
+                refresh["user_id"] = user.id
+                refresh["username"] = user.username
+                refresh["name"] = user.full_name
+                refresh["user_type"] = user.user_type
+                refresh["attendance_type"]=system_settings.attendance_options if system_settings else None
+                refresh["role_id"] = role.role_id if role else None
+                refresh["role_name"] = role.name if role else None
+                refresh["permissions"] = role_permissions
+                refresh["exp"] = int((timezone.now() + timedelta(minutes=30)).timestamp())
+                refresh["created_at"] = user.created_at.isoformat() if user.created_at else None
+
+                access_token = str(refresh.access_token)
+                refresh_token = str(refresh)
+
+                # payload = {
+                #     "user_id": user.id,
+                #     "created_at": user.created_at.isoformat() if user.created_at else None,
+                #     "username": user.username,
+                #     "name": user.full_name,
+                #     "user_type": user.user_type,
+                #     "attendance_type": system_settings.attendance_options if system_settings else None,
+                #     "role_id": role.role_id if role else None,
+                #     "role_name": role.name if role else None,
+                #     "permissions": role_permissions,
+                #     "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
+                    
+                # }
+                
+                # token = jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+               
+
+                # return Response({
+                #     "success": True,
+                #     "message": "Login successful",
+                #     "token": token,
+                #     "user": {
+                #         "user_id": user.id,
+                #         "username": user.username,
+                #         "created_at":user.created_at,
+                #         "name": user.full_name,
+                #         "user_type": user.user_type,
+                #         "attendance_type": system_settings .attendance_options if system_settings  else None,
+                #         "role_id": role.role_id if role else None,
+                #         "role_name": role.name if role else None,
+                #         "permissions": role_permissions,
+                #         # "employee_id":user.employee_id
+
+                #     },
+                #     "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
+                # }, status=200)
                 return Response({
                     "success": True,
                     "message": "Login successful",
-                    "token": token,
+                    "token": access_token,
+                    "refresh_token": refresh_token,
                     "user": {
                         "user_id": user.id,
                         "username": user.username,
-                        "created_at": user.created_at,
+                        "created_at":user.created_at,
                         "name": user.full_name,
                         "user_type": user.user_type,
                         "attendance_type": system_settings .attendance_options if system_settings  else None,
                         "role_id": role.role_id if role else None,
                         "role_name": role.name if role else None,
                         "permissions": role_permissions,
-                    },
-                    "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
-                }, status=200)
+                        # "employee_id":user.employee_id
 
-            # For Student login
+                    }
+                })
+            # For Student
             student = Student.objects.filter(
                 Q(username=username_or_email) | Q(email__iexact=username_or_email),
                 is_archived=False
@@ -597,6 +632,56 @@ class Login(LoggingMixin, APIView):
                     },
                     "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
                 }, status=200)
+
+            # For EbookRegistration login
+            ebook_user = EbookRegistration.objects.filter(
+                email__iexact=username_or_email
+            ).first()
+
+            if ebook_user:
+
+                if not ebook_user.is_paid:
+                    return Response({
+                        "success": False,
+                        "message": "Please complete payment to login"
+                    }, status=200)
+
+                if check_password(password, ebook_user.password) or password == ebook_user.password:
+
+                    # 🔥 convert old password to hashed
+                    if password == ebook_user.password:
+                        from django.contrib.auth.hashers import make_password
+                        ebook_user.password = make_password(password)
+                        ebook_user.save()
+
+                    payload = {
+                        "registration_id": ebook_user.id,
+                        "name": ebook_user.name,
+                        "email": ebook_user.email,
+                        "user_type": "ebookuser",
+                        "role_id": 50,
+                        "role_name": "ebook user",
+                        "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
+                        "phone":ebook_user.phone,
+                    }
+
+                    token = jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+
+                    return Response({
+                        "success": True,
+                        "message": "Login successful",
+                        "token": token,
+                        "user": {
+                            "registration_id": ebook_user.id,
+                            "name": ebook_user.name,
+                            "email": ebook_user.email,
+                            "user_type": "ebookuser",
+                            "role_id": 50,
+                            "role_name": "ebook user",
+                            "phone":ebook_user.phone
+                        },
+                        "exp": payload["exp"]
+                    }, status=200)
 
             # For Trainer/Admin login
             trainer = Trainer.objects.filter(
