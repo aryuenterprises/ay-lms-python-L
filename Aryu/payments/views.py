@@ -1815,26 +1815,21 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         except razorpay.errors.SignatureVerificationError:
             return Response({"success": False, "message": "Payment verification failed"}, status=200)
 
-class RazorpaySettlementListAPIView(APIView):
-    """
-    Fetch settlements from Razorpay API
-    """
+class RazorpaySettlementViewSet(viewsets.ViewSet):
 
-    def get(self, request):
+    def list(self, request):
         try:
             count = request.query_params.get("count", 50)
             skip = request.query_params.get("skip", 0)
 
-            url = "https://api.razorpay.com/v1/settlements"
-
             response = requests.get(
-                url,
+                "https://api.razorpay.com/v1/settlements",
                 params={
                     "count": count,
                     "skip": skip
                 },
                 auth=HTTPBasicAuth(
-                    "rzp_live_SKfiZYRJEe8WuU",
+                   "rzp_live_SKfiZYRJEe8WuU",
                     "Du4L7ebKchXQSOMcgzx5wE3h"
                 ),
                 timeout=30
@@ -1842,16 +1837,12 @@ class RazorpaySettlementListAPIView(APIView):
 
             data = response.json()
 
-            ist = pytz.timezone("Asia/Kolkata")
+            ist = ZoneInfo("Asia/Kolkata")
 
             for item in data.get("items", []):
-                # Convert amount from paise to rupees
                 item["amount"] = float(
                     round(Decimal(item["amount"]) / Decimal("100"), 2)
                 )
-
-                # Convert timestamp to IST
-                # ist = ZoneInfo("Asia/Kolkata")
 
                 item["created_at"] = datetime.fromtimestamp(
                     item["created_at"],
@@ -1868,8 +1859,64 @@ class RazorpaySettlementListAPIView(APIView):
             return Response({
                 "success": False,
                 "message": str(e)
-            }, status=500)  
-        
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def balance(self, request):
+        try:
+            auth = HTTPBasicAuth(
+                "rzp_live_SKfiZYRJEe8WuU",
+                "Du4L7ebKchXQSOMcgzx5wE3h"
+            )
+
+            balance_response = requests.get(
+                "https://api.razorpay.com/v1/balance",
+                auth=auth
+            )
+
+            balance_data = balance_response.json()
+
+            available_balance = balance_data.get("balance", 0) / 100
+
+            settlement_response = requests.get(
+                "https://api.razorpay.com/v1/settlements?count=100",
+                auth=auth
+            )
+
+            settlement_data = settlement_response.json()
+
+            today = datetime.now().date()
+            yesterday = today - timedelta(days=1)
+
+            today_settlement = 0
+            yesterday_settlement = 0
+
+            for settlement in settlement_data.get("items", []):
+                settlement_date = datetime.fromtimestamp(
+                    settlement["created_at"]
+                ).date()
+
+                amount = settlement.get("amount", 0)
+
+                if settlement_date == today:
+                    today_settlement += amount
+                elif settlement_date == yesterday:
+                    yesterday_settlement += amount
+
+            return Response({
+                "success": True,
+                "data": {
+                    "available_balance": round(available_balance, 2),
+                    "today_settlement": round(today_settlement / 100, 2),
+                    "yesterday_settlement": round(yesterday_settlement / 100, 2),
+                }
+            })
+
+        except Exception as e:
+            return Response({
+                "success": False,
+                "message": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)    
+    
 @api_view(['GET'])
 def stripe_success(request):
     return Response({"success": True, "message": "Payment successful!"})

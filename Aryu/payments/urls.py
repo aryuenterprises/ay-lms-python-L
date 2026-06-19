@@ -17,7 +17,8 @@ urlpatterns = [
    path("razorpay/create", RazorpayPaymentViewSet.as_view({"post": "create"})),
    path("razorpay-report/",RazorpayPaymentViewSet.as_view({"get":"get"})),
    path("razorpay/verify", RazorpayPaymentViewSet.as_view({"post": "verify_payment"})),
-    path("razorpay/settlements/", RazorpaySettlementListAPIView.as_view()),
+   path("razorpay/settlements/", RazorpaySettlementViewSet.as_view({"get":"list"})),
+   path("razorpay/settlements/balance", RazorpaySettlementViewSet.as_view({"get":"balance"})),
    path('stripe/success/', stripe_success),
    path('stripe/cancel/', stripe_cancel),
 ]
