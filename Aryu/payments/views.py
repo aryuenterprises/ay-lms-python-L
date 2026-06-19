@@ -26,10 +26,11 @@ from aryuapp.mixins import *
 from aryuapp.models import Settings
 from aryuapp.views import flatten_errors
 from collections import defaultdict
-
+from rest_framework.views import APIView
 import json
 import logging
-
+import requests
+from requests.auth import HTTPBasicAuth
 logger = logging.getLogger(__name__)
 
 # Create your views here.
@@ -1686,6 +1687,92 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         except Exception as e:
             return Response({"success": False, "message": str(e)}, status=500)
 
+    def get(self, request):
+            try:
+                count = int(request.GET.get("count", 50))
+                skip = int(request.GET.get("skip", 0))
+
+                # print("COUNT =", count)
+                # print("SKIP =", skip)
+
+                # # payments = client.payment.all({
+                # #     "count": count,
+                # #     "skip": skip
+                # # })
+
+                # print("RECEIVED =", len(payments.get("items", [])))
+
+                client = razorpay.Client(
+                    auth=(
+                    "rzp_live_SKfiZYRJEe8WuU",
+                    "Du4L7ebKchXQSOMcgzx5wE3h"
+                    )
+                )
+
+                payments = client.payment.all({
+                    "count": count,
+                    "skip": skip
+                })
+                print("COUNT =", count)
+                print("SKIP =", skip)
+
+                # payments = client.payment.all({
+                #     "count": count,
+                #     "skip": skip
+                # })
+
+                print("RECEIVED =", len(payments.get("items", [])))
+
+                payment_data = []
+
+                for payment in payments.get("items", []):
+
+                    notes = payment.get("notes", {})
+
+                    payment_data.append({
+                        "payment_id": payment.get("id"),
+
+                        # Customer Name
+                        "customer": notes.get("name", "N/A"),
+
+                        # Customer Email
+                        "email": notes.get("email") or payment.get("email"),
+
+                        # Customer Phone
+                        "phone": notes.get("phone") or payment.get("contact"),
+
+                        # Amount in INR
+                        "amount": payment.get("amount", 0) / 100,
+
+                        # Payment Status
+                        "status": payment.get("status"),
+
+                        # Payment Method
+                        "method": payment.get("method"),
+
+                        # Date
+                        "created_at": datetime.fromtimestamp(
+                            payment.get("created_at")
+                        ).strftime("%d %b %Y %I:%M:%S %p"),
+                    })
+
+                return Response({
+                    "success": True,
+                    "count": len(payment_data),
+                    "total_records": 1000,  
+                    "skip": skip,
+                    "data": payment_data
+                })
+
+            except Exception as e:
+                return Response(
+                    {
+                        "success": False,
+                        "message": str(e)
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+        
     # -------------------------
     # Verify Razorpay Payment
     # -------------------------
@@ -1727,6 +1814,59 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         except razorpay.errors.SignatureVerificationError:
             return Response({"success": False, "message": "Payment verification failed"}, status=200)
 
+class RazorpaySettlementListAPIView(APIView):
+    """
+    Fetch settlements from Razorpay API
+    """
+
+    def get(self, request):
+        try:
+            count = request.query_params.get("count", 50)
+            skip = request.query_params.get("skip", 0)
+
+            url = "https://api.razorpay.com/v1/settlements"
+
+            response = requests.get(
+                url,
+                params={
+                    "count": count,
+                    "skip": skip
+                },
+                auth=HTTPBasicAuth(
+                    "rzp_live_SKfiZYRJEe8WuU",
+                    "Du4L7ebKchXQSOMcgzx5wE3h"
+                ),
+                timeout=30
+            )
+
+            data = response.json()
+
+            ist = pytz.timezone("Asia/Kolkata")
+
+            for item in data.get("items", []):
+                # Convert amount from paise to rupees
+                item["amount"] = float(
+                    round(Decimal(item["amount"]) / Decimal("100"), 2)
+                )
+
+                # Convert timestamp to IST
+                item["created_at"] = datetime.fromtimestamp(
+                    item["created_at"],
+                    tz=ist
+                ).strftime("%d-%m-%Y %I:%M:%S %p")
+
+            return Response({
+                "success": True,
+                "status_code": response.status_code,
+                "data": data
+            })
+
+        except Exception as e:
+            return Response({
+                "success": False,
+                "message": str(e)
+            }, status=500)  
+        
 @api_view(['GET'])
 def stripe_success(request):
     return Response({"success": True, "message": "Payment successful!"})
