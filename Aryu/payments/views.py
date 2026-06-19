@@ -1853,9 +1853,9 @@ class RazorpaySettlementListAPIView(APIView):
                 # Convert timestamp to IST
                 # ist = ZoneInfo("Asia/Kolkata")
 
-                item["created_at"] = datetime.strptime(
+                item["created_at"] = datetime.fromtimestamp(
                     item["created_at"],
-                    "%d-%m-%Y %I:%M:%S %p"
+                    tz=ist
                 ).strftime("%d %b %Y %I:%M:%S %p")
 
             return Response({
