@@ -33,6 +33,7 @@ import requests
 from requests.auth import HTTPBasicAuth
 logger = logging.getLogger(__name__)
 import pytz
+from zoneinfo import ZoneInfo
 # Create your views here.
 
 
@@ -1850,10 +1851,12 @@ class RazorpaySettlementListAPIView(APIView):
                 )
 
                 # Convert timestamp to IST
+                ist = ZoneInfo("Asia/Kolkata")
+
                 item["created_at"] = datetime.fromtimestamp(
                     item["created_at"],
                     tz=ist
-                ).strftime("%d-%m-%Y %I:%M:%S %p")
+                ).strftime("%d %b %Y %I:%M:%S %p")
 
             return Response({
                 "success": True,
