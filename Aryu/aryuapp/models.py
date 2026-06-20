@@ -378,6 +378,7 @@ class Student(models.Model):
     reference_name = models.CharField(max_length=255, null=True, blank=True)
     reference_number = models.CharField(max_length=255, null=True, blank=True)
     student_type = models.CharField(max_length=30, null=True, blank=True)
+    student_sub_type = models.CharField(max_length=150,null = True,blank = True)
     source_type = models.CharField(max_length=255,null=True,blank=False)
     source_name = models.CharField(max_length = 250,null = True,blank=False)
     status = models.BooleanField(default=True, null=False, blank=False)

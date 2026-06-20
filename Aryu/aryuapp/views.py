@@ -3864,8 +3864,7 @@ class StudentRegistration(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         
         user = request.user
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
         # Ensure module_id points to Students
         student_module = ModulePermission.objects.filter(module__iexact="Students").first()
         if not student_module:
@@ -3893,7 +3892,6 @@ class StudentRegistration(viewsets.ModelViewSet):
             "message": "Student registered successfully.",
             "registration_id": student.registration_id  # or other relevant field
         }, status=status.HTTP_201_CREATED, headers=headers)
-
 
 class StudentListAPIView(viewsets.ViewSet):
 
@@ -4055,7 +4053,8 @@ class StudentListAPIView(viewsets.ViewSet):
                     "status": s.status,
                     "internship_required": s.internship_required,
                     "internship": s.internship,
-                    "source": s.source_type,
+                    "source_type": s.source_type,
+                    "source_name":s.source_name,
                     "notes": notes,
                     "joining_date": s.joining_date,
                     "created_by": s.created_by,
@@ -4068,7 +4067,7 @@ class StudentListAPIView(viewsets.ViewSet):
                     "category_id": unique(category_id_list),
                     "category_name": unique(category_name_list),
                     "profile_pic": (
-                        f"https://portal.aryuacademy.com/api{s.profile_pic.url}"
+                        f"https://aylms.aryuprojects.com/api{s.profile_pic.url}"
                         if s.profile_pic else None
                     ),
                     "school_student": School_StudentSerializer(s.school_student).data if getattr(s, "school_student", None) else None,
@@ -4127,7 +4126,6 @@ class StudentListAPIView(viewsets.ViewSet):
                 "success": False,
                 "message": str(e)
             })
-
 
 class StudentTicketViewSet(APIView):
     permission_classes = [IsAuthenticated]
@@ -5166,29 +5164,6 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
         }, status=200)
 class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
-    queryset = (
-        Student.objects.all()
-        .select_related(
-            "employee",
-            "school_student",
-            "college_student",
-            "jobseeker",
-            "role",
-            "trainer",
-        )
-        .prefetch_related(
-            "topic_statuses__topic__course",
-            "attendance_set__course",
-            "new_batches__course",
-            "new_batches__trainer",
-            "batchcoursetrainer_set__course",
-            "batchcoursetrainer_set__trainer",
-            Prefetch(
-                "attendance_set",
-                queryset=Attendance.objects.select_related("course"),
-            ),
-        )
-    )
 
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
@@ -5196,81 +5171,123 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     lookup_field = 'student_id'    
     lookup_url_kwarg = 'student_id'
+
+    def get_queryset(self):
+        user = self.request.user
+        user_type = getattr(user, 'user_type', None)
+
+        # BASE QUERY (optimized)
+        base_qs = (
+            Student.objects.filter(is_archived=False)
+            .select_related(
+                "employee",
+                "school_student",
+                "college_student",
+                "jobseeker",
+                "role",
+                "trainer",
+            )
+            .prefetch_related(
+                "topic_statuses__topic__course",
+                "new_batches__course",
+                "new_batches__trainer",
+                "batchcoursetrainer_set__course",
+                "batchcoursetrainer_set__trainer",
+                Prefetch(
+                    "attendance_set",
+                    queryset=Attendance.objects.select_related("course"),
+                ),
+            )
+        )
+
+        # STUDENT → only own record
+        if user_type == 'student':
+            return base_qs.filter(student_id=user.student_id)
+
+        # TRAINER → students in their batches (optimized with distinct)
+        if user_type in ['tutor', 'trainer']:
+            trainer_student_ids = (
+                NewBatch.objects.filter(
+                    trainer__trainer_id=user.trainer_id,
+                    is_archived=False
+                )
+                .values_list('students__student_id', flat=True)
+                .distinct()
+            )
+            return base_qs.filter(student_id__in=trainer_student_ids)
+
+        # ADMIN → scoped students
+        if user_type == 'admin':
+            return base_qs.filter(
+                created_by=str(user.trainer_id),
+                created_by_type='admin'
+            )
+
+        # SUPER ADMIN → include admins + own created students
+        if user_type == 'super_admin':
+            admin_ids = (
+                Trainer.objects.filter(
+                    created_by=user.user_id,
+                    created_by_type='super_admin',
+                    is_archived=False
+                )
+                .values_list('trainer_id', flat=True)
+            )
+
+            return base_qs.filter(
+                Q(created_by=str(user.user_id), created_by_type='super_admin') |
+                Q(created_by__in=[str(i) for i in admin_ids], created_by_type='admin')
+            )
+
+        return Student.objects.none()
+
+    @cache_api(prefix="student_profile", timeout=300)
+    def retrieve(self, request, student_id=None):
+        user = request.user
+        user_type = getattr(user, 'user_type', None)
+        print("USER:", user)
+        print("USER TYPE:", user_type)
+        print("USER STUDENT ID:", getattr(user, "student_id", None))
+        print("REQUESTED STUDENT ID:", student_id)
+        try:
+            student = self.get_queryset().get(student_id=int(student_id))
+        except Student.DoesNotExist:
+            return Response(
+                {"success": False, "message": "Not found or access denied."},
+                status=404
+            )
+
+        
+        if user_type == "student" and str(student.student_id) != str(user.student_id):
+            return Response(
+                {"success": False, "message": "You are not allowed to access this resource."},
+                status=403
+            )
+
+        serializer = StudentProfileSerializer(student, context={'request': request})
+        return Response({"success": True, "data": serializer.data})
+
+    def partial_update(self, request, student_id=None):
+        try:
+            student = self.get_queryset().get(student_id=student_id)
+        except Student.DoesNotExist:
+            return Response(
+                {"success": False, "message": "Not found or access denied."},
+                status=404
+            )
+
+        serializer = StudentUpdateSerializer(student, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response({"success": False, "message": serializer.errors}, status=400)
+
+        serializer.save()
+        return Response({"success": True, "message": "Updated successfully."})
     
     def get_serializer_class(self):
         if self.action in ['update', 'partial_update']:
             return StudentUpdateSerializer
         return StudentProfileSerializer  # Read-only profile view
     
-    def partial_update(self, request, *args, **kwargs):
-        user = request.user
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-        
-        try:
-            student_id = kwargs.get('student_id')
-            if not student_id:
-                return Response({"success": False, "message": "Student ID missing"}, status=200)
-
-            try:
-                student = Student.objects.get(student_id=student_id)
-            except Student.DoesNotExist:
-                return Response({"success": False, "message": "Student not found"}, status=200)
-
-            # -------------------------------------------------------------
-            # PROTECTION: Intercept payload and forcefully remove user_type/role
-            # -------------------------------------------------------------
-            payload = request.data.copy()  # Create a mutable copy of the request data
-            
-            # If they try to pass user_type or role in the payload, remove it quietly
-            # so it is ignored during serializer validation and saving.
-            payload.pop('user_type', None)
-            payload.pop('role', None)
-            payload.pop('role_id', None) # Extra check if you pass role as role_id
-            # -------------------------------------------------------------
-
-            serializer = self.get_serializer(student, data=payload, partial=True)
-            user = request.user
-
-            # Ensure module_id points to Students
-            student_module = ModulePermission.objects.filter(module__iexact="Students").first()
-            if not student_module:
-                return Response({"success": False, "message": "Students module not found"}, status=200)
-
-            # Validate without raising exception
-            if not serializer.is_valid():
-                error_messages = flatten_errors(serializer.errors)
-                error_message = ". ".join(error_messages) + "."
-                return Response({
-                    "success": False,
-                    "message": error_message
-                }, status=status.HTTP_200_OK)
-
-            # Save valid data
-            serializer.save()
-            student.refresh_from_db()
-
-            # Save notes if provided in request
-            notes_text = payload.get("notes")
-            if notes_text:
-                mixin = NotesMixin()
-                mixin.save_notes(student, notes_text, request=request)
-
-            # Use full profile serializer for response
-            response_serializer = StudentProfileSerializer(student, context={'request': request})
-
-            return Response({
-                "success": True,
-                "message": "Profile updated successfully.",
-                "data": response_serializer.data
-            }, status=200)
-
-        except Exception as e:
-            return Response({
-                "success": False,
-                "message": str(e)
-            }, status=status.HTTP_200_OK)
-
     @action(
         detail=True,
         methods=['patch'],
@@ -5352,32 +5369,6 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         student.save()
 
         return Response({"success": True, "message": "Password reset successfully."}, status=200)
-        
-    @cache_api(prefix="student_profile", timeout=300)
-    def retrieve(self, request, student_id=None):
-        user = request.user
-        user_type = getattr(user, 'user_type', None)
-        try:
-            student = Student.objects.get(student_id=student_id)
-          
-        except Student.DoesNotExist:
-            return Response({
-                "success": False,
-                "message": "Student not found"
-            }, status=status.HTTP_200_OK)
-        
-        if user_type == "student" and str(student.student_id) != str(user.student_id):
-            return Response(
-                {"success": False, "message": "Unable to process request."},
-                status=status.HTTP_403_FORBIDDEN
-            )
-
-        serializer = StudentProfileSerializer(student, context={'request': request})
-        return Response({
-            "success": True,
-            "message": "Student profile retrieved successfully",
-            "data": serializer.data
-        }, status=status.HTTP_200_OK)
 
 
 class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
@@ -5409,7 +5400,7 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
                 status=404
             )
 
-        MEDIA_BASE_URL = "https://portal.aryuacademy.com/api/media/"
+        MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api/media/"
 
         # ----------------------------------
         # 1. STUDENT-SPECIFIC BATCHES
