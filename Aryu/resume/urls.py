@@ -10,6 +10,7 @@ urlpatterns = [
 
     path("auth/signup/",AuthViewSet.as_view({"post": "signup"}),name="signup"),
     path("auth/login/",AuthViewSet.as_view({"post": "login"}),name="login"),
+    path("auth/logout/",AuthViewSet.as_view({"post": "logout"}),name="logout"),
     path("token/refresh/",CustomTokenRefreshView.as_view(),name="token_refresh"),
     path("auth/verify-email/",AuthViewSet.as_view({"get": "verify_email"}),name="verify_email"),
     path("auth/resend-verification-email/",AuthViewSet.as_view({"post": "resend_verification_email"}),name="resend_verification_email"),
