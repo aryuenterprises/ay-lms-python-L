@@ -1690,91 +1690,141 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             return Response({"success": False, "message": str(e)}, status=500)
 
     def get(self, request):
-            try:
-                count = int(request.GET.get("count", 50))
-                skip = int(request.GET.get("skip", 0))
+        try:
 
-                # print("COUNT =", count)
-                # print("SKIP =", skip)
+            status_filter = request.GET.get("status", "all")
+            search = request.GET.get("search", "").strip().lower()
+            start_date = request.GET.get("start_date")
+            end_date = request.GET.get("end_date")
+            page = int(request.GET.get("page", 1))
+            page_size = int(request.GET.get("page_size", 50))
 
-                # # payments = client.payment.all({
-                # #     "count": count,
-                # #     "skip": skip
-                # # })
-
-                # print("RECEIVED =", len(payments.get("items", [])))
-
-                client = razorpay.Client(
-                    auth=(
+            client = razorpay.Client(
+                auth=(
                     "rzp_live_SKfiZYRJEe8WuU",
                     "Du4L7ebKchXQSOMcgzx5wE3h"
-                    )
+                )
+            )
+
+            params = {}
+
+            if start_date:
+                params["from"] = int(
+                    datetime.strptime(start_date, "%Y-%m-%d").timestamp()
                 )
 
-                payments = client.payment.all({
-                    "count": count,
+            if end_date:
+                params["to"] = int(
+                    datetime.strptime(end_date, "%Y-%m-%d")
+                    .replace(hour=23, minute=59, second=59)
+                    .timestamp()
+                )
+
+            has_filter = search or (status_filter.lower() != "all")
+
+            # ✅ ALWAYS fetch all records in batches of 100
+            # Razorpay does NOT provide a real total count field —
+            # "count" in the response = items returned, not total available.
+            # The only reliable way is to fetch everything and count ourselves.
+            all_payments = []
+            batch_size = 100
+            skip = 0
+
+            while True:
+                result = client.payment.all({
+                    **params,
+                    "count": batch_size,
                     "skip": skip
                 })
-                print("COUNT =", count)
-                print("SKIP =", skip)
 
-                # payments = client.payment.all({
-                #     "count": count,
-                #     "skip": skip
-                # })
+                if isinstance(result, dict):
+                    batch = result.get("items", [])
+                elif isinstance(result, list):
+                    batch = result
+                else:
+                    batch = []
 
-                print("RECEIVED =", len(payments.get("items", [])))
+                if not batch:
+                    break
 
-                payment_data = []
+                all_payments.extend(batch)
 
-                for payment in payments.get("items", []):
+                # If fewer items returned than requested, we've reached the end
+                if len(batch) < batch_size:
+                    break
 
-                    notes = payment.get("notes", {})
+                skip += batch_size
 
-                    payment_data.append({
-                        "payment_id": payment.get("id"),
+            # ── Build rows ──
+            all_rows = []
 
-                        # Customer Name
-                        "customer": notes.get("name", "N/A"),
+            for payment in all_payments:
+                if not isinstance(payment, dict):
+                    continue
 
-                        # Customer Email
-                        "email": notes.get("email") or payment.get("email"),
+                notes = payment.get("notes", {})
+                if not isinstance(notes, dict):
+                    notes = {}
 
-                        # Customer Phone
-                        "phone": notes.get("phone") or payment.get("contact"),
+                row = {
+                    "payment_id": payment.get("id"),
+                    "customer":   notes.get("name", "N/A"),
+                    "email":      notes.get("email") or payment.get("email"),
+                    "phone":      notes.get("phone") or payment.get("contact"),
+                    "amount":     payment.get("amount", 0) / 100,
+                    "status":     payment.get("status"),
+                    "method":     payment.get("method"),
+                    "created_at": datetime.fromtimestamp(
+                        payment.get("created_at", 0)
+                    ).strftime("%d %b %Y %I:%M:%S %p"),
+                }
 
-                        # Amount in INR
-                        "amount": payment.get("amount", 0) / 100,
+                all_rows.append(row)
 
-                        # Payment Status
-                        "status": payment.get("status"),
+            # ── Apply filters if active ──
+            if has_filter:
+                if status_filter.lower() != "all":
+                    all_rows = [
+                        r for r in all_rows
+                        if str(r["status"]).lower() == status_filter.lower()
+                    ]
 
-                        # Payment Method
-                        "method": payment.get("method"),
+                if search:
+                    filtered = []
+                    for r in all_rows:
+                        searchable = (
+                            f"{r['payment_id']} "
+                            f"{r['customer']} "
+                            f"{r['email']} "
+                            f"{r['phone']}"
+                        ).lower()
+                        if search in searchable:
+                            filtered.append(r)
+                    all_rows = filtered
 
-                        # Date
-                        "created_at": datetime.fromtimestamp(
-                            payment.get("created_at")
-                        ).strftime("%d %b %Y %I:%M:%S %p"),
-                    })
+            # ✅ total_records = actual count of all matching rows
+            total_records = len(all_rows)
 
-                return Response({
-                    "success": True,
-                    "count": len(payment_data),
-                    "total_records": 1000,  
-                    "skip": skip,
-                    "data": payment_data
-                })
+            # ✅ Paginate AFTER filtering
+            start_index = (page - 1) * page_size
+            end_index = start_index + page_size
+            paginated_data = all_rows[start_index:end_index]
 
-            except Exception as e:
-                return Response(
-                    {
-                        "success": False,
-                        "message": str(e)
-                    },
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-        
+            return Response({
+                "success":       True,
+                "page":          page,
+                "page_size":     page_size,
+                "total_records": total_records,
+                "data":          paginated_data
+            })
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {"success": False, "message": str(e)},
+                status=500
+            )
     # -------------------------
     # Verify Razorpay Payment
     # -------------------------
