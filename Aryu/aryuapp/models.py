@@ -377,7 +377,7 @@ class Student(models.Model):
     is_referenced = models.BooleanField(default=False)
     reference_name = models.CharField(max_length=255, null=True, blank=True)
     reference_number = models.CharField(max_length=255, null=True, blank=True)
-    student_type = models.CharField(max_length=30, null=False, blank=False)
+    student_type = models.CharField(max_length=30, null=True, blank=True)
     source_type = models.CharField(max_length=255,null=True,blank=False)
     source_name = models.CharField(max_length = 250,null = True,blank=False)
     status = models.BooleanField(default=True, null=False, blank=False)
