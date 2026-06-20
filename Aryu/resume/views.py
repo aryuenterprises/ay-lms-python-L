@@ -93,53 +93,21 @@ class AuthViewSet(viewsets.ViewSet):
     @action(detail=False, methods=["post"], url_path="signup")
     @secure_throttle(rate_limit=5, period=60)
     def signup(self, request):
+        # 1. Run strict type validation
+        serializer = SecureSignupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated_data = serializer.validated_data
 
-        data = request.data
+        email = validated_data["email"].strip().lower()
+        phone = validated_data["phone"].strip()
+        password = validated_data["password"]
 
-        email = str(data.get("email", "")).strip().lower()
-        phone = str(data.get("phone", "")).strip()
-
-        if not email:
-            return Response(
-                {"error": "Email is required"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        if not data.get("password"):
-            return Response(
-                {"error": "Password is required"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        password_error = self.validate_password(data["password"])
-
-        if password_error:
-            return Response(
-                {"error": password_error},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # prevent duplicate account
         if ResumeRegistration.objects.filter(email=email).exists():
             return Response(
                 {"error": "Email already registered"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # hash password
-        hashed_password = make_password(data["password"])
-
-        user = ResumeRegistration.objects.create(
-            first_name=data.get("first_name"),
-            last_name=data.get("last_name"),
-            email=email,
-            phone=phone,
-            password=hashed_password,
-            city=data.get("city"),
-            state=data.get("state"),
-            country=data.get("country"),
-            is_verified=False,
-        )
         free_plan = Subscription.objects.filter(
             name__iexact="Free",
             is_active=True,
@@ -148,15 +116,23 @@ class AuthViewSet(viewsets.ViewSet):
 
         if not free_plan:
             return Response(
-                {
-                    "success": False,
-                    "message": "Free subscription plan not configured."
-                },
+                {"success": False, "message": "Free subscription plan not configured."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-        start_date = timezone.now()
+        user = ResumeRegistration.objects.create(
+            first_name=validated_data["first_name"],
+            last_name=validated_data["last_name"],
+            email=email,
+            phone=phone,
+            password=make_password(password),
+            city=validated_data["city"],
+            state=validated_data["state"],
+            country=validated_data["country"],
+            is_verified=False,
+        )
 
+        start_date = timezone.now()
         duration = str(free_plan.duration_days).strip()
 
         if duration.lower() == "lifetime":
@@ -166,21 +142,16 @@ class AuthViewSet(viewsets.ViewSet):
             end_date = start_date + timedelta(days=days)
 
         user_subscription = UserSubscription.objects.create(
-
             user=user,
-
             subscription=free_plan,
-
             start_date=start_date,
-
             end_date=end_date,
-
             status="active"
         )
 
         user.current_subscription = user_subscription
-
         user.save(update_fields=["current_subscription"])
+        
         PaymentHistory.objects.create(
             user=user,
             plan_name="Free",
@@ -188,18 +159,8 @@ class AuthViewSet(viewsets.ViewSet):
             payment_status="free"
         )
 
-        token = signing.dumps(
-            {
-                "user_id": user.id,
-                "email": user.email
-            },
-            salt=SIGNING_SALT
-        )
-
-        verification_link = (
-            "https://portal.aryuacademy.com"
-            f"/api/resume/auth/verify-email/?token={token}"
-        )
+        token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
+        verification_link = f"https://aylms.aryuprojects.com/api/resume/auth/verify-email/?token={token}"
 
         html_message = f"""
 <!DOCTYPE html>
@@ -251,7 +212,7 @@ class AuthViewSet(viewsets.ViewSet):
                   padding: 45px 5px;
                 ">
                 <img
-                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -446,91 +407,15 @@ class AuthViewSet(viewsets.ViewSet):
         # EMAIL SEND
         # =========================================
 
-        email_message = EmailMultiAlternatives(
-
-            subject=f"{user.first_name}, complete your Pass ATS registration",
-
-            body=f"""
-Hello {user.first_name},
-
-Please verify your PassATS account:
-
-{verification_link}
-
-Website:
-https://aryuacademy.com
-""",
-
-            from_email=settings.DEFAULT_FROM_EMAIL,
-
-            to=[user.email],
-        )
-
-        email_message.attach_alternative(
-            html_message,
-            "text/html"
-        )
-
-        email_message.extra_headers = {
-            "Reply-To": "support@aryuacademy.com",
-            "X-Auto-Response-Suppress": "OOF, AutoReply"
-        }
-        
-        # send email
-        # email_message = EmailMultiAlternatives(
-
-        # subject=f"{user.first_name}, verify your PassAts account",
-
-        # body=f"""
-        # Hello {user.first_name},
-
-        # Please verify your PassAts account:
-
-        # {verification_link}
-
-        # Website:
-        # https://aryuacademy.com
-        # """,
-
-        #     from_email=settings.DEFAULT_FROM_EMAIL,
-
-        #     to=[user.email],
-        # )
-
-        # email_message.attach_alternative(
-        #     html_message,
-        #     "text/html"
-        # )
-
-        # email_message.send(fail_silently=False)
-        subject = (
-            f"{user.first_name}, verify your PassAts account"
-        )
-
-        body = f"""
-        Hello {user.first_name},
-
-        Please verify your PassAts account:
-
-        {verification_link}
-
-        Website:
-        https://aryuacademy.com
-        """
+        subject = f"{user.first_name}, verify your PassAts account"
+        body = f"Please verify your account: {verification_link}"
 
         transaction.on_commit(
-            lambda: send_verification_email.delay(
-                subject,
-                body,
-                html_message,
-                user.email
-            )
+            lambda: send_verification_email.delay(subject, body, html_message, user.email)
         )
 
         return Response(
-            {
-                "message": "Registration successful. Verification email sent."
-            },
+            {"message": "Registration successful. Verification email sent."},
             status=status.HTTP_201_CREATED
         )
 
@@ -595,7 +480,7 @@ https://aryuacademy.com
         )
 
         verification_link = (
-            "https://portal.aryuacademy.com"
+            "https://aylms.aryuprojects.com"
             f"/api/resume/auth/verify-email/?token={token}"
         )
 
@@ -653,7 +538,7 @@ https://aryuacademy.com
                   padding: 45px 5px;
                 ">
                 <img
-                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -898,68 +783,7 @@ https://aryuacademy.com
             status=status.HTTP_200_OK
         )
 
-    # =========================
-    # VERIFY EMAIL
-    # =========================
-
-    # @action(detail=False, methods=["get"], url_path="verify-email")
-    # def verify_email(self, request):
-
-    #     token = request.GET.get("token")
-
-    #     logger.info(f"TOKEN: {token}")
-
-    #     if not token:
-    #         logger.error('no token')
-    #         return Response(
-    #             {"error": "Invalid verification link"},
-    #             status=status.HTTP_400_BAD_REQUEST
-    #         )
-        
-    #     try:
-
-    #         data = signing.loads(
-    #             token,
-    #             salt=SIGNING_SALT,
-    #             max_age=60 * 60 * 24
-    #         )
-
-    #         user = ResumeRegistration.objects.only(
-    #             "id",
-    #             "email",
-    #             "is_verified"
-    #         ).get(
-    #             id=data["user_id"],
-    #             email=data["email"]
-    #         )
-
-    #     except SignatureExpired:
-
-    #         return Response(
-    #             {"error": "Verification link expired"},
-    #             status=status.HTTP_400_BAD_REQUEST
-    #         )
-
-    #     except (BadSignature, ResumeRegistration.DoesNotExist) as msg:
-
-    #         return Response(
-    #             {"error": msg},
-    #             status=status.HTTP_400_BAD_REQUEST
-    #         )
-
-    #     if user.is_verified:
-
-    #         return redirect(
-    #         "https://passats.aryuacademy.com/email-verified"
-    #     )
-
-    #     user.is_verified = True
-
-    #     user.save(update_fields=["is_verified"])
-
-    #     return redirect(
-    #         "https://passats.aryuacademy.com/email-verified"
-    #     )
+    
     @action(
     detail=False,
     methods=["get"],
@@ -1181,95 +1005,33 @@ https://aryuacademy.com
     @action(detail=False, methods=["post"], url_path="login")
     @secure_throttle(rate_limit=5, period=60)
     def login(self, request):
+        # 1. Run strict type validation
+        serializer = SecureLoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True) 
+        # If payload contains dictionaries, DRF safely returns 400 bad request here
 
-        # =====================================
-        # TURNSTILE VERIFICATION
-        # =====================================
-
-        turnstile_token = request.data.get("turnstileToken")
-
-        if not turnstile_token:
-            return Response(
-                {
-                    "error": "Security verification required"
-                },
-                status=status.HTTP_403_FORBIDDEN
-            )
-
-        client_ip = self.get_client_ip(request)
-
-        verification_result = self.verify_turnstile_token(
-            turnstile_token,
-            client_ip
-        )
-
-        print("TURNSTILE RESULT:", verification_result)
-
-        if not verification_result.get("success"):
-            return Response(
-                {
-                    "error": "Security verification failed",
-                    "details": verification_result
-                },
-                status=status.HTTP_403_FORBIDDEN
-            )
-
-        # =====================================
-        # LOGIN LOGIC
-        # =====================================
-
-        email = str(
-            request.data.get("email", "")
-        ).strip().lower()
-
-        password = request.data.get("password")
-
-        if not email or not password:
-            return Response(
-                {"error": "Email and password required"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        validated_data = serializer.validated_data
+        email = validated_data["email"].strip().lower()
+        password = validated_data["password"]
 
         try:
-
             user = ResumeRegistration.objects.select_related(
                 "current_subscription"
             ).only(
-                "id",
-                "email",
-                "password",
-                "is_verified",
-                "first_name",
-                "last_name",
-                "current_subscription",
+                "id", "email", "password", "is_verified", "first_name", "last_name", "current_subscription"
             ).get(email=email)
 
         except ResumeRegistration.DoesNotExist:
-
-            check_password(
-                password,
-                make_password("dummy_password")
-            )
-
-            return Response(
-                {"error": "Invalid credentials"},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            check_password(password, make_password("dummy_password"))
+            return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
 
         if not check_password(password, user.password):
-            return Response(
-                {"error": "Invalid credentials"},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
 
         if not user.is_verified:
-            return Response(
-                {"error": "Please verify your email first"},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return Response({"error": "Please verify your email first"}, status=status.HTTP_403_FORBIDDEN)
 
         refresh = RefreshToken()
-
         refresh["user_id"] = user.id
         refresh["id"] = user.id
         refresh["email"] = user.email
@@ -1277,18 +1039,10 @@ https://aryuacademy.com
         refresh["first_name"] = user.first_name
         refresh["last_name"] = user.last_name
 
-        access_token = str(refresh.access_token)
-        refresh_token = str(refresh)
-        print("TOKEN TYPE:", type(turnstile_token))
-        print("TOKEN LENGTH:", len(turnstile_token))
-        print("TOKEN FIRST 100:", turnstile_token[:100])
-        print("TOKEN LAST 100:", turnstile_token[-100:])
-
-        return Response(
+        response = Response(
             {
                 "message": "Login successful",
-                "access_token": access_token,
-                "refresh_token": refresh_token,
+                "access_token": str(refresh.access_token),
                 "user": {
                     "id": user.id,
                     "first_name": user.first_name,
@@ -1299,6 +1053,31 @@ https://aryuacademy.com
             },
             status=status.HTTP_200_OK
         )
+
+        # 1. Dynamically configure cookie settings for Local vs Production environments
+        if settings.DEBUG:
+            cookie_domain = None       # Localhost requires None to bind directly to 'localhost'
+            cookie_samesite = "None"    # Lax works perfectly for local dev environments
+            cookie_secure = False      # Set to False if testing on http://localhost without SSL
+        else:
+            cookie_domain = ".aryuacademy.com"  # Production parent domain rule
+            cookie_samesite = "Lax"             # Can be "Lax" or "Strict" once the CNAME is live
+            cookie_secure = True                # Enforce HTTPS in production
+
+        # 2. Apply the dynamic settings to the cookie
+        response.set_cookie(
+            key="refresh_token",
+            value=str(refresh),
+            max_age=30 * 24 * 60 * 60,   # 30 Days
+            expires=None,
+            path="/",                    
+            domain=cookie_domain,        # <--- Dynamic domain variable
+            secure=cookie_secure,        # <--- Dynamic secure variable
+            httponly=True,               # Always keep True to block XSS script theft
+            samesite=cookie_samesite,    # <--- Dynamic samesite variable
+        )
+
+        return response
     
     @staticmethod
     def generate_secure_otp(length=6):
@@ -1449,7 +1228,7 @@ https://aryuacademy.com
                 ">
 
                 <img
-                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -1938,22 +1717,62 @@ https://aryuacademy.com
         )
 
 class CustomTokenRefreshView(APIView):
-
     permission_classes = [AllowAny]
     serializer_class = CustomTokenRefreshSerializer
 
     def post(self, request, *args, **kwargs):
+        # 1. Extract the token directly from the HTTP secure cookie container
+        refresh_token = request.COOKIES.get("refresh_token")
 
-        serializer = self.serializer_class(
-            data=request.data
-        )
-
+        # 2. Hand it off to the serializer mapping dictionary explicitly
+        serializer = self.serializer_class(data={"refresh": refresh_token})
         serializer.is_valid(raise_exception=True)
+        
+        validated_data = serializer.validated_data
+        new_refresh_obj = validated_data.get("refresh_token_obj")
 
-        return Response(
-            serializer.validated_data,
+        # 3. Create clean baseline response containing ONLY the access token in the body
+        response = Response(
+            {
+                "access_token": validated_data["access_token"]
+            },
             status=status.HTTP_200_OK
         )
+
+        origin = request.headers.get("Origin", "")
+
+        LOCAL_ORIGINS = {
+            "http://localhost:3000",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            "http://192.168.0.139:8081",
+        }
+
+        if origin in LOCAL_ORIGINS:
+            cookie_domain = None
+            cookie_secure = False
+            cookie_samesite = "None"
+
+        else:
+            cookie_domain = ".aryuacademy.com"
+            cookie_samesite = "Lax"  # Matches your custom API CNAME architecture setup
+            cookie_secure = True
+
+        # 5. Bake the newly rotated refresh token back into the user's browser cookie storage
+        if new_refresh_obj:
+            response.set_cookie(
+                key="refresh_token",
+                value=str(new_refresh_obj),
+                max_age=30 * 24 * 60 * 60,  # 30 Days
+                expires=None,
+                path="/",
+                domain=cookie_domain,
+                secure=cookie_secure,
+                httponly=True,              # Keeps XSS defense completely locked down
+                samesite=cookie_samesite,
+            )
+
+        return response
 
 from .tasks import resume_reg
 
