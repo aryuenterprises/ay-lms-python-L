@@ -1079,6 +1079,37 @@ class AuthViewSet(viewsets.ViewSet):
 
         return response
     
+    @secure_throttle(rate_limit=5, period=60)
+    def logout(request):
+
+        origin = request.headers.get("Origin", "")
+
+        LOCAL_ORIGINS = {
+            "http://localhost:3000",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            "http://192.168.0.139:8081",
+        }
+
+        if origin in LOCAL_ORIGINS:
+            cookie_domain = None
+        else:
+            cookie_domain = ".aryuprojects.com"
+
+        response = Response(
+            {"message": "Logged out successfully"},
+            status=status.HTTP_200_OK,
+        )
+
+        response.delete_cookie(
+            key="refresh_token",
+            path="/api/token/refresh/",
+            domain=cookie_domain,
+            samesite="None" if cookie_domain else "Lax",
+        )
+
+        return response
+    
     @staticmethod
     def generate_secure_otp(length=6):
 
