@@ -413,6 +413,26 @@ class StudentDetailSerializer(serializers.ModelSerializer):
         # remove duplicates
         return list(set(course_names))
 
+class StudentusertypeSerializer(serializers.ModelSerializer):
+    # student_id = serializers.PrimaryKeyRelatedField(
+    #     queryset=Student.objects.all(),
+    #     source='student'
+    # )
+
+    class Meta:
+        model = Studentusertype
+        fields ="__all__"
+
+class StudentsubusertypeSerializer(serializers.ModelSerializer):
+    # student_id = serializers.PrimaryKeyRelatedField(
+    #     queryset=Student.objects.all(),
+    #     source='student'
+    # )
+
+    class Meta:
+        model = Studentsubusertype
+        fields = "__all__"
+
 class EmployerSerializer(serializers.ModelSerializer, NotesMixin):
     notes = serializers.SerializerMethodField()
 
@@ -1589,26 +1609,6 @@ class StudentUpdateSerializer(serializers.ModelSerializer):
 
         return instance
 
-class StudentusertypeSerializer(serializers.ModelSerializer):
-    # student_id = serializers.PrimaryKeyRelatedField(
-    #     queryset=Student.objects.all(),
-    #     source='student'
-    # )
-
-    class Meta:
-        model = Studentusertype
-        fields ="__all__"
-
-class StudentsubusertypeSerializer(serializers.ModelSerializer):
-    # student_id = serializers.PrimaryKeyRelatedField(
-    #     queryset=Student.objects.all(),
-    #     source='student'
-    # )
-
-    class Meta:
-        model = Studentsubusertype
-        fields = "__all__"
-
 class RecordingSerializer(serializers.ModelSerializer):
     created_date = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
     class Meta:
@@ -2295,26 +2295,26 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
         return instance
     
 
-class StudentDetailSerializer(serializers.ModelSerializer):
-    batch = serializers.SerializerMethodField()
-    profile_pic = serializers.SerializerMethodField()
-    class Meta:
-        model = Student
-        fields = [
-            'registration_id', 'student_id', 'profile_pic', 'batch',
-            'first_name', 'last_name', 'contact_no', 'email'
-        ]
+# class StudentDetailSerializer(serializers.ModelSerializer):
+#     batch = serializers.SerializerMethodField()
+#     profile_pic = serializers.SerializerMethodField()
+#     class Meta:
+#         model = Student
+#         fields = [
+#             'registration_id', 'student_id', 'profile_pic', 'batch',
+#             'first_name', 'last_name', 'contact_no', 'email'
+#         ]
 
-    def get_batch(self, obj):
-        batches = obj.new_batches.all().values(
-            "batch_id", "title", "course__course_id", "course__course_name"
-        )
-        return batches
+#     def get_batch(self, obj):
+#         batches = obj.new_batches.all().values(
+#             "batch_id", "title", "course__course_id", "course__course_name"
+#         )
+#         return batches
     
-    def get_profile_pic(self, obj):
-        if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
-        return None
+#     def get_profile_pic(self, obj):
+#         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
+#             return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
+#         return None
 
 class TrainerForStudentSerializer(serializers.ModelSerializer):
     batch = serializers.SerializerMethodField()
