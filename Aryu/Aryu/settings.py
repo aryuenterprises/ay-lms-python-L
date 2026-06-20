@@ -29,7 +29,7 @@ pip install channels-redis paypalrestsdk reportlab pyclamd pytesseract Pillow dj
 SECRET_KEY = 'django-insecure-e-ar=#hq&(q0ujnwofc!%8#in(2z1osso65+(8i+&elo=cn4$k'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -319,7 +319,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://workshop.aryuacademy.com",
     "https://aryuacademy.com",
     "https://passats.aryuacademy.com",
-    "http://127.0.0.1:8000",
+    # "http://127.0.0.1:8000",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -327,7 +327,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://workshop.aryuacademy.com",
     "https://aryuacademy.com",
     "https://passats.aryuacademy.com",
-    "http://127.0.0.1:8000",
+    # "http://127.0.0.1:8000",
 ]
 
 ALLOWED_HOSTS = [
@@ -335,8 +335,8 @@ ALLOWED_HOSTS = [
     "workshop.aryuacademy.com",
     "aryuacademy.com",
     "passats.aryuacademy.com",
-    "localhost",
-    "127.0.0.1",
+    # "localhost",
+    # "127.0.0.1",
 ]
 
 
