@@ -747,19 +747,27 @@ class StudentSerializer(serializers.ModelSerializer):
     college_student = College_StudentSerializer(required=False)
     jobseeker = JobSeekerSerializer(required=False)
     employee = EmployeeSerializer(required=False)
+    source_type = serializers.CharField(required=False, allow_blank=True)
+    source_name = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = Student
         fields = [
             'student_id', 'profile_pic', 'role', 'first_name', 'last_name', 'password', 'registration_id', 'dob',
             'email', 'contact_no', 'gender', 'alternate_mobile_no', 'internship_required', 'current_address', 'permanent_address', 'city', 'state',
-            'country','source_type',
+            'country','source_type','source_name','converter',
             'parent_guardian_name', 'parent_guardian_phone', 'internship','parent_guardian_occupation',
             'reference_number', 'reference_name', 'student_type', 'status', 'notes',
             'school_student', 'college_student', 'jobseeker', 'employee',
-            'course_detail','course_ids', 'category_id', 'category_name', 'joining_date', 'created_by', 'created_at',
+            'course_detail','course_ids', 'category_id', 'category_name', 'joining_date', 'created_by', 'created_at','student_sub_type'
         ]
         read_only_fields = ['registration_id']
+
+    def get_source_type(self, obj):
+        return obj.source_type
+
+    def get_source_name(self, obj):
+        return obj.source_name
 
     def get_school_student(self, obj):
         if hasattr(obj, 'school_student'):
@@ -793,46 +801,6 @@ class StudentSerializer(serializers.ModelSerializer):
         unique_courses = {c.course_id: c for c in courses}.values()
 
         return CourseSerializer(unique_courses, many=True).data
-    
-    def validate_profile_pic(self, file):
-        """
-        SECURITY GATEWAY: Deep inspect profile pictures for spoofing, XSS, and massive file sizes.
-        """
-        if not file:
-            return file
-
-        # 1. Size Limit (e.g., 5 MB maximum to prevent Memory/DoS attacks)
-        MAX_IMAGE_SIZE = 5 * 1024 * 1024
-        if file.size > MAX_IMAGE_SIZE:
-            raise serializers.ValidationError("Profile picture size exceeds the 5MB limit.")
-
-        # 2. Strict Extension Allowlist (Block .svg, .gif, .tiff, etc.)
-        ext = os.path.splitext(file.name)[1].lower()
-        allowed_extensions = {'.jpg', '.jpeg', '.png'}
-        
-        if ext not in allowed_extensions:
-            raise serializers.ValidationError(
-                f"Security Alert: Extension '{ext}' is not permitted. Only standard images (JPG, PNG, WEBP) are allowed."
-            )
-
-        # 3. Deep Content Inspection (Magic Number Check)
-        # Read the binary header to ensure it's truly an image, not a renamed script.
-        file_head = file.read(2048)
-        file.seek(0)  # CRITICAL: Reset the file pointer so Django/Pillow can process it later
-
-        true_mime_type = magic.from_buffer(file_head, mime=True)
-        allowed_mimes = {'image/jpeg', 'image/png'}
-
-        if true_mime_type not in allowed_mimes:
-            raise serializers.ValidationError(
-                "Security Alert: The file's internal binary format does not match a secure image type (Spoofed file)."
-            )
-
-        # 4. Block SVG Explicitly (Prevents Stored XSS attacks via XML)
-        if 'svg' in true_mime_type.lower() or 'xml' in true_mime_type.lower():
-            raise serializers.ValidationError("Security Alert: SVG images are blocked due to XSS vulnerabilities.")
-
-        return file
 
     def validate_contact_no(self, value):
 
@@ -1010,53 +978,55 @@ class StudentSerializer(serializers.ModelSerializer):
 
         return student
 
-    def validate(self, data):
-        stype = data.get('student_type')
+    # def validate(self, data):
+    #     stype = data.get('student_type')
 
-        if not stype or stype not in ["school_student", "college_student", "jobseeker", "employee"]:
-            raise serializers.ValidationError({
-                "student_type": "Invalid or missing student type."
-            })
+    #     if not stype or stype not in ["school_student", "college_student", "jobseeker", "employee"]:
+    #         raise serializers.ValidationError({
+    #             "student_type": "Invalid or missing student type."
+    #         })
 
-        if stype == "school_student":
-            school = data.get("school_student") or {}
-            if not school.get("school_name"):
-                raise serializers.ValidationError({"school_name": "School name is required."})
-            if not school.get("school_class"):
-                raise serializers.ValidationError({"school_class": "School class is required."})
+    #     if stype == "school_student":
+    #         school = data.get("school_student") or {}
+    #         if not school.get("school_name"):
+    #             raise serializers.ValidationError({"school_name": "School name is required."})
+    #         if not school.get("school_class"):
+    #             raise serializers.ValidationError({"school_class": "School class is required."})
 
-        elif stype == "college_student":
-            college = data.get("college_student") or {}
-            if not college.get("college_name"):
-                raise serializers.ValidationError({"college_name": "College name is required."})
-            if not college.get("degree"):
-                raise serializers.ValidationError({"degree": "Degree is required."})
-            if not college.get("year_of_study"):
-                raise serializers.ValidationError({"year_of_study": "Year of study is required."})
+    #     elif stype == "college_student":
+    #         college = data.get("college_student") or {}
+    #         if not college.get("college_name"):
+    #             raise serializers.ValidationError({"college_name": "College name is required."})
+    #         if not college.get("degree"):
+    #             raise serializers.ValidationError({"degree": "Degree is required."})
+    #         if not college.get("year_of_study"):
+    #             raise serializers.ValidationError({"year_of_study": "Year of study is required."})
 
-        elif stype == "jobseeker":
-            job = data.get("jobseeker") or {}
-            if not job.get("passed_out_year"):
-                raise serializers.ValidationError({"passed_out_year": "Passed out year is required."})
-            if not job.get("current_qualification"):
-                raise serializers.ValidationError({"current_qualification": "Current qualification is required."})
-            if not job.get("preferred_job_role"):
-                raise serializers.ValidationError({"preferred_job_role": "Preferred job role is required."})
-            # for field in ["passed_out_year", "current_qualification", "preferred_job_role", "resume"]:
-            #     if not job.get(field):
-            #         raise serializers.ValidationError({f"{field}": f"{field.replace('_', ' ').title()} is required."})
+    #     elif stype == "jobseeker":
+    #         job = data.get("jobseeker") or {}
+    #         if not job.get("passed_out_year"):
+    #             raise serializers.ValidationError({"passed_out_year": "Passed out year is required."})
+    #         if not job.get("current_qualification"):
+    #             raise serializers.ValidationError({"current_qualification": "Current qualification is required."})
+    #         if not job.get("preferred_job_role"):
+    #             raise serializers.ValidationError({"preferred_job_role": "Preferred job role is required."})
+    #         # for field in ["passed_out_year", "current_qualification", "preferred_job_role", "resume"]:
+    #         #     if not job.get(field):
+    #         #         raise serializers.ValidationError({f"{field}": f"{field.replace('_', ' ').title()} is required."})
         
-        elif stype == 'employee':
-            employee = data.get('employee') or {}
-            if not employee.get('company_name'):
-                raise serializers.ValidationError({'company_name': 'Company Name is required.'})
-            if not employee.get('designation'):
-                raise serializers.ValidationError({'designation': 'Designation is required.'})
-            if not employee.get('experience'):
-                raise serializers.ValidationError({'experience': 'Experience is required.'})
-            if not employee.get('skills'):
-                raise serializers.ValidationError({'skills': 'Skills are required.'})
+    #     elif stype == 'employee':
+    #         employee = data.get('employee') or {}
+    #         if not employee.get('company_name'):
+    #             raise serializers.ValidationError({'company_name': 'Company Name is required.'})
+    #         if not employee.get('designation'):
+    #             raise serializers.ValidationError({'designation': 'Designation is required.'})
+    #         if not employee.get('experience'):
+    #             raise serializers.ValidationError({'experience': 'Experience is required.'})
+    #         if not employee.get('skills'):
+    #             raise serializers.ValidationError({'skills': 'Skills are required.'})
 
+    #     return data
+    def validate(self, data):
         return data
 
 class AttendanceSerializer(serializers.ModelSerializer):

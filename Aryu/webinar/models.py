@@ -126,7 +126,7 @@ class WebinarRegistration(models.Model):
     )
 
     # 🔹 CRM link (optional but powerful)
-    lead = models.ForeignKey(
+    models.ForeignKey(
         Lead,
         on_delete=models.SET_NULL,
         null=True,
