@@ -158,6 +158,8 @@ MIDDLEWARE = [
     # Allauth must come immediately after AuthenticationMiddleware
     "allauth.account.middleware.AccountMiddleware",
 
+    "core.middleware.security_sanitizer.InputSanitizationMiddleware",
+
     # custom middlewares AFTER auth + allauth
     "aryuapp.middleware.AutoLogoutMiddleware",
     "aryuapp.middleware.DBCleanupMiddleware",

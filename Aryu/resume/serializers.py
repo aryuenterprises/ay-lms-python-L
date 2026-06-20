@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
+import re
 from payments.models import PaymentTransaction
 from .models import ResumeRegistration,Contact,Subscription,PaymentHistory, UserSubscription, UserResume, ResumeTemplate
 from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
@@ -20,6 +21,34 @@ class ResumeRegistrationSerializers(serializers.ModelSerializer):
         model = ResumeRegistration
         fields = "__all__"
 
+
+class SecureLoginSerializer(serializers.Serializer):
+    email = serializers.EmailField(required=True)
+    password = serializers.CharField(required=True)
+
+class SecureSignupSerializer(serializers.Serializer):
+    first_name = serializers.CharField(required=False, allow_blank=True, default="")
+    last_name = serializers.CharField(required=False, allow_blank=True, default="")
+    email = serializers.EmailField(required=True)
+    phone = serializers.CharField(required=False, allow_blank=True, default="")
+    password = serializers.CharField(required=True)
+    city = serializers.CharField(required=False, allow_blank=True, default="")
+    state = serializers.CharField(required=False, allow_blank=True, default="")
+    country = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate_password(self, value):
+        if len(value) < 8:
+            raise serializers.ValidationError("Password must be minimum 8 characters")
+        if not re.search(r"[A-Z]", value):
+            raise serializers.ValidationError("Password must contain one uppercase letter")
+        if not re.search(r"[a-z]", value):
+            raise serializers.ValidationError("Password must contain one lowercase letter")
+        if not re.search(r"[0-9]", value):
+            raise serializers.ValidationError("Password must contain one number")
+        if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", value):
+            raise serializers.ValidationError("Password must contain one special character")
+        return value
+
 class ContactSerializers(serializers.ModelSerializer):
 
     class Meta:
@@ -27,22 +56,23 @@ class ContactSerializers(serializers.ModelSerializer):
         fields ="__all__"
 
 class CustomTokenRefreshSerializer(TokenRefreshSerializer):
+    # Make the default input requirement optional since we read from cookies
+    refresh = serializers.CharField(required=False, allow_null=True)
 
     def validate(self, attrs):
-
+        # 1. Grab the token string passed manually from the view
         refresh_token_string = attrs.get("refresh")
 
-        try:
+        if not refresh_token_string:
+            raise AuthenticationFailed("Refresh token is required.")
 
+        try:
             # Decode refresh token
             refresh = RefreshToken(refresh_token_string)
-
             user_id = refresh.get("user_id")
 
             if not user_id:
-                raise AuthenticationFailed(
-                    "Invalid token payload."
-                )
+                raise AuthenticationFailed("Invalid token payload.")
 
             # Validate user
             user = ResumeRegistration.objects.get(
@@ -58,33 +88,24 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
                 "access_token": access_token,
             }
 
-            # OPTIONAL REFRESH ROTATION
-            # Create new refresh token manually
-
+            # ROTATE REFRESH TOKEN (Highly Recommended for Security)
             new_refresh = RefreshToken()
-
             new_refresh["user_id"] = user.id
             new_refresh["id"] = user.id
-
             new_refresh["email"] = user.email
             new_refresh["user_type"] = "resume_user"
-
             new_refresh["first_name"] = user.first_name
             new_refresh["last_name"] = user.last_name
 
-            response_data["refresh_token"] = str(new_refresh)
+            # Pass the raw token object along so the view can extract it into a cookie
+            response_data["refresh_token_obj"] = new_refresh
 
             return response_data
 
         except ResumeRegistration.DoesNotExist:
-            raise AuthenticationFailed(
-                "User inactive or deleted."
-            )
-
+            raise AuthenticationFailed("User inactive or deleted.")
         except (TokenError, InvalidToken):
-            raise InvalidToken(
-                {"detail": "Token invalid or expired."}
-            )
+            raise InvalidToken({"detail": "Token invalid or expired."})
 
 class SubscriptionSerializer(serializers.ModelSerializer):
 
