@@ -3,6 +3,7 @@
 from django.db import models
 import uuid
 from django.conf import settings
+from lead.models import Lead
 
 User = settings.AUTH_USER_MODEL
 
@@ -126,7 +127,7 @@ class WebinarRegistration(models.Model):
 
     # 🔹 CRM link (optional but powerful)
     lead = models.ForeignKey(
-        'lead.Lead',
+        Lead,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
