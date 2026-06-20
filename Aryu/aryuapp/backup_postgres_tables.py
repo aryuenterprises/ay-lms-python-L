@@ -7,9 +7,9 @@ DB_NAME = "aylms_live"
 DB_USER = "aylms_live"
 DB_HOST = "69.62.78.109"
 DB_PASSWORD = "KfdW543FDdfg"
-BACKUP_ROOT = "/home/aryu_user/Arun/Live Backup/"
+BACKUP_ROOT = "/home/tamilselvi/Documents/backup"
 
-PG_DUMP = "/usr/lib/postgresql/16/bin/pg_dump"
+PG_DUMP = "/home/tamilselvi/Documents/backup"
 
 today = datetime.date.today().strftime("%d-%m-%y")
 backup_dir = os.path.join(BACKUP_ROOT, today)
