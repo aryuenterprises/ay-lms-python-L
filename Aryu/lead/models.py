@@ -1,6 +1,5 @@
 from django.db import models
 from django.contrib.contenttypes.fields import GenericRelation
-from aryuapp.models import User, Note
 
 # Create your models here.
 class Lead(models.Model):
@@ -104,7 +103,7 @@ class Lead(models.Model):
     # FOLLOW-UP INFO
 
     followup_by = models.ForeignKey(
-        User,
+        "aryuapp.User",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -112,7 +111,7 @@ class Lead(models.Model):
     )
 
     handled_by = models.ForeignKey(
-        User,
+        "aryuapp.User",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -160,7 +159,7 @@ class Lead(models.Model):
 
 
     notes = GenericRelation(
-        Note,
+        "aryuapp.Note",
         related_query_name="lead_notes"
     )
 
@@ -270,7 +269,7 @@ class LeadCallLog(models.Model):
     )
 
     called_by = models.ForeignKey(
-        User,
+        "aryuapp.User",
         on_delete=models.SET_NULL,
         null=True,
         blank=True
@@ -305,7 +304,7 @@ class LeadCallLog(models.Model):
     )
 
     notes = GenericRelation(
-        Note,
+        "aryuapp.Note",
         related_query_name="call_log_notes"
     )
     created_at = models.DateTimeField(auto_now_add=True)
@@ -328,7 +327,7 @@ class LeadDMLog(models.Model):
     )
 
     handled_by = models.ForeignKey(
-        User,
+        "aryuapp.User",
         on_delete=models.SET_NULL,
         null=True,
         blank=True
@@ -369,7 +368,7 @@ class LeadStatusHistory(models.Model):
     )
 
     changed_by = models.ForeignKey(
-        User,
+        "aryuapp.User",
         on_delete=models.SET_NULL,
         null=True,
         blank=True
@@ -408,7 +407,7 @@ class LeadFollowUp(models.Model):
     )
 
     assigned_to = models.ForeignKey(
-        User,
+        "aryuapp.User",
         on_delete=models.SET_NULL,
         null=True,
         blank=True
@@ -420,7 +419,7 @@ class LeadFollowUp(models.Model):
     )
 
     notes = GenericRelation(
-        Note,
+        "aryuapp.Note",
         related_query_name="call_log_notes"
     )
 
