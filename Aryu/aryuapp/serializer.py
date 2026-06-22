@@ -1151,6 +1151,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
     course_id = serializers.SerializerMethodField()
     notes = serializers.SerializerMethodField()
     trainer = serializers.SerializerMethodField()
+    converter = serializers.SerializerMethodField()
 
     class Meta:
         model = Student
@@ -1159,7 +1160,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
             'contact_no', 'current_address', 'permanent_address', 'internship_required','city', 'state', 'country',"source_type",
             'parent_guardian_name', 'parent_guardian_phone', 'parent_guardian_occupation', 'internship', 'reference_name', 'reference_number', 
             'email', 'student_type', 'course', 'course_detail', 'joining_date', 'studenttopicstatus',
-            'school_student', 'college_student', 'jobseeker', 'employee', 'assignment', 'attendance', 'status', 'created_at', 'created_by', 'notes'
+            'school_student', 'college_student', 'jobseeker', 'employee', 'assignment', 'attendance', 'status', 'created_at', 'created_by', 'notes','converter'
         ]
 
     def _get_active_new_batches(self, obj):
