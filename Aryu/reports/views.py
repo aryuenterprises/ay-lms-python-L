@@ -17,8 +17,8 @@ class AryuReportView(APIView):
             tutor_id    = request.GET.get("tutor_id", "").strip()
             start_date  = request.GET.get("start_date", "").strip()
             end_date    = request.GET.get("end_date", "").strip()
-            page        = int(request.GET.get("page", 1))
-            page_size   = int(request.GET.get("page_size", 10))
+            # page        = int(request.GET.get("page", 1))
+            # page_size   = int(request.GET.get("page_size", 10))
 
             # ── Base queryset: PaymentTransaction ──────────────────────
             qs = PaymentTransaction.objects.filter(
@@ -70,17 +70,37 @@ class AryuReportView(APIView):
                 total_discount       = Sum("discount"),
             )
 
-            total_records = qs.count()
+            unique_student_ids = list(
+            qs.values_list(
+                    "student__student_id",
+                    flat=True
+                ).distinct()
+            )
 
-            # ── Pagination ─────────────────────────────────────────────
-            start_index  = (page - 1) * page_size
-            paginated_qs = qs[start_index: start_index + page_size]
+            total_records = len(unique_student_ids)
 
-            # ── Pre-fetch BatchCourseTrainer for all students in this page ──
-            # Avoids N+1 queries — one query for all students on this page
-            student_ids_page = [txn.student_id for txn in paginated_qs]
+            # start_index = (page - 1) * page_size
+            # student_ids_page = unique_student_ids[
+            #     start_index:start_index + page_size
+            # ]
 
-            bct_map = {}  # student_id → BatchCourseTrainer (latest)
+            # No pagination
+            paginated_qs = qs
+
+            total_records = qs.values(
+                "student__student_id"
+            ).distinct().count()
+
+            student_ids_page = (
+                qs.values_list(
+                    "student_id",
+                    flat=True
+                )
+                .distinct()
+            )
+
+            bct_map = {}
+
             bct_qs = NewBatch.objects.filter(
                 students__student_id__in=student_ids_page
             ).select_related(
@@ -89,6 +109,7 @@ class AryuReportView(APIView):
             ).prefetch_related(
                 "students"
             ).distinct()
+
             for bct in bct_qs:
                 for student in bct.students.all():
                     key = (
@@ -99,56 +120,85 @@ class AryuReportView(APIView):
                     if key not in bct_map:
                         bct_map[key] = bct
 
-            # ── Build rows ─────────────────────────────────────────────
             data = []
+            processed_students = set()
+
             for txn in paginated_qs:
+
+                if txn.student_id in processed_students:
+                    continue
+
+                processed_students.add(txn.student_id)
+
                 student = txn.student
-                course  = txn.course
+                course = txn.course
 
-                full_name = f"{student.first_name or ''} {student.last_name or ''}".strip()
+                full_name = (
+                    f"{student.first_name or ''} "
+                    f"{student.last_name or ''}"
+                ).strip()
 
-                # ✅ Get BatchCourseTrainer by (student, course) match
-                bct = bct_map.get((student.student_id, course.course_id))
+                bct = bct_map.get(
+                    (student.student_id, course.course_id)
+                )
 
-                # ✅ Tutor name from BatchCourseTrainer
-                tutor_name = bct.trainer.full_name if bct and bct.trainer else "N/A"
+                tutor_name = (
+                    bct.trainer.full_name
+                    if bct and bct.trainer
+                    else "N/A"
+                )
 
-                # ✅ Batch name from BatchCourseTrainer
                 batch_id = bct.batch_id if bct else "N/A"
                 batch_name = bct.title if bct else "N/A"
                 batch_start_date = bct.start_date if bct else "N/A"
                 batch_end_date = bct.end_date if bct else "N/A"
-                # Duration
+
                 duration = "N/A"
                 if course.duration and course.duration_type:
-                    duration = f"{course.duration} {course.duration_type}"
+                    duration = (
+                        f"{course.duration} "
+                        f"{course.duration_type}"
+                    )
                 elif course.duration:
                     duration = str(course.duration)
 
-                # Amount logic with fallbacks
-                raw_amount     = float(txn.amount or 0)
-                discount       = float(txn.discount or 0)
-                after_discount = float(txn.total_after_discount or 0)
-                final_amount   = after_discount if after_discount > 0 else max(raw_amount - discount, 0)
-                paid_amount    = float(txn.amount_received or 0)
-                balance_due    = float(txn.balance_due or 0)
-                if balance_due == 0 and paid_amount > 0:
-                    balance_due = max(final_amount - paid_amount, 0)
+                raw_amount = float(txn.amount or 0)
+                discount = float(txn.discount or 0)
 
-                # Course type fallback
+                after_discount = float(
+                    txn.total_after_discount or 0
+                )
+
+                final_amount = (
+                    after_discount
+                    if after_discount > 0
+                    else max(raw_amount - discount, 0)
+                )
+
+                paid_amount = float(
+                    txn.amount_received or 0
+                )
+
+                balance_due = float(
+                    txn.balance_due or 0
+                )
+
                 course_type_val = (
                     course.mode_of_delivery
                     or student.student_type
                     or "N/A"
                 )
-                student_transactions = PaymentTransaction.objects.filter(
-                    student__student_id=student.student_id,
-                    is_archived=False
-                ).select_related(
-                    "course"
-                ).order_by(
-                    "-invoice_date",
-                    "-created_at"
+
+                student_transactions = (
+                    PaymentTransaction.objects.filter(
+                        student__student_id=student.student_id,
+                        is_archived=False
+                    )
+                    .select_related("course")
+                    .order_by(
+                        "-invoice_date",
+                        "-created_at"
+                    )
                 )
 
                 payment_history = []
@@ -159,7 +209,8 @@ class AryuReportView(APIView):
                         "id": payment.id,
                         "course_name": (
                             payment.course.course_name
-                            if payment.course else None
+                            if payment.course
+                            else None
                         ),
                         "invoice_date": payment.invoice_date,
                         "transaction_id": payment.transaction_id,
@@ -173,24 +224,26 @@ class AryuReportView(APIView):
                         "payment_status": payment.payment_status,
                         "payment_mode": (
                             payment.metadata.get("mode")
-                            if payment.metadata else None
+                            if payment.metadata
+                            else None
                         ),
                         "invoice_url": (
                             "https://aylms.aryuprojects.com/api"
                             + payment.invoice.url
                         )
-                        if payment.invoice and hasattr(payment.invoice, "url")
+                        if payment.invoice
+                        and hasattr(payment.invoice, "url")
                         else None,
                     })
-
-                # IMPORTANT:
-                # data.append must be OUTSIDE payment loop
 
                 data.append({
                     "student_name": full_name or "N/A",
                     "phone": student.contact_no or "N/A",
                     "email": student.email or "N/A",
-                    "registration_id": student.registration_id or "N/A",
+                    "registration_id": (
+                        student.registration_id
+                        or "N/A"
+                    ),
                     "student_id": student.student_id,
                     "discount": student.discount or "N/A",
                     "converter": student.converter or "N/A",
@@ -198,16 +251,16 @@ class AryuReportView(APIView):
                     "course_type": course_type_val,
                     "course_name": course.course_name or "N/A",
                     "course_id": course.course_id,
-                    "start_date": course.start_date ,
-                    "end_date":course.end_date,
 
                     "batch_name": batch_name,
                     "batch_id": batch_id,
+
                     "batch_start_date": (
                         str(batch_start_date)
                         if batch_start_date != "N/A"
                         else "N/A"
                     ),
+
                     "batch_end_date": (
                         str(batch_end_date)
                         if batch_end_date != "N/A"
@@ -229,28 +282,27 @@ class AryuReportView(APIView):
                         if course.start_date
                         else "N/A"
                     ),
+
                     "end_date": (
                         str(course.end_date)
                         if course.end_date
                         else "N/A"
                     ),
 
-                    "transaction_id": txn.transaction_id or "N/A",
-                    "payment_status": txn.payment_status or "N/A",
-                    "payment_mode": txn.payment_mode or "N/A",
                     "created_at": (
-                        txn.created_at.strftime("%d %b %Y")
+                        txn.created_at.strftime(
+                            "%d %b %Y"
+                        )
                         if txn.created_at
                         else "N/A"
                     ),
 
                     "payment_history": payment_history
                 })
-
             return Response({
                 "success"       : True,
-                "page"          : page,
-                "page_size"     : page_size,
+                # "page"          : page,
+                # "page_size"     : page_size,
                 "total_records" : total_records,
                 "totals": {
                     "total_final_amount"  : float(totals["total_final_amount"]   or 0),
