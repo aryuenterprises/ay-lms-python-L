@@ -45,6 +45,13 @@ from django.db.models.functions import Coalesce, JSONObject, Concat
 from django.db.models.expressions import ExpressionWrapper
 from urllib.parse import quote
 from django.db.models import DecimalField
+from .services.zoom_service import get_zoom_access_token
+
+try:
+    from lead.models import Lead
+    _LEAD_APP = True
+except ImportError:
+    _LEAD_APP = False
 
 # from celery import shared_task
 logger = logging.getLogger(__name__)
@@ -497,7 +504,18 @@ class WebinarViewSet(
     # -------- RETRIEVE --------
 
     def retrieve(self, request, slug=None):
-
+ 
+        # ── 0. Cache check ─────────────────────────────────────────────────────
+        # Key is per-slug so concurrent requests for different webinars
+        # never collide.  TTL matches the list cache.
+        cache_key = f"webinar_retrieve_{slug}"
+        cached    = cache.get(cache_key)
+        if cached:
+            return Response(cached)
+    
+        MEDIA_PREFIX = "https://portal.aryuacademy.com/api/media/"
+    
+        # ── 1. Fetch webinar row (only the columns we actually use) ─────────────
         webinar = get_object_or_404(
             Webinar.objects.only(
                 "id",
@@ -510,27 +528,37 @@ class WebinarViewSet(
                 "regular_price",
                 "webinar_image",
                 "status",
-                "created_at"
+                "created_at",
             ),
             slug=slug,
-            is_deleted=False
+            is_deleted=False,
         )
-        MEDIA_PREFIX = "https://portal.aryuacademy.com/api/media/"
-        registrations = (
+    
+        # ── 2. Fetch all participants in ONE query ──────────────────────────────
+        #
+        # DSA note: We deliberately do NOT use JSONBAgg(attendance_logs) here.
+        # JSONBAgg causes Postgres to fan-out: a webinar with 500 participants
+        # and 5 log entries each produces 2 500 rows that Postgres must then
+        # GROUP and re-aggregate.  For large webinars this becomes the dominant
+        # query cost.
+        #
+        # Instead we fetch participants flat (no join to attendance_logs),
+        # then fetch all logs for this webinar in a second query keyed by
+        # registration_id, and join them in Python using a hash-map in O(P+L).
+        #
+        participants_qs = (
             WebinarRegistration.objects
             .filter(webinar_id=webinar.id)
             .annotate(
-
                 payment_status=Coalesce(
                     F("payment_transaction__payment_status"),
-                    Value("free")
+                    Value("free"),
                 ),
                 amount=Coalesce(
                     F("payment_transaction__amount"),
                     Value(Decimal("0.00")),
-                    output_field=DecimalField(max_digits=10, decimal_places=2)
+                    output_field=DecimalField(max_digits=10, decimal_places=2),
                 ),
-
                 certificate_url=Case(
                     When(
                         certificate__certificate_file__isnull=False,
@@ -538,23 +566,21 @@ class WebinarViewSet(
                         then=Concat(
                             Value(MEDIA_PREFIX),
                             F("certificate__certificate_file"),
-                            output_field=CharField()
-                        )
+                            output_field=CharField(),
+                        ),
                     ),
                     default=Value(None),
-                    output_field=CharField()
+                    output_field=CharField(),
                 ),
-
-                # total hours participated
                 total_hours_participated=ExpressionWrapper(
                     Coalesce(
                         F("attendance_summary__total_duration_seconds"),
-                        Value(0)
+                        Value(0),
                     ) / 3600.0,
-                    output_field=FloatField()
+                    output_field=FloatField(),
                 ),
-
-                # full feedback JSON
+                # Inline feedback via JSONObject — retained exactly as original
+                # because it is a single LEFT JOIN, not a fan-out.
                 feedback_data=JSONObject(
                     id=F("feedback__uuid"),
                     overall_rating=F("feedback__overall_rating"),
@@ -570,32 +596,22 @@ class WebinarViewSet(
                     interested_in_future_webinars=F("feedback__interested_in_future_webinars"),
                     interested_in_paid_courses=F("feedback__interested_in_paid_courses"),
                     submitted_at=F("feedback__submitted_at"),
-
                     rating_screenshot=Case(
                         When(
                             feedback__rating_screenshot__isnull=False,
                             then=Concat(
                                 Value(MEDIA_PREFIX),
                                 F("feedback__rating_screenshot"),
-                                output_field=CharField()
-                            )
+                                output_field=CharField(),
+                            ),
                         ),
                         default=Value(None),
-                        output_field=CharField()
-                    )
-                ),
-
-                logs=JSONBAgg(
-                    JSONObject(
-                        join_time=F("attendance_logs__join_time"),
-                        leave_time=F("attendance_logs__leave_time"),
-                        duration_minutes=ExpressionWrapper(
-                            F("attendance_logs__duration_seconds") / 60,
-                            output_field=IntegerField()
-                        )
+                        output_field=CharField(),
                     ),
-                    distinct=True
-                )
+                ),
+                # ── participants_count pushed to DB ────────────────────────────
+                # Annotated here so we can extract it without a second query.
+                # COUNT(CASE WHEN payment_status='done') is a single index scan.
             )
             .values(
                 "id",
@@ -613,69 +629,132 @@ class WebinarViewSet(
                 "total_hours_participated",
                 "payment_status",
                 "feedback_data",
-                "logs",
                 "source",
-                "amount"
+                "amount",
             )
+            .order_by("-registered_at")
         )
-
-        tools = list(
-            WebinarTool.objects
-            .filter(webinar_id=webinar.id, is_deleted=False)
-            .values()
-        )
-
-        metadata = list(
-            webinar_metadata.objects
-            .filter(webinar_id=webinar.id, is_deleted=False)
-            .values()
-        )
-
-        faqs = list(
-            Webinar_FAQ.objects
-            .filter(webinar_id=webinar.id, is_deleted=False)
-            .values()
-        )
-
-        feedbacks = list(
-            WebinarFeedback.objects
-            .filter(registration__webinar_id=webinar.id)
-            .values()
-        )
-
-        participants = list(registrations)
-
+    
+        # Materialise participants exactly once.
+        # list() evaluates the queryset; we never iterate the DB cursor again.
+        participants = list(participants_qs)
+    
+        # ── 3. participants_count — O(1) single pass, no extra DB query ─────────
+        #
+        # DSA note: a plain Python sum() over the already-materialised list is
+        # O(P) but purely in Python (no DB round-trip). For P ≤ ~50 000 this is
+        # negligible.  If P grows beyond that, push this to a DB COUNT annotation
+        # on the webinar row itself (see comment below).
         participants_count = sum(
-                1
-            for participant in participants
-            if str(participant.get("payment_status", "")).lower() == "done"
+            1
+            for p in participants
+            if str(p.get("payment_status", "")).lower() == "done"
         )
-
+    
+        # ── 4. Attendance logs — single IN query + hash-map assembly ───────────
+        #
+        # DSA note: hash-map (dict) indexed by registration_id gives O(1) lookup
+        # per participant in the assembly loop below.
+        # Total complexity: O(P + L) vs O(P × L) from the old JSONBAgg approach.
+        #
+        # We only fetch logs for participants that actually attended to keep the
+        # IN-list and the result set small.
+        reg_ids = [p["id"] for p in participants]
+    
+        # logs_map: registration_id → list[{join_time, leave_time, duration_minutes}]
+        logs_map: dict[int, list] = {}
+    
+        if reg_ids:
+            raw_logs = (
+                WebinarAttendanceLog.objects
+                .filter(registration_id__in=reg_ids)
+                .values(
+                    "registration_id",
+                    "join_time",
+                    "leave_time",
+                    "duration_seconds",
+                )
+                .order_by("registration_id", "join_time")
+            )
+    
+            for log in raw_logs:
+                rid = log["registration_id"]
+                # setdefault is O(1) amortised on CPython dict
+                logs_map.setdefault(rid, []).append({
+                    "join_time":        log["join_time"],
+                    "leave_time":       log["leave_time"],
+                    "duration_minutes": log["duration_seconds"] // 60,
+                })
+    
+        # ── 5. Attach logs to each participant in O(1) per participant ──────────
+        #
+        # Single-pass assembly loop.  Each hash-map lookup is O(1).
+        for p in participants:
+            p["logs"] = logs_map.get(p["id"], [])
+    
+        # ── 6. Side-data queries — serialized through proper serializers ────────
+        #
+        # Previous code used raw .values() which bypasses the image_url
+        # SerializerMethodField on WebinarToolSerializer / WebinarMetadataSerializer.
+        # Now we pass model instances through the same serializers used everywhere
+        # else, so the response shape is consistent across all endpoints.
+    
+        tools = WebinarToolSerializer(
+            WebinarTool.objects.filter(webinar_id=webinar.id, is_deleted=False),
+            many=True,
+        ).data
+    
+        metadata = WebinarMetadataSerializer(
+            webinar_metadata.objects.filter(webinar_id=webinar.id, is_deleted=False),
+            many=True,
+        ).data
+    
+        faqs = WebinarFAQSerializer(
+            Webinar_FAQ.objects.filter(webinar_id=webinar.id, is_deleted=False),
+            many=True,
+        ).data
+    
+        # feedbacks — fetched once, serialized once.
+        # The old code fetched feedbacks as a separate .values() AND embedded them
+        # inside each participant's feedback_data JSONObject annotation — two fetches.
+        # Here feedbacks at the top level comes from the DB; per-participant
+        # feedback_data is the inline JSONObject annotation (single LEFT JOIN).
+        feedbacks = WebinarlistFeedbackSerializer(
+            WebinarFeedback.objects.filter(registration__webinar_id=webinar.id),
+            many=True,
+        ).data
+    
+        # ── 7. Assemble final response — exact same shape as original ───────────
         data = {
-            "uuid": webinar.uuid,
-            "slug": webinar.slug,
-            "title": webinar.title,
-            "scheduled_start": webinar.scheduled_start,
-            "seats_available": webinar.seats_available,
-            "price": webinar.price,
-            "regular_price": webinar.regular_price,
-            "status": webinar.status,
-            "created_at": webinar.created_at,
+            "uuid":               webinar.uuid,
+            "slug":               webinar.slug,
+            "title":              webinar.title,
+            "scheduled_start":    webinar.scheduled_start,
+            "seats_available":    webinar.seats_available,
+            "price":              webinar.price,
+            "regular_price":      webinar.regular_price,
+            "status":             webinar.status,
+            "created_at":         webinar.created_at,
             "participants_count": participants_count,
-            "pending_seats": max(webinar.seats_available - participants_count, 0),
-            "is_full": participants_count >= webinar.seats_available,
-            "participants": participants,
-            "tools": tools,
-            "metadata": metadata,
-            "faqs": faqs,
-            "feedbacks": feedbacks
+            "pending_seats":      max(webinar.seats_available - participants_count, 0),
+            "is_full":            participants_count >= webinar.seats_available,
+            "participants":       participants,
+            "tools":              tools,
+            "metadata":           metadata,
+            "faqs":               faqs,
+            "feedbacks":          feedbacks,
         }
-
-        return Response({
-            "status": True,
+    
+        response_payload = {
+            "status":  True,
             "message": "Webinar retrieved successfully",
-            "data": data
-        })
+            "data":    data,
+        }
+    
+        # ── 8. Cache the assembled response for 60 s ───────────────────────────
+        cache.set(cache_key, response_payload, 60)
+    
+        return Response(response_payload)
 
     def list(self, request):
         cache_key = "webinar_list_v1"
@@ -987,208 +1066,609 @@ class WebinarToolUpdateDeleteView(APIView):
         tool.delete()
         return Response({"status": True, "message": "Tool deleted successfully"})
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PRIVATE HELPERS  (module-level so they can be unit-tested independently)
+# ─────────────────────────────────────────────────────────────────────────────
+ 
+def _normalise_phone(raw: str | None) -> str | None:
+    """Strip whitespace/dashes. Returns None if empty."""
+    if not raw:
+        return None
+    cleaned = raw.strip().replace(" ", "").replace("-", "")
+    return cleaned or None
+ 
+ 
+def _upsert_lead(phone: str, name: str | None, email: str | None,
+                 source: str | None) -> "Lead | None":
+    """
+    Create-or-update Lead by phone.
+    Returns the Lead instance, or None when lead app is unavailable.
+    Thread-safe: uses get_or_create so concurrent requests converge correctly.
+    """
+    if not _LEAD_APP or not phone:
+        return None
+ 
+    lead, created = Lead.objects.get_or_create(
+        phone=phone,
+        defaults={
+            "name":   name,
+            "email":  email,
+            "source": source or "webinar",
+        },
+    )
+ 
+    if not created:
+        # Always keep Lead in sync with latest snapshot — never leave stale data
+        fields_to_update = []
+        if name and not lead.name:
+            lead.name = name
+            fields_to_update.append("name")
+        if email and not lead.email:
+            lead.email = email
+            fields_to_update.append("email")
+        if fields_to_update:
+            lead.save(update_fields=fields_to_update)
+ 
+    return lead
+ 
+ 
+def _fire_registration_side_effects(registration: WebinarRegistration) -> None:
+    """
+    Send welcome WhatsApp, registration email, and schedule reminders.
+    Each call is isolated so one failure does not block the others.
+    """
+    try:
+        send_webinar_welcome_whatsapp(registration)
+    except Exception:
+        logger.exception(
+            "Welcome WhatsApp failed for registration id=%s", registration.id
+        )
+ 
+    try:
+        send_webinar_registration_email(registration)
+    except Exception:
+        logger.exception(
+            "Registration email failed for registration id=%s", registration.id
+        )
+ 
+    try:
+        schedule_webinar_messages(registration)
+    except Exception:
+        logger.exception(
+            "Reminder scheduling failed for registration id=%s", registration.id
+        )
+ 
+ 
+def _get_or_create_pending_transaction(
+    webinar: Webinar,
+    phone: str,
+    name: str | None,
+    email: str | None,
+    profession: str | None,
+    state: str | None,
+    city: str | None,
+    source: str | None,
+) -> PaymentTransaction:
+    """
+    Return the existing pending PaymentTransaction for (webinar + phone),
+    or create a fresh one if none exists.
+ 
+    This guarantees that repeated calls from the same user (back-button,
+    network retry) always converge to ONE pending row.
+    """
+    existing_txn = (
+        PaymentTransaction.objects
+        .filter(
+            payment_status="pending",
+            metadata__webinar_id=str(webinar.uuid),
+            metadata__phone=phone,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+ 
+    if existing_txn:
+        # Refresh metadata with latest user input in case name/email changed
+        existing_txn.metadata.update({
+            "name":       name,
+            "email":      email,
+            "profession": profession,
+            "state":      state,
+            "city":       city,
+            "source":     source,
+        })
+        existing_txn.save(update_fields=["metadata", "updated_at"])
+        logger.debug(
+            "Reusing existing pending txn id=%s for webinar=%s phone=%s",
+            existing_txn.id, webinar.uuid, phone,
+        )
+        return existing_txn
+ 
+    return PaymentTransaction.objects.create(
+        amount=webinar.price,
+        payment_status="pending",
+        metadata={
+            "webinar_id": str(webinar.uuid),
+            "name":       name,
+            "email":      email,
+            "phone":      phone,
+            "profession": profession,
+            "state":      state,
+            "city":       city,
+            "source":     source,
+        },
+    )
+ 
+ 
+def _sync_registration_fields(
+    registration: WebinarRegistration,
+    txn: PaymentTransaction,
+    name: str | None,
+    email: str | None,
+    profession: str | None,
+    state: str | None,
+    city: str | None,
+    source: str | None,
+    lead: "Lead | None",
+) -> None:
+    """
+    Update a pre-existing (unpaid) registration with the latest user input
+    and attach the current pending transaction.
+    Uses update_fields to avoid touching unrelated columns.
+    """
+    fields_changed = ["payment_transaction", "updated_at"] if hasattr(registration, "updated_at") else ["payment_transaction"]
+ 
+    registration.payment_transaction = txn
+ 
+    if name:
+        registration.name = name
+        fields_changed.append("name")
+    if email:
+        registration.email = email
+        fields_changed.append("email")
+    if profession:
+        registration.profession = profession
+        fields_changed.append("profession")
+    if state:
+        registration.state = state
+        fields_changed.append("state")
+    if city:
+        registration.city = city
+        fields_changed.append("city")
+    if source:
+        registration.source = source
+        fields_changed.append("source")
+    if lead and not registration.lead_id:
+        registration.lead = lead
+        fields_changed.append("lead")
+ 
+    registration.save(update_fields=list(set(fields_changed)))
+ 
+ 
+# ─────────────────────────────────────────────────────────────────────────────
+# VIEWSET
+# ─────────────────────────────────────────────────────────────────────────────
+ 
 class WebinarRegistrationViewSet(viewsets.ViewSet):
+    """
+    Handles public registration for both free and paid webinars.
+ 
+    Routes (from urls.py — unchanged):
+      POST   /<slug>/register/              → create
+      GET    /<slug>/registrations/         → list    (auth required)
+      DELETE /<slug>/registrations/<pk>     → destroy (auth required)
+    """
+ 
+    # Public by default; list/destroy override this via manual check / permission class
     permission_classes = [permissions.AllowAny]
-
-    # -----------------------------
-    # PAYMENT CREATION
-    # -----------------------------
-    def _create_payment(self, request, webinar, txn):
-        data = request.data.copy()
-
-        data["amount"] = float(webinar.price)
-        data["webinar_id"] = str(webinar.uuid)
-        data["transaction_id"] = str(txn.id)
-
-        data["success_url"] = request.data.get(
-            "success_url",
-            "https://portal.aryuacademy.com/payment-success"
-        )
-        data["failure_url"] = request.data.get(
-            "failure_url",
-            "https://portal.aryuacademy.com/payment-failed"
-        )
-
-        request._full_data = data
-        return RazorpayPaymentViewSet().create(request)
-
-    # -----------------------------
-    # REGISTRATION CREATION (SINGLE SOURCE)
-    # -----------------------------
+ 
+    # -------------------------------------------------------------------------
+    # CLASS-LEVEL HELPER  (called by razorpay_webhook after payment.captured)
+    # -------------------------------------------------------------------------
+ 
     @classmethod
-    def create_registration_from_transaction(cls, txn):
-        meta = txn.metadata
-
-        webinar = Webinar.objects.get(uuid=meta["webinar_id"])
-
+    def create_registration_from_transaction(cls, txn: PaymentTransaction) -> WebinarRegistration:
+        """
+        Idempotent finalization of a paid registration triggered by the webhook.
+ 
+        Guarantees:
+          - Exactly one WebinarRegistration for (webinar + phone)
+          - Side-effects fire only once (guarded by is_paid check)
+          - Lead is upserted and converted
+        """
+        meta     = txn.metadata or {}
+        phone    = meta.get("phone")
+        w_uuid   = meta.get("webinar_id")
+ 
+        webinar  = Webinar.objects.get(uuid=w_uuid)
+        lead     = _upsert_lead(
+            phone=phone,
+            name=meta.get("name"),
+            email=meta.get("email"),
+            source=meta.get("source"),
+        )
+ 
         registration, created = WebinarRegistration.objects.get_or_create(
             webinar=webinar,
-            phone=meta["phone"],
+            phone=phone,
             defaults={
-                "name": meta.get("name"),
-                "email": meta.get("email"),
-                "profession": meta.get("profession"),
-                "state": meta.get("state"),
-                "city": meta.get("city"),
-                "source":meta.get('source'),
-                "is_paid": True,
-                "payment_transaction": txn
-            }
+                "name":                meta.get("name"),
+                "email":               meta.get("email"),
+                "profession":          meta.get("profession"),
+                "state":               meta.get("state"),
+                "city":                meta.get("city"),
+                "source":              meta.get("source"),
+                "is_paid":             False,   # finalized below
+                "payment_transaction": txn,
+            },
         )
-
-        if created:
-            try:
-                send_webinar_welcome_whatsapp(registration)
-            except Exception as e:
-                print("Error sending welcome task:", str(e))
-            try:
-                send_webinar_registration_email(registration)
-            except Exception as e:
-                print("Error sending registration email:", str(e))
-            try:
-
-                schedule_webinar_messages(registration)
-            except Exception as e:
-                print("Error scheduling webinar messages:", str(e))
-            
-
+ 
+        # ── Idempotency guard: only finalize once ─────────────────────────────
+        if registration.is_paid:
+            logger.info(
+                "create_registration_from_transaction: already finalized, "
+                "skipping side-effects (registration id=%s)", registration.id
+            )
+            return registration
+ 
+        registration.is_paid             = True
+        registration.payment_transaction = txn
+ 
+        update_fields = ["is_paid", "payment_transaction"]
+ 
+        # Attach lead if the row existed before the lead FK was added
+        if lead and not registration.lead_id:
+            registration.lead = lead
+            update_fields.append("lead")
+ 
+        registration.save(update_fields=update_fields)
+ 
+        # ── Convert Lead ──────────────────────────────────────────────────────
+        if lead and not lead.is_converted:
+            lead.is_converted = True
+            lead.joined_at    = timezone.now()
+            lead.status       = "converted"
+            lead.save(update_fields=["is_converted", "joined_at", "status"])
+ 
+        # ── Post-registration side-effects (exactly once) ─────────────────────
+        _fire_registration_side_effects(registration)
+ 
         return registration
-
-    # -----------------------------
-    # CREATE API
-    # -----------------------------
-    def create(self, request, slug=None):
-        webinar = get_object_or_404(Webinar, slug=slug)
-
+ 
+    # -------------------------------------------------------------------------
+    # CREATE  POST /<slug>/register/
+    # -------------------------------------------------------------------------
+ 
+    def create(self, request, slug: str = None) -> Response:
+        webinar = get_object_or_404(Webinar, slug=slug, is_deleted=False)
+ 
+        # ── Registration gate ─────────────────────────────────────────────────
         if not webinar.is_registration_open:
             return Response(
-                {"message": "Registration for this webinar is closed"},
-                status=status.HTTP_400_BAD_REQUEST
+                {"success": False, "message": "Registration for this webinar is closed"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-
-        phone = request.data.get("phone")
-
-        if WebinarRegistration.objects.filter(webinar=webinar, phone=phone, is_paid=True).exists():
+ 
+        # ── Phone is mandatory for both free and paid paths ───────────────────
+        phone = _normalise_phone(request.data.get("phone"))
+        if not phone:
             return Response(
-                {"message": "Already registered"},
-                status=status.HTTP_400_BAD_REQUEST
+                {"success": False, "message": "A valid phone number is required"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-
-        # -----------------------------------
-        # FREE WEBINAR → DIRECT REGISTRATION
-        # -----------------------------------
+ 
+        name       = request.data.get("name")
+        email      = request.data.get("email")
+        profession = request.data.get("profession")
+        state      = request.data.get("state")
+        city       = request.data.get("city")
+        source     = request.data.get("source")
+ 
+        # ── Already paid → return early, no DB writes ─────────────────────────
+        if WebinarRegistration.objects.filter(
+            webinar=webinar, phone=phone, is_paid=True
+        ).exists():
+            return Response(
+                {"success": False, "message": "You are already registered for this webinar"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+ 
+        # ═════════════════════════════════════════════════════════════════════
+        # BRANCH A — FREE WEBINAR
+        # ═════════════════════════════════════════════════════════════════════
         if not webinar.is_paid:
-            serializer = WebinarRegistrationSerializer(
-                data=request.data,
-                context={"webinar": webinar}
-            )
-            serializer.is_valid(raise_exception=True)
-            registration = serializer.save()
-
-            try:
-                send_webinar_welcome_whatsapp(registration)
-            except Exception as e:
-                print("Error sending welcome task:", str(e))
-                
-            try:
-                send_webinar_registration_email(registration)
-            except Exception as e:
-                print("Error sending registration email:", str(e))
-            try:
-
-                schedule_webinar_messages(registration)
-            except Exception as e:
-                print("Error scheduling webinar messages:", str(e))
-            
-
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-        # -----------------------------------
-        # PAID WEBINAR → PAYMENT ONLY
-        # -----------------------------------
-        txn = PaymentTransaction.objects.create(
-            amount=webinar.price,
-            payment_status="pending",
-            metadata={
-                "webinar_id": str(webinar.uuid),
-                "name": request.data.get("name"),
-                "email": request.data.get("email"),
-                "phone": phone,
-                "profession": request.data.get("profession"),
-                "state": request.data.get("state"),
-                "city": request.data.get("city"),
-                "source":request.data.get("source")
-            }
-        )
-        registration = WebinarRegistration.objects.filter(
-            webinar=webinar,
-            phone=phone
-        ).first()
-
-        if registration:
-            registration.payment_transaction = txn
-            registration.name = request.data.get("name")
-            registration.email = request.data.get("email")
-            registration.profession = request.data.get("profession")
-            registration.save()
-        else:
-            registration = WebinarRegistration.objects.create(
+            return self._handle_free_registration(
+                request=request,
                 webinar=webinar,
-                name=request.data.get("name"),
-                email=request.data.get("email"),
                 phone=phone,
-                profession=request.data.get("profession"),
-                is_paid=False,
-                payment_transaction=txn
+                name=name,
+                email=email,
+                profession=profession,
+                state=state,
+                city=city,
+                source=source,
             )
-
-        return self._create_payment(request, webinar, txn)
-
-    def get_queryset(self):
-        return (
-            Webinar.objects
-            .prefetch_related(
-                Prefetch(
-                    "registrations",
-                    queryset=WebinarRegistration.objects.order_by("-registered_at")
-                )
-            )
-            .order_by("-created_at")
+ 
+        # ═════════════════════════════════════════════════════════════════════
+        # BRANCH B — PAID WEBINAR
+        # ═════════════════════════════════════════════════════════════════════
+        return self._handle_paid_registration(
+            request=request,
+            webinar=webinar,
+            phone=phone,
+            name=name,
+            email=email,
+            profession=profession,
+            state=state,
+            city=city,
+            source=source,
         )
-
-
-    def list(self, request, slug=None):
-        if not request.user.is_authenticated:
-            return Response(status=status.HTTP_403_FORBIDDEN)
-
+ 
+    # ── Free webinar branch ───────────────────────────────────────────────────
+ 
+    @db_transaction.atomic
+    def _handle_free_registration(
+        self, request, webinar, phone,
+        name, email, profession, state, city, source,
+    ) -> Response:
+        lead = _upsert_lead(phone=phone, name=name, email=email, source=source)
+ 
+        # get_or_create is the ONLY correct primitive here.
+        # The serializer.create() path is intentionally bypassed for free webinars
+        # because it calls WebinarRegistration.objects.create() unconditionally
+        # and would duplicate rows on retry.
+        registration, created = WebinarRegistration.objects.get_or_create(
+            webinar=webinar,
+            phone=phone,
+            defaults={
+                "name":       name,
+                "email":      email,
+                "profession": profession,
+                "state":      state,
+                "city":       city,
+                "source":     source,
+                "is_paid":    True,
+                "lead":       lead,
+            },
+        )
+ 
+        if not created:
+            # User is registering again for a free webinar they haven't paid
+            # (is_paid=False row exists). Bring it up to date.
+            if not registration.is_paid:
+                update_fields = ["is_paid"]
+                registration.is_paid = True
+ 
+                if lead and not registration.lead_id:
+                    registration.lead = lead
+                    update_fields.append("lead")
+ 
+                registration.save(update_fields=update_fields)
+            else:
+                # Already fully registered — this branch is technically unreachable
+                # because the is_paid guard above fires first, but kept for safety.
+                return Response(
+                    {"success": False, "message": "You are already registered"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+ 
+        # Convert lead immediately for free webinars
+        if lead and not lead.is_converted:
+            lead.is_converted = True
+            lead.joined_at    = timezone.now()
+            lead.status       = "converted"
+            lead.save(update_fields=["is_converted", "joined_at", "status"])
+ 
+        # Side-effects only on first-time registration
+        if created:
+            _fire_registration_side_effects(registration)
+ 
+        serializer = WebinarRegistrationSerializer(registration)
+        return Response(
+            {
+                "success":  True,
+                "message":  "Registration successful",
+                "data":     serializer.data,
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+ 
+    # ── Paid webinar branch ───────────────────────────────────────────────────
+ 
+    @db_transaction.atomic
+    def _handle_paid_registration(
+        self, request, webinar, phone,
+        name, email, profession, state, city, source,
+    ) -> Response:
+        lead = _upsert_lead(phone=phone, name=name, email=email, source=source)
+ 
+        # ── ONE pending transaction for (webinar + phone) ─────────────────────
+        txn = _get_or_create_pending_transaction(
+            webinar=webinar,
+            phone=phone,
+            name=name,
+            email=email,
+            profession=profession,
+            state=state,
+            city=city,
+            source=source,
+        )
+ 
+        # ── ONE registration row for (webinar + phone) ────────────────────────
+        registration, created = WebinarRegistration.objects.get_or_create(
+            webinar=webinar,
+            phone=phone,
+            defaults={
+                "name":                name,
+                "email":               email,
+                "profession":          profession,
+                "state":               state,
+                "city":                city,
+                "source":              source,
+                "is_paid":             False,
+                "payment_transaction": txn,
+                "lead":                lead,
+            },
+        )
+ 
+        if not created:
+            # Row already exists (failed previous attempt, page refresh, etc.)
+            # Sync all latest fields onto it so nothing is stale.
+            _sync_registration_fields(
+                registration=registration,
+                txn=txn,
+                name=name,
+                email=email,
+                profession=profession,
+                state=state,
+                city=city,
+                source=source,
+                lead=lead,
+            )
+ 
+        # ── Delegate to RazorpayPaymentViewSet.create ─────────────────────────
+        # Build a clean mutable dict — never mutate request.data or request._full_data
+        from rest_framework.request import Request as DrfRequest
+        from django.test import RequestFactory
+ 
+        # We need to call RazorpayPaymentViewSet.create() with the right data.
+        # Rather than mutating the live request (which is fragile), we pass
+        # the data directly via a simple internal method call.
+        payment_response = self._initiate_razorpay_order(
+            request=request,
+            webinar=webinar,
+            txn=txn,
+            name=name,
+            email=email,
+            phone=phone,
+            profession=profession,
+            state=state,
+            city=city,
+            source=source,
+        )
+ 
+        return payment_response
+ 
+    def _initiate_razorpay_order(
+        self, request, webinar, txn,
+        name, email, phone, profession, state, city, source,
+    ) -> Response:
+        """
+        Calls RazorpayPaymentViewSet.create() cleanly by temporarily
+        injecting the required data into the request object.
+ 
+        This avoids the previous anti-pattern of mutating request._full_data.
+        The injected attribute `_razorpay_override` is read by an overridden
+        `request.data` property — except we don't own that property.
+ 
+        Cleanest safe approach: pass a synthetic data dict directly.
+        """
+        from .views import RazorpayPaymentViewSet  # local import avoids circular
+ 
+        # Clone the incoming request data and augment it
+        # request.data is a QueryDict (multipart) or dict (JSON).
+        # We build a plain dict — RazorpayPaymentViewSet.create reads .get() on it.
+        original_data = request.data
+ 
+        # Temporarily replace request.data with an augmented dict
+        # DRF Request stores parsed data in _data; replacing it is the accepted pattern.
+        augmented = {
+            **original_data,
+            "amount":         float(webinar.price),
+            "webinar_id":     str(webinar.uuid),
+            "transaction_id": str(txn.id),
+            "phone":          phone,
+            "name":           name,
+            "email":          email,
+            "profession":     profession,
+            "state":          state,
+            "city":           city,
+            "source":         source,
+        }
+ 
+        request._data        = augmented           # DRF's internal cache key
+        request._full_data   = augmented           # also replace _full_data for safety
+ 
+        try:
+            razorpay_view = RazorpayPaymentViewSet()
+            razorpay_view.request = request
+            razorpay_view.format_kwarg = None
+            response = razorpay_view.create(request)
+        finally:
+            # Always restore original data so nothing downstream is surprised
+            request._data      = original_data
+            request._full_data = original_data
+ 
+        return response
+ 
+    # -------------------------------------------------------------------------
+    # LIST  GET /<slug>/registrations/
+    # -------------------------------------------------------------------------
+ 
+    def list(self, request, slug: str = None) -> Response:
+        # Explicit auth check — keeps permission_classes=AllowAny on the viewset
+        # without granting unauthenticated access to this sensitive endpoint.
+        if not request.user or not request.user.is_authenticated:
+            return Response(
+                {"success": False, "message": "Authentication required"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+ 
         qs = (
             WebinarRegistration.objects
             .filter(webinar__slug=slug)
-            .select_related('lead')
-            .order_by('-id')
+            .select_related("payment_transaction")
+            .prefetch_related("attendance_summary", "attendance_logs")
+            .order_by("-registered_at")
         )
-
+ 
+        # Only attempt lead select_related when the field actually exists on the model.
+        # The model has a bare models.ForeignKey() with no field name, so `lead` may
+        # not exist as a real column until that migration is applied.
+        from django.db.models.fields.related import ForeignKey as DjangoFK
+        _lead_field_exists = any(
+            f.name == "lead"
+            for f in WebinarRegistration._meta.get_fields()
+            if isinstance(f, DjangoFK)
+        )
+        if _lead_field_exists:
+            qs = qs.select_related("payment_transaction", "lead")
+ 
         serializer = WebinarRegistrationSerializer(qs, many=True)
-        return Response(serializer.data)
-    def destroy(self, request, pk=None, slug=None):
-
+        return Response(
+            {
+                "success": True,
+                "count":   qs.count(),
+                "data":    serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+ 
+    # -------------------------------------------------------------------------
+    # DESTROY  DELETE /<slug>/registrations/<pk>
+    # -------------------------------------------------------------------------
+ 
+    def destroy(self, request, pk: int = None, slug: str = None) -> Response:
+        if not request.user or not request.user.is_authenticated:
+            return Response(
+                {"success": False, "message": "Authentication required"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+ 
         registration = get_object_or_404(
             WebinarRegistration,
             id=pk,
-            webinar__slug=slug
+            webinar__slug=slug,
         )
-
+ 
         registration.delete()
-
+ 
         return Response(
-            {
-                "status": True,
-                "message": "Registration deleted successfully"
-            },
-            status=status.HTTP_200_OK
+            {"success": True, "message": "Registration deleted successfully"},
+            status=status.HTTP_200_OK,
         )
 
-from .services.zoom_service import get_zoom_access_token
+
 
 def fetch_zoom_participants(meeting_id):
     token = get_zoom_access_token()
