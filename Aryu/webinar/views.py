@@ -49,71 +49,138 @@ from django.db.models import DecimalField
 # from celery import shared_task
 logger = logging.getLogger(__name__)
 
+# ─── helpers ────────────────────────────────────────────────────────────────
+
+def _get_razorpay_gateway():
+    return PaymentGateway.objects.filter(
+        gatway_name__icontains="razorpay"
+    ).first()
+
+
+def _finalize_registration(registration, txn):
+    """Fires post-registration side-effects exactly once. Idempotent."""
+    if registration.is_paid:
+        return  # webhook retry — already processed, skip everything
+
+    registration.is_paid             = True
+    registration.payment_transaction = txn
+    registration.save(update_fields=["is_paid", "payment_transaction"])
+
+    try:
+        send_webinar_welcome_whatsapp(registration)
+    except Exception as e:
+        logger.exception("Welcome WhatsApp failed: %s", e)
+
+    try:
+        send_webinar_registration_email(registration)
+    except Exception as e:
+        logger.exception("Registration email failed: %s", e)
+
+    try:
+        schedule_webinar_messages(registration)
+    except Exception as e:
+        logger.exception("Reminder scheduling failed: %s", e)
+
+
+# ─── webhook ─────────────────────────────────────────────────────────────────
+
 @csrf_exempt
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def razorpay_webhook(request):
-    payload = request.body
+    payload            = request.body
     received_signature = request.headers.get("X-Razorpay-Signature")
 
     if not received_signature:
         return HttpResponse(status=400)
 
-    gateway = PaymentGateway.objects.filter(
-        gatway_name__icontains="razorpay"
-    ).first()
+    # ── FIX 1: guard against missing gateway row ──────────────────────────────
+    gateway = _get_razorpay_gateway()
+    if not gateway:
+        logger.error(
+            "Razorpay webhook: no gateway row found. "
+            "Ensure a PaymentGateway row with 'razorpay' in gatway_name exists."
+        )
+        return HttpResponse(status=200)  # 200 stops Razorpay retrying a misconfigured server
 
+    if not gateway.webhook_secret:
+        logger.error("Razorpay webhook: webhook_secret is empty on gateway row id=%s", gateway.id)
+        return HttpResponse(status=200)
+
+    # ── Verify signature ──────────────────────────────────────────────────────
     expected_signature = hmac.new(
-        gateway.webhook_secret.encode(),
+        gateway.webhook_secret.encode("utf-8"),
         payload,
-        hashlib.sha256
+        hashlib.sha256,
     ).hexdigest()
 
     if not hmac.compare_digest(expected_signature, received_signature):
         return HttpResponse(status=400)
 
-    data = request.data
+    data  = request.data
     event = data.get("event")
 
+    # ── payment.captured ──────────────────────────────────────────────────────
     if event == "payment.captured":
-        entity = data["payload"]["payment"]["entity"]
+        entity   = data["payload"]["payment"]["entity"]
         order_id = entity.get("order_id")
 
         with db_transaction.atomic():
-            txn = PaymentTransaction.objects.select_for_update().filter(
-                order_id=order_id,
-                payment_status="pending"
-            ).first()
+            txn = (
+                PaymentTransaction.objects
+                .select_for_update()        # row-level lock — safe for retries
+                .filter(order_id=order_id)
+                .first()
+            )
 
             if not txn:
                 return HttpResponse(status=200)
 
+            # ── FIX 2: idempotency guard ──────────────────────────────────────
+            if txn.payment_status == "done":
+                logger.info("Webhook retry ignored — already done (order_id=%s)", order_id)
+                return HttpResponse(status=200)
+
             txn.payment_status = "done"
-            txn.transaction_id = entity["id"]
-            txn.save()
-            registration = WebinarRegistration.objects.filter(
-                phone=txn.metadata.get("phone"),
-                webinar__uuid=txn.metadata.get("webinar_id")
-            ).first()
+            txn.transaction_id = entity.get("id")
+            txn.payment_mode   = entity.get("method")
+            txn.save(update_fields=["payment_status", "transaction_id", "payment_mode", "updated_at"])
 
-            if registration:
-                registration.is_paid = True
-                registration.payment_transaction = txn
-                registration.save(
-                    update_fields=[
-                        "is_paid",
-                        "payment_transaction"
-                    ]
-                )
+            meta     = txn.metadata or {}
+            phone    = meta.get("phone")
+            w_uuid   = meta.get("webinar_id")
 
-            WebinarRegistrationViewSet.create_registration_from_transaction(txn)
+            try:
+                webinar = Webinar.objects.get(uuid=w_uuid)
+            except Webinar.DoesNotExist:
+                logger.error("Webhook: webinar %s not found", w_uuid)
+                return HttpResponse(status=200)
 
+            registration, _ = WebinarRegistration.objects.get_or_create(
+                webinar=webinar,
+                phone=phone,
+                defaults={
+                    "name":                meta.get("name"),
+                    "email":               meta.get("email"),
+                    "profession":          meta.get("profession"),
+                    "state":               meta.get("state"),
+                    "city":                meta.get("city"),
+                    "source":              meta.get("source"),
+                    "is_paid":             False,
+                    "payment_transaction": txn,
+                },
+            )
+
+            _finalize_registration(registration, txn)
+
+    # ── payment.failed ────────────────────────────────────────────────────────
     elif event == "payment.failed":
-        entity = data["payload"]["payment"]["entity"]
-        order_id = entity.get("order_id")
-
+        order_id = data["payload"]["payment"]["entity"].get("order_id")
+        # Update SAME row, never create a new one, never downgrade "done"
         PaymentTransaction.objects.filter(
             order_id=order_id
+        ).exclude(
+            payment_status="done"
         ).update(payment_status="failed")
 
     return HttpResponse(status=200)
