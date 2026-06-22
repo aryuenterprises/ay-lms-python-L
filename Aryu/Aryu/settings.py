@@ -304,7 +304,11 @@ CORS_ALLOWED_ORIGINS = [
     "https://workshop.aryuacademy.com",
     "https://aryuacademy.com",
     "https://passats.aryuacademy.com",
+<<<<<<< HEAD
     "http://localhost:3000",
+=======
+    "http://127.0.0.1:8000",
+>>>>>>> 5657f558 (aryureports)
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -312,7 +316,11 @@ CSRF_TRUSTED_ORIGINS = [
     "https://workshop.aryuacademy.com",
     "https://aryuacademy.com",
     "https://passats.aryuacademy.com",
+<<<<<<< HEAD
     "http://localhost:3000",
+=======
+    "http://127.0.0.1:8000",
+>>>>>>> 5657f558 (aryureports)
 ]
 
 ALLOWED_HOSTS = [
