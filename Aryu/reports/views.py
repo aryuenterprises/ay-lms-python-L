@@ -1,319 +1,205 @@
-from django.shortcuts import render
+from django.db.models import Q, Sum
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from django.db.models import Sum, Q
+
 from aryuapp.models import Student
 from batches.models import NewBatch
 from payments.models import PaymentTransaction
-from courses.models import Course
 
 
 class AryuReportView(APIView):
+
     def get(self, request):
         try:
-            search      = request.GET.get("search", "").strip()
-            course_name = request.GET.get("course_name", "").strip()
-            course_type = request.GET.get("course_type", "").strip()
-            tutor_id    = request.GET.get("tutor_id", "").strip()
-            start_date  = request.GET.get("start_date", "").strip()
-            end_date    = request.GET.get("end_date", "").strip()
-            # page        = int(request.GET.get("page", 1))
-            # page_size   = int(request.GET.get("page_size", 10))
 
-            # ── Base queryset: PaymentTransaction ──────────────────────
-            qs = PaymentTransaction.objects.filter(
-                billing_type="student",
-                is_archived=False,
-                student__isnull=False,
-                course__isnull=False,
-            ).select_related(
-                "student",
-                "course",
-                "course__course_category",
-            ).order_by("-created_at")
+            search = request.GET.get("search", "").strip()
+            tutor_id = request.GET.get("tutor_id", "").strip()
 
-            # ── Filters ────────────────────────────────────────────────
-            if search:
-                qs = qs.filter(
-                    Q(student__first_name__icontains=search) |
-                    Q(student__last_name__icontains=search)  |
-                    Q(student__contact_no__icontains=search) |
-                    Q(student__email__icontains=search)
-                )
-
-            if course_name:
-                qs = qs.filter(course__course_name__icontains=course_name)
-
-            if course_type:
-                qs = qs.filter(course__mode_of_delivery__iexact=course_type)
-
-            # Filter by tutor via BatchCourseTrainer
-            if tutor_id:
-                student_ids = Student.objects.filter(
-                    new_batches__trainer__trainer_id=tutor_id
-                ).values_list(
-                    "student_id",
-                    flat=True
-                ).distinct()
-                qs = qs.filter(student__student_id__in=student_ids)
-
-            if start_date:
-                qs = qs.filter(created_at__date__gte=start_date)
-            if end_date:
-                qs = qs.filter(created_at__date__lte=end_date)
-
-            # ── Totals across ALL filtered records ─────────────────────
-            totals = qs.aggregate(
-                total_final_amount   = Sum("amount"),
-                total_paid_amount    = Sum("amount_received"),
-                total_balance_amount = Sum("balance_due"),
-                total_discount       = Sum("discount"),
-            )
-
-            unique_student_ids = list(
-            qs.values_list(
-                    "student__student_id",
-                    flat=True
-                ).distinct()
-            )
-
-            total_records = len(unique_student_ids)
-
-            # start_index = (page - 1) * page_size
-            # student_ids_page = unique_student_ids[
-            #     start_index:start_index + page_size
-            # ]
-
-            # No pagination
-            paginated_qs = qs
-
-            total_records = qs.values(
-                "student__student_id"
-            ).distinct().count()
-
-            student_ids_page = (
-                qs.values_list(
-                    "student_id",
-                    flat=True
-                )
-                .distinct()
-            )
-
-            bct_map = {}
-
-            bct_qs = NewBatch.objects.filter(
-                students__student_id__in=student_ids_page
-            ).select_related(
-                "trainer",
-                "course"
-            ).prefetch_related(
-                "students"
+            students = Student.objects.filter(
+                is_archived=False
             ).distinct()
 
-            for bct in bct_qs:
-                for student in bct.students.all():
-                    key = (
-                        student.student_id,
-                        bct.course_id
-                    )
+            if search:
+                students = students.filter(
+                    Q(first_name__icontains=search) |
+                    Q(last_name__icontains=search) |
+                    Q(contact_no__icontains=search) |
+                    Q(email__icontains=search) |
+                    Q(registration_id__icontains=search)
+                )
 
-                    if key not in bct_map:
-                        bct_map[key] = bct
+            if tutor_id:
+                students = students.filter(
+                    new_batches__trainer__trainer_id=tutor_id
+                ).distinct()
 
             data = []
-            processed_students = set()
 
-            for txn in paginated_qs:
-
-                if txn.student_id in processed_students:
-                    continue
-
-                processed_students.add(txn.student_id)
-
-                student = txn.student
-                course = txn.course
+            for student in students:
 
                 full_name = (
                     f"{student.first_name or ''} "
                     f"{student.last_name or ''}"
                 ).strip()
 
-                bct = bct_map.get(
-                    (student.student_id, course.course_id)
-                )
+                student_data = {
+                    "student_id": student.student_id,
+                    "registration_id": student.registration_id,
+                    "student_name": full_name,
+                    "phone": student.contact_no,
+                    "email": student.email,
+                    "converter": student.converter,
+                    "student_type": student.student_type,
+                    "courses": []
+                }
 
-                tutor_name = (
-                    bct.trainer.full_name
-                    if bct and bct.trainer
-                    else "N/A"
-                )
-
-                batch_id = bct.batch_id if bct else "N/A"
-                batch_name = bct.title if bct else "N/A"
-                batch_start_date = bct.start_date if bct else "N/A"
-                batch_end_date = bct.end_date if bct else "N/A"
-
-                duration = "N/A"
-                if course.duration and course.duration_type:
-                    duration = (
-                        f"{course.duration} "
-                        f"{course.duration_type}"
+                batches = (
+                    NewBatch.objects.filter(
+                        students__student_id=student.student_id
                     )
-                elif course.duration:
-                    duration = str(course.duration)
-
-                raw_amount = float(txn.amount or 0)
-                discount = float(txn.discount or 0)
-
-                after_discount = float(
-                    txn.total_after_discount or 0
-                )
-
-                final_amount = (
-                    after_discount
-                    if after_discount > 0
-                    else max(raw_amount - discount, 0)
-                )
-
-                paid_amount = float(
-                    txn.amount_received or 0
-                )
-
-                balance_due = float(
-                    txn.balance_due or 0
-                )
-
-                course_type_val = (
-                    course.mode_of_delivery
-                    or student.student_type
-                    or "N/A"
-                )
-
-                student_transactions = (
-                    PaymentTransaction.objects.filter(
-                        student__student_id=student.student_id,
-                        is_archived=False
+                    .select_related(
+                        "course",
+                        "trainer"
                     )
-                    .select_related("course")
-                    .order_by(
-                        "-invoice_date",
-                        "-created_at"
-                    )
+                    .distinct()
                 )
 
-                payment_history = []
+                for batch in batches:
 
-                for payment in student_transactions:
+                    course = batch.course
 
-                    payment_history.append({
-                        "id": payment.id,
-                        "course_name": (
-                            payment.course.course_name
-                            if payment.course
-                            else None
-                        ),
-                        "invoice_date": payment.invoice_date,
-                        "transaction_id": payment.transaction_id,
-                        "amount": float(payment.amount or 0),
-                        "amount_received": float(
-                            payment.amount_received or 0
-                        ),
-                        "balance_due": float(
-                            payment.balance_due or 0
-                        ),
-                        "payment_status": payment.payment_status,
-                        "payment_mode": (
-                            payment.metadata.get("mode")
-                            if payment.metadata
-                            else None
-                        ),
-                        "invoice_url": (
-                            "https://aylms.aryuprojects.com/api"
-                            + payment.invoice.url
+                    transactions = (
+                        PaymentTransaction.objects.filter(
+                            student__student_id=student.student_id,
+                            course=course,
+                            is_archived=False
                         )
-                        if payment.invoice
-                        and hasattr(payment.invoice, "url")
-                        else None,
+                        .order_by(
+                            "-invoice_date",
+                            "-created_at"
+                        )
+                    )
+
+                    totals = transactions.aggregate(
+                        total_amount=Sum("amount"),
+                        paid_amount=Sum("amount_received"),
+                        balance_amount=Sum("balance_due"),
+                        discount_amount=Sum("discount")
+                    )
+
+                    payment_history = []
+
+                    for payment in transactions:
+
+                        payment_history.append({
+                            "id": payment.id,
+                            "transaction_id": payment.transaction_id,
+                            "invoice_date": payment.invoice_date,
+                            "amount": float(payment.amount or 0),
+                            "amount_received": float(
+                                payment.amount_received or 0
+                            ),
+                            "balance_due": float(
+                                payment.balance_due or 0
+                            ),
+                            "payment_status": payment.payment_status,
+                            "payment_mode": (
+                                payment.metadata.get("mode")
+                                if payment.metadata
+                                else None
+                            ),
+                            "invoice_url": (
+                                request.build_absolute_uri(
+                                    payment.invoice.url
+                                )
+                                if payment.invoice
+                                else None
+                            )
+                        })
+
+                    student_data["courses"].append({
+                        "course_id": (
+                            course.course_id
+                            if course else None
+                        ),
+                        "course_name": (
+                            course.course_name
+                            if course else None
+                        ),
+                        "course_type": (
+                            course.mode_of_delivery
+                            if course else None
+                        ),
+                        "batch_id": batch.batch_id,
+                        "batch_name": batch.title,
+                        "duration":course.duration,
+                        "batch_start_date": batch.start_date,
+                        "batch_end_date": batch.end_date,
+                        "trainer_name": (
+                            batch.trainer.full_name
+                            if batch.trainer
+                            else "N/A"
+                        ),
+                        "total_amount": float(
+                            totals["total_amount"] or 0
+                        ),
+                        "paid_amount": float(
+                            totals["paid_amount"] or 0
+                        ),
+                        "balance_amount": float(
+                            totals["balance_amount"] or 0
+                        ),
+                        "discount_amount": float(
+                            totals["discount_amount"] or 0
+                        ),
+                        "payment_history": payment_history
                     })
 
-                data.append({
-                    "student_name": full_name or "N/A",
-                    "phone": student.contact_no or "N/A",
-                    "email": student.email or "N/A",
-                    "registration_id": (
-                        student.registration_id
-                        or "N/A"
-                    ),
-                    "student_id": student.student_id,
-                    "discount": student.discount or "N/A",
-                    "converter": student.converter or "N/A",
+                if not student_data["courses"]:
 
-                    "course_type": course_type_val,
-                    "course_name": course.course_name or "N/A",
-                    "course_id": course.course_id,
-
-                    "batch_name": batch_name,
-                    "batch_id": batch_id,
-
-                    "batch_start_date": (
-                        str(batch_start_date)
-                        if batch_start_date != "N/A"
-                        else "N/A"
-                    ),
-
-                    "batch_end_date": (
-                        str(batch_end_date)
-                        if batch_end_date != "N/A"
-                        else "N/A"
-                    ),
-
-                    "tutor_name": tutor_name,
-
-                    "total_amount": raw_amount,
-                    "discount_amount": discount,
-                    "final_amount": final_amount,
-                    "paid_amount": paid_amount,
-                    "balance_amount": balance_due,
-
-                    "duration": duration,
-
-                    "start_date": (
-                        str(course.start_date)
-                        if course.start_date
-                        else "N/A"
-                    ),
-
-                    "end_date": (
-                        str(course.end_date)
-                        if course.end_date
-                        else "N/A"
-                    ),
-
-                    "created_at": (
-                        txn.created_at.strftime(
-                            "%d %b %Y"
+                    transactions = (
+                        PaymentTransaction.objects.filter(
+                            student__student_id=student.student_id,
+                            is_archived=False
                         )
-                        if txn.created_at
-                        else "N/A"
-                    ),
+                        .order_by("-created_at")
+                    )
 
-                    "payment_history": payment_history
-                })
+                    payment_history = []
+
+                    for payment in transactions:
+                        payment_history.append({
+                            "id": payment.id,
+                            "transaction_id": payment.transaction_id,
+                            "invoice_date": payment.invoice_date,
+                            "amount": float(payment.amount or 0),
+                            "amount_received": float(
+                                payment.amount_received or 0
+                            ),
+                            "balance_due": float(
+                                payment.balance_due or 0
+                            ),
+                            "payment_status": payment.payment_status
+                        })
+
+                    student_data["payment_history"] = payment_history
+
+                data.append(student_data)
+
             return Response({
-                "success"       : True,
-                # "page"          : page,
-                # "page_size"     : page_size,
-                "total_records" : total_records,
-                "totals": {
-                    "total_final_amount"  : float(totals["total_final_amount"]   or 0),
-                    "total_paid_amount"   : float(totals["total_paid_amount"]    or 0),
-                    "total_balance_amount": float(totals["total_balance_amount"] or 0),
-                    "total_discount"      : float(totals["total_discount"]       or 0),
-                },
+                "success": True,
+                "total_records": students.count(),
                 "data": data
             })
 
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return Response({"success": False, "message": str(e)}, status=500)
+
+            return Response(
+                {
+                    "success": False,
+                    "message": str(e)
+                },
+                status=500
+            )
