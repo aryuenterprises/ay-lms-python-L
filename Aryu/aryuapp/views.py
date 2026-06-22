@@ -59,6 +59,7 @@ from .certificate_filler import generate_and_send_certificate_pdf
 from datetime import datetime
 import pytz
 from rest_framework_simplejwt.tokens import RefreshToken
+from ebook.models import EbookRegistration
 
 
 class IsAdminOrSuperAdmin(BasePermission):
