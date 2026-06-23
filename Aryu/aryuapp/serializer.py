@@ -35,14 +35,13 @@ from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 class CustomTokenRefreshSerializer(TokenRefreshSerializer):
 
     def validate(self, attrs):
-        data = super().validate(attrs)
+        validated_data = super().validate(attrs)
 
-        data["access_token"] = data.pop("access")
+        return {
+            "access_token": validated_data["access"],
+            "refresh_token_obj": validated_data.get("refresh")
+        }
 
-        if "refresh" in data:
-            data["refresh_token_obj"] = data["refresh"]
-
-        return data
 
 class SettingsPicsSerializer(serializers.ModelSerializer):
     general_logo_url = serializers.SerializerMethodField()

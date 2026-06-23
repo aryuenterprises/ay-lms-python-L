@@ -476,7 +476,6 @@ class CustomRefreshToken(RefreshToken):
         )
 
         return token
-     
 class Login(LoggingMixin, APIView):
     permission_classes = [AllowAny] 
 
@@ -571,22 +570,18 @@ class Login(LoggingMixin, APIView):
                 if origin in LOCAL_ORIGINS:
                     cookie_domain = None
                     cookie_secure = False
-                    cookie_samesite = "None"
+                    cookie_samesite = "Lax"
                 else:
                     cookie_domain = ".aryuacademy.com"
                     cookie_secure = True
                     cookie_samesite = "Lax"
 
+                
                 response.set_cookie(
-                    key="refresh_token",
-                    value=refresh_token,
-                    max_age=30 * 24 * 60 * 60,
-                    path="/",
-                    domain=cookie_domain,
-                    secure=cookie_secure,
-                    httponly=True,
-                    samesite=cookie_samesite,
-                )
+                        key="refresh_token",
+                        value=refresh_token,
+                        httponly=True,
+                    )
 
                 return response
             
@@ -823,43 +818,20 @@ class CustomTokenRefreshView(APIView):
     serializer_class = CustomTokenRefreshSerializer
 
     def post(self, request):
-
         refresh_token = request.COOKIES.get("refresh_token")
-
-        if not refresh_token:
-            return Response(
-                {"message": "Refresh token missing"},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
 
         serializer = self.serializer_class(
             data={"refresh": refresh_token}
         )
 
-        serializer.is_valid(raise_exception=True)
-
-        validated_data = serializer.validated_data
-
-        response = Response(
-            {
-                "access_token": validated_data["access_token"]
-            },
-            status=status.HTTP_200_OK
-        )
-
-        if "refresh" in serializer.validated_data:
-            response.set_cookie(
-                key="refresh_token",
-                value=serializer.validated_data["refresh"],
-                max_age=30 * 24 * 60 * 60,
-                httponly=True,
-                secure=True,
-                samesite="Lax",
-                domain=".aryuacademy.com"
+        if not serializer.is_valid():
+            return Response(
+                serializer.errors,
+                status=400
             )
 
-        return response
-    
+        return Response(serializer.validated_data)
+
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all().select_related("role")
     serializer_class = UserSerializer
