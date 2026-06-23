@@ -130,6 +130,7 @@ class AryuReportView(APIView):
                             course.mode_of_delivery
                             if course else None
                         ),
+                        "course_fee":course.fee,
                         "batch_id": batch.batch_id,
                         "batch_name": batch.title,
                         "duration":course.duration,
