@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 from corsheaders.defaults import default_headers
 from dotenv import load_dotenv
+from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -269,6 +270,31 @@ REST_FRAMEWORK = {
         "drf_spectacular.openapi.AutoSchema",
 }
 
+SIMPLE_JWT = {
+
+    # access token short life
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+
+    # refresh token long life
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
+
+    # generate new refresh token every refresh
+    "ROTATE_REFRESH_TOKENS": True,
+
+    # blacklist old refresh tokens
+    "BLACKLIST_AFTER_ROTATION": True,
+
+    # update last login
+    "UPDATE_LAST_LOGIN": True,
+
+    "ALGORITHM": "HS256",
+
+    "SIGNING_KEY": SECRET_KEY,
+
+    "AUTH_HEADER_TYPES": ("Bearer",),
+
+}
+
 
 
 AUTHENTICATION_BACKENDS = [
@@ -324,6 +350,7 @@ ALLOWED_HOSTS = [
     "passats.aryuacademy.com",
     "localhost",
     "127.0.0.1",
+    
 ]
 
 

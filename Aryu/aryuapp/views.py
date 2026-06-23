@@ -448,6 +448,35 @@ def verify_recaptcha_v3(token, action="login"):
     score = result.get("score", 0)
     return score >= settings.RECAPTCHA_REQUIRED_SCORE
 
+class CustomRefreshToken(RefreshToken):
+
+    @classmethod
+    def for_user(cls, user, role_permissions=None, system_settings=None):
+        token = super().for_user(user)
+
+        role = getattr(user, "role", None)
+
+        token["user_id"] = user.id
+        token["username"] = user.username
+        token["name"] = user.full_name
+        token["user_type"] = user.user_type
+        token["attendance_type"] = (
+            system_settings.attendance_options
+            if system_settings else None
+        )
+
+        token["role_id"] = role.role_id if role else None
+        token["role_name"] = role.name if role else None
+        token["permissions"] = role_permissions or []
+
+        token["created_at"] = (
+            user.created_at.isoformat()
+            if getattr(user, "created_at", None)
+            else None
+        )
+
+        return token
+     
 class Login(LoggingMixin, APIView):
     permission_classes = [AllowAny] 
 
@@ -501,77 +530,66 @@ class Login(LoggingMixin, APIView):
                             "allowed_actions": rm.allowed_actions
                         })
 
-                refresh = RefreshToken()
-
-                refresh["user_id"] = user.id
-                refresh["username"] = user.username
-                refresh["name"] = user.full_name
-                refresh["user_type"] = user.user_type
-                refresh["attendance_type"]=system_settings.attendance_options if system_settings else None
-                refresh["role_id"] = role.role_id if role else None
-                refresh["role_name"] = role.name if role else None
-                refresh["permissions"] = role_permissions
-                refresh["exp"] = int((timezone.now() + timedelta(minutes=30)).timestamp())
-                refresh["created_at"] = user.created_at.isoformat() if user.created_at else None
+                refresh = CustomRefreshToken.for_user(
+                    user,
+                    role_permissions=role_permissions,
+                    system_settings=system_settings
+                )
 
                 access_token = str(refresh.access_token)
                 refresh_token = str(refresh)
 
-                # payload = {
-                #     "user_id": user.id,
-                #     "created_at": user.created_at.isoformat() if user.created_at else None,
-                #     "username": user.username,
-                #     "name": user.full_name,
-                #     "user_type": user.user_type,
-                #     "attendance_type": system_settings.attendance_options if system_settings else None,
-                #     "role_id": role.role_id if role else None,
-                #     "role_name": role.name if role else None,
-                #     "permissions": role_permissions,
-                #     "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
-                    
-                # }
-                
-                # token = jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
-               
+                response = Response(
+                    {
+                        "success": True,
+                        "message": "Login successful",
+                        "token": access_token,
+                        "refresh_token":refresh_token,
+                        "user": {
+                            "user_id": user.id,
+                            "username": user.username,
+                            "created_at": user.created_at,
+                            "name": user.full_name,
+                            "user_type": user.user_type,
+                            "attendance_type": system_settings.attendance_options if system_settings else None,
+                            "role_id": role.role_id if role else None,
+                            "role_name": role.name if role else None,
+                            "permissions": role_permissions,
+                        }
+                    },
+                    status=status.HTTP_200_OK
+                )
 
-                # return Response({
-                #     "success": True,
-                #     "message": "Login successful",
-                #     "token": token,
-                #     "user": {
-                #         "user_id": user.id,
-                #         "username": user.username,
-                #         "created_at":user.created_at,
-                #         "name": user.full_name,
-                #         "user_type": user.user_type,
-                #         "attendance_type": system_settings .attendance_options if system_settings  else None,
-                #         "role_id": role.role_id if role else None,
-                #         "role_name": role.name if role else None,
-                #         "permissions": role_permissions,
-                #         # "employee_id":user.employee_id
+                origin = request.headers.get("Origin", "")
 
-                #     },
-                #     "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
-                # }, status=200)
-                return Response({
-                    "success": True,
-                    "message": "Login successful",
-                    "token": access_token,
-                    "refresh_token": refresh_token,
-                    "user": {
-                        "user_id": user.id,
-                        "username": user.username,
-                        "created_at":user.created_at,
-                        "name": user.full_name,
-                        "user_type": user.user_type,
-                        "attendance_type": system_settings .attendance_options if system_settings  else None,
-                        "role_id": role.role_id if role else None,
-                        "role_name": role.name if role else None,
-                        "permissions": role_permissions,
-                        # "employee_id":user.employee_id
+                LOCAL_ORIGINS = {
+                    "http://localhost:3000",
+                    "http://localhost:8000",
+                    "http://127.0.0.1:8000",
+                }
 
-                    }
-                })
+                if origin in LOCAL_ORIGINS:
+                    cookie_domain = None
+                    cookie_secure = False
+                    cookie_samesite = "None"
+                else:
+                    cookie_domain = ".aryuacademy.com"
+                    cookie_secure = True
+                    cookie_samesite = "Lax"
+
+                response.set_cookie(
+                    key="refresh_token",
+                    value=refresh_token,
+                    max_age=30 * 24 * 60 * 60,
+                    path="/",
+                    domain=cookie_domain,
+                    secure=cookie_secure,
+                    httponly=True,
+                    samesite=cookie_samesite,
+                )
+
+                return response
+            
             # For Student
             student = Student.objects.filter(
                 Q(username=username_or_email) | Q(email__iexact=username_or_email),
@@ -800,6 +818,48 @@ class Login(LoggingMixin, APIView):
     def get(self, request):
         return Response({'message': 'Send POST request to login.'})
 
+class CustomTokenRefreshView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = CustomTokenRefreshSerializer
+
+    def post(self, request):
+
+        refresh_token = request.COOKIES.get("refresh_token")
+
+        if not refresh_token:
+            return Response(
+                {"message": "Refresh token missing"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        serializer = self.serializer_class(
+            data={"refresh": refresh_token}
+        )
+
+        serializer.is_valid(raise_exception=True)
+
+        validated_data = serializer.validated_data
+
+        response = Response(
+            {
+                "access_token": validated_data["access_token"]
+            },
+            status=status.HTTP_200_OK
+        )
+
+        if "refresh" in serializer.validated_data:
+            response.set_cookie(
+                key="refresh_token",
+                value=serializer.validated_data["refresh"],
+                max_age=30 * 24 * 60 * 60,
+                httponly=True,
+                secure=True,
+                samesite="Lax",
+                domain=".aryuacademy.com"
+            )
+
+        return response
+    
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all().select_related("role")
     serializer_class = UserSerializer
