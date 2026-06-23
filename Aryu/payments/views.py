@@ -1804,18 +1804,42 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
             # ✅ total_records = actual count of all matching rows
             total_records = len(all_rows)
+            success_amount = sum(
+                float(row.get("amount", 0))
+                for row in all_rows
+            )
 
             # ✅ Paginate AFTER filtering
             start_index = (page - 1) * page_size
             end_index = start_index + page_size
             paginated_data = all_rows[start_index:end_index]
+            for idx, row in enumerate(paginated_data, start=start_index + 1):
+                row["sno"] = idx
+            if status_filter.lower() == "captured":
+                success_amount = sum(
+                    float(row.get("amount", 0))
+                    for row in all_rows
+                    if row.get("status") == "captured"
+                )
+            elif status_filter.lower() == "failed":
+                success_amount = sum(
+                    float(row.get("amount", 0))
+                    for row in all_rows
+                    if row.get("status") == "failed"
+                )
+            else:  # status = all
+                success_amount = sum(
+                    float(row.get("amount", 0))
+                    for row in all_rows
+                )
 
             return Response({
-                "success":       True,
-                "page":          page,
-                "page_size":     page_size,
+                "success": True,
+                "page": page,
+                "page_size": page_size,
                 "total_records": total_records,
-                "data":          paginated_data
+                "success_amount": success_amount,
+                "data": paginated_data
             })
 
         except Exception as e:
@@ -1825,6 +1849,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 {"success": False, "message": str(e)},
                 status=500
             )
+       
     # -------------------------
     # Verify Razorpay Payment
     # -------------------------
