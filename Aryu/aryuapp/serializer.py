@@ -30,6 +30,19 @@ from batches.models import NewBatch, Batch, BatchCourseTrainer
 from batches.serializers import BatchSerializer
 import requests
 from django.utils.timezone import make_aware
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+
+class CustomTokenRefreshSerializer(TokenRefreshSerializer):
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+
+        data["access_token"] = data.pop("access")
+
+        if "refresh" in data:
+            data["refresh_token_obj"] = data["refresh"]
+
+        return data
 
 class SettingsPicsSerializer(serializers.ModelSerializer):
     general_logo_url = serializers.SerializerMethodField()

@@ -11,6 +11,7 @@ urlpatterns = [
    path("cms/<int:pk>/", CmsViewSet.as_view({'get': 'retrieve', 'patch': 'partial_update', 'put': 'update'})),
    path('cms/<int:pk>/archive', CmsViewSet.as_view({'patch': 'is_archived'})),
    path('login', Login.as_view(), name='login'),
+   path("token/refresh/",CustomTokenRefreshView.as_view(),name="token_refresh"),
    # path('role',RoleViewSet.as_view('get':'all_view'))
    path('role/<int:pk>',RoleViewSet.as_view({'patch':'status_update'})),
    path('roles', RoleViewSet.as_view({'get': 'list', 'post': 'create'})),
