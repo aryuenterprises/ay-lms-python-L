@@ -476,6 +476,8 @@ class CustomRefreshToken(RefreshToken):
         )
 
         return token
+
+    
 class Login(LoggingMixin, APIView):
     permission_classes = [AllowAny] 
 
@@ -824,14 +826,30 @@ class CustomTokenRefreshView(APIView):
             data={"refresh": refresh_token}
         )
 
-        if not serializer.is_valid():
-            return Response(
-                serializer.errors,
-                status=400
+        serializer.is_valid(raise_exception=True)
+
+        validated_data = serializer.validated_data
+
+        response = Response(
+            {
+                "access_token": validated_data["access_token"]
+            },
+            status=200
+        )
+
+        # Save NEW rotated refresh token
+        if validated_data.get("refresh_token_obj"):
+            response.set_cookie(
+                key="refresh_token",
+                value=validated_data["refresh_token_obj"],
+                httponly=True,
+                max_age=30 * 24 * 60 * 60,
+                samesite="Lax",
+                secure=False,  # True in production HTTPS
             )
 
-        return Response(serializer.validated_data)
-
+        return response
+    
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all().select_related("role")
     serializer_class = UserSerializer

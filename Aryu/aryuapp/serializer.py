@@ -43,6 +43,7 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
         }
 
 
+
 class SettingsPicsSerializer(serializers.ModelSerializer):
     general_logo_url = serializers.SerializerMethodField()
     secondary_logo_url = serializers.SerializerMethodField()
