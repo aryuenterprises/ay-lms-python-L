@@ -1631,11 +1631,16 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
     # Create Razorpay Payment Link
     # -------------------------
     @action(detail=False, methods=['post'])
-    def create(self, request):
+    def create(self, request,webinar):
         amount = float(request.data.get("amount", 0))
         currency = request.data.get("currency", "INR")
         success_url = request.data.get("success_url")
         cancel_url = request.data.get("failure_url")
+        data = request.data.copy()
+        data["webinar_name"] = webinar.title
+        data["name"] = request.data.get("name")
+        data["email"] = request.data.get("email")
+        data["phone"] = request.data.get("phone")
 
         if not amount or not success_url or not cancel_url:
             return Response({"success": False, "message": "Amount, success_url, and cancel_url are required"}, status=400)
@@ -1651,14 +1656,14 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
         try:
             payment_link_data = {
-                "amount": int(amount * 100),  # in paise
+                "amount": int(amount * 100),
                 "currency": currency,
                 "accept_partial": False,
-                "description": f"Payment by {student.student_id}",
+                "description": webinar.title,
                 "customer": {
-                    "name": student.first_name ,
-                    "email": student.email,
-                    "contact": student.contact_no
+                    "name": data.get("name"),
+                    "email": data.get("email"),
+                    "contact": data.get("phone")
                 },
                 "notify": {"sms": True, "email": True},
                 "reminder_enable": True,
@@ -1766,21 +1771,32 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 if not isinstance(notes, dict):
                     notes = {}
 
+                webinar_name = payment.get("description")
+
+                webinar_id = notes.get("webinar_id")
+                if webinar_id:
+                    webinar = Webinar.objects.filter(uuid=webinar_id).first()
+
+                    if webinar:
+                        webinar_name = webinar.title
+
                 row = {
                     "payment_id": payment.get("id"),
-                    "customer":   notes.get("name", "N/A"),
-                    "email":      notes.get("email") or payment.get("email"),
-                    "phone":      notes.get("phone") or payment.get("contact"),
-                    "amount":     payment.get("amount", 0) / 100,
-                    "status":     payment.get("status"),
-                    "method":     payment.get("method"),
+                    "customer": notes.get("name", "N/A"),
+                    "email": notes.get("email") or payment.get("email"),
+                    "phone": notes.get("phone") or payment.get("contact"),
+                    "description": f"{webinar_name}",
+                    "amount": round(payment.get("amount", 0) / 100,2),
+                    "status": payment.get("status"),
+                    "method": payment.get("method"),
+                    "upi_id": payment.get("vpa"),
+                    "razorpay_fee": round((payment.get("fee") or 0) / 100, 2),
                     "created_at": datetime.fromtimestamp(
                         payment.get("created_at", 0)
                     ).strftime("%d %b %Y %I:%M:%S %p"),
                 }
 
                 all_rows.append(row)
-
             # ── Apply filters if active ──
             if has_filter:
                 if status_filter.lower() != "all":
@@ -1849,7 +1865,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 {"success": False, "message": str(e)},
                 status=500
             )
-       
+        
     # -------------------------
     # Verify Razorpay Payment
     # -------------------------

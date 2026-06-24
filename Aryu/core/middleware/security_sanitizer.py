@@ -18,34 +18,39 @@ class InputSanitizationMiddleware(MiddlewareMixin):
     """
 
     def process_request(self, request):
+
+        # Skip sanitization for HTML → PDF endpoint
+        if request.path.startswith("/api/resume/candidates/generate-pdf"):
+            return None
+
         if request.method in ["POST", "PUT", "PATCH"]:
             if request.content_type == "application/json":
                 try:
-                    # Safely load request body directly as a string/dict (avoiding request.data DRF crash)
                     if not request.body:
                         return None
-                    
+
                     raw_data = json.loads(request.body)
-                    
-                    # Hardening Step: Walk the payload. If we find non-standard dictionary nesting
-                    # on fields that are supposed to be scalar values, we either reject or sanitize.
+
                     sanitized_data = self.sanitize_data(raw_data)
-                    
-                    # Replace the request body stream with our safe, sanitized JSON data
+
                     encoded_data = json.dumps(sanitized_data).encode("utf-8")
                     request._body = encoded_data
+
                 except json.JSONDecodeError:
                     return JsonResponse(
-                        {"error": "Malformed JSON payload format."}, 
+                        {"error": "Malformed JSON payload format."},
                         status=400
                     )
+
                 except Exception as e:
                     logger.error(f"Request sanitization failed: {str(e)}")
                     return JsonResponse(
-                        {"error": "Invalid request parameters detected."}, 
+                        {"error": "Invalid request parameters detected."},
                         status=400
                     )
+
         return None
+
 
     def sanitize_data(self, data, depth=0):
         """
