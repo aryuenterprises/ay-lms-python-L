@@ -46,7 +46,7 @@ from django.db.models.expressions import ExpressionWrapper
 from urllib.parse import quote
 from django.db.models import DecimalField
 from .services.zoom_service import get_zoom_access_token
-
+from webinar.models import Webinar
 try:
     from lead.models import Lead
     _LEAD_APP = True
