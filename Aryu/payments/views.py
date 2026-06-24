@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 import pytz
 from zoneinfo import ZoneInfo
 from datetime import timedelta
+from webinar.models import Webinar
 # Create your views here.
 
 
