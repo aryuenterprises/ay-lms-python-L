@@ -1832,23 +1832,23 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             paginated_data = all_rows[start_index:end_index]
             for idx, row in enumerate(paginated_data, start=start_index + 1):
                 row["sno"] = idx
-            if status_filter.lower() == "captured":
-                success_amount = sum(
-                    float(row.get("amount", 0))
-                    for row in all_rows
-                    if row.get("status") == "captured"
-                )
-            elif status_filter.lower() == "failed":
-                success_amount = sum(
-                    float(row.get("amount", 0))
-                    for row in all_rows
-                    if row.get("status") == "failed"
-                )
-            else:  # status = all
-                success_amount = sum(
-                    float(row.get("amount", 0))
-                    for row in all_rows
-                )
+            success_amount = sum(
+                float(row.get("amount", 0))
+                for row in all_rows
+                if row.get("status", "").lower() == "captured"
+            )
+
+            failed_amount = sum(
+                float(row.get("amount", 0))
+                for row in all_rows
+                if row.get("status", "").lower() == "failed"
+            )
+
+            refunded_amount = sum(
+                float(row.get("amount", 0))
+                for row in all_rows
+                if row.get("status", "").lower() == "refunded"
+            )
 
             return Response({
                 "success": True,
@@ -1856,6 +1856,8 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 "page_size": page_size,
                 "total_records": total_records,
                 "success_amount": success_amount,
+                "failed_amount": failed_amount,
+                "refunded_amount": refunded_amount,
                 "data": paginated_data
             })
 
