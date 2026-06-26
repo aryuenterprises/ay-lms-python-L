@@ -50,6 +50,7 @@ class AryuReportView(APIView):
                     "email": student.email,
                     "converter": student.converter,
                     "student_type": student.student_type,
+                    "created_at":student.created_at,
                     "courses": []
                 }
 

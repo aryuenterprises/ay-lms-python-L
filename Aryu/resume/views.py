@@ -102,7 +102,7 @@ class AuthViewSet(viewsets.ViewSet):
         phone = validated_data["phone"].strip()
         password = validated_data["password"]
 
-        if ResumeRegistration.objects.filter(email=email,is_deleted=True).exists():
+        if ResumeRegistration.objects.filter(email=email,is_deleted=False).exists():
             return Response(
                 {"error": "Email already registered"},
                 status=status.HTTP_400_BAD_REQUEST
