@@ -4,9 +4,9 @@ from datetime import datetime, time
 from django.utils import timezone
 import calendar
 from collections import defaultdict
-from courses.models import Course
 import holidays
 from aryuapp.models import TrainerAttendance, Trainer, Student
+from rest_framework.response import Response
 
 
 
@@ -785,4 +785,4 @@ class NewBatchSerializer(serializers.ModelSerializer):
                 "success": False,
                 "message": str(e)
             }, status=200)
-            
+        

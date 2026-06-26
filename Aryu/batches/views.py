@@ -1937,9 +1937,24 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                 batch.trainer = trainer
 
             # ---------- Update normal fields ----------
+            from datetime import datetime
+
             for key, value in data.items():
+
                 if key in ["course", "trainer", "students"]:
                     continue
+
+                # Convert AM/PM time to 24-hour format
+                if key in ["start_time", "end_time"] and value:
+
+                    try:
+                        value = datetime.strptime(value, "%I:%M:%S %p").time()
+                    except ValueError:
+                        return Response({
+                            "success": False,
+                            "message": f"Invalid time format for {key}"
+                        }, status=200)
+
                 if hasattr(batch, key):
                     setattr(batch, key, value)
 
