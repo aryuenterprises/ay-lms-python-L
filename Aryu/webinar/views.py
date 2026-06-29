@@ -95,21 +95,10 @@ def _finalize_registration(registration, txn):
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def razorpay_webhook(request):
-    logger = logging.getLogger("razorpay_webhook")
-    logger.info("=" * 80)
-    logger.info("Webhook received")
-
-    logger.info("Headers:")
-    logger.info(dict(request.headers))
-
-    logger.info("Raw body:")
-    logger.info(request.body.decode(errors="ignore"))
-
     payload            = request.body
     received_signature = request.headers.get("X-Razorpay-Signature")
 
     if not received_signature:
-        logger.error("Signature missing")
         return HttpResponse(status=400)
 
     # ── FIX 1: guard against missing gateway row ──────────────────────────────
@@ -120,7 +109,7 @@ def razorpay_webhook(request):
             "Ensure a PaymentGateway row with 'razorpay' in gatway_name exists."
         )
         return HttpResponse(status=200)  # 200 stops Razorpay retrying a misconfigured server
-    logger.info("Webhook secret = %s", gateway.webhook_secret)
+
     if not gateway.webhook_secret:
         logger.error("Razorpay webhook: webhook_secret is empty on gateway row id=%s", gateway.id)
         return HttpResponse(status=200)
@@ -132,15 +121,8 @@ def razorpay_webhook(request):
         hashlib.sha256,
     ).hexdigest()
 
-    logger.info("Expected Signature = %s", expected_signature)
-
-    logger.info("Received = %s", received_signature)
-
     if not hmac.compare_digest(expected_signature, received_signature):
-        logger.error("Signature mismatch")
         return HttpResponse(status=400)
-    
-    logger.info("Signature verified")
 
     data  = request.data
     event = data.get("event")
