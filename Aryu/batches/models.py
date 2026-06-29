@@ -235,7 +235,11 @@ class NewBatch(models.Model):
     batch_id = models.AutoField(primary_key=True)
     title = models.CharField(max_length=100)
     course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='new_batches')
-    trainer = models.ForeignKey("aryuapp.Trainer", on_delete=models.CASCADE, related_name='new_batches', null=True, blank=True)
+    trainers = models.ManyToManyField(
+        "aryuapp.Trainer",
+        related_name="new_batches",
+        blank=True
+    )
     start_date = models.DateField()
     end_date = models.DateField()
     start_time = models.TimeField()
