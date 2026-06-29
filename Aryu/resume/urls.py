@@ -21,7 +21,7 @@ urlpatterns = [
     #dashboard
     path('dashboard', UserDashboardView.as_view(), name='user-dashboard'),
 
-    path('candidates/generate-pdf', GeneratePDFView.as_view(), name='generate_pdf'),
+    path('candidates/generate-pdf',GenerateResumePDFView.as_view(), name='generate_pdf'),
 
     #templates
 

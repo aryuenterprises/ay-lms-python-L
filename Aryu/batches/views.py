@@ -267,8 +267,8 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
 
             # ------------------- Fetch batches -------------------
             batch_qs = NewBatch.objects.filter(batch_filter).select_related(
-                "course", "course__course_category", "trainer"
-            )
+                "course", "course__course_category"
+            ).prefetch_related("trainers")
 
             batch_data = [
                 {
@@ -646,10 +646,10 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
             # ------------------ HIERARCHY FILTERED BATCHES ------------------
             # New system batches for this trainer only
             new_batch_qs = NewBatch.objects.filter(
-                trainer__employee_id=employee_id,
+                trainers__employee_id=employee_id,
                 is_archived=False,
                 status=True
-            ).select_related("trainer", "course").order_by("batch_id")
+            ).select_related("course").prefetch_related("trainers").order_by("batch_id")
 
             # Old batches where trainer is linked via BatchCourseTrainer
             old_batch_ids_for_trainer = BatchCourseTrainer.objects.filter(
@@ -716,7 +716,7 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
             ).values_list('course_id', flat=True)
 
             new_course_ids = NewBatch.objects.filter(
-                trainer__employee_id=employee_id,
+                trainers__employee_id=employee_id,
                 is_archived=False
             ).values_list('course_id', flat=True)
 
@@ -1132,8 +1132,8 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
 
             new_batches = list(
                 NewBatch.objects.filter(is_archived=False)
-                .select_related("course__course_category", "trainer")
-                .prefetch_related("students")
+                .select_related("course__course_category")
+                .prefetch_related("students", "trainers")
                 .order_by("-created_at")
             )
 
@@ -1302,8 +1302,14 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     "course": nb.course.course_id if nb.course else None,
                     "course_name": nb.course.course_name if nb.course else None,
                     "category": nb.course.course_category.category_id if nb.course and nb.course.course_category else None,
-                    "trainer_id": nb.trainer.trainer_id if nb.trainer else None,
-                    "trainer_name": nb.trainer.full_name if nb.trainer else None,
+                    "trainers": [
+                        {
+                            "trainer_id": t.trainer_id,
+                            "trainer_name": t.full_name,
+                            "employee_id": t.employee_id,
+                        }
+                        for t in nb.trainers.all()
+                    ],
                     "start_date": nb.start_date,
                     "end_date": nb.end_date,
                     "start_time": nb.start_time,
@@ -1398,7 +1404,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
             # OLD BATCHES
             # ----------------------------
             assigned_old_batch_ids = BatchCourseTrainer.objects.filter(
-                trainer__trainer_id=trainer_id
+                trainers__trainer_id=trainer_id
             ).values_list("batch_id", flat=True)
 
             old_batches = Batch.objects.filter(
@@ -1488,7 +1494,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                 })
 
             new_batches = NewBatch.objects.filter(
-                trainer__trainer_id=trainer_id,
+                trainers__trainer_id=trainer_id,
                 is_archived=False
             ).order_by("-created_at")
 
@@ -1546,8 +1552,14 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     "course": nb.course.course_id if nb.course else None,
                     "category": nb.course.course_category.category_id if nb.course and nb.course.course_category else None,
                     "course_name": nb.course.course_name if nb.course else None,
-                    "trainer": nb.trainer.trainer_id if nb.trainer else None,
-                    "trainer_name": nb.trainer.full_name if nb.trainer else None,
+                    "trainers": [
+                        {
+                            "trainer_id": t.trainer_id,
+                            "trainer_name": t.full_name,
+                            "employee_id": t.employee_id,
+                        }
+                        for t in nb.trainers.all()
+                    ],
                     "start_date": nb.start_date,
                     "end_date": nb.end_date,
                     "start_time": nb.start_time,
@@ -1568,7 +1580,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
             trainer_id = trainer_id
             # Get all courses assigned to this trainer via NewBatch
             assigned_course_ids = NewBatch.objects.filter(
-                trainer__trainer_id=trainer_id,
+                trainers__trainer_id=trainer_id,
                 is_archived=False,
                 status=True
             ).values_list("course_id", flat=True).distinct()
@@ -1590,7 +1602,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
             
             # From NEW batches (NewBatch -> students M2M)
             new_batches = NewBatch.objects.filter(
-                trainer__trainer_id=trainer_id,
+                trainers__trainer_id=trainer_id,
                 is_archived=False
             ).order_by("-created_at")
 
@@ -1756,8 +1768,14 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     "course": nb.course.course_id if nb.course else None,
                     "category": nb.course.course_category.category_id if nb.course and nb.course.course_category else None,
                     "course_name": nb.course.course_name if nb.course else None,
-                    "trainer": nb.trainer.trainer_id if nb.trainer else None,
-                    "trainer_name": nb.trainer.full_name if nb.trainer else None,
+                    "trainers": [
+                        {
+                            "trainer_id": t.trainer_id,
+                            "trainer_name": t.full_name,
+                            "employee_id": t.employee_id,
+                        }
+                        for t in nb.trainers.all()
+                    ],
                     "start_date": nb.start_date,
                     "end_date": nb.end_date,
                     "start_time": nb.start_time,
@@ -1788,7 +1806,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     "trainer_name": nb.trainer.full_name,
                 }
                 for nb in new_batches
-                if nb.trainer
+                if nb.trainer.all()
             ]
 
             student_id = str(student_id)
@@ -1886,13 +1904,22 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     )
 
             # ----------------- Validate Trainer -----------------
-            trainer_id = data.get("trainer")
-            if trainer_id:
-                if not Trainer.objects.filter(pk=trainer_id).exists():
-                    return Response(
-                        {"success": False, "message": "Invalid trainer"},
-                        status=200
-                    )
+            trainer_ids = data.get("trainers", [])
+
+            if trainer_ids:
+                if not isinstance(trainer_ids, list):
+                    return Response({
+                        "success": False,
+                        "message": "Trainers must be a list"
+                    }, status=200)
+
+                trainers = Trainer.objects.filter(pk__in=trainer_ids)
+
+                if trainers.count() != len(trainer_ids):
+                    return Response({
+                        "success": False,
+                        "message": "Invalid trainer(s)"
+                    }, status=200)
 
             # ----------------- Create Batch -----------------
             serializer = NewBatchSerializer(data=data, context={'request': request})
@@ -1929,19 +1956,24 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                 batch.course = course
 
             # ---------- Update Trainer ----------
-            trainer_id = data.get("trainer")
-            if trainer_id:
-                trainer = Trainer.objects.filter(pk=trainer_id).first()
-                if not trainer:
-                    return Response({"success": False, "message": "Invalid trainer"}, status=200)
-                batch.trainer = trainer
+            trainer_ids = data.get("trainers")
 
+            if trainer_ids is not None:
+                trainers = Trainer.objects.filter(pk__in=trainer_ids)
+
+                if trainers.count() != len(trainer_ids):
+                    return Response({
+                        "success": False,
+                        "message": "Invalid trainer(s)"
+                    }, status=200)
+
+                batch.trainers.set(trainers)
             # ---------- Update normal fields ----------
             from datetime import datetime
 
             for key, value in data.items():
 
-                if key in ["course", "trainer", "students"]:
+                if key in ["course", "trainers", "students"]:
                     continue
 
                 # Convert AM/PM time to 24-hour format

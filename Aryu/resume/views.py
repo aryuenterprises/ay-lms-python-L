@@ -37,7 +37,8 @@ from django.contrib.auth.hashers import (
 import secrets
 import string
 import re
-import io
+from io import BytesIO
+from django.http import FileResponse
 import logging
 from rest_framework.exceptions import ValidationError
 from weasyprint import HTML, CSS
@@ -51,6 +52,7 @@ import os
 import requests
 from django.conf import settings
 from .tasks import send_verification_email
+from .pdf_generator import PDFGenerationError, PDFGeneratorService
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +104,7 @@ class AuthViewSet(viewsets.ViewSet):
         phone = validated_data["phone"].strip()
         password = validated_data["password"]
 
-        if ResumeRegistration.objects.filter(email=email,is_deleted=False).exists():
+        if ResumeRegistration.objects.filter(email=email).exists():
             return Response(
                 {"error": "Email already registered"},
                 status=status.HTTP_400_BAD_REQUEST
@@ -160,7 +162,7 @@ class AuthViewSet(viewsets.ViewSet):
         )
 
         token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
-        verification_link = f"https://aylms.aryuprojects.com/api/resume/auth/verify-email/?token={token}"
+        verification_link = f"https://portal.aryuacademy.com/api/resume/auth/verify-email/?token={token}"
 
         html_message = f"""
 <!DOCTYPE html>
@@ -212,7 +214,7 @@ class AuthViewSet(viewsets.ViewSet):
                   padding: 45px 5px;
                 ">
                 <img
-                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
+                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -480,7 +482,7 @@ class AuthViewSet(viewsets.ViewSet):
         )
 
         verification_link = (
-            "https://aylms.aryuprojects.com"
+            "https://portal.aryuacademy.com"
             f"/api/resume/auth/verify-email/?token={token}"
         )
 
@@ -538,7 +540,7 @@ class AuthViewSet(viewsets.ViewSet):
                   padding: 45px 5px;
                 ">
                 <img
-                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
+                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -1060,7 +1062,7 @@ class AuthViewSet(viewsets.ViewSet):
             cookie_samesite = "None"    # Lax works perfectly for local dev environments
             cookie_secure = False      # Set to False if testing on http://localhost without SSL
         else:
-            cookie_domain = ".aryuacademy.com"  # Production parent domain rule
+            cookie_domain = ".aryuprojects.com"  # Production parent domain rule
             cookie_samesite = "Lax"             # Can be "Lax" or "Strict" once the CNAME is live
             cookie_secure = True                # Enforce HTTPS in production
 
@@ -1070,7 +1072,7 @@ class AuthViewSet(viewsets.ViewSet):
             value=str(refresh),
             max_age=30 * 24 * 60 * 60,   # 30 Days
             expires=None,
-            path="/",                    
+            path="/api/token/refresh/",                    
             domain=cookie_domain,        # <--- Dynamic domain variable
             secure=cookie_secure,        # <--- Dynamic secure variable
             httponly=True,               # Always keep True to block XSS script theft
@@ -1259,7 +1261,7 @@ class AuthViewSet(viewsets.ViewSet):
                 ">
 
                 <img
-                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
+                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -1785,7 +1787,7 @@ class CustomTokenRefreshView(APIView):
             cookie_samesite = "None"
 
         else:
-            cookie_domain = ".aryuacademy.com"
+            cookie_domain = ".aryuprojects.com"
             cookie_samesite = "Lax"  # Matches your custom API CNAME architecture setup
             cookie_secure = True
 
@@ -1796,7 +1798,7 @@ class CustomTokenRefreshView(APIView):
                 value=str(new_refresh_obj),
                 max_age=30 * 24 * 60 * 60,  # 30 Days
                 expires=None,
-                path="/",
+                path="/api/token/refresh/",
                 domain=cookie_domain,
                 secure=cookie_secure,
                 httponly=True,              # Keeps XSS defense completely locked down
@@ -1932,7 +1934,7 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
                 )
 
             expected_hostnames = [
-                "aylms.aryuprojects.com",
+                "portal.aryuacademy.com",
                 "localhost",
                 "yourdomain.com"
             ]
@@ -4231,86 +4233,64 @@ class PaymentHistoryViewset(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
     
-class GeneratePDFView(APIView):
+class GenerateResumePDFView(APIView):
+ 
+    parser_classes = [JSONParser]
     permission_classes = [permissions.IsAuthenticated]
-    MAX_HTML_SIZE = 2 * 1024 * 1024  # 2MB
-    
-    async def generate_pdf_async(self, html_content):
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                ]
+ 
+    def post(self, request) -> HttpResponse:
+        serializer = GeneratePDFSerializer(data=request.data)
+        if not serializer.is_valid():
+            return HttpResponse(
+                content=serializer.errors,
+                content_type="application/json",
+                status=status.HTTP_400_BAD_REQUEST,
             )
-            page = await browser.new_page(
-                viewport={
-                    "width": 794,
-                    "height": 1123
-                },
-                device_scale_factor=3  # 👈 ADD THIS — 288 DPI for print quality
-            )
-            
-            await page.set_content(
-                html_content,
-                wait_until="networkidle"
-            )
-            
-            # Wait for fonts to fully load
-            await page.evaluate("document.fonts.ready")  # 👈 ADD THIS
-            await page.wait_for_timeout(300)              # 👈 ADD THIS - small buffer
-            
-            await page.emulate_media(media="print")
-            
-            pdf_bytes = await page.pdf(
-                format="A4",
-                print_background=True,
-                margin={
-                    "top": "0mm",
-                    "right": "0mm",
-                    "bottom": "0mm",
-                    "left": "0mm",
-                },
-                prefer_css_page_size=True
-            )
-            await browser.close()
-            return pdf_bytes
-
-    def post(self, request, *args, **kwargs):
-        html_content = request.data.get("html")
-        if not html_content:
-            raise ValidationError({
-                "detail": "HTML content is required."
-            })
-        if len(html_content) > self.MAX_HTML_SIZE:
-            raise ValidationError({
-                "detail": (
-                    "HTML payload too large. "
-                    "Maximum size is 2MB."
-                )
-            })
+ 
+        html_content: str = serializer.validated_data["html"]
+ 
+        t_start = time.perf_counter()
         try:
-            pdf_bytes = asyncio.run(
-                self.generate_pdf_async(html_content)
+            service = PDFGeneratorService()
+            pdf_bytes = service.generate_pdf(html_content)
+        except PDFGenerationError as exc:
+            logger.error(
+                "PDF generation error for user %s: %s",
+                getattr(request.user, "pk", "anonymous"),
+                exc,
             )
-            response = HttpResponse(
-                pdf_bytes,
-                content_type="application/pdf"
+            return HttpResponse(
+                content={"detail": str(exc)},
+                content_type="application/json",
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-            response[
-                "Content-Disposition"
-            ] = 'attachment; filename="resume.pdf"'
-            return response
-        except Exception as e:
+        except Exception as exc:
             logger.exception(
-                f"PDF generation failed: {str(e)}"
+                "Unexpected PDF generation failure for user %s",
+                getattr(request.user, "pk", "anonymous"),
             )
-            return Response(
-                {
-                    "detail": (
-                        "Failed to generate PDF."
-                    )
-                },
-                status=500
+            return HttpResponse(
+                content={"detail": "An unexpected error occurred while generating the PDF."},
+                content_type="application/json",
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+        finally:
+            elapsed = time.perf_counter() - t_start
+            logger.info(
+                "PDF generation completed in %.2fs for user %s",
+                elapsed,
+                getattr(request.user, "pk", "anonymous"),
+            )
+ 
+        response = HttpResponse(
+            content=pdf_bytes,
+            content_type="application/pdf",
+            status=status.HTTP_200_OK,
+        )
+        response["Content-Disposition"] = 'attachment; filename="resume.pdf"'
+        response["Content-Length"] = len(pdf_bytes)
+        # Prevent CDN/proxy caching of personal resumes
+        response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+        

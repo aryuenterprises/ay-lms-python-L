@@ -649,11 +649,11 @@ class BatchSerializer(serializers.ModelSerializer):
     
 class NewBatchSerializer(serializers.ModelSerializer):
     course = serializers.PrimaryKeyRelatedField(queryset=Course.objects.all())
-    trainer = serializers.PrimaryKeyRelatedField(
-        queryset=Trainer.objects.all(),
-        required=False,
-        allow_null=True
-    )
+    trainers = serializers.PrimaryKeyRelatedField(
+    queryset=Trainer.objects.all(),
+    many=True,
+    required=False
+    )   
 
     # Correct M2M Field
     students = serializers.PrimaryKeyRelatedField(
@@ -672,7 +672,7 @@ class NewBatchSerializer(serializers.ModelSerializer):
     class Meta:
         model = NewBatch
         fields = [
-            'batch_id', 'title', 'course', 'trainer',
+            'batch_id', 'title', 'course', 'trainers',
             'start_date', 'end_date', 'start_time', 'end_time',
             'slots', 'status', 'students',
             'created_by', 'created_by_type', 'created_at', 'is_archived'
@@ -699,6 +699,7 @@ class NewBatchSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         students = validated_data.pop('students', [])
+        trainers = validated_data.pop('trainers',[])
         slots = validated_data.get("slots", 0)
 
         if len(students) > slots and slots == 0:
@@ -733,6 +734,9 @@ class NewBatchSerializer(serializers.ModelSerializer):
 
         batch = NewBatch.objects.create(**validated_data)
 
+        if trainers:
+            batch.trainers.set(trainers)
+
         if students:
             if batch.available_slots() <= 0 and len(students) > 0:
                 raise serializers.ValidationError({
@@ -742,47 +746,19 @@ class NewBatchSerializer(serializers.ModelSerializer):
 
         return batch
 
-    def update(self, request, batch_id=None):
+    def update(self, instance, validated_data):
+        students = validated_data.pop("students", None)
+        trainers = validated_data.pop("trainers", None)
 
-        try:
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
 
-            batch = NewBatch.objects.filter(
-                batch_id=batch_id,
-                is_archived=False
-            ).first()
+        instance.save()
 
-            if not batch:
-                return Response({
-                    "success": False,
-                        "message": "Batch not found"
-                }, status=200)
+        if students is not None:
+            instance.students.set(students)
 
-            serializer = NewBatchSerializer(
-                batch,
-                data=request.data,
-                partial=True,
-                context={"request": request}
-            )
+        if trainers is not None:
+            instance.trainers.set(trainers)
 
-            if serializer.is_valid():
-
-                serializer.save()
-
-                return Response({
-                    "success": True,
-                    "message": "Batch updated successfully",
-                    "data": serializer.data
-                }, status=200)
-
-            return Response({
-                "success": False,
-                "message": serializer.errors
-            }, status=200)
-
-        except Exception as e:
-
-            return Response({
-                "success": False,
-                "message": str(e)
-            }, status=200)
-        
+        return instance 
