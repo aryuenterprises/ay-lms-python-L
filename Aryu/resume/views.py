@@ -53,6 +53,7 @@ import requests
 from django.conf import settings
 from .tasks import send_verification_email
 from .pdf_generator import PDFGenerationError, PDFGeneratorService
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -94,342 +95,346 @@ class AuthViewSet(viewsets.ViewSet):
     @action(detail=False, methods=["post"], url_path="signup")
     @secure_throttle(rate_limit=5, period=60)
     def signup(self, request):
+        try:
         # 1. Run strict type validation
-        serializer = SecureSignupSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        validated_data = serializer.validated_data
+            serializer = SecureSignupSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            validated_data = serializer.validated_data
 
-        email = validated_data["email"].strip().lower()
-        phone = validated_data["phone"].strip()
-        password = validated_data["password"]
+            email = validated_data["email"].strip().lower()
+            phone = validated_data["phone"].strip()
+            password = validated_data["password"]
 
-        existing_user = ResumeRegistration.objects.filter(
-            email=email,
-            is_deleted=False
-        ).first()
+            existing_user = ResumeRegistration.objects.filter(
+                email=email,
+                is_deleted=False
+            ).first()
 
-        if existing_user:
+            if existing_user:
 
-            # Already verified → don't allow signup
-            if existing_user.is_verified:
+                # Already verified → don't allow signup
+                if existing_user.is_verified:
+                    return Response(
+                        {"error": "Email already registered"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                # Existing but NOT verified → reuse the same record
+                existing_user.delete()
+
+            free_plan = Subscription.objects.filter(
+                name__iexact="Free",
+                is_active=True,
+                is_deleted=False
+            ).first()
+
+            if not free_plan:
                 return Response(
-                    {"error": "Email already registered"},
-                    status=status.HTTP_400_BAD_REQUEST
+                    {"success": False, "message": "Free subscription plan not configured."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
-            # Existing but NOT verified → reuse the same record
-            existing_user.delete()
-
-        free_plan = Subscription.objects.filter(
-            name__iexact="Free",
-            is_active=True,
-            is_deleted=False
-        ).first()
-
-        if not free_plan:
-            return Response(
-                {"success": False, "message": "Free subscription plan not configured."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            user = ResumeRegistration.objects.create(
+                first_name=validated_data["first_name"],
+                last_name=validated_data["last_name"],
+                email=email,
+                phone=phone,
+                password=make_password(password),
+                city=validated_data["city"],
+                state=validated_data["state"],
+                country=validated_data["country"],
+                is_verified=False,
             )
 
-        user = ResumeRegistration.objects.create(
-            first_name=validated_data["first_name"],
-            last_name=validated_data["last_name"],
-            email=email,
-            phone=phone,
-            password=make_password(password),
-            city=validated_data["city"],
-            state=validated_data["state"],
-            country=validated_data["country"],
-            is_verified=False,
-        )
+            start_date = timezone.now()
+            duration = str(free_plan.duration_days).strip()
 
-        start_date = timezone.now()
-        duration = str(free_plan.duration_days).strip()
+            if duration.lower() == "lifetime":
+                end_date = None
+            else:
+                days = int(duration.split()[0])
+                end_date = start_date + timedelta(days=days)
 
-        if duration.lower() == "lifetime":
-            end_date = None
-        else:
-            days = int(duration.split()[0])
-            end_date = start_date + timedelta(days=days)
+            user_subscription = UserSubscription.objects.create(
+                user=user,
+                subscription=free_plan,
+                start_date=start_date,
+                end_date=end_date,
+                status="active"
+            )
 
-        user_subscription = UserSubscription.objects.create(
-            user=user,
-            subscription=free_plan,
-            start_date=start_date,
-            end_date=end_date,
-            status="active"
-        )
+            user.current_subscription = user_subscription
+            user.save(update_fields=["current_subscription"])
+            
+            PaymentHistory.objects.create(
+                user=user,
+                plan_name="Free",
+                price=0,
+                payment_status="free"
+            )
 
-        user.current_subscription = user_subscription
-        user.save(update_fields=["current_subscription"])
-        
-        PaymentHistory.objects.create(
-            user=user,
-            plan_name="Free",
-            price=0,
-            payment_status="free"
-        )
+            token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
+            verification_link = f"https://portal.aryuacademy.com/api/resume/auth/verify-email/?token={token}"
 
-        token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
-        verification_link = f"https://portal.aryuacademy.com/api/resume/auth/verify-email/?token={token}"
+            html_message = f"""
+    <!DOCTYPE html>
+    <html lang="en">
 
-        html_message = f"""
-<!DOCTYPE html>
-<html lang="en">
+    <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verify Your PassATS Account</title>
+    </head>
 
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Verify Your PassATS Account</title>
-</head>
-
-<body
-    style="
-      margin: 0;
-      padding: 0;
-      background-color: #f5f3ff;
-      font-family: Arial, sans-serif;
-    ">
-    <table
-      width="100%"
-      cellpadding="0"
-      cellspacing="0"
-      border="0"
-      style="background-color: #f5f3ff; padding: 40px 15px">
-      <tr>
-        <td align="center">
-          <table
-            width="620"
-            cellpadding="0"
-            cellspacing="0"
-            border="0"
-            style="
-              background: #ffffff;
-              border-radius: 18px;
-              overflow: hidden;
-              box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
-            ">
-            <!-- HEADER -->
-            <tr>
-              <td
-                align="center"
+    <body
+        style="
+        margin: 0;
+        padding: 0;
+        background-color: #f5f3ff;
+        font-family: Arial, sans-serif;
+        ">
+        <table
+        width="100%"
+        cellpadding="0"
+        cellspacing="0"
+        border="0"
+        style="background-color: #f5f3ff; padding: 40px 15px">
+        <tr>
+            <td align="center">
+            <table
+                width="620"
+                cellpadding="0"
+                cellspacing="0"
+                border="0"
                 style="
-                  background: linear-gradient(
-                    135deg,
-                    #090116 0%,
-                    #090116 50%,
-                    #7120e7 100%
-                  );
-                  padding: 45px 5px;
+                background: #ffffff;
+                border-radius: 18px;
+                overflow: hidden;
+                box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
                 ">
-                <img
-                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
-                  alt="Pass ATS"
-                  style="
-                    width: 200px;
-                    max-width: 90%;
-                    height: auto;
-                    display: block;
-                    margin: 0 auto;
-                  " />
-
-                <p
-                  style="
-                    margin-top: 20px;
-                    color: #996ae3;
-                    font-size: 16px;
-                    line-height: 26px;
-                    font-weight: 600;
-                  ">
-                  Secure Account Verification
-                </p>
-              </td>
-            </tr>
-
-            <!-- CONTENT -->
-            <tr>
-              <td style="padding: 45px 20px">
-                <h2
-                  style="
-                    margin: 0 0 20px 0;
-                    font-size: 28px;
-                    color: #1e1b4b;
-                    font-weight: 700;
-                  ">
-                  Hello {user.first_name},
-                </h2>
-
-                <p
-                  style="
-                    margin: 0 0 20px 0;
-                    font-size: 16px;
-                    line-height: 30px;
-                    color: #475569;
-                  ">
-                  Thank you for creating your PassATS account. Please verify
-                  your email address to activate your account securely.
-                </p>
-
-                <p
-                  style="
-                    margin: 0 0 35px 0;
-                    font-size: 16px;
-                    line-height: 30px;
-                    color: #475569;
-                  ">
-                  This verification link is secure and expires automatically.
-                </p>
-
-                <!-- BUTTON -->
-                <table
-                  cellpadding="0"
-                  cellspacing="0"
-                  border="0"
-                  align="center">
-                  <tr>
-                    <td
-                      align="center"
-                      style="
-                        border-radius: 12px;
-                        background: linear-gradient(135deg, #5c20e7, #7120e7);
-                      ">
-                      <a
-                        href="{verification_link}"
-                        target="_blank"
-                        style="
-                          display: inline-block;
-                          padding: 16px 34px;
-                          font-size: 16px;
-                          font-weight: 700;
-                          color: #ffffff;
-                          text-decoration: none;
-                          border-radius: 12px;
-                        ">
-                        Verify Email Address
-                      </a>
-                    </td>
-                  </tr>
-                </table>
-
-                <!-- NOTICE -->
-                <table
-                  width="100%"
-                  cellpadding="0"
-                  cellspacing="0"
-                  border="0"
-                  style="
-                    margin-top: 40px;
-                    background: #f5f3ff;
-                    border-left: 4px solid #7c3aed;
-                    border-radius: 10px;
-                  ">
-                  <tr>
-                    <td style="padding: 18px 22px">
-                      <p
-                        style="
-                          margin: 0;
-                          font-size: 14px;
-                          line-height: 24px;
-                          color: #5b21b6;
-                        ">
-                        If you did not create this account, you can safely
-                        ignore this email.
-                      </p>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-
-            <!-- FOOTER -->
-            <tr>
-              <td
-                align="center"
-                style="
-                  background: #fafafa;
-                  padding: 30px;
-                  border-top: 1px solid #e5e7eb;
-                ">
-                <p style="margin: 0 0 10px 0; font-size: 14px; color: #475569">
-                  Product of
-                  <a
-                    href="https://aryuacademy.com"
+                <!-- HEADER -->
+                <tr>
+                <td
+                    align="center"
                     style="
-                      color: #005aef;
-                      text-decoration: none;
-                      font-weight: 600;
+                    background: linear-gradient(
+                        135deg,
+                        #090116 0%,
+                        #090116 50%,
+                        #7120e7 100%
+                    );
+                    padding: 45px 5px;
                     ">
-                    Aryu Academy Pvt.
-                  </a>
-                </p>
+                    <img
+                    src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+                    alt="Pass ATS"
+                    style="
+                        width: 200px;
+                        max-width: 90%;
+                        height: auto;
+                        display: block;
+                        margin: 0 auto;
+                    " />
 
-                <p
-                  style="
-                    margin: 0;
-                    font-size: 13px;
-                    color: #64748b;
-                    line-height: 24px;
-                  ">
-                  <a
-                    href="https://passats.aryuacademy.com/privacy-policy"
-                    style="color: #005aef; text-decoration: none">
-                    Privacy Policy
-                  </a>
+                    <p
+                    style="
+                        margin-top: 20px;
+                        color: #996ae3;
+                        font-size: 16px;
+                        line-height: 26px;
+                        font-weight: 600;
+                    ">
+                    Secure Account Verification
+                    </p>
+                </td>
+                </tr>
 
-                  &nbsp; | &nbsp;
+                <!-- CONTENT -->
+                <tr>
+                <td style="padding: 45px 20px">
+                    <h2
+                    style="
+                        margin: 0 0 20px 0;
+                        font-size: 28px;
+                        color: #1e1b4b;
+                        font-weight: 700;
+                    ">
+                    Hello {user.first_name},
+                    </h2>
 
-                  <a
-                    href="https://passats.aryuacademy.com/terms-conditions"
-                    style="color: #005aef; text-decoration: none">
-                    Terms & Conditions
-                  </a>
-                </p>
+                    <p
+                    style="
+                        margin: 0 0 20px 0;
+                        font-size: 16px;
+                        line-height: 30px;
+                        color: #475569;
+                    ">
+                    Thank you for creating your PassATS account. Please verify
+                    your email address to activate your account securely.
+                    </p>
 
-                <p
-                  style="
-                    margin-top: 18px;
-                    font-size: 12px;
-                    line-height: 22px;
-                    color: #9ca3af;
-                  ">
-                  © 2026 Aryu Academy Private Limited. All rights reserved.
-                </p>
+                    <p
+                    style="
+                        margin: 0 0 35px 0;
+                        font-size: 16px;
+                        line-height: 30px;
+                        color: #475569;
+                    ">
+                    This verification link is secure and expires automatically.
+                    </p>
 
-                <p
-                  style="
-                    margin-top: 8px;
-                    font-size: 12px;
-                    line-height: 22px;
-                    color: #9ca3af;
-                  ">
-                  This is an automated security email. Please do not reply.
-                </p>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>
-"""
+                    <!-- BUTTON -->
+                    <table
+                    cellpadding="0"
+                    cellspacing="0"
+                    border="0"
+                    align="center">
+                    <tr>
+                        <td
+                        align="center"
+                        style="
+                            border-radius: 12px;
+                            background: linear-gradient(135deg, #5c20e7, #7120e7);
+                        ">
+                        <a
+                            href="{verification_link}"
+                            target="_blank"
+                            style="
+                            display: inline-block;
+                            padding: 16px 34px;
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: #ffffff;
+                            text-decoration: none;
+                            border-radius: 12px;
+                            ">
+                            Verify Email Address
+                        </a>
+                        </td>
+                    </tr>
+                    </table>
 
-        # =========================================
-        # EMAIL SEND
-        # =========================================
+                    <!-- NOTICE -->
+                    <table
+                    width="100%"
+                    cellpadding="0"
+                    cellspacing="0"
+                    border="0"
+                    style="
+                        margin-top: 40px;
+                        background: #f5f3ff;
+                        border-left: 4px solid #7c3aed;
+                        border-radius: 10px;
+                    ">
+                    <tr>
+                        <td style="padding: 18px 22px">
+                        <p
+                            style="
+                            margin: 0;
+                            font-size: 14px;
+                            line-height: 24px;
+                            color: #5b21b6;
+                            ">
+                            If you did not create this account, you can safely
+                            ignore this email.
+                        </p>
+                        </td>
+                    </tr>
+                    </table>
+                </td>
+                </tr>
 
-        subject = f"{user.first_name}, verify your PassAts account"
-        body = f"Please verify your account: {verification_link}"
+                <!-- FOOTER -->
+                <tr>
+                <td
+                    align="center"
+                    style="
+                    background: #fafafa;
+                    padding: 30px;
+                    border-top: 1px solid #e5e7eb;
+                    ">
+                    <p style="margin: 0 0 10px 0; font-size: 14px; color: #475569">
+                    Product of
+                    <a
+                        href="https://aryuacademy.com"
+                        style="
+                        color: #005aef;
+                        text-decoration: none;
+                        font-weight: 600;
+                        ">
+                        Aryu Academy Pvt.
+                    </a>
+                    </p>
 
-        transaction.on_commit(
-            lambda: send_verification_email.delay(subject, body, html_message, user.email)
-        )
+                    <p
+                    style="
+                        margin: 0;
+                        font-size: 13px;
+                        color: #64748b;
+                        line-height: 24px;
+                    ">
+                    <a
+                        href="https://passats.aryuacademy.com/privacy-policy"
+                        style="color: #005aef; text-decoration: none">
+                        Privacy Policy
+                    </a>
 
-        return Response(
-            {"message": "Registration successful. Verification email sent."},
-            status=status.HTTP_201_CREATED
-        )
+                    &nbsp; | &nbsp;
+
+                    <a
+                        href="https://passats.aryuacademy.com/terms-conditions"
+                        style="color: #005aef; text-decoration: none">
+                        Terms & Conditions
+                    </a>
+                    </p>
+
+                    <p
+                    style="
+                        margin-top: 18px;
+                        font-size: 12px;
+                        line-height: 22px;
+                        color: #9ca3af;
+                    ">
+                    © 2026 Aryu Academy Private Limited. All rights reserved.
+                    </p>
+
+                    <p
+                    style="
+                        margin-top: 8px;
+                        font-size: 12px;
+                        line-height: 22px;
+                        color: #9ca3af;
+                    ">
+                    This is an automated security email. Please do not reply.
+                    </p>
+                </td>
+                </tr>
+            </table>
+            </td>
+        </tr>
+        </table>
+    </body>
+    </html>
+    """
+
+            # =========================================
+            # EMAIL SEND
+            # =========================================
+
+            subject = f"{user.first_name}, verify your PassAts account"
+            body = f"Please verify your account: {verification_link}"
+
+            transaction.on_commit(
+                lambda: send_verification_email.delay(subject, body, html_message, user.email)
+            )
+
+            return Response(
+                {"message": "Registration successful. Verification email sent."},
+                status=status.HTTP_201_CREATED
+            )
+        except Exception:
+            traceback.print_exc()
+            raise
 
     # =========================================
     # RESEND VERIFICATION EMAIL
