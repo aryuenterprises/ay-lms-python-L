@@ -109,10 +109,16 @@ class AuthViewSet(viewsets.ViewSet):
         ).first()
 
         if existing_user:
-            return Response(
-                {"error": "Email already registered"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+
+            # Already verified → don't allow signup
+            if existing_user.is_verified:
+                return Response(
+                    {"error": "Email already registered"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Existing but NOT verified → reuse the same record
+            existing_user.delete()
 
         free_plan = Subscription.objects.filter(
             name__iexact="Free",
