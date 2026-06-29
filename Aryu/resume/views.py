@@ -59,7 +59,6 @@ logger = logging.getLogger(__name__)
 
 SIGNING_SALT = "resume-email-verification"
 
-
 class AuthViewSet(viewsets.ViewSet):
 
     permission_classes = [AllowAny]
@@ -104,7 +103,12 @@ class AuthViewSet(viewsets.ViewSet):
         phone = validated_data["phone"].strip()
         password = validated_data["password"]
 
-        if ResumeRegistration.objects.filter(email=email).exists():
+        existing_user = ResumeRegistration.objects.filter(
+            email=email,
+            is_deleted=False
+        ).first()
+
+        if existing_user:
             return Response(
                 {"error": "Email already registered"},
                 status=status.HTTP_400_BAD_REQUEST
