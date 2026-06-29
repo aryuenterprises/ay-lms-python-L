@@ -1424,6 +1424,8 @@ class StudentProfileSerializer(serializers.ModelSerializer):
             qs, many=True,
             context={'request': self.context.get('request'), 'student': obj}
         ).data
+    def get_converter(self,obj):
+        return obj.converter
 
 class StudentUpdateSerializer(serializers.ModelSerializer):
     school_student = School_StudentSerializer(required=False)
