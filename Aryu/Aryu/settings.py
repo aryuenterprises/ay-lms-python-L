@@ -295,51 +295,7 @@ SIMPLE_JWT = {
 
 }
 
-SERVER_ROOT = Path("/var/www/ay-lms-python-L")
 
-LOGGING = {
-    "version": 1,
-    "disable_existing_loggers": False,
-
-    "formatters": {
-        "simple": {
-            "format": "[{levelname}] {asctime} {name} :: {message}",
-            "style": "{",
-        },
-        "verbose": {
-            "format": "[{levelname}] {asctime} {name} :: {message}",
-            "style": "{",
-        },
-    },
-
-    "handlers": {
-        "webhook_file": {
-            "level": "DEBUG",
-            "class": "logging.FileHandler",
-            "filename": SERVER_ROOT / "logs" / "razorpay_webhook.log",
-            "formatter": "verbose",
-        },
-        "console": {
-            "class": "logging.StreamHandler",
-            "formatter": "simple",
-        },
-    },
-
-    "loggers": {
-        # Razorpay logger only
-        "razorpay_webhook": {
-            "handlers": ["webhook_file"],
-            "level": "DEBUG",
-            "propagate": False,
-        },
-
-        # Everything else
-        "": {
-            "handlers": ["console"],
-            "level": "INFO",
-        },
-    },
-}
 
 AUTHENTICATION_BACKENDS = [
     "axes.backends.AxesStandaloneBackend",
