@@ -224,12 +224,12 @@ class CourseSerializer(serializers.ModelSerializer):
                 "end_time": b.end_time,
                 "trainers": [
                     {
-                        "trainer_id": trainer.trainer_id,
-                        "trainer_name": trainer.full_name,
+                        "trainer_id": t.trainer_id,
+                        "trainer_name": t.full_name,
+                        "employee_id": t.employee_id,
                     }
-                    for trainer in b.trainers.all()
+                    for t in b.trainers.all()
                 ]
-
             } for b in batches_qs
         ]
     
