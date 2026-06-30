@@ -16,7 +16,7 @@ from batches.models import ClassSchedule
 from django.db.models import F, ExpressionWrapper, DateTimeField, Q
 
 
-class StudentDashboardService:
+class   StudentDashboardService:
 
     CACHE_TIMEOUT = 60
 
@@ -115,7 +115,7 @@ class StudentDashboardService:
                 batch_end_time=Max("new_batches__end_time"),
                 batch_start_date=Min("new_batches__start_date"),
                 batch_end_date=Max("new_batches__end_date"),
-                trainer_name=Min("new_batches__trainer__full_name")
+                trainer_name=Min("new_batches__trainers__full_name")   # ✅
             )
             .values(
                 "course_id",
@@ -126,7 +126,7 @@ class StudentDashboardService:
                 "batch_start_time",
                 "batch_end_time",
                 "batch_start_date",
-                "batch_end_date"
+                "batch_end_date",
             )
         )
 
@@ -282,7 +282,6 @@ class StudentDashboardService:
     # ---------------------------------------------------------
 
     def get_assignment_stats(self):
-
         courses = Course.objects.filter(
             Q(new_batches__students=self.student_id) |
             Q(batchcoursetrainer__student_id=self.student_id),
@@ -292,30 +291,43 @@ class StudentDashboardService:
         result = []
 
         for course in courses:
+            # ✅ all assignments for this course
             assignments = Assignment.objects.filter(
-                course_id=course.course_id,
+                course=course,
                 is_archived=False
             )
 
             total = assignments.count()
 
+            # ✅ completed assignments
             completed = Submission.objects.filter(
                 student_id=self.student_id,
                 assignment__in=assignments
-            ).values("assignment_id").distinct().count()
+            ).values('assignment_id').distinct().count()
 
             pending = total - completed
 
             result.append({
                 "course_id": course.course_id,
                 "course_name": course.course_name,
-                "total_assessments": total,
-                "completed": completed,
-                "pending": pending,
+                "total_assignments": total,
+                "completed_assignments": completed,
+                "pending_assignments": pending
             })
 
         return result
-            
+
+        for assignment in assignments:
+            result.append({
+                "assignment_id": assignment.id,   # ✅ correct field
+                "assignment_name": assignment.title,
+                # "description": assignment.description,
+                "course_id": assignment.course.course_id if assignment.course else None,
+                "course_name": assignment.course.course_name if assignment.course else None,
+                "status": "Completed" if assignment.id in submitted_ids else "Pending"
+            })
+
+        return result  
         
 
     # ---------------------------------------------------------
@@ -465,8 +477,7 @@ class StudentDashboardService:
     # ---------------------------------------------------------
 
     def get_announcements(self):
-
-        return list(
+        data = list(
             Announcement.objects
             .filter(
                 audience__in=["all", "students"],
@@ -475,7 +486,22 @@ class StudentDashboardService:
             .values(
                 "title",
                 "content",
-                "created_at"
+                "created_at",
+                "content_pic",
+                "background_pic",
             )
             .order_by("-created_at")[:5]
         )
+
+        for item in data:
+            if item["content_pic"]:
+                item["content_pic_url"] = f"https://portal.aryuacademy.com/api/media/{item['content_pic']}"
+            else:
+                item["content_pic_url"] = None
+
+            if item["background_pic"]:
+                item["background_pic_url"] = f"https://portal.aryuacademy.com/api/media/{item['background_pic']}"
+            else:
+                item["background_pic_url"] = None
+
+        return data
