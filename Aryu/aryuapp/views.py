@@ -5277,7 +5277,7 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         if user_type in ['tutor', 'trainer']:
             trainer_student_ids = (
                 NewBatch.objects.filter(
-                    trainer__trainer_id=user.trainer_id,
+                    trainers__trainer_id=user.trainer_id,
                     is_archived=False
                 )
                 .values_list('students__student_id', flat=True)

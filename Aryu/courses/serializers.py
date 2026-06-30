@@ -222,8 +222,14 @@ class CourseSerializer(serializers.ModelSerializer):
                 "end_date": b.end_date,
                 "start_time": b.start_time,
                 "end_time": b.end_time,
-                "trainer_id": b.trainer.trainer_id if b.trainer else None,
-                "trainer_name": b.trainer.full_name if b.trainer else None,
+                "trainers": [
+                    {
+                        "trainer_id": trainer.trainer_id,
+                        "trainer_name": trainer.full_name,
+                    }
+                    for trainer in b.trainers.all()
+                ]
+
             } for b in batches_qs
         ]
     

@@ -294,8 +294,9 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
 
 }
-
+# 
 SERVER_ROOT = Path("/var/www/ay-lms-python-L")
+# SERVER_ROOT = Path("/home/tamilselvi/Documents/GitHub/ay-lms-python-L")
 
 LOGGING = {
     "version": 1,
