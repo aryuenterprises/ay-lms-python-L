@@ -10,6 +10,7 @@ from django.views.decorators.csrf import csrf_exempt
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from rest_framework import status, viewsets
+from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 import stripe
 from rest_framework.decorators import action, api_view
@@ -21,20 +22,22 @@ from django.db.models.functions import Coalesce
 from payments.services.invoice_service import (
     InvoiceService
 )
+from decimal import Decimal, InvalidOperation
 from aryuapp.utils import *
 from aryuapp.mixins import *
 from aryuapp.models import Settings
 from aryuapp.views import flatten_errors
 from collections import defaultdict
-from rest_framework.views import APIView
+import pytz
 import json
 import logging
+from datetime import datetime
+logger = logging.getLogger(__name__)
 import requests
 from requests.auth import HTTPBasicAuth
-logger = logging.getLogger(__name__)
-import pytz
 from zoneinfo import ZoneInfo
 from datetime import timedelta
+import traceback
 from webinar.models import Webinar
 # Create your views here.
 
@@ -354,6 +357,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                                 "payment_mode": tx.metadata.get("mode") if tx.metadata else None, 
                                 "currency": tx.currency,
                                 "created_at": tx.created_at,
+                            
                             } for tx in txs
                         ]
                     })
@@ -539,6 +543,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                     if tx.course_id == course.course_id and not tx.is_archived
                 ]
 
+
             # Calculate paid amount (only successful payments)
             paid_amount = sum(
                 float(tx.amount) 
@@ -640,7 +645,6 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         user = request.user
 
         if getattr(user, "user_type", "") != "super_admin":
-
             return Response(
                 {
                     "success": False,
@@ -655,7 +659,6 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         ).first()
 
         if not transaction:
-
             return Response(
                 {
                     "success": False,
@@ -663,6 +666,61 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 },
                 status=404
             )
+
+        # ---------- Check if course fee is already completed ----------
+        if "amount" in request.data:
+
+            student = transaction.student
+            course = transaction.course
+
+            if student and course:
+
+                final_fee = Decimal(str(course.fee or 0))
+
+                if hasattr(student, "course_fee") and student.course_fee:
+                    try:
+                        new_amount = Decimal(str(request.data["amount"]))
+                    except (InvalidOperation, KeyError, TypeError):
+                        return Response(
+                            {
+                                "success": False,
+                                "message": "Invalid payment amount."
+                            },
+                            status=400
+                        )
+
+                already_paid = Decimal(
+                    str(
+                        PaymentTransaction.objects.filter(
+                            student=student,
+                            course=course,
+                            is_archived=False
+                        )
+                        .exclude(pk=transaction.pk)
+                        .aggregate(total=Sum("amount"))["total"] or 0
+                    )
+                )
+
+                new_amount = Decimal(str(request.data["amount"]))
+
+                total_paid = already_paid + new_amount
+
+                if total_paid > final_fee:
+                    remaining = final_fee - already_paid
+
+                    return Response(
+                        {
+                            "success": False,
+                            "message": (
+                                f"Payment exceeds the remaining course fee. "
+                                f"Course Fee: ₹{final_fee}, "
+                                f"Already Paid: ₹{already_paid}, "
+                                f"Remaining Balance: ₹{remaining}."
+                            )
+                        },
+                        status=400
+                    )
+               
 
         serializer = PaymentTransactionUpdateSerializer(
             transaction,
@@ -672,13 +730,15 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         )
 
         if not serializer.is_valid():
+            first_error = next(iter(serializer.errors.values()))[0]
 
             return Response(
-                {
+                {   
                     "success": False,
-                    "errors": serializer.errors
+                    "message": str(first_error),
+                    "errors": serializer.errors,
                 },
-                status=400
+                status=400,
             )
 
         serializer.save()
@@ -2011,7 +2071,7 @@ class RazorpaySettlementViewSet(viewsets.ViewSet):
                 "success": False,
                 "message": str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)    
-    
+        
 @api_view(['GET'])
 def stripe_success(request):
     return Response({"success": True, "message": "Payment successful!"})
