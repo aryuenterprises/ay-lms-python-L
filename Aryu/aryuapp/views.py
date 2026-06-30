@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from .models import *
 from .serializer import *
 from rest_framework.viewsets import ReadOnlyModelViewSet, ViewSet
-from rest_framework.exceptions import ValidationError, NotFound, AuthenticationFailed, PermissionDenied
+from rest_framework.exceptions import ValidationError, NotFound, AuthenticationFailed,PermissionDenied
 from .auth import CustomJWTAuthentication
 from rest_framework.filters import OrderingFilter
 from django_filters.rest_framework import DjangoFilterBackend
@@ -36,40 +36,27 @@ from django.conf import settings
 from django.contrib.auth.hashers import *
 from django.db.models import Q, Count, F, Max, ExpressionWrapper, Prefetch, DateField, Case, When,  IntegerField, Sum, Avg, Value, CharField,Subquery, Window
 import holidays
+from core.permissions import IsSelfOrAdmin, IsAdminOrTrainer
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from django.db.models.functions import Concat,Lag, JSONObject, Coalesce
 from django.contrib.postgres.aggregates import JSONBAgg
-from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from .utils import *
 from .mixins import *
 from webinar.models import Webinar, WebinarRegistration, WebinarAttendanceSummary, WebinarFeedback
 from .services.dashboard.student_dashboard_service import StudentDashboardService
 from courses.models import Course, CourseCategory
 from batches.models import NewBatch, ClassSchedule, Batch, BatchCourseTrainer
-from core.permissions import verify_admin_privileges
 from payments.models import PaymentTransaction
+from ebook.models import EbookRegistration
+from django.core.cache import cache
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.pagination import PageNumberPagination
-from core.views import apply_custom_throttle, secure_throttle
-import traceback
-import logging     
-logger = logging.getLogger(__name__)  
-import traceback
-from django.utils import timezone
-from .certificate_filler import generate_and_send_certificate_pdf
-from datetime import datetime
-import pytz
 from rest_framework_simplejwt.tokens import RefreshToken
-from ebook.models import EbookRegistration
-
+from django.contrib.auth.hashers import make_password
 
 class IsAdminOrSuperAdmin(BasePermission):
     def has_permission(self, request, view):
         return getattr(request.user, "user_type", "") in ["admin", "super_admin"]
-    
-class IsAdminSuperAdminOrTutor(BasePermission):
-    def has_permission(self, request, view):
-        user = request.user
-        return user and user.is_authenticated and user.user_type in ["admin", "super_admin", "tutor"]
     
 class SettingsPicsViewSet(viewsets.ModelViewSet):
     login_required = False
@@ -140,15 +127,15 @@ class SettingsViewSet(viewsets.ModelViewSet):
         return qs
 
     def list(self, request, *args, **kwargs):
+        user = request.user
 
-        is_allowed, throttle_response = apply_custom_throttle(request, rate_limit=3, period=60)
-        if not is_allowed:
-            return throttle_response
+        allowed_types = ["super_admin", "admin"]
 
-        db_user_type, error_response = verify_admin_privileges(request)
-        if error_response:
-            return error_response
-        
+        if user.user_type not in allowed_types:
+            return Response({
+                "success": False,
+                "message": "You are not authorized to access this resource."
+            }, status=403)
         queryset = self.get_queryset()
         serializer = self.get_serializer(queryset, many=True)
         datas = serializer.data
@@ -165,16 +152,6 @@ class SettingsViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
@@ -185,16 +162,6 @@ class SettingsViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
-
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
 
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
@@ -208,16 +175,6 @@ class SettingsViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
 
     def is_archived(self, request, pk=None):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             instance = self.get_object()
             instance.is_archived = True
@@ -288,16 +245,6 @@ class CmsViewSet(viewsets.ModelViewSet):
             }, status=200)
 
     def list(self, request, *args, **kwargs):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             queryset = self.filter_queryset(self.get_queryset())
             serializer = self.get_serializer(queryset, many=True)
@@ -310,16 +257,6 @@ class CmsViewSet(viewsets.ModelViewSet):
             return Response({'success': False, 'message': str(e)}, status=200)
 
     def create(self, request, *args, **kwargs):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             serializer = self.get_serializer(data=request.data)
             if serializer.is_valid():
@@ -339,16 +276,6 @@ class CmsViewSet(viewsets.ModelViewSet):
             return Response({'success': False, 'message': str(e)}, status=200)
 
     def update(self, request, *args, **kwargs):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         instance = self.get_object()
         if isinstance(instance, Response):
             return instance  # Return error response
@@ -372,16 +299,6 @@ class CmsViewSet(viewsets.ModelViewSet):
             return Response({'success': False, 'message': str(e)}, status=200)
 
     def is_archived(self, request, *args, **kwargs):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         instance = self.get_object()
         if isinstance(instance, Response):
             return instance  # Return error response
@@ -476,7 +393,6 @@ class CustomRefreshToken(RefreshToken):
         )
 
         return token
-
     
 class Login(LoggingMixin, APIView):
     permission_classes = [AllowAny] 
@@ -574,16 +490,21 @@ class Login(LoggingMixin, APIView):
                     cookie_secure = False
                     cookie_samesite = "Lax"
                 else:
-                    cookie_domain = ".aryuacademy.com"
+                    cookie_domain = ".aryuprojects.com"
                     cookie_secure = True
                     cookie_samesite = "Lax"
 
                 
                 response.set_cookie(
-                        key="refresh_token",
-                        value=refresh_token,
-                        httponly=True,
-                    )
+                    key="refresh_token",
+                    value=refresh_token,
+                    httponly=True,
+                    secure=cookie_secure,
+                    samesite=cookie_samesite,
+                    domain=cookie_domain,
+                    path="/",
+                    max_age=30 * 24 * 60 * 60,
+                )
 
                 return response
             
@@ -666,7 +587,7 @@ class Login(LoggingMixin, APIView):
 
                     # 🔥 convert old password to hashed
                     if password == ebook_user.password:
-                        from django.contrib.auth.hashers import make_password
+                        
                         ebook_user.password = make_password(password)
                         ebook_user.save()
 
@@ -815,6 +736,7 @@ class Login(LoggingMixin, APIView):
     def get(self, request):
         return Response({'message': 'Send POST request to login.'})
 
+
 class CustomTokenRefreshView(APIView):
     permission_classes = [AllowAny]
     serializer_class = CustomTokenRefreshSerializer
@@ -837,17 +759,37 @@ class CustomTokenRefreshView(APIView):
             status=200
         )
 
-        # Save NEW rotated refresh token
+        # Save NEW rotated refresh token - USE SAME SETTINGS AS LOGIN
         if validated_data.get("refresh_token_obj"):
+            # Determine cookie settings based on origin (same as login)
+            origin = request.headers.get("Origin", "")
+            
+            LOCAL_ORIGINS = {
+                "http://localhost:3000",
+                "http://localhost:8000",
+                "http://127.0.0.1:8000",
+            }
+
+            if origin in LOCAL_ORIGINS:
+                cookie_domain = None
+                cookie_secure = False
+                cookie_samesite = "Lax"
+            else:
+                cookie_domain = ".aryuprojects.com"
+                cookie_secure = True
+                cookie_samesite = "Lax"  # ✅ Changed from "None" to "Lax"
+
             response.set_cookie(
                 key="refresh_token",
                 value=validated_data["refresh_token_obj"],
                 httponly=True,
+                secure=cookie_secure,
+                samesite=cookie_samesite,  # ✅ Match login
+                domain=cookie_domain,       # ✅ Match login
                 max_age=30 * 24 * 60 * 60,
-                samesite="Lax",
-                secure=False,  # True in production HTTPS
+                path="/",                   # ✅ Changed from "api/refresh/token/" to "/"
+                expires=None
             )
-
         return response
     
 class UserViewSet(viewsets.ModelViewSet):
@@ -858,106 +800,53 @@ class UserViewSet(viewsets.ModelViewSet):
     lookup_field = "id"
 
     def get_queryset(self):
-        qs = super().get_queryset().filter(is_archived=False)
-        
-        # Data Isolation: Prevent standard admins from even viewing/querying Super Admins
-        requesting_user = self.request.user
-        if requesting_user.user_type == "admin":
-            qs = qs.exclude(user_type="super_admin")
-            
+        qs = super().get_queryset().filter(is_archived=False)  # exclude archived users
         role_id = self.request.query_params.get("role_id")
         if role_id:
             qs = qs.filter(role_id=role_id)
         return qs
 
-    @secure_throttle(rate_limit=5, period=60)
-    def create(self, request, *args, **kwargs):
-        user = request.user
-        if user.user_type not in ["super_admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-        
-        payload = request.data.copy()
-        
-        # SECURE CREATE: Standard admin cannot create a Super Admin
-        if user.user_type == "admin" and payload.get("user_type") == "super_admin":
-            return Response({
-                "success": False,
-                "message": "Forbidden"
-            }, status=status.HTTP_403_FORBIDDEN)
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(
+            {"success": True, "message": "Users fetched successfully", "data": serializer.data},
+            status=status.HTTP_200_OK
+        )
 
-        serializer = self.get_serializer(data=payload, context={"request": request})
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data, context={"request": request})
         if serializer.is_valid():
             serializer.save()
-            return Response({"success": True, "message": "User created successfully", "data": serializer.data}, status=status.HTTP_200_OK)
-            
+            return Response(
+                {"success": True, "message": "User created successfully", "data": serializer.data},
+                status=status.HTTP_200_OK
+            )
+        # Direct field errors instead of generic message
         first_field, first_error = list(serializer.errors.items())[0]
-        return Response({"success": False, "message": f"{first_field}: {first_error[0]}"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"success": False, "message": f"{first_field} {first_error[0]}"},
+            status=status.HTTP_200_OK
+        )
 
-
-    @secure_throttle(rate_limit=5, period=60)
     def update(self, request, *args, **kwargs):
-        """ Handles PUT requests (Full Updates) """
-        user = request.user
-        instance = self.get_object() # Fetch the user targeted for the change
-
-        # 1. Base Role Permission Gate
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-            
-        payload = request.data.copy()
-        
-        # 2. Prevent Privileged Target Tampering
-        # An admin cannot modify an existing Super Admin account under any circumstance
-        if user.user_type == "admin" and instance.user_type == "super_admin":
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-
-        # 3. Prevent Privilege Escalation
-        # An admin cannot elevate anyone (including themselves) to a "super_admin" status
-        if user.user_type == "admin" and payload.get("user_type") == "super_admin":
-            return Response({
-                "success": False, 
-                "message": "Forbidden"
-            }, status=status.HTTP_403_FORBIDDEN)
-            
-        return super().update(request, *args, **kwargs)
-
-    @secure_throttle(rate_limit=5, period=60)
-    def partial_update(self, request, *args, **kwargs):
-        """ Handles PATCH requests (Partial Updates) """
-        user = request.user
+        partial = kwargs.pop("partial", True)
         instance = self.get_object()
+        serializer = self.get_serializer(
+            instance, data=request.data, partial=partial, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(
+            {
+                "success": True,
+                "message": "User updated successfully",
+                "data": serializer.data
+            },
+            status=status.HTTP_200_OK
+        )
 
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-            
-        payload = request.data.copy()
-        
-        # Check target account authority
-        if user.user_type == "admin" and instance.user_type == "super_admin":
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-
-        # Intercept inline role elevation injections via PATCH payload
-        if user.user_type == "admin" and payload.get("user_type") == "super_admin":
-            return Response({
-                "success": False, 
-                "message": "You cannot grant Super Admin privileges."
-            }, status=status.HTTP_403_FORBIDDEN)
-            
-        return super().partial_update(request, *args, **kwargs)
-    
-    @secure_throttle(rate_limit=5, period=60)
     def destroy(self, request, *args, **kwargs):
-
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         instance = self.get_object()
         instance.is_archived = True
         instance.save()
@@ -989,17 +878,6 @@ class RoleModulePermissionViewSet(viewsets.ViewSet):
             return RoleModulePermission.objects.none()
 
     def list(self, request):
-
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             qs = self.get_queryset()
             serializer = RoleModulePermissionSerializer(qs, many=True)
@@ -1030,16 +908,6 @@ class RoleModulePermissionViewSet(viewsets.ViewSet):
             ]
         }
         """
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             role_id = request.data.get("role_id")
             module_permissions = request.data.get("module_permissions", [])
@@ -1094,16 +962,6 @@ class RoleModulePermissionViewSet(viewsets.ViewSet):
 
         If "module_permissions" is empty or missing, all module permissions for the role will be cleared.
         """
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             role_id = request.data.get("role_id")
             module_permissions = request.data.get("module_permissions", [])
@@ -1159,16 +1017,6 @@ class RoleModulePermissionViewSet(viewsets.ViewSet):
         
     def retrieve(self, request, pk=None):
         """Retrieve single role-module permission"""
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             role_module_perm = RoleModulePermission.objects.select_related("role", "module_permission").get(pk=pk)
             serializer = RoleModulePermissionSerializer(role_module_perm)
@@ -1182,6 +1030,9 @@ class RoleViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
     lookup_field = "role_id"
+
+
+
 
     def get_queryset(self):
         try:
@@ -1222,17 +1073,8 @@ class RoleViewSet(viewsets.ViewSet):
         except Exception:
             return Role.objects.none()
     
+
     def status_update(self,request,pk=None):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             role = Role.objects.get(role_id=pk)
             role.status=not role.status
@@ -1241,18 +1083,10 @@ class RoleViewSet(viewsets.ViewSet):
         except Exception as e:
             return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
 
+
+
     def list(self, request):
         """List all roles with module permissions"""
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             qs = self.get_queryset()
             data = []
@@ -1271,16 +1105,6 @@ class RoleViewSet(viewsets.ViewSet):
             return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         serializer = self.serializer_class(
             data=request.data,
             context={'request': request}  # pass request here
@@ -1295,16 +1119,7 @@ class RoleViewSet(viewsets.ViewSet):
         }, status=status.HTTP_200_OK)
 
     def update(self, request, pk=None):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
+        """Update role name"""
         try:
             role = Role.objects.get(role_id=pk)
             name = request.data.get("name")
@@ -1321,16 +1136,6 @@ class RoleViewSet(viewsets.ViewSet):
     
     def retrieve(self, request, pk=None):
         """Retrieve single role with permissions"""
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             role = Role.objects.get(pk=pk)
             role_perms = RoleModulePermission.objects.filter(role=role).select_related("module_permission")
@@ -1347,16 +1152,6 @@ class RoleViewSet(viewsets.ViewSet):
             return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
         
     def is_archived(self, request, pk=None):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             role = Role.objects.get(role_id=pk)
             role.is_archived = True
@@ -1383,16 +1178,6 @@ class ModulePermissionViewSet(viewsets.ViewSet):
 
     def list(self, request):
         """List all modules with actions"""
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             qs = self.get_queryset()
             serializer = ModulePermissionSerializer(qs, many=True)
@@ -1409,16 +1194,6 @@ class ModulePermissionViewSet(viewsets.ViewSet):
             "actions": ["create","read","update","delete"]
         }
         """
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             module_name = request.data.get("module")
             actions = request.data.get("actions", [])
@@ -1436,16 +1211,6 @@ class ModulePermissionViewSet(viewsets.ViewSet):
             return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
 
     def update(self, request, pk=None):
-
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
         
         if not pk:
             return Response(
@@ -1480,16 +1245,6 @@ class ModulePermissionViewSet(viewsets.ViewSet):
         
     def retrieve(self, request, pk=None):
         """Retrieve single module permission by id"""
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             module = ModulePermission.objects.get(module_id=pk)
             serializer = ModulePermissionSerializer(module)
@@ -1500,16 +1255,6 @@ class ModulePermissionViewSet(viewsets.ViewSet):
             return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
     
     def is_archived(self, request, pk=None):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             modules = ModulePermission.objects.get(module_id=pk)
             modules.is_archived = True
@@ -1582,6 +1327,8 @@ class UserDashboardView(APIView):
                 return self._get_employer_dashboard(payload)
             elif user_type == "super_admin":
                 return self._get_super_admin_dashboard(payload)
+            elif user_type == "ebookuser":
+                return self._get_ebook_dashboard(payload,request)
             else:
                 return Response({"success": False, "message": "Unknown user type."}, status=200)
         except Exception as e:
@@ -1609,7 +1356,43 @@ class UserDashboardView(APIView):
             "user_type": "student",
             "data": data
         })
-    
+    def _get_ebook_dashboard(self, payload, request):
+        from ebook.models import EbookRegistration
+
+        email = payload.get("email")
+
+        if not email:
+            return Response({
+                "success": False,
+                "message": "Email missing in token"
+            }, status=200)
+
+        # ✅ Get purchased ebooks
+        registrations = EbookRegistration.objects.filter(
+            email__iexact=email,
+            is_paid=True
+        ).select_related("ebook")
+
+        ebooks = []
+
+        for reg in registrations:
+            ebook = reg.ebook
+
+            ebooks.append({
+                "ebook_id": ebook.id,
+                "title": ebook.title,
+                "description": ebook.description,
+                "price": ebook.price,
+                "pdf": f"{settings.MEDIA_BASE_URL}{ebook.pdf.url}" if ebook.pdf else None,
+                "image": f"{settings.MEDIA_BASE_URL}{ebook.ebook_image.url}" if ebook.ebook_image else None
+            })
+
+        return Response({
+            "success": True,
+            "user_type": "ebookuser",
+            "ebooks": ebooks
+        }, status=200)
+
     def _get_trainer_dashboard(self, payload):
         employee_id = payload.get("employee_id")
         if not employee_id:
@@ -2581,22 +2364,16 @@ class UserDashboardView(APIView):
             "message": f"Dashboard for Company {company_name}",
             "data": data
         }, status=200)
+    
 
+import traceback
+import logging     
+logger = logging.getLogger(__name__)  
 class ReportsViewSet(ViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
     
     def list(self, request):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-        
         user = request.user
         user_type = getattr(user, "user_type", "").lower()
         admin_trainer_id = getattr(user, "trainer_id", None)
@@ -2663,10 +2440,6 @@ class ReportsViewSet(ViewSet):
         }, status=200)
 
     def get_reports(self, request):
-        db_user_type, error_response = verify_admin_privileges(request)
-        if error_response:
-            return error_response
-        
         user = request.user
         user_type = getattr(user, "user_type", "").lower()
         admin_trainer_id = getattr(user, "trainer_id", None)
@@ -3833,7 +3606,8 @@ class EmployerDashboardViewSet(ViewSet):
 
         except Exception as e:
             return Response({"success": False, "message": str(e), "data": {}}, status=200)
-
+        
+    
 def jwt_required(view_func):
     def wrapped_view(request, *args, **kwargs):
         token = request.META.get('HTTP_AUTHORIZATION')
@@ -4118,7 +3892,7 @@ class StudentListAPIView(viewsets.ViewSet):
                     "category_id": unique(category_id_list),
                     "category_name": unique(category_name_list),
                     "profile_pic": (
-                        f"https://aylms.aryuprojects.com/api{s.profile_pic.url}"
+                        f"https://portal.aryuacademy.com/api{s.profile_pic.url}"
                         if s.profile_pic else None
                     ),
                     "school_student": School_StudentSerializer(s.school_student).data if getattr(s, "school_student", None) else None,
@@ -4177,6 +3951,7 @@ class StudentListAPIView(viewsets.ViewSet):
                 "success": False,
                 "message": str(e)
             })
+
 
 class StudentTicketViewSet(APIView):
     permission_classes = [IsAuthenticated]
@@ -4542,7 +4317,6 @@ class StudentTicketViewSet(APIView):
         }, status=status.HTTP_200_OK)
 
 
-
 class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
     queryset = Attendance.objects.all()
     serializer_class = AttendanceSerializer
@@ -4747,9 +4521,13 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             return Response({'success': False, 'message': 'No class scheduled today.'}, status=200)
 
         # Status
-        status_value = request.data.get('status', 'Present')
-        if status_value not in ['Present', 'Absent']:
-            status_value = 'Absent'
+        status_value = request.data.get('status', '').strip()
+
+        if not status_value:
+            return Response({
+                'success': False,
+                'message': 'Status is required.'
+            }, status=200)
 
         # Capture IP
         ip_address = None
@@ -4815,14 +4593,22 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 return Response({"success": False, "message": "Course does not belong to this new batch."}, status=200)
 
             # Prevent duplicate attendance for same day
-            if Attendance.objects.filter(
+            # Prevent duplicate SAME STATUS only
+
+            already_exists = Attendance.objects.filter(
                 student=student,
                 new_batch=new_batch,
                 course=course,
+                status=status_val,
                 date__date=scheduled_date.date()
-            ).exists():
-                return Response({"success": False, "message": "Attendance already marked."}, status=200)
+            ).exists()
 
+            if already_exists:
+
+                return Response({
+                    "success": False,
+                    "message": f"{status_val} already marked."
+                }, status=200)
             # Create attendance with new_batch, old batch always null
             attendance = Attendance.objects.create(
                 student=student,
@@ -5019,9 +4805,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     })
 
                     current['current_break_in'] = None
-                    # logs = list(grouped.values())
-
-        logs = list(grouped.values())
+                    logs = list(grouped.values())
 
         # ======================================================
         # CALCULATIONS
@@ -5214,6 +4998,240 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             'data': logs
 
         }, status=200)
+    
+    @action(detail=True, methods=['get'], url_path='status')
+    def attendance_status(self, request, student_id=None):
+        ist = pytz.timezone("Asia/Kolkata")
+        start_date_str = request.query_params.get("start_date")
+        end_date_str = request.query_params.get("end_date")
+
+        # Parse start and end dates
+        try:
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").astimezone(ist).date() if start_date_str else None
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date() if end_date_str else timezone.now().astimezone(ist).date()
+        except ValueError:
+            return Response({
+                "success": False,
+                "message": "Invalid date format. Use YYYY-MM-DD."
+            }, status=status.HTTP_200_OK)
+
+        # Fetch student
+        try:
+            student = Student.objects.get(student_id=student_id)
+        except Student.DoesNotExist:
+            return Response({
+                "success": False,
+                "message": "Student not found."
+            }, status=status.HTTP_200_OK)
+
+        # ---------------------------------------------------------------------
+        # SUPPORT BOTH: old BatchSchedule AND new NewBatch-generated schedules
+        # ---------------------------------------------------------------------
+
+        # OLD batch schedules (existing)
+        scheduled_old = ClassSchedule.objects.filter(
+            batch__batchcoursetrainer__student=student,
+            scheduled_date__lte=end_date,
+            is_archived=False
+        ).select_related("course", "batch", "trainer")
+
+        # NEW batch schedules
+        scheduled_new = ClassSchedule.objects.filter(
+            new_batch__students=student,
+            scheduled_date__lte=end_date,
+            is_archived=False
+        ).select_related("course", "new_batch", "trainer")
+
+        # Combine both
+        scheduled_classes = (scheduled_old | scheduled_new).order_by("-scheduled_date", "-start_time")
+
+        class_statuses = []
+        attended_count = 0
+        not_attended_count = 0
+
+        for sched in scheduled_classes:
+
+            # -----------------------------------------------------------------
+            # DETECT IF IT IS OLD BATCH OR NEW BATCH
+            # -----------------------------------------------------------------
+            using_new_batch = hasattr(sched, "new_batch") and sched.new_batch is not None
+
+            if using_new_batch:
+                batch_name = sched.new_batch.title
+                title = sched.new_batch.title
+                batch_obj = None
+                new_batch_obj = sched.new_batch
+            else:
+                batch_name = sched.batch.batch_name
+                title = sched.batch.title
+                batch_obj = sched.batch
+                new_batch_obj = None
+
+            # -----------------------------------------------------------------
+            # TRAINER attendance check
+            # -----------------------------------------------------------------
+            trainer_attendance = TrainerAttendance.objects.filter(
+                Q(
+                    course=sched.course,
+                    date__date=sched.scheduled_date,
+                    trainer=sched.trainer
+                ) & (Q(status__iexact="Login") | Q(status__iexact="Logout"))
+            ).exists()
+
+            if not trainer_attendance:
+                status_str = "Leave"
+            else:
+                # -------------------------------------------------------------
+                # STUDENT attendance check for both batch types
+                # -------------------------------------------------------------
+                if using_new_batch:
+                    student_attendance = Attendance.objects.filter(
+                        student=student,
+                        course=sched.course,
+                        new_batch=new_batch_obj,
+                        date__date=sched.scheduled_date
+                    ).exists()
+                else:
+                    student_attendance = Attendance.objects.filter(
+                        student=student,
+                        course=sched.course,
+                        batch=batch_obj,
+                        date__date=sched.scheduled_date
+                    ).exists()
+
+                status_str = "Present" if student_attendance else "Absent"
+
+                if student_attendance:
+                    attended_count += 1
+                else:
+                    not_attended_count += 1
+
+            class_statuses.append({
+                "id": sched.schedule_id,
+                "date": sched.scheduled_date.strftime("%Y-%m-%d"),
+                "start_time": sched.start_time.strftime("%I:%M %p"),
+                "course": sched.course.course_name,
+                "batch": batch_name,
+                "title": title,
+                "trainer": sched.trainer.full_name if sched.trainer else None,
+                "status": status_str
+            })
+
+        total_classes = attended_count + not_attended_count
+        attendance_percentage = (attended_count / total_classes * 100) if total_classes > 0 else 0
+
+        return Response({
+            "success": True,
+            "student": f"{student.first_name or ''} {student.last_name or ''}".strip(),
+            "total_classes": total_classes,
+            "attended": attended_count,
+            "not_attended": not_attended_count,
+            "attendance_percentage": round(attendance_percentage, 2),
+            "classes": class_statuses
+        }, status=status.HTTP_200_OK)
+    
+    @action(detail=False,methods=['get'],url_path='attendance-logs')
+    def attendance_logs(self, request):
+
+        student_id = request.GET.get("student_id")
+        course_id = request.GET.get("course_id")
+        batch_id = request.GET.get("batch_id")
+        date = request.GET.get("date")
+
+        queryset = Attendance.objects.all()
+
+        if student_id:
+            queryset = queryset.filter(student__student_id=student_id)
+
+        if course_id:
+            queryset = queryset.filter(course_id=course_id)
+
+        if batch_id:
+            queryset = queryset.filter(new_batch_id=batch_id)
+
+        if date:
+            queryset = queryset.filter(date__date=date)
+
+        queryset = queryset.order_by("date")
+
+        data = []
+
+        for obj in queryset:
+
+            dt = obj.date
+
+            if timezone.is_naive(dt):
+                dt = timezone.make_aware(
+                    dt,
+                    timezone.get_current_timezone()
+                )
+
+            dt = timezone.localtime(dt)
+
+            data.append({
+                "id": obj.id,
+                "status": obj.status,
+                "datetime": dt.strftime(
+                    "%Y-%m-%d %I:%M %p"
+                )
+            })
+
+        return Response({
+            "success": True,
+            "data": data
+        })
+    
+    @action(detail=False,methods=['put'],url_path='update-attendance-log')
+    def update_attendance_log(self, request, student_id=None):
+
+        attendance_id = (
+            request.data.get("attendance_id")
+            or request.data.get("id")
+        )
+
+        datetime_value = request.data.get("datetime")
+        status_value = request.data.get("status")
+
+        if not attendance_id:
+            return Response({
+                "success": False,
+                "message": "attendance_id is required"
+            })
+
+        try:
+            attendance = Attendance.objects.get(
+                id=attendance_id
+            )
+
+        except Attendance.DoesNotExist:
+
+            return Response({
+                "success": False,
+                "message": f"Attendance {attendance_id} not found"
+            })
+
+        if datetime_value:
+
+            naive_dt = datetime.strptime(
+                datetime_value,
+                "%Y-%m-%d %I:%M %p"
+            )
+
+            attendance.date = timezone.make_aware(
+                naive_dt,
+                timezone.get_current_timezone()
+            )
+
+        if status_value:
+            attendance.status = status_value
+
+        attendance.save()
+
+        return Response({
+            "success": True,
+            "message": "Attendance updated successfully"
+        })
+
 class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
 
     permission_classes = [IsAuthenticated]
@@ -5241,7 +5259,7 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
             .prefetch_related(
                 "topic_statuses__topic__course",
                 "new_batches__course",
-                "new_batches__trainer",
+                "new_batches__trainers",
                 "batchcoursetrainer_set__course",
                 "batchcoursetrainer_set__trainer",
                 Prefetch(
@@ -5451,7 +5469,7 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
                 status=404
             )
 
-        MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api/media/"
+        MEDIA_BASE_URL = "https://portal.aryuacademy.com/api/media/"
 
         # ----------------------------------
         # 1. STUDENT-SPECIFIC BATCHES
@@ -6355,110 +6373,6 @@ class CertificateViewSet(viewsets.ModelViewSet):
             "data": serializer.data
         }, status=status.HTTP_200_OK)
     
-    @transaction.atomic
-    def create(self, request, *args, **kwargs):
-
-        student_id = request.data.get("student")
-
-        if not student_id:
-            return Response(
-                {
-                    "success": False,
-                    "message": "Student ID is required."
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        try:
-            student = Student.objects.get(student_id=student_id)
-
-        except Student.DoesNotExist:
-            return Response(
-                {
-                    "success": False,
-                    "message": "Student not found."
-                },
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        # Prevent duplicate certificates
-        if Certificate.objects.filter(
-            student=student,
-            is_archived=False
-        ).exists():
-
-            return Response(
-                {
-                    "success": False,
-                    "message": "Certificate already exists for this student."
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Get student's active batch
-        batch = (
-            student.new_batches
-            .filter(
-                is_archived=False,
-                status=True
-            )
-            .select_related("course")
-            .first()
-        )
-
-        if not batch:
-            return Response(
-                {
-                    "success": False,
-                    "message": "Student is not assigned to any active batch."
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        course = batch.course
-
-        certificate = Certificate.objects.create(
-
-            student=student,
-
-            # certificate_number is automatically generated
-            # by the model's save() method
-
-            student_name=student.first_name,  # Change if your field name differs
-
-            course_name=course.course_name,
-
-            course_duration=course.duration,
-
-            organization_name=request.data.get(
-                "organization_name",
-                "Aryu Academy"
-            ),
-
-            notes=request.data.get("notes"),
-
-            created_by=str(request.user.id),
-
-            created_by_type=(
-                "super_admin"
-                if request.user.is_superuser
-                else "admin"
-            ),
-        )
-
-        generate_and_send_certificate_pdf(certificate.id)
-
-        serializer = self.get_serializer(certificate)
-
-        return Response(
-            {
-                "success": True,
-                "message": "Certificate created successfully.",
-                "data": serializer.data,
-            },
-            status=status.HTTP_201_CREATED
-        )
-    
     @action(detail=False, methods=['get'], url_path='<student_id>' )
     def student_certificates(self, request, student_id=None):
         certificates = Certificate.objects.filter(student=student_id)
@@ -6494,9 +6408,9 @@ class CertificateViewSet(viewsets.ModelViewSet):
 #     email.content_subtype = "html"
 #     email.send(fail_silently=False)    
 
+
 class RegisterThrottle(AnonRateThrottle):
     rate = "5/hour"
-
 
 class PublicTrainerRegisterAPIView(APIView):
     permission_classes = [AllowAny]
@@ -6583,11 +6497,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     permission_classes      = [IsAuthenticated, IsAdminOrSuperAdmin]
     authentication_classes  = [CustomJWTAuthentication]
     lookup_field            = "employee_id"
-    
-    def get_permissions(self):
-        if self.action in ["student_list", "trainer_student_profile"]:
-            return [IsAuthenticated(), IsAdminSuperAdminOrTutor()]
-        return [IsAuthenticated(), IsAdminOrSuperAdmin()]
+ 
     # ── Base queryset — used by list, retrieve, update, destroy ──────────
  
     def get_queryset(self):
@@ -6609,10 +6519,6 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
         return queryset.order_by("employee_id")
   
     def retrieve(self, request, *args, **kwargs):
-        user = request.user
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             trainer = self.get_object()   # uses optimised get_queryset above
         except Trainer.DoesNotExist:
@@ -6660,10 +6566,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     # ── Create ───────────────────────────────────────────────────────────
  
     def create(self, request, *args, **kwargs):
-        user = request.user
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-        
+
         tutors_module = (
             ModulePermission.objects
             .filter(module__iexact="Tutors")
@@ -6686,7 +6589,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
             return Response(
                 {
                     "success": False,
-                    "message": self._get_first_error_message(serializer.errors),
+                    "message": serializer.errors,
                 },
                 status=status.HTTP_200_OK,
             )
@@ -6722,10 +6625,6 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     # ── Update ───────────────────────────────────────────────────────────
  
     def update(self, request, *args, **kwargs):
-        user = request.user
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-        
         tutors_module = (
             ModulePermission.objects
             .filter(module__iexact="Tutors")
@@ -6766,10 +6665,6 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     
     @action(detail=True, methods=['get'], url_path='courses')
     def get_courses_taken(self, request, employee_id=None):
-        user = request.user
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             trainer = self.get_object()  # Trainer retrieved using lookup_field
         except Trainer.DoesNotExist:
@@ -6789,7 +6684,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
 
         # ========== 2. Courses from NewBatch Model ==========
         active_new_batches = NewBatch.objects.filter(
-            trainer=trainer,
+            trainers=trainer,
             status=True,
             is_archived=False
         )
@@ -6814,10 +6709,6 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
         
     @action(detail=False, methods=['get'], url_path='admins')
     def list_admins(self, request):
-        user = request.user
-        if user.user_type not in ["super_admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             user = request.user
             user_created_id = getattr(user, "trainer_id", None)  # For admin
@@ -6877,9 +6768,9 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                 }
 
                 for t in trainers_qs
-            ] 
+            ]
             trainers_count = trainers_qs.count()
-            roles = Role.objects.filter(is_archived=False)
+            roles = Role.objects.filter(is_archived=False).values("role_id", "name")
             role = RoleSerializer(roles, many=True).data
 
             return Response({
@@ -6888,78 +6779,32 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                 "trainers_count": trainers_count,
                 "roles": role
             }, status=200)
-    
+
         except Exception as e:
-            traceback.print_exc()
             return Response({
                 "success": False,
                 "message": str(e)
-            }, status=500)
-         
+            }, status=200)
+            
     @action(detail=False, methods=['get'], url_path='ad_employee/(?P<employee_id>[^/.]+)')
     def admin_profile(self, request, employee_id=None):
-        user = request.user
-        if user.user_type not in ["super_admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-        
         try:
-            # =============================================================
-            # SECURE GATE 2: CRITICAL - EXCLUSIVE Super Admin Verification
-            # =============================================================
-            db_user = User.objects.filter(id=request.user.id, is_archived=False).first()
-            if not db_user or db_user.user_type != "super_admin":
-                return Response({
-                    "success": False,
-                    "message": "Unable to process request."
-                }, status=status.HTTP_403_FORBIDDEN)
-
-            # Fetch the requested profile safely
-            try:
-                trainer = Trainer.objects.get(employee_id=employee_id, is_archived=False)
-            except Trainer.DoesNotExist:
-                return Response({
-                    "success": False,
-                    "message": "Requested profile data does not exist."
-                }, status=status.HTTP_404_NOT_FOUND)
-
-            # Data Integrity Check: Ensure this Super Admin actually owns/is permitted to view this target admin
-            user_created_id = getattr(db_user, "user_id", None)
-            
-            # Find the admin IDs created by this Super Admin to authenticate hierarchy tree
-            allowed_admin_ids = list(
-                Trainer.objects.filter(
-                    created_by=user_created_id,
-                    created_by_type="super_admin",
-                    is_archived=False
-                ).values_list("trainer_id", flat=True)
-            )
-
-            # Block request if the admin profile belongs to an entirely different hierarchy stream
-            is_owner = (trainer.created_by_type == "super_admin" and trainer.created_by == user_created_id)
-            is_sub_admin = (trainer.created_by_type == "admin" and trainer.created_by in allowed_admin_ids)
-            
-            if not (is_owner or is_sub_admin):
-                return Response({
-                    "success": False,
-                    "message": "Unable to process request."
-                }, status=status.HTTP_403_FORBIDDEN)
-
-            serializer = self.get_serializer(trainer)
-            return Response({
-                "success": True,
-                "message": "Profile retrieved successfully.",
-                "data": serializer.data,
-            }, status=status.HTTP_200_OK)
-
-        except Exception as e:
+            trainer = Trainer.objects.get(employee_id=employee_id, is_archived=False)
+        except Trainer.DoesNotExist:
             return Response({
                 "success": False,
-                "message": "Unable to safely retrieve profile information."
-            }, status=status.HTTP_400_BAD_REQUEST)        
-    
+                "message": "Trainer not found."
+            }, status=status.HTTP_200_OK)
+
+        serializer = self.get_serializer(trainer)
+        return Response({
+            "success": True,
+            "message": "Trainer profile retrieved successfully.",
+            "data": serializer.data,
+        }, status=status.HTTP_200_OK)
+        
     @action(detail=True, methods=['get'], url_path='batches')
     def get_batches(self, request, employee_id=None):
-        
         # self.get_object() will fetch the Trainer based on employee_id
         trainer = self.get_object()  # Trainer instance
 
@@ -7019,7 +6864,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
             "data": course_data
         }, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=['get'], url_path='students', permission_classes=[IsAuthenticated, IsAdminSuperAdminOrTutor])
+    @action(detail=True, methods=['get'], url_path='students')
     def student_list(self, request, employee_id=None):
         try:
             trainer = self.get_object()
@@ -7073,7 +6918,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
     
     @cache_api(prefix="trainer_student_profile", timeout=300)
-    @action(detail=False, methods=['get'], url_path=r'(?P<student_id>[^/]+)', permission_classes=[IsAuthenticated, IsAdminSuperAdminOrTutor])
+    @action(detail=False, methods=['get'], url_path=r'(?P<student_id>[^/]+)')
     def trainer_student_profile(self, request, employee_id=None, student_id=None):
         trainer = Trainer.objects.filter(employee_id=employee_id, is_archived=False).first()
         if not trainer:
@@ -7088,7 +6933,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                     "topic_statuses__topic",
                     "attendance_set",
                     "new_batches__course",
-                    "new_batches__trainer",
+                    "new_batches__trainers",
                 )
                 .first())
 
@@ -7097,7 +6942,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
 
         # courses assigned to trainer
         trainer_courses = (NewBatch.objects
-                        .filter(trainer=trainer, students=student)
+                        .filter(trainers=trainer, students=student)
                         .values_list('course_id', flat=True))
 
         serializer = StudentProfileSerializer(
@@ -7258,7 +7103,8 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
 
                 trainers_qs = trainers_qs.filter(
                     Q(created_by_type="super_admin", created_by=user_created_id) |
-                    Q(created_by_type="admin", created_by__in=admin_ids)
+                    Q(created_by_type="admin", created_by__in=admin_ids)|
+                    Q(created_by_type = "public")
                 )
 
             elif user.user_type == "admin":
@@ -7294,15 +7140,14 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
             for obj in old_batches:
                 old_batch_map[obj.trainer_id].append(obj)
 
-            new_batches = NewBatch.objects.filter(
-                is_archived=False
-            ).select_related(
-                "trainer",
-                "course__course_category"
+            new_batches = (
+                NewBatch.objects.filter(is_archived=False)
+                .select_related("course__course_category")
+                .prefetch_related("trainers")
             )
-
             for nb in new_batches:
-                new_batch_map[nb.trainer_id].append(nb)
+                for trainer in nb.trainers.all():
+                    new_batch_map[trainer.trainer_id].append(nb)
 
             trainer_data = []
 
@@ -8343,10 +8188,6 @@ class AssignmentViewSet(LoggingMixin, viewsets.ModelViewSet):
         return queryset
 
     def list(self, request, *args, **kwargs):
-        user = request.user
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-        
         queryset = self.get_queryset().filter(is_archived=False).order_by("id")
         serializer = self.get_serializer(queryset, many=True)
         return Response({
@@ -8374,12 +8215,11 @@ class AssignmentViewSet(LoggingMixin, viewsets.ModelViewSet):
             "message": "Exercises retrieved successfully",
             "data": serializer.data
         }, status=status.HTTP_200_OK)
+    
+    
+
 
     def create(self, request, *args, **kwargs):
-        user = request.user
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             course_id = request.data.get('course')
             
@@ -8528,22 +8368,22 @@ class SubmissionViewSet(LoggingMixin, viewsets.ModelViewSet):
 
         # Serialize and save submission
         serializer = self.get_serializer(data=request.data)
-        
         if serializer.is_valid():
             serializer.save(student=student, assignment=assignment)
+            # Async virus scan triggered via signal
             return Response({
                 "success": True,
-                "message": "Submission created successfully. File has passed security checks.",
+                "message": "Submission created successfully. File will be scanned for viruses.",
                 "data": serializer.data
             }, status=status.HTTP_201_CREATED)
             
-        # Cleanly format the security validation errors to send back to the frontend
+        # Convert serializer.errors to a single message string
         error_messages = []
-        for field, field_errors in serializer.errors.items():
+        for field_errors in serializer.errors.values():
             if isinstance(field_errors, list):
-                # If it's a file error, we want to show it explicitly
-                error_messages.append(f"{field.capitalize()}: {field_errors[0]}")
+                error_messages.extend(field_errors)
             elif isinstance(field_errors, dict):
+                # nested serializer errors
                 for sub_errors in field_errors.values():
                     error_messages.extend(sub_errors)
 
@@ -8551,7 +8391,7 @@ class SubmissionViewSet(LoggingMixin, viewsets.ModelViewSet):
             "success": False,
             "message": error_messages[0] if error_messages else "Validation error"
         }, status=status.HTTP_200_OK)
-    
+
     @action(detail=False, methods=['get'], url_path='<registration_id>')
     def by_student(self, request, registration_id=None):
         try:
@@ -8676,13 +8516,8 @@ class AdminfullLogViewSet(ReadOnlyModelViewSet):
     ordering_fields = ['timestamp']
 
     def list(self, request, *args, **kwargs):
-        db_user_type, error_response = verify_admin_privileges(request)
-        if error_response:
-            return error_response
         user = getattr(request, 'user_data', None)
         if not user or user.get('user_type') != 'admin':
             return Response({'error': 'Unauthorized'}, status=status.HTTP_200_OK)
         return super().list(request, *args, **kwargs)
-
-
 
