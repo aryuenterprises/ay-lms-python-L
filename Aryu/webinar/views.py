@@ -244,6 +244,10 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 {"success": False, "message": "Razorpay not configured"},
                 status=400
             )
+        
+        transaction_id = request.data.get("transaction_id")
+
+        logger.info(f"transaction id: {transaction_id}")
 
         order = client.order.create({
             "amount": int(float(amount) * 100),
@@ -257,6 +261,19 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 "description":webinar_title 
             }
         })
+
+        if transaction_id:
+            try:
+                txn = PaymentTransaction.objects.get(id=transaction_id)
+                logger.info(f"txn {txn}")
+                txn.order_id = order["id"]
+                txn.save(update_fields=["order_id", "updated_at"])
+                logger.info("txn saved")
+            except PaymentTransaction.DoesNotExist:
+                logger.error(
+                    "PaymentTransaction %s not found while saving Razorpay order_id",
+                    transaction_id,
+                )
 
         webinar = get_object_or_404(Webinar, uuid=webinar_id)
 
