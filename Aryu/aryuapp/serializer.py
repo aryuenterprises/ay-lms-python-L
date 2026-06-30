@@ -14,14 +14,11 @@ import json
 import os
 from aryuapp.mixins import NotesMixin
 from django.conf import settings
-from django.db import transaction
 import jwt
-import magic
-import uuid
-import zipfile
 import holidays
 from django.http import QueryDict
 import re
+from django.db import transaction
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError as DjangoValidationError
 from courses.models import Course
@@ -41,7 +38,6 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
             "access_token": validated_data["access"],
             "refresh_token_obj": validated_data.get("refresh")
         }
-
 
 
 class SettingsPicsSerializer(serializers.ModelSerializer):
@@ -236,10 +232,7 @@ class UserSerializer(serializers.ModelSerializer):
     role_id = serializers.PrimaryKeyRelatedField(
         queryset=Role.objects.all(), source="role", write_only=True
     )
-    
-    # Changed required=False so that profile updates without changing the password don't crash.
-    # Removed min_length=6 here so our strict validate_password logic handles length (8) exclusively.
-    password = serializers.CharField(write_only=True, required=False)
+    password = serializers.CharField(write_only=True, required=True, min_length=6)
 
     class Meta:
         model = User
@@ -250,60 +243,31 @@ class UserSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at", "created_by"]
 
-    def validate_password(self, value):
-        """
-        DRF Field-Level Validation Hook. Automatically triggers on create and update
-        whenever the 'password' key is present in the payload.
-        """
-        if len(value) < 8:
-            raise serializers.ValidationError("Password must be at least 8 characters long.")
-
-        if not re.search(r'[A-Z]', value):
-            raise serializers.ValidationError("Password must contain at least one uppercase letter.")
-
-        if not re.search(r'[a-z]', value):
-            raise serializers.ValidationError("Password must contain at least one lowercase letter.")
-
-        if not re.search(r'\d', value):
-            raise serializers.ValidationError("Password must contain at least one number.")
-
-        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', value):
-            raise serializers.ValidationError("Password must contain at least one special character.")
-
-        return value
-
-    def validate(self, attrs):
-        """
-        Object-level validation. Ensure password is submitted during user creation.
-        """
-        # If we are creating a new instance, password must be present.
-        if not self.instance and 'password' not in attrs:
-            raise serializers.ValidationError({"password": "This field is required when creating a user."})
-        return attrs
-
     def create(self, validated_data):
         request = self.context.get("request")
         
         if request and request.user:
-            role = getattr(request.user, "user_type", None)
+            role = getattr(request.user, "user_type", None)  # or from JWT payload
 
             if role in ["trainer", "admin"]:
                 validated_data["created_by"] = getattr(request.user, "trainer_id", None)
                 validated_data["created_by_type"] = role
+
             elif role == "super_admin":
                 validated_data["created_by"] = getattr(request.user, "user_id", None)
                 validated_data["created_by_type"] = role
+
             elif role == "student":
                 validated_data["created_by"] = getattr(request.user, "student_id", None)
                 validated_data["created_by_type"] = role
+
             else:
                 validated_data["created_by"] = getattr(request.user, "user_id", None)
                 validated_data["created_by_type"] = role
                 
-        password = validated_data.pop("password", None)
+        password = validated_data.pop("password")
         user = User(**validated_data)
-        if password:
-            user.set_password(password)
+        user.set_password(password)
         user.save()
         return user
 
@@ -311,7 +275,7 @@ class UserSerializer(serializers.ModelSerializer):
         password = validated_data.pop("password", None)
 
         for attr, value in validated_data.items():
-            setattr(instance, attr, value)
+            setattr(instance, attr, value)  # Only updates provided fields
 
         if password:
             instance.set_password(password)
@@ -1077,6 +1041,26 @@ class AttendanceSerializer(serializers.ModelSerializer):
 
     def get_student_name(self, obj):
         return f"{obj.student.first_name} {obj.student.last_name}"
+
+    # def validate_status(self, value):
+
+    #     allowed_statuses = [
+    #         "Login",
+    #         "Logout",
+    #         "BreakIn",
+    #         "BreakOut",
+    #         "Present",
+    #         "Absent",
+    #         "Late",
+    #         "Holiday"
+    #     ]
+
+    #     if value not in allowed_statuses:
+    #         raise serializers.ValidationError(
+    #             "Invalid attendance status."
+    #         )
+
+    #     return value
     def validate_status(self,value):
         return value
 
@@ -1173,7 +1157,8 @@ class StudentProfileSerializer(serializers.ModelSerializer):
             'contact_no', 'current_address', 'permanent_address', 'internship_required','city', 'state', 'country',"source_type",
             'parent_guardian_name', 'parent_guardian_phone', 'parent_guardian_occupation', 'internship', 'reference_name', 'reference_number', 
             'email', 'student_type', 'course', 'course_detail', 'joining_date', 'studenttopicstatus',
-            'school_student', 'college_student', 'jobseeker', 'employee', 'assignment', 'attendance', 'status', 'created_at', 'created_by', 'notes','converter'
+            'school_student', 'college_student', 'jobseeker', 'employee', 'assignment', 'attendance', 'status', 'created_at', 'created_by', 'notes','student_sub_type',
+            'converter'
         ]
 
     def _get_active_new_batches(self, obj):
@@ -1198,22 +1183,27 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         return StudentTopicStatusSerializer(qs, many=True).data
     
     def get_trainer(self, obj):
-        batches = obj.new_batches.filter(is_archived=False, status=True)
-
-        trainers = {batch.trainer for batch in batches}
-
         result = []
-        for trainer in trainers:
-            if not trainer:
-                continue
+        seen = set()
 
-            result.append({
-                "name": getattr(trainer, "full_name", None),
-                "email": getattr(trainer, "email", None),
-            })
+        batches = obj.new_batches.filter(
+            is_archived=False,
+            status=True
+        ).prefetch_related("trainers")
+
+        for batch in batches:
+            for trainer in batch.trainers.all():
+                if trainer.trainer_id in seen:
+                    continue
+
+                seen.add(trainer.trainer_id)
+
+                result.append({
+                    "name": trainer.full_name,
+                    "email": trainer.email,
+                })
 
         return result
-    
     def get_notes(self, obj):
         student_ct = ContentType.objects.get_for_model(obj)
 
@@ -1240,21 +1230,28 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         new_batches = obj.new_batches.filter(
             is_archived=False,
             status=True
-        ).select_related("course", "trainer")
+        ).select_related("course").prefetch_related("trainers")
 
         for nb in new_batches:
             if nb.batch_id in seen:
                 continue
             seen.add(nb.batch_id)
 
+            trainers = [
+                {
+                    "trainer_id": trainer.employee_id,
+                    "trainer_name": trainer.full_name,
+                }
+                for trainer in nb.trainers.all()
+            ]
+
             final_batches.append({
                 "batch_id": nb.batch_id,
                 "batch_name": nb.title,
                 "title": nb.title,
-                "course_id": nb.course.course_id,
-                "course_name": nb.course.course_name,
-                "trainer_id": nb.trainer.employee_id if nb.trainer else None,
-                "trainer_name": nb.trainer.full_name if nb.trainer else None,
+                "course_id": nb.course.course_id if nb.course else None,
+                "course_name": nb.course.course_name if nb.course else None,
+                "trainers": trainers,
                 "type": "new",
             })
 
@@ -1437,6 +1434,7 @@ class StudentUpdateSerializer(serializers.ModelSerializer):
     student_type = serializers.CharField(required=False)
     parent_guardian_occupation = serializers.CharField(required=False)
     deactivation_reason = serializers.CharField(required=False, allow_blank=True)
+    student_sub_type = serializers.CharField(required=False)
 
     # Accept JSON array string like '[1, 2, 3]'
     course_ids = serializers.CharField(write_only=True, required=False)
@@ -1450,7 +1448,7 @@ class StudentUpdateSerializer(serializers.ModelSerializer):
             'first_name', 'last_name', 'email', 'contact_no', 'current_address', 'permanent_address',
             'city', 'state', 'reference_name', 'internship_required', 'alternate_mobile_no', 'gender','country', 'parent_guardian_name', 'parent_guardian_phone', 'internship',
             'parent_guardian_occupation', 'student_type', 'dob', 'profile_pic', "source_type",
-            'course', 'course_ids', 'school_student', 'college_student', 'jobseeker', 'employee', 'status', 'deactivation_reason', 'notes'
+            'course', 'course_ids', 'school_student', 'college_student', 'jobseeker', 'employee', 'status', 'deactivation_reason', 'notes','student_sub_type'
         ]
 
     def get_course(self, obj):
@@ -1480,46 +1478,6 @@ class StudentUpdateSerializer(serializers.ModelSerializer):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
             return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
-    
-    def validate_profile_pic(self, file):
-        """
-        SECURITY GATEWAY: Deep inspect profile pictures for spoofing, XSS, and massive file sizes.
-        """
-        if not file:
-            return file
-
-        # 1. Size Limit (e.g., 5 MB maximum to prevent Memory/DoS attacks)
-        MAX_IMAGE_SIZE = 5 * 1024 * 1024
-        if file.size > MAX_IMAGE_SIZE:
-            raise serializers.ValidationError("Profile picture size exceeds the 5MB limit.")
-
-        # 2. Strict Extension Allowlist (Block .svg, .gif, .tiff, etc.)
-        ext = os.path.splitext(file.name)[1].lower()
-        allowed_extensions = {'.jpg', '.jpeg', '.png'}
-        
-        if ext not in allowed_extensions:
-            raise serializers.ValidationError(
-                f"Security Alert: Extension '{ext}' is not permitted. Only standard images (JPG, PNG, WEBP) are allowed."
-            )
-
-        # 3. Deep Content Inspection (Magic Number Check)
-        # Read the binary header to ensure it's truly an image, not a renamed script.
-        file_head = file.read(2048)
-        file.seek(0)  # CRITICAL: Reset the file pointer so Django/Pillow can process it later
-
-        true_mime_type = magic.from_buffer(file_head, mime=True)
-        allowed_mimes = {'image/jpeg', 'image/png'}
-
-        if true_mime_type not in allowed_mimes:
-            raise serializers.ValidationError(
-                "Security Alert: The file's internal binary format does not match a secure image type (Spoofed file)."
-            )
-
-        # 4. Block SVG Explicitly (Prevents Stored XSS attacks via XML)
-        if 'svg' in true_mime_type.lower() or 'xml' in true_mime_type.lower():
-            raise serializers.ValidationError("Security Alert: SVG images are blocked due to XSS vulnerabilities.")
-
-        return file
 
     def validate_contact_no(self, value):
         value = value.strip()
@@ -1793,7 +1751,6 @@ class PublicTrainerRegisterSerializer(serializers.ModelSerializer):
         trainer.save()
         return trainer
 
-
 class TrainerSerializer(serializers.ModelSerializer):
  
     profile_pic_url = serializers.SerializerMethodField()
@@ -1931,7 +1888,7 @@ class TrainerSerializer(serializers.ModelSerializer):
             # Safe fallback (used outside the optimised viewset)
             batches = (
                 NewBatch.objects
-                .filter(trainer=obj, is_archived=False)
+                .filter(trainers=obj, is_archived=False)
                 .select_related("course")
                 .prefetch_related("students")
             )
@@ -2082,7 +2039,8 @@ class TrainerSerializer(serializers.ModelSerializer):
 
         # ASSIGN BATCHES
         if batch_ids:
-            NewBatch.objects.filter(batch_id__in=batch_ids).update(trainer=trainer)
+            for batch in NewBatch.objects.filter(batch_id__in=batch_ids):
+                batch.trainers.add(trainer)
 
         return trainer
  
@@ -2105,8 +2063,13 @@ class TrainerSerializer(serializers.ModelSerializer):
 
         # UPDATE BATCHES
         if batch_ids is not None:
-            NewBatch.objects.filter(trainer=instance).update(trainer=None)
-            NewBatch.objects.filter(batch_id__in=batch_ids).update(trainer=instance)
+            if batch_ids is not None:
+
+                for batch in instance.new_batches.all():
+                    batch.trainers.remove(instance)
+
+                for batch in NewBatch.objects.filter(batch_id__in=batch_ids):
+                    batch.trainers.add(instance)
 
         return instance
       
@@ -2195,7 +2158,7 @@ class TrainerAttendanceSerializer(serializers.ModelSerializer):
         from aryuapp.models import ClassSchedule
 
         schedules = ClassSchedule.objects.filter(
-            trainer=obj.trainer,
+            trainers=obj.trainer,
             batch=obj.batch,
             course=obj.course,
             scheduled_date=obj.date.date(),
@@ -2281,26 +2244,26 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
         return instance
     
 
-# class StudentDetailSerializer(serializers.ModelSerializer):
-#     batch = serializers.SerializerMethodField()
-#     profile_pic = serializers.SerializerMethodField()
-#     class Meta:
-#         model = Student
-#         fields = [
-#             'registration_id', 'student_id', 'profile_pic', 'batch',
-#             'first_name', 'last_name', 'contact_no', 'email'
-#         ]
+class StudentDetailSerializer(serializers.ModelSerializer):
+    batch = serializers.SerializerMethodField()
+    profile_pic = serializers.SerializerMethodField()
+    class Meta:
+        model = Student
+        fields = [
+            'registration_id', 'student_id', 'profile_pic', 'batch',
+            'first_name', 'last_name', 'contact_no', 'email'
+        ]
 
-#     def get_batch(self, obj):
-#         batches = obj.new_batches.all().values(
-#             "batch_id", "title", "course__course_id", "course__course_name"
-#         )
-#         return batches
+    def get_batch(self, obj):
+        batches = obj.new_batches.all().values(
+            "batch_id", "title", "course__course_id", "course__course_name"
+        )
+        return batches
     
-#     def get_profile_pic(self, obj):
-#         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-#             return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
-#         return None
+    def get_profile_pic(self, obj):
+        if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
+            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
+        return None
 
 class TrainerForStudentSerializer(serializers.ModelSerializer):
     batch = serializers.SerializerMethodField()
@@ -2377,69 +2340,6 @@ class SubmissionSerializer(serializers.ModelSerializer):
         if obj.file and hasattr(obj.file, 'url'):
             return 'https://portal.aryuacademy.com/api' + obj.file.url
         return None
-
-    def validate_file(self, file):
-        """
-        DOCUMENT SECURITY GATEWAY: Strictly allows only PDFs and Word Documents.
-        """
-        if not file:
-            return file
-
-        # 1. DOS Protection
-        MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB is plenty for a resume
-        if file.size > MAX_UPLOAD_SIZE:
-            raise serializers.ValidationError("File size exceeds the 10MB limit.")
-
-        # 2. Filename Obliteration (Anti-Directory Traversal)
-        original_ext = os.path.splitext(file.name)[1].lower()
-        file.name = f"{uuid.uuid4().hex}{original_ext}"
-
-        # 3. Strict Extension Allowlist
-        allowed_extensions = {'.pdf', '.docx', '.doc'}
-        if original_ext not in allowed_extensions:
-            raise serializers.ValidationError(
-                f"Invalid format. Only PDF and Word documents are allowed."
-            )
-
-        # 4. Magic Byte Inspection (Anti-Spoofing)
-        file_head = file.read(2048)
-        file.seek(0)
-        true_mime_type = magic.from_buffer(file_head, mime=True)
-
-        valid_mimes = [
-            'application/pdf', 
-            'application/msword', # .doc
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' # .docx
-        ]
-        
-        if true_mime_type not in valid_mimes:
-            raise serializers.ValidationError(
-                "Security Alert: The file extension does not match its true binary format."
-            )
-
-        # 5. Deep Inspection for DOCX (Preventing XML/Zip attacks)
-        if original_ext == '.docx' or true_mime_type.endswith('document'):
-            try:
-                with zipfile.ZipFile(file, 'r') as zf:
-                    total_uncompressed_size = 0
-                    for info in zf.infolist():
-                        # Block Directory Traversal inside the DOCX
-                        if '..' in info.filename or info.filename.startswith('/'):
-                            raise serializers.ValidationError("Security Alert: Malformed DOCX file detected.")
-
-                        # Block Zip Bombs (e.g., stopping a 5MB DOCX from unzipping into 5GB of XML)
-                        total_uncompressed_size += info.file_size
-                        if total_uncompressed_size > (50 * 1024 * 1024): # 50 MB uncompressed limit
-                            raise serializers.ValidationError("Security Alert: DOCX decompression size exceeds safe limits.")
-            except zipfile.BadZipFile:
-                raise serializers.ValidationError("Security Alert: Corrupted or invalid Word Document.")
-            finally:
-                file.seek(0)
-
-        # Optional but highly recommended: Keep ClamAV active here if you have it installed,
-        # to scan the PDFs and DOCX files for known malware signatures before saving.
-
-        return file
     
     def validate(self, data):
         assignment = data.get('assignment')
@@ -2450,6 +2350,7 @@ class SubmissionSerializer(serializers.ModelSerializer):
         if not course:
             raise serializers.ValidationError({"assignment": "Invalid assignment, course not found."})
 
+        # Check course and category status
         if course.status == "Inactive":
             raise serializers.ValidationError({"course": "Cannot submit because this course is inactive."})
 
@@ -2562,65 +2463,6 @@ class TicketAttachmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = TicketAttachment
         fields = ["attachment_id", "file", "created_at"]
-
-    def validate_file(self, file):
-        """
-        SECURITY GATEWAY: Deep inspect uploaded files for malware, spoofing, and dangerous payloads.
-        """
-        if not file:
-            return file
-
-        # 1. Size Limit (e.g., 15 MB max to prevent DoS)
-        MAX_UPLOAD_SIZE = 15 * 1024 * 1024
-        if file.size > MAX_UPLOAD_SIZE:
-            raise serializers.ValidationError("File size exceeds the 15MB limit.")
-
-        # 2. Strict Extension Allowlist
-        ext = os.path.splitext(file.name)[1].lower()
-        allowed_extensions = {
-            # Code
-            '.py', '.js', '.ts', '.html', '.css', '.java', '.cpp', '.c', '.cs', '.php', '.rb',
-            # Documents / Archives
-            '.txt', '.pdf', '.zip', '.rar', '.tar', '.gz'
-        }
-        
-        if ext not in allowed_extensions:
-            raise serializers.ValidationError(
-                f"File extension '{ext}' is not permitted. Please upload code files or compress your project into a .zip archive."
-            )
-
-        # 3. Deep Content Inspection (Magic Number Check)
-        # Read the first 2048 bytes to determine the true file type
-        file_head = file.read(2048)
-        file.seek(0)  # CRITICAL: Reset the file pointer so Django can save it properly later
-
-        true_mime_type = magic.from_buffer(file_head, mime=True)
-
-        # 4. Block Dangerous MIME Types explicitly (Executables, Scripts, XML Forgery)
-        blocked_mimes = [
-            'application/x-dosexec',      # Windows .exe
-            'application/x-executable',   # Linux binaries
-            'application/x-sh',           # Shell scripts
-            'application/x-msdownload',   # Malicious DLLs/Binaries
-            'application/xml',            # XML (Prevents XXE attacks)
-            'text/xml',                   # XML
-            'image/svg+xml',              # SVG (Can contain malicious JavaScript XSS)
-        ]
-
-        if true_mime_type in blocked_mimes:
-            raise serializers.ValidationError(
-                "Security Alert: Upload blocked. This file type contains potentially executable or malicious content. "
-                "If you need to submit XML code, please compress it into a .zip file."
-            )
-
-        # 5. Sanity Check: Ensure the true MIME type roughly matches what we expect from coding files
-        # Code files usually register as 'text/plain', 'text/x-c', 'text/html', etc.
-        valid_mime_prefixes = ('text/', 'application/zip', 'application/x-rar', 'application/pdf', 'application/gzip', 'application/x-tar')
-        
-        if not true_mime_type.startswith(valid_mime_prefixes):
-            raise serializers.ValidationError("Security Alert: The file extension does not match its internal binary contents (Spoofed file).")
-
-        return file
 
     def get_file(self, obj):
         if obj.file and hasattr(obj.file, 'url'):
@@ -2776,6 +2618,5 @@ class UserActivityLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserActivityLog
         fields = '__all__'
-
 
 
