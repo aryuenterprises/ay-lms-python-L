@@ -98,6 +98,8 @@ import base64
 def razorpay_webhook(request):
     logger = logging.getLogger("razorpay_webhook")
 
+    WEBHOOK_SECRET = "test123456789"
+
     logger.info("=" * 120)
     logger.info("RAZORPAY WEBHOOK RECEIVED")
     logger.info("=" * 120)
@@ -172,24 +174,24 @@ def razorpay_webhook(request):
     # DEBUG ONLY
     ###############################################################
 
-    logger.info("Webhook Secret repr     : %r", gateway.webhook_secret)
-    logger.info("Webhook Secret Length   : %d", len(gateway.webhook_secret or ""))
-    logger.info("Webhook Secret UTF8     : %s", gateway.webhook_secret)
+    logger.info("Webhook Secret repr     : %r", WEBHOOK_SECRET)
+    logger.info("Webhook Secret Length   : %d", len(WEBHOOK_SECRET or ""))
+    logger.info("Webhook Secret UTF8     : %s", WEBHOOK_SECRET)
     logger.info(
         "Webhook Secret HEX      : %s",
-        gateway.webhook_secret.encode().hex()
+        WEBHOOK_SECRET.encode().hex()
     )
 
     logger.info(
         "Webhook Secret BASE64   : %s",
         base64.b64encode(
-            gateway.webhook_secret.encode()
+            WEBHOOK_SECRET.encode()
         ).decode()
     )
 
     ###############################################################
 
-    if not gateway.webhook_secret:
+    if not WEBHOOK_SECRET:
         logger.error("Webhook secret empty.")
         return HttpResponse(status=200)
 
@@ -200,13 +202,13 @@ def razorpay_webhook(request):
     logger.info("Algorithm : HMAC SHA256")
 
     logger.info("Secret Bytes HEX")
-    logger.info(gateway.webhook_secret.encode().hex())
+    logger.info(WEBHOOK_SECRET.encode().hex())
 
     logger.info("Payload Bytes HEX")
     logger.info(payload.hex())
 
     expected_signature = hmac.new(
-        gateway.webhook_secret.encode("utf-8"),
+        WEBHOOK_SECRET.encode("utf-8"),
         payload,
         hashlib.sha256,
     ).hexdigest()
@@ -257,7 +259,7 @@ def razorpay_webhook(request):
         client.utility.verify_webhook_signature(
             payload,
             received_signature,
-            gateway.webhook_secret,
+            WEBHOOK_SECRET,
         )
 
         logger.info("SDK Verification SUCCESS")
