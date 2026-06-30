@@ -1424,7 +1424,7 @@ class UserDashboardView(APIView):
             # NEW SYSTEM UPCOMING BATCHES
             # ===========================================================
             upcoming_batches_new = NewBatch.objects.filter(
-                trainer=trainer,
+                trainers=trainer,
                 start_date__gte=date.today(),
                 is_archived=False,
                 status=True
@@ -5277,7 +5277,7 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         if user_type in ['tutor', 'trainer']:
             trainer_student_ids = (
                 NewBatch.objects.filter(
-                    trainers__trainer_id=user.trainer_id,
+                    trainer__trainer_id=user.trainer_id,
                     is_archived=False
                 )
                 .values_list('students__student_id', flat=True)
