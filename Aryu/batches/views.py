@@ -172,12 +172,15 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
 
                 # NEW BATCH ASSIGNMENTS (prefetched)
                 if sched.new_batch:
+
+                    trainer = sched.new_batch.trainers.first()
+
                     for ns in sched.new_batch.new_students:
                         assignments_list.append({
                             "course_id": sched.new_batch.course.course_id if sched.new_batch.course else None,
                             "course_name": sched.new_batch.course.course_name if sched.new_batch.course else None,
-                            "trainer_employee_id": sched.new_batch.trainer.employee_id if sched.new_batch.trainer else None,
-                            "trainer_name": sched.new_batch.trainer.full_name if sched.new_batch.trainer else None,
+                            "trainer_employee_id": trainer.employee_id if trainer else None,
+                            "trainer_name": trainer.full_name if trainer else None,
                             "registration_id": ns.registration_id,
                             "student_name": f"{ns.first_name} {ns.last_name}".strip(),
                             "batch_type": "new",
@@ -270,22 +273,27 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 "course", "course__course_category"
             ).prefetch_related("trainers")
 
-            batch_data = [
-                {
+            batch_data = []
+
+            for b in batch_qs:
+
+                trainer = b.trainers.first()
+
+                batch_data.append({
                     "batch_id": b.batch_id,
                     "title": b.title,
                     "start_date": b.start_date,
                     "end_date": b.end_date,
                     "start_time": b.start_time,
                     "end_time": b.end_time,
-                    "employee_id": b.trainer.employee_id if b.trainer else None,
-                    "trainer_name": b.trainer.full_name if b.trainer else None,
-                    "trainer_id": b.trainer.trainer_id if b.trainer else None,
+
+                    "employee_id": trainer.employee_id if trainer else None,
+                    "trainer_name": trainer.full_name if trainer else None,
+                    "trainer_id": trainer.trainer_id if trainer else None,
+
                     "course_id": b.course.course_id if b.course else None,
                     "course_name": b.course.course_name if b.course else None,
-                }
-                for b in batch_qs
-            ]
+                })
 
 
             # ------------------- Fetch courses with batches -------------------
@@ -665,6 +673,9 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
             # Combine: ensure same structure as before
             batch_data = []
             for b in new_batch_qs:
+
+                trainer = b.trainers.first()
+
                 batch_data.append({
                     "batch_id": b.batch_id,
                     "title": b.title,
@@ -672,9 +683,11 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                     "end_date": b.end_date,
                     "start_time": b.start_time,
                     "end_time": b.end_time,
-                    "employee_id": b.trainer.employee_id if b.trainer else None,
-                    "trainer_name": b.trainer.full_name if b.trainer else None,
-                    "trainer_id": b.trainer.trainer_id if b.trainer else None,
+
+                    "employee_id": trainer.employee_id if trainer else None,
+                    "trainer_name": trainer.full_name if trainer else None,
+                    "trainer_id": trainer.trainer_id if trainer else None,
+
                     "course_id": b.course.course_id if b.course else None,
                     "course_name": b.course.course_name if b.course else None,
                 })
