@@ -120,7 +120,10 @@ def razorpay_webhook(request):
             "Ensure a PaymentGateway row with 'razorpay' in gatway_name exists."
         )
         return HttpResponse(status=200)  # 200 stops Razorpay retrying a misconfigured server
-    logger.info("Webhook secret = %s", gateway.webhook_secret)
+    
+    logger.info("Secret repr = %r", gateway.webhook_secret)
+    logger.info("Secret length = %d", len(gateway.webhook_secret))
+    
     if not gateway.webhook_secret:
         logger.error("Razorpay webhook: webhook_secret is empty on gateway row id=%s", gateway.id)
         return HttpResponse(status=200)
