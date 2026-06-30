@@ -230,6 +230,14 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
         return None
     
     def validate(self, data):
+        invoice_date = data.get("invoice_date")
+
+        # Prevent future payment date
+        if invoice_date and invoice_date > timezone.localdate():
+            raise serializers.ValidationError({
+                "invoice_date": "Future date transactions are not allowed."
+            })
+
         student = data.get("student")
         course = data.get("course")
         amount = data.get("amount")
@@ -249,7 +257,7 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
                 student=student,
                 course=course,
                 is_archived=False,
-                payment_status__in=["success", "done", "paid", "pending","complete"]
+                payment_status__in=["success", "done", "paid", "pending","complete","advanced"]
             ).aggregate(total=Sum('amount'))['total'] or 0
             
             existing_paid = float(existing_paid)
@@ -466,6 +474,50 @@ class PaymentTransactionUpdateSerializer(serializers.ModelSerializer):
         if obj.course and hasattr(obj.course, 'fee'):
             return obj.course.fee
         return 0
+    def validate(self, data):
+        # ---------------- Future Date Validation ----------------
+        invoice_date = data.get("invoice_date")
+        if invoice_date and invoice_date > timezone.localdate():
+            raise serializers.ValidationError({
+                "invoice_date": "Future date transactions are not allowed."
+            })
+
+        instance = self.instance
+
+        student = instance.student
+        course = data.get("course", instance.course)
+        amount = data.get("amount", instance.amount)
+
+        if student and course:
+            # Calculate total paid excluding the current transaction
+            already_paid = (
+                PaymentTransaction.objects.filter(
+                    student=student,
+                    course=course,
+                    is_archived=False
+                )
+                .exclude(pk=instance.pk)
+                .aggregate(total=Sum("amount"))["total"] or 0
+            )
+
+            # Calculate final fee (after discount if applicable)
+            final_fee = (
+                instance.total_after_discount
+                if instance.total_after_discount
+                else getattr(course, "fee", 0)
+            )
+
+            if already_paid + amount > final_fee:
+                raise serializers.ValidationError({
+                    "amount": (
+                        f"Payment exceeds the total course fee after discount. "
+                        f"Final fee: ₹{final_fee}, "
+                        f"Already paid: ₹{already_paid}. "
+                        f"Maximum allowed payment is ₹{final_fee - already_paid}."
+                    )
+                })
+
+        return data
 
 class PaymentTransactionDeleteSerializer(serializers.ModelSerializer):
     class Meta:
