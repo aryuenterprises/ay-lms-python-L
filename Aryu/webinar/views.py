@@ -123,28 +123,35 @@ def razorpay_webhook(request):
     
     logger.info("Secret repr = %r", gateway.webhook_secret)
     logger.info("Secret length = %d", len(gateway.webhook_secret))
-    
+
     if not gateway.webhook_secret:
         logger.error("Razorpay webhook: webhook_secret is empty on gateway row id=%s", gateway.id)
         return HttpResponse(status=200)
 
-    # ── Verify signature ──────────────────────────────────────────────────────
-    expected_signature = hmac.new(
-        gateway.webhook_secret.encode("utf-8"),
-        payload,
-        hashlib.sha256,
-    ).hexdigest()
+    # ── Verify signature using Razorpay SDK ───────────────────────────────────
 
-    logger.info("Expected Signature = %s", expected_signature)
+    logger.info("Webhook Secret = %r", gateway.webhook_secret)
+    logger.info("Received Signature = %s", received_signature)
+    logger.info("Body Length = %d", len(request.body))
+    logger.info("Body SHA256 = %s", hashlib.sha256(request.body).hexdigest())
 
-    logger.info("Received = %s", received_signature)
+    try:
+        client = razorpay.Client(
+            auth=(gateway.public_key, gateway.secret_key)
+        )
 
-    if not hmac.compare_digest(expected_signature, received_signature):
-        logger.error("Signature mismatch")
+        client.utility.verify_webhook_signature(
+            request.body,
+            received_signature,
+            gateway.webhook_secret,
+        )
+
+        logger.info("Webhook signature verified successfully.")
+
+    except razorpay.errors.SignatureVerificationError as e:
+        logger.exception("Webhook signature verification FAILED")
         return HttpResponse(status=400)
     
-    logger.info("Signature verified")
-
     data  = request.data
     event = data.get("event")
 
