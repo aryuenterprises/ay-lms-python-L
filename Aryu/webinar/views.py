@@ -90,70 +90,211 @@ def _finalize_registration(registration, txn):
 
 
 # ─── webhook ─────────────────────────────────────────────────────────────────
+import base64
 
 @csrf_exempt
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def razorpay_webhook(request):
     logger = logging.getLogger("razorpay_webhook")
-    logger.info("=" * 80)
-    logger.info("Webhook received")
 
-    logger.info("Headers:")
-    logger.info(dict(request.headers))
+    logger.info("=" * 120)
+    logger.info("RAZORPAY WEBHOOK RECEIVED")
+    logger.info("=" * 120)
 
-    logger.info("Raw body:")
-    logger.info(request.body.decode(errors="ignore"))
+    # ------------------------------------------------------------------
+    # REQUEST INFORMATION
+    # ------------------------------------------------------------------
 
-    payload            = request.body
+    logger.info("METHOD           : %s", request.method)
+    logger.info("PATH             : %s", request.path)
+    logger.info("CONTENT TYPE     : %s", request.content_type)
+    logger.info("CONTENT LENGTH   : %s", request.META.get("CONTENT_LENGTH"))
+    logger.info("REMOTE ADDR      : %s", request.META.get("REMOTE_ADDR"))
+    logger.info("USER AGENT       : %s", request.META.get("HTTP_USER_AGENT"))
+
+    logger.info("-" * 120)
+    logger.info("ALL HEADERS")
+    logger.info("-" * 120)
+
+    for k, v in sorted(request.headers.items()):
+        logger.info("%s : %s", k, v)
+
+    payload = request.body
+
+    logger.info("-" * 120)
+    logger.info("BODY INFORMATION")
+    logger.info("-" * 120)
+
+    logger.info("Payload Length      : %d", len(payload))
+    logger.info("Payload SHA256      : %s", hashlib.sha256(payload).hexdigest())
+    logger.info("Payload MD5         : %s", hashlib.md5(payload).hexdigest())
+
+    logger.info("Payload UTF8")
+    logger.info(payload.decode("utf-8", errors="replace"))
+
+    logger.info("Payload HEX")
+    logger.info(payload.hex())
+
+    logger.info("Payload BASE64")
+    logger.info(base64.b64encode(payload).decode())
+
     received_signature = request.headers.get("X-Razorpay-Signature")
 
+    logger.info("-" * 120)
+    logger.info("SIGNATURE FROM RAZORPAY")
+    logger.info("-" * 120)
+
+    logger.info("Received Signature          : %s", received_signature)
+    logger.info("Signature Length            : %s", len(received_signature or ""))
+
     if not received_signature:
-        logger.error("Signature missing")
+        logger.error("No X-Razorpay-Signature header.")
         return HttpResponse(status=400)
 
-    # ── FIX 1: guard against missing gateway row ──────────────────────────────
     gateway = _get_razorpay_gateway()
-    if not gateway:
-        logger.error(
-            "Razorpay webhook: no gateway row found. "
-            "Ensure a PaymentGateway row with 'razorpay' in gatway_name exists."
-        )
-        return HttpResponse(status=200)  # 200 stops Razorpay retrying a misconfigured server
-    
-    logger.info("Secret repr = %r", gateway.webhook_secret)
-    logger.info("Secret length = %d", len(gateway.webhook_secret))
 
-    if not gateway.webhook_secret:
-        logger.error("Razorpay webhook: webhook_secret is empty on gateway row id=%s", gateway.id)
+    if not gateway:
+        logger.error("Gateway not found.")
         return HttpResponse(status=200)
 
-    # ── Verify signature using Razorpay SDK ───────────────────────────────────
+    logger.info("-" * 120)
+    logger.info("DATABASE VALUES")
+    logger.info("-" * 120)
 
-    logger.info("Webhook Secret = %r", gateway.webhook_secret)
-    logger.info("Received Signature = %s", received_signature)
-    logger.info("Body Length = %d", len(request.body))
-    logger.info("Body SHA256 = %s", hashlib.sha256(request.body).hexdigest())
+    logger.info("Gateway ID              : %s", gateway.id)
+    logger.info("Gateway Name            : %s", gateway.gatway_name)
+    logger.info("Public Key              : %s", gateway.public_key)
+
+    logger.info("Secret Key Length       : %d", len(gateway.secret_key or ""))
+
+    ###############################################################
+    # DEBUG ONLY
+    ###############################################################
+
+    logger.info("Webhook Secret repr     : %r", gateway.webhook_secret)
+    logger.info("Webhook Secret Length   : %d", len(gateway.webhook_secret or ""))
+    logger.info("Webhook Secret UTF8     : %s", gateway.webhook_secret)
+    logger.info(
+        "Webhook Secret HEX      : %s",
+        gateway.webhook_secret.encode().hex()
+    )
+
+    logger.info(
+        "Webhook Secret BASE64   : %s",
+        base64.b64encode(
+            gateway.webhook_secret.encode()
+        ).decode()
+    )
+
+    ###############################################################
+
+    if not gateway.webhook_secret:
+        logger.error("Webhook secret empty.")
+        return HttpResponse(status=200)
+
+    logger.info("-" * 120)
+    logger.info("MANUAL HMAC CALCULATION")
+    logger.info("-" * 120)
+
+    logger.info("Algorithm : HMAC SHA256")
+
+    logger.info("Secret Bytes HEX")
+    logger.info(gateway.webhook_secret.encode().hex())
+
+    logger.info("Payload Bytes HEX")
+    logger.info(payload.hex())
+
+    expected_signature = hmac.new(
+        gateway.webhook_secret.encode("utf-8"),
+        payload,
+        hashlib.sha256,
+    ).hexdigest()
+
+    logger.info("Expected Signature : %s", expected_signature)
+    logger.info("Received Signature : %s", received_signature)
+    logger.info("Matched            : %s", expected_signature == received_signature)
+
+    logger.info("-" * 120)
+    logger.info("CHARACTER COMPARISON")
+    logger.info("-" * 120)
+
+    max_len = max(len(expected_signature), len(received_signature))
+
+    mismatch = False
+
+    for i in range(max_len):
+
+        e = expected_signature[i] if i < len(expected_signature) else "<END>"
+        r = received_signature[i] if i < len(received_signature) else "<END>"
+
+        if e != r:
+            mismatch = True
+            logger.error(
+                "Mismatch at index %d -> Expected=%s Received=%s",
+                i,
+                e,
+                r,
+            )
+            break
+
+    if not mismatch:
+        logger.info("Character comparison passed.")
+
+    logger.info("-" * 120)
+    logger.info("SDK VERIFICATION")
+    logger.info("-" * 120)
 
     try:
+
         client = razorpay.Client(
-            auth=(gateway.public_key, gateway.secret_key)
+            auth=(
+                gateway.public_key,
+                gateway.secret_key,
+            )
         )
 
         client.utility.verify_webhook_signature(
-            request.body,
+            payload,
             received_signature,
             gateway.webhook_secret,
         )
 
-        logger.info("Webhook signature verified successfully.")
+        logger.info("SDK Verification SUCCESS")
 
-    except razorpay.errors.SignatureVerificationError as e:
-        logger.exception("Webhook signature verification FAILED")
+    except Exception as e:
+
+        logger.exception("SDK Verification FAILED")
+        logger.exception(e)
+
+    logger.info("-" * 120)
+    logger.info("JSON PARSE")
+    logger.info("-" * 120)
+
+    try:
+
+        data = json.loads(payload)
+
+        logger.info(
+            json.dumps(
+                data,
+                indent=4,
+                sort_keys=True,
+            )
+        )
+
+        logger.info("Event          : %s", data.get("event"))
+        logger.info("Contains Entity: %s", "payload" in data)
+
+    except Exception:
+        logger.exception("JSON parsing failed.")
         return HttpResponse(status=400)
-    
-    data  = request.data
-    event = data.get("event")
+
+    logger.info("=" * 120)
+    logger.info("END OF DEBUG")
+    logger.info("=" * 120)
+
+    event = data["event"]
 
     # ── payment.captured ──────────────────────────────────────────────────────
     if event == "payment.captured":
