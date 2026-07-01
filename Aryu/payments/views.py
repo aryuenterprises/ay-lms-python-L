@@ -795,7 +795,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # Restrict only students
+        # Restrict students to their own records
         if user.user_type == "student":
 
             logged_student_id = str(user.student_id)
@@ -817,26 +817,16 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                     status=status.HTTP_403_FORBIDDEN
                 )
 
-        # super_admin skips validation and can view any student
-
         transactions = (
             PaymentTransaction.objects
             .filter(
                 student__student_id=student_id,
                 is_archived=False
             )
-            .select_related("course")
-            .only(
-                "id",
-                "transaction_id",
-                "amount",
-                "payment_status",
-                "invoice_date",
-                "invoice",
-                "course__course_name"
-            )
+            .select_related("course", "gateway")
             .order_by("-invoice_date", "-created_at")
         )
+
         student = Student.objects.get(student_id=student_id)
 
         serializer = StudentPaymentSummarySerializer(
@@ -852,20 +842,31 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "transaction_id": tx.transaction_id,
                 "amount": float(tx.amount or 0),
                 "payment_status": tx.payment_status,
-                "payment_mode": tx.metadata.get("mode") if tx.metadata else None, 
+                "payment_mode": (
+                    tx.payment_mode
+                    if getattr(tx, "payment_mode", None)
+                    else tx.metadata.get("mode") if tx.metadata else None
+                ),
+                "discount": float(tx.discount or 0),
+                "currency": tx.currency,
+                "gateway": tx.gateway.gatway_name if tx.gateway else None,
                 "invoice_url": (
-                    "https://portal.aryuacademy.com/api" + tx.invoice.url
-                ) if tx.invoice and hasattr(tx.invoice, "url") else None
+                    request.build_absolute_uri(tx.invoice.url)
+                    if tx.invoice else None
+                ),
+                "created_at": tx.created_at,
             }
             for tx in transactions
         ]
 
-        return Response({
-            "success": True,
-            "count": len(payment_logs),
-            "payment_logs": payment_logs
-        })
-    
+        return Response(
+            {
+                "success": True,
+                "count": len(payment_logs),
+                "payment_logs": payment_logs,
+            }
+        )
+      
     # 2. Delete FULL student + all transactions
     @action(detail=True, methods=['delete'], url_path='delete-student')
     def delete_student(self, request, pk=None):
