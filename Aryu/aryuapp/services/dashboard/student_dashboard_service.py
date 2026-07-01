@@ -14,8 +14,8 @@ from aryuapp.models import (
 )
 from batches.models import ClassSchedule
 from django.db.models import F, ExpressionWrapper, DateTimeField, Q
-
-
+from django.contrib.postgres.aggregates import StringAgg
+from batches.models import NewBatch
 class   StudentDashboardService:
 
     CACHE_TIMEOUT = 60
@@ -77,7 +77,7 @@ class   StudentDashboardService:
             return {}
 
         return {
-            "student_name": f"{self.student.first_name} {self.student.last_name}",
+            "student_name": f"{self.student.first_name}",
             "student_id": self.student.registration_id,
             "email": self.student.email,
             "profile_pic": f"https://portal.aryuacademy.com/api/media/{self.student.profile_pic}",
@@ -89,76 +89,68 @@ class   StudentDashboardService:
     # ---------------------------------------------------------
 
     def get_course_progress(self):
-
         student_id = self.student_id
 
-        courses = (
-            Course.objects.filter(
-                new_batches__students=student_id,
-                is_archived=False
+        batches = (
+            NewBatch.objects.filter(
+                students__student_id=student_id,
+                is_archived=False,
+                course__is_archived=False,
             )
-            .annotate(
-                total_topics=Count(
-                    "topics__topic_id",
-                    filter=Q(topics__is_archived=False),
-                    distinct=True
-                ),
-                completed_topics=Count(
-                    "topics__topic_id",
-                    filter=Q(
-                        topics__student_statuses__student_id=student_id,
-                        topics__student_statuses__status=True
-                    ),
-                    distinct=True
-                ),
-                batch_start_time=Min("new_batches__start_time"),
-                batch_end_time=Max("new_batches__end_time"),
-                batch_start_date=Min("new_batches__start_date"),
-                batch_end_date=Max("new_batches__end_date"),
-                trainer_name=Min("new_batches__trainers__full_name")   # ✅
-            )
-            .values(
-                "course_id",
-                "course_name",
-                "trainer_name",
-                "total_topics",
-                "completed_topics",
-                "batch_start_time",
-                "batch_end_time",
-                "batch_start_date",
-                "batch_end_date",
-            )
+            .select_related("course")
+            .prefetch_related("trainers", "course__topics")
+            .distinct()
         )
 
         results = []
 
-        for c in courses:
+        for batch in batches:
+            course = batch.course
 
-            total = c["total_topics"] or 0
-            completed = c["completed_topics"] or 0
+            total_topics = course.topics.filter(
+                is_archived=False
+            ).count()
 
-            progress_percent = (completed / total * 100) if total else 0
+            completed_topics = course.topics.filter(
+                is_archived=False,
+                student_statuses__student_id=student_id,
+                student_statuses__status=True
+            ).distinct().count()
 
-            duration = None
-            if c["batch_start_date"] and c["batch_end_date"]:
-                days = (c["batch_end_date"] - c["batch_start_date"]).days
-                months = round(days / 30)
-                duration = f"{months} Months" if months else f"{days} Days"
+            progress_percent = (
+                completed_topics / total_topics * 100
+                if total_topics else 0
+            )
+
+            days = (batch.end_date - batch.start_date).days
+
+            if days >= 30:
+                duration = f"{round(days / 30)} Months"
+            else:
+                duration = f"{days} Days"
+
+            trainers = batch.trainers.all()
+
+            trainer_names = ", ".join(
+                trainer.full_name
+                for trainer in trainers
+            )
 
             results.append({
-                "course_id": c["course_id"],
-                "course_name": c["course_name"],
-                "trainer_name": c["trainer_name"],
+                "course_id": course.course_id,
+                "course_name": course.course_name,
+                "batch_id": batch.batch_id,
+                "batch_name": batch.title,
+                "trainer_name": trainer_names if trainer_names else None,
                 "duration": duration,
-                "start_time": c["batch_start_time"].strftime("%H:%M") if c["batch_start_time"] else None,
-                "end_time": c["batch_end_time"].strftime("%H:%M") if c["batch_end_time"] else None,
-                "total_topics": total,
-                "completed_topics": completed,
-                "progress_percent": round(progress_percent, 2)
+                "start_time": batch.start_time.strftime("%H:%M") if batch.start_time else None,
+                "end_time": batch.end_time.strftime("%H:%M") if batch.end_time else None,
+                "total_topics": total_topics,
+                "completed_topics": completed_topics,
+                "progress_percent": round(progress_percent, 2),
             })
 
         return results
-
     # ---------------------------------------------------------
     # ATTENDANCE
     # ---------------------------------------------------------
