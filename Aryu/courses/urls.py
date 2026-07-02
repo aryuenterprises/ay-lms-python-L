@@ -6,6 +6,8 @@ urlpatterns = [
    path('courses/<str:course_id>', CourseViewSet.as_view({'get': 'retrieve','put': 'update','patch': 'partial_update','delete': 'destroy'})),
    path('courses/<str:course_id>/batches', CourseViewSet.as_view({'get': 'get_batches'})),
    path('courses/<str:course_id>/archive', CourseViewSet.as_view({'patch': 'archive_course'})),
+   path('courses/<str:course_id>/video',CourseVideoViewSet.as_view({'get':'list','post':'create'})),
+   path('courses/<str:course_id>/video/<int:video_id>',CourseVideoViewSet.as_view({'delete':'destroy','patch':'update'})),
    path('course_categories', CourseCategoryViewSet.as_view({'get': 'list', 'post': 'create'})),
    path('course_categories/<str:category_id>', CourseCategoryViewSet.as_view({'get': 'retrieve','put': 'update','patch': 'partial_update',})),
    path('course_categories/<str:category_id>/archive', CourseCategoryViewSet.as_view({'patch': 'archive_category'})),

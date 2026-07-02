@@ -76,7 +76,7 @@ class Course(models.Model):
     course_name = models.CharField(max_length=255, null=True, blank=True)
     course_pic = models.ImageField(upload_to="courses/", null=True, blank=True)
     syllabus = models.FileField(upload_to="syllabus/", null=True, blank=True)
-    duration = models.CharField(max_length=255, null=True, blank=True)
+    duration = models.CharField(max_length=3, null=True, blank=True)
     duration_type = models.CharField(max_length=150,null=True,blank=True)
     start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)
@@ -95,6 +95,11 @@ class Course(models.Model):
     created_by = models.CharField(max_length=100, null=True, blank=True)
     created_by_type = models.CharField(max_length=50, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    video_url = models.URLField(
+        blank=True,
+        null=True,
+        help_text="YouTube/Vimeo embed URL"
+    )
 
     class Meta:
         db_table = "aryuapp_course"
@@ -146,6 +151,41 @@ class Course(models.Model):
 
     def __str__(self):
         return self.course_name
+
+# class CourseVideo(models.Model):
+#     video_url = models.URLField(
+#         blank=True,
+#         null=True,
+#         help_text="YouTube/Vimeo embed URL"
+#     )
+#     # course_id = models.ForeignKey(Course,on_delete = models.CASCADE,related_name='Video')
+#     course = models.ForeignKey(Course,on_delete = models.CASCADE,related_name='Video')
+#     Title = models.CharField(max_length = 255,null = True,blank = True)
+#     created_at =models.DateTimeField(auto_now_add = True)
+#     is_archived = models.BooleanField(default=False)
+
+class CourseVideo(models.Model):
+
+    course = models.ForeignKey(
+        Course,
+        on_delete=models.CASCADE,
+        related_name='videos'
+    )
+
+    video_url = models.URLField(
+        blank=True,
+        null=True
+    )
+
+    title = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    is_archived = models.BooleanField(default=False)
 
 class Topic(models.Model):
     topic_id = models.AutoField(primary_key=True)

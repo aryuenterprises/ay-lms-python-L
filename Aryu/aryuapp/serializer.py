@@ -2553,7 +2553,7 @@ class AssignmentSerializer(serializers.ModelSerializer):
             many=True,
             context={"request": request}
         ).data
-      
+   
 class AssignmentSimpleSerializer(serializers.ModelSerializer):
     submission_count = serializers.SerializerMethodField()
     class Meta:

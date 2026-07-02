@@ -465,6 +465,142 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
             "message": f"Course {course.course_name} deleted successfully."
         }, status=status.HTTP_200_OK)
    
+class CourseVideoViewSet(viewsets.ModelViewSet):
+    serializer_class = CourseVideoSerializer
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+
+    def get_queryset(self):
+
+        user = self.request.user
+        course_id = self.kwargs.get('course_id')
+
+        qs = CourseVideo.objects.filter(
+            is_archived=False
+        ).order_by('-id')
+
+        if course_id:
+            qs = qs.filter(course=course_id)
+
+        return qs
+    def get_object(self):
+
+        course_id = self.kwargs.get('course_id')
+        video_id = self.kwargs.get('video_id')
+
+        return get_object_or_404(
+            CourseVideo,
+            course=course_id,
+            id=video_id,
+            is_archived=False
+        )
+    # LIST
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+
+        serializer = self.get_serializer(
+            queryset,
+            many=True,
+            context={"request": request}
+        )
+
+        return Response({
+            "success": True,
+            "message": "Course videos retrieved successfully",
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
+
+    # CREATE
+    def create(self, request, *args, **kwargs):
+
+        course_id = self.kwargs.get('course_id')
+
+        try:
+            course = Course.objects.get(
+                course_id=course_id
+            )
+
+        except Course.DoesNotExist:
+            return Response({
+                "success": False,
+                "message": "Course not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = self.get_serializer(
+            data=request.data
+        )
+
+        if serializer.is_valid():
+
+            video = serializer.save(
+                course=course
+            )
+
+            return Response({
+                "success": True,
+                "message": "Course video created successfully",
+                "data": CourseVideoSerializer(
+                    video,
+                    context={"request": request}
+                ).data
+            }, status=status.HTTP_201_CREATED)
+
+        formatted = []
+
+        for field, msgs in serializer.errors.items():
+
+            for msg in msgs:
+
+                if str(msg).startswith("This"):
+                    formatted.append(f"{field} is required")
+                else:
+                    formatted.append(f"{field} {msg}")
+
+        return Response({
+            "success": False,
+            "message": " | ".join(formatted)
+        }, status=status.HTTP_200_OK)
+    # UPDATE
+    def update(self, request, *args, **kwargs):
+
+        partial = kwargs.pop('partial', False)
+
+        instance = self.get_object()
+
+        serializer = self.get_serializer(
+            instance,
+            data=request.data,
+            partial=partial
+        )
+
+        if serializer.is_valid(raise_exception=True):
+
+            self.perform_update(serializer)
+
+            return Response({
+                "success": True,
+                "message": "Course video updated successfully",
+                "data": serializer.data
+            }, status=status.HTTP_200_OK)
+
+        return Response({
+            "success": False,
+            "message": "Validation failed",
+            "errors": serializer.errors
+        }, status=status.HTTP_200_OK)
+
+    # DELETE (SOFT DELETE)
+    def destroy(self, request, *args, **kwargs):
+
+        instance = self.get_object()
+
+        instance.is_archived = True
+        instance.save()
+
+        return Response({
+            "success": True,
+            "message": "Course video deleted successfully"
+        }, status=status.HTTP_200_OK)
      
 class TopicViewSet(LoggingMixin, viewsets.ModelViewSet):
     serializer_class = TopicSerializer
