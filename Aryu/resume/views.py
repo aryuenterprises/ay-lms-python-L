@@ -1075,7 +1075,7 @@ class AuthViewSet(viewsets.ViewSet):
         if settings.DEBUG:
             cookie_domain = None       # Localhost requires None to bind directly to 'localhost'
             cookie_samesite = "None"    # Lax works perfectly for local dev environments
-            cookie_secure = False      # Set to False if testing on http://localhost without SSL
+            cookie_secure = True      # Set to False if testing on http://localhost without SSL
         else:
             cookie_domain = ".aryuacademy.com"  # Production parent domain rule
             cookie_samesite = "Lax"             # Can be "Lax" or "Strict" once the CNAME is live
