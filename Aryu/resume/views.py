@@ -1077,7 +1077,7 @@ class AuthViewSet(viewsets.ViewSet):
             cookie_samesite = "None"    # Lax works perfectly for local dev environments
             cookie_secure = False      # Set to False if testing on http://localhost without SSL
         else:
-            cookie_domain = ".aryuprojects.com"  # Production parent domain rule
+            cookie_domain = ".aryuacademy.com"  # Production parent domain rule
             cookie_samesite = "Lax"             # Can be "Lax" or "Strict" once the CNAME is live
             cookie_secure = True                # Enforce HTTPS in production
 
@@ -1111,7 +1111,7 @@ class AuthViewSet(viewsets.ViewSet):
         if origin in LOCAL_ORIGINS:
             cookie_domain = None
         else:
-            cookie_domain = ".aryuprojects.com"
+            cookie_domain = ".aryuacademy.com"
 
         response = Response(
             {"message": "Logged out successfully"},
@@ -1802,7 +1802,7 @@ class CustomTokenRefreshView(APIView):
             cookie_samesite = "None"
 
         else:
-            cookie_domain = ".aryuprojects.com"
+            cookie_domain = ".aryuacademy.com"
             cookie_samesite = "Lax"  # Matches your custom API CNAME architecture setup
             cookie_secure = True
 
