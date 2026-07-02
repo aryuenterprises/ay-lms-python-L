@@ -94,6 +94,12 @@ class Subscription(models.Model):
         max_length=150,null = True, blank = True
     )
 
+    resume_parse_limit = models.PositiveIntegerField(default=0)
+
+    ats_scan_limit = models.PositiveIntegerField(default=0)
+
+    unlimited_ai_suggestions = models.BooleanField(default=True)
+
     limit = models.CharField(
         max_length=50,
         default="free"
@@ -142,6 +148,10 @@ class UserSubscription(models.Model):
         null=True,
         blank=True
     )
+
+    parse_used = models.PositiveIntegerField(default=0)
+
+    ats_used = models.PositiveIntegerField(default=0)
 
     status = models.CharField(
         max_length=20,
@@ -233,6 +243,23 @@ class UserResume(models.Model):
     def __str__(self):
         return f"{self.user.first_name}'s {self.resume_title}"
 
+class FeatureUsage(models.Model):
+
+
+    user = models.ForeignKey(
+        'ResumeRegistration', 
+        on_delete=models.CASCADE, 
+        related_name='resumes_features'
+    )
+
+    subscription = models.ForeignKey(
+        "resume.Subscription",
+        on_delete=models.CASCADE
+    )
+
+    feature = models.CharField(max_length=30,)
+
+    created_at = models.DateTimeField(auto_now_add=True)
 
 class PaymentHistory(models.Model):
     user = models.ForeignKey(

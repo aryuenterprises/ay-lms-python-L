@@ -23,6 +23,10 @@ urlpatterns = [
 
     path('candidates/generate-pdf',GenerateResumePDFView.as_view(), name='generate_pdf'),
 
+    path("parse/",ResumeGateway.as_view(),name="resume-parse",),
+
+    path("ats/scan/",ATSGateway.as_view(),name="ats-scan",),
+
     #templates
 
     path('templates', ResumeTemplateViewSet.as_view({'get': 'list', 'post': 'create'})),
