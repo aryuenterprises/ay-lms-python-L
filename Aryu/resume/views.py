@@ -1078,7 +1078,7 @@ class AuthViewSet(viewsets.ViewSet):
             cookie_secure = True      # Set to False if testing on http://localhost without SSL
         else:
             cookie_domain = ".aryuacademy.com"  # Production parent domain rule
-            cookie_samesite = "Lax"             # Can be "Lax" or "Strict" once the CNAME is live
+            cookie_samesite = "None"             # Can be "Lax" or "Strict" once the CNAME is live
             cookie_secure = True                # Enforce HTTPS in production
 
         # 2. Apply the dynamic settings to the cookie
