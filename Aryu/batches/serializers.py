@@ -649,11 +649,18 @@ class BatchSerializer(serializers.ModelSerializer):
     
 class NewBatchSerializer(serializers.ModelSerializer):
     course = serializers.PrimaryKeyRelatedField(queryset=Course.objects.all())
-    trainers = serializers.PrimaryKeyRelatedField(
-    queryset=Trainer.objects.all(),
-    many=True,
-    required=False
-    )   
+    
+
+    # Request
+    trainers = serializers.SerializerMethodField(read_only=True)
+
+    trainer_ids = serializers.PrimaryKeyRelatedField(
+        source="trainers",
+        queryset=Trainer.objects.filter(is_archived=False),
+        many=True,
+        write_only=True,
+        required=False
+    )
 
     # Correct M2M Field
     students = serializers.PrimaryKeyRelatedField(
@@ -672,12 +679,19 @@ class NewBatchSerializer(serializers.ModelSerializer):
     class Meta:
         model = NewBatch
         fields = [
-            'batch_id', 'title', 'course', 'trainers',
+            'batch_id', 'title', 'course', 'trainers','trainer_ids',
             'start_date', 'end_date', 'start_time', 'end_time',
             'slots', 'status', 'students',
             'created_by', 'created_by_type', 'created_at', 'is_archived'
         ]
         read_only_fields = ['batch_id', 'created_by', 'created_by_type', 'created_at']
+    def get_trainers(self, obj):
+        from aryuapp.serializer import TrainerPreviewSerializer
+
+        return TrainerPreviewSerializer(
+            obj.trainers.all(),
+            many=True
+        ).data
 
     def validate(self, attrs):
         start_date = attrs.get('start_date')
@@ -762,3 +776,4 @@ class NewBatchSerializer(serializers.ModelSerializer):
             instance.trainers.set(trainers)
 
         return instance 
+    
