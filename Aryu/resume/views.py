@@ -52,7 +52,7 @@ import os
 import requests
 from django.conf import settings
 from .tasks import send_verification_email
-from .pdf_generator import PDFGenerationError, PDFGeneratorService
+from .pdf_generator import PDFGenerationError, PDFGeneratorService, GeneratePDFSerializer
 import traceback
 
 logger = logging.getLogger(__name__)
