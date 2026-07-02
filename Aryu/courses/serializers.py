@@ -10,7 +10,7 @@ import magic
 import json
 import zipfile
 from aryuapp.models import Assignment
-
+from aryuapp.models import Submission
 
 
 
@@ -176,15 +176,10 @@ class CourseSerializer(serializers.ModelSerializer):
             'video_url',
         ]
     def get_video_url(self, obj):
-        video = getattr(obj, "video_url", None)
+        if obj.video_url and hasattr(obj.video_url, 'url'):
+            return 'https://portal.aryuacademy.com/api/' + obj.video_url.url
+        return None
 
-        if not video:
-            return None
-
-        if hasattr(video, "url"):
-            return "https://aylms.aryuprojects.com/api" + video.url
-
-        return video
 
         
     def get_notes(self, obj):
@@ -249,12 +244,12 @@ class CourseSerializer(serializers.ModelSerializer):
     
     def get_course_pic_url(self, obj):
         if obj.course_pic and hasattr(obj.course_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.course_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.course_pic.url
         return None
     
     def get_syllabus_url(self, obj):
         if obj.syllabus and hasattr(obj.syllabus, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.syllabus.url
+            return 'https://portal.aryuacademy.com/api' + obj.syllabus.url
         return None
     def get_syllabus_info(self, obj):
         if obj.syllabus:
@@ -293,7 +288,7 @@ class CourseSerializer(serializers.ModelSerializer):
                 if submission.student.profile_pic:
                     try:
                         profile_pic = (
-                            "https://aylms.aryuprojects.com/api"
+                            "https://portal.aryuacademy.com/api"
                             + submission.student.profile_pic.url
                         )
                     except Exception:
@@ -311,7 +306,7 @@ class CourseSerializer(serializers.ModelSerializer):
                     "text": submission.text,
                     "file": submission.file.url if submission.file else None,
                     "file_url": (
-                        "https://aylms.aryuprojects.com/api" + submission.file.url
+                        "https://portal.aryuacademy.com/api" + submission.file.url
                         if submission.file else None
                     ),
                     "date": submission.date.strftime("%Y-%m-%d %H:%M:%S"),
@@ -523,6 +518,11 @@ class CourseSimpleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Course
         fields = ['course_id', 'course_name', 'course_pic', 'course_category']
+
+class CourseVideoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model=CourseVideo
+        fields = "__all__"
 
 class TopicSerializer(serializers.ModelSerializer):
     create_by = serializers.SlugRelatedField(
