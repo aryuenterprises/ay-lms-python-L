@@ -129,11 +129,9 @@ class   StudentDashboardService:
             else:
                 duration = f"{days} Days"
 
-            trainers = batch.trainers.all()
-
             trainer_names = ", ".join(
                 trainer.full_name
-                for trainer in trainers
+                for trainer in batch.trainers.all()
             )
 
             results.append({
