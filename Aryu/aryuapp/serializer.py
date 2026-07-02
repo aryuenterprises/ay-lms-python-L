@@ -2073,7 +2073,17 @@ class TrainerSerializer(serializers.ModelSerializer):
 
         return instance
       
+class TrainerPreviewSerializer(serializers.ModelSerializer):
+    trainer_name = serializers.CharField(source="full_name")
 
+    class Meta:
+        model = Trainer
+        fields = (
+            "trainer_id",
+            "trainer_name",
+            "employee_id",
+        )
+    
 class TrainerTravelExpenseImageSerializer(serializers.ModelSerializer):
     image = serializers.SerializerMethodField()
 

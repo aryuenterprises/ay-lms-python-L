@@ -1940,6 +1940,20 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
 
             batch = serializer.save()
 
+            trainer_ids = request.data.get("trainers", [])
+
+            if trainer_ids:
+                trainers = Trainer.objects.filter(trainer_id__in=trainer_ids)
+                batch.trainers.set(trainers)
+
+            student_ids = request.data.get("students", [])
+
+            if student_ids:
+                students = Student.objects.filter(student_id__in=student_ids)
+                batch.students.set(students)
+
+            batch.save()
+
             return Response(
                 {
                     "success": True,
