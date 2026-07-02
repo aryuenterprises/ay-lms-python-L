@@ -176,9 +176,15 @@ class CourseSerializer(serializers.ModelSerializer):
             'video_url',
         ]
     def get_video_url(self, obj):
-        if obj.video_url and hasattr(obj.video_url, 'url'):
-            return 'https://aylms.aryuprojects.com/api/' + obj.video_url.url
-        return None
+        video = getattr(obj, "video_url", None)
+
+        if not video:
+            return None
+
+        if hasattr(video, "url"):
+            return "https://aylms.aryuprojects.com/api" + video.url
+
+        return video
 
         
     def get_notes(self, obj):
