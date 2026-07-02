@@ -1087,7 +1087,7 @@ class AuthViewSet(viewsets.ViewSet):
             value=str(refresh),
             max_age=30 * 24 * 60 * 60,   # 30 Days
             expires=None,
-            path="/api/token/refresh/",                    
+            path="/api/resume/token/refresh/",                    
             domain=cookie_domain,        # <--- Dynamic domain variable
             secure=cookie_secure,        # <--- Dynamic secure variable
             httponly=True,               # Always keep True to block XSS script theft
