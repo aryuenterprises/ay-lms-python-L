@@ -6422,7 +6422,7 @@ class CertificateViewSet(viewsets.ModelViewSet):
 
 
 class RegisterThrottle(AnonRateThrottle):
-    rate = "5/hour"
+    rate = "10/hour"
 
 class PublicTrainerRegisterAPIView(APIView):
     permission_classes = [AllowAny]
