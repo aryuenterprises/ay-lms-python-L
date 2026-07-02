@@ -2338,7 +2338,7 @@ class SubmissionSerializer(serializers.ModelSerializer):
 
     def get_file_url(self, obj):
         if obj.file and hasattr(obj.file, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.file.url
+            return 'https://aylms.aryuprojects.com/api' + obj.file.url
         return None
     
     def validate(self, data):
@@ -2362,91 +2362,198 @@ class SubmissionSerializer(serializers.ModelSerializer):
 class AssignmentSerializer(serializers.ModelSerializer):
     course = CourseSimpleSerializer(read_only=True)
     assigned_by = TrainerSerializer(read_only=True)
+
+    submission_count = serializers.SerializerMethodField()
     submissions = serializers.SerializerMethodField()
 
     class Meta:
         model = Assignment
-        fields = ['id', 'title', 'description', 'status', 'course', 'assigned_by', 'submissions', 'is_archived', 'created_at', 'created_by']
-        
+        fields = [
+            "id",
+            "title",
+            "description",
+            "status",
+            "course",
+            "assigned_by",
+            "submission_count",
+            "submissions",
+            "is_archived",
+            "created_at",
+            "created_by",
+        ]
+
     def validate(self, attrs):
-        title = attrs.get('title', '').strip()
-        description = attrs.get('description', '').strip()
+        title = attrs.get("title", "").strip()
+        description = attrs.get("description", "").strip()
 
         if not title:
-            raise serializers.ValidationError("Title cannot be empty or spaces only")
+            raise serializers.ValidationError(
+                "Title cannot be empty or spaces only"
+            )
+
         if len(title) > 255:
-            raise serializers.ValidationError("Title cannot exceed 255 characters.")
+            raise serializers.ValidationError(
+                "Title cannot exceed 255 characters."
+            )
+
         if not description:
-            raise serializers.ValidationError("Description cannot be empty or spaces only")
+            raise serializers.ValidationError(
+                "Description cannot be empty or spaces only"
+            )
+
         return attrs
 
     def create(self, validated_data):
         request = self.context.get("request")
-        
+
         if request and request.user:
-            role = getattr(request.user, "user_type", None)  # or from JWT payload
+
+            role = getattr(request.user, "user_type", None)
 
             if role in ["trainer", "admin"]:
-                validated_data["created_by"] = getattr(request.user, "trainer_id", None)
+                validated_data["created_by"] = getattr(
+                    request.user,
+                    "trainer_id",
+                    None
+                )
                 validated_data["created_by_type"] = role
 
             elif role == "super_admin":
-                validated_data["created_by"] = getattr(request.user, "user_id", None)
+                validated_data["created_by"] = getattr(
+                    request.user,
+                    "user_id",
+                    None
+                )
                 validated_data["created_by_type"] = role
 
             elif role == "student":
-                validated_data["created_by"] = getattr(request.user, "student_id", None)
+                validated_data["created_by"] = getattr(
+                    request.user,
+                    "student_id",
+                    None
+                )
                 validated_data["created_by_type"] = role
 
             else:
-                validated_data["created_by"] = getattr(request.user, "user_id", None)
+                validated_data["created_by"] = getattr(
+                    request.user,
+                    "user_id",
+                    None
+                )
                 validated_data["created_by_type"] = role
+
         return super().create(validated_data)
 
+    def get_submission_count(self, obj):
+        return obj.submissions.filter(
+            is_archived=False
+        ).count()
+
     def get_submissions(self, obj):
-        request = self.context.get('request')
-        student = self.context.get('student')
 
-        # Start with all active submissions
-        submissions_qs = obj.submissions.filter(is_archived=False).order_by('-date')
+        request = self.context.get("request")
 
-        if student:
-            submissions_qs = submissions_qs.filter(student=student)
-        else:
-            if request:
-                auth_header = request.headers.get('Authorization')
-                if auth_header and auth_header.startswith('Bearer '):
-                    token = auth_header.split()[1]
-                    try:
-                        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=['HS256'])
-                        user_type = payload.get('user_type')
+        submissions = obj.submissions.filter(
+            is_archived=False
+        ).select_related(
+            "student",
+            "assignment"
+        ).prefetch_related(
+            "replies"
+        ).order_by("-date")
 
-                        if user_type == 'admin':
-                            # admin sees all submissions
-                            submissions_qs = obj.submissions.filter(is_archived=False)
-                        elif user_type == 'tutor':
-                            employee_id = payload.get('employee_id')
-                            student_ids = BatchCourseTrainer.objects.filter(
-                                course=obj.course,
-                                trainer__employee_id=employee_id
-                            ).values_list('student__registration_id', flat=True)
-                            submissions_qs = submissions_qs.filter(student__registration_id__in=student_ids)
-                        elif user_type == 'employer':
-                            company_name = payload.get('company_name')
-                            student_ids = Student.objects.filter(
-                                is_archived=False,
-                                employee__company_name__iexact=company_name
-                            ).values_list('registration_id', flat=True)
-                            submissions_qs = submissions_qs.filter(student__registration_id__in=student_ids)
-                        elif user_type == 'student':
-                            reg_id = payload.get('registration_id')
-                            submissions_qs = submissions_qs.filter(student__registration_id=reg_id)
+        if not request:
+            return SubmissionSerializer(
+                submissions,
+                many=True,
+                context={"request": request}
+            ).data
 
-                    except jwt.PyJWTError:
-                        return []
+        auth_header = request.headers.get("Authorization")
 
-        return SubmissionSerializer(submissions_qs, many=True, context={'request': request}).data
-    
+        if not auth_header:
+            return []
+
+        if not auth_header.startswith("Bearer "):
+            return []
+
+        try:
+
+            token = auth_header.split()[1]
+
+            payload = jwt.decode(
+                token,
+                settings.SECRET_KEY,
+                algorithms=["HS256"]
+            )
+
+            user_type = payload.get("user_type")
+
+            # -----------------------------------
+            # SUPER ADMIN
+            # -----------------------------------
+
+            if user_type == "super_admin":
+
+                pass
+
+            # -----------------------------------
+            # ADMIN
+            # -----------------------------------
+
+            elif user_type == "admin":
+
+                pass
+
+            # -----------------------------------
+            # TRAINER
+            # -----------------------------------
+
+            elif user_type == "trainer":
+
+                username = payload.get("username")
+
+                trainer = Trainer.objects.filter(
+                    username=username
+                ).first()
+
+                if trainer:
+
+                    student_ids = Student.objects.filter(
+                        new_batches__trainers=trainer,
+                        new_batches__course=obj.course,
+                        new_batches__status=True,
+                        new_batches__is_archived=False
+                    ).values_list(
+                        "student_id",
+                        flat=True
+                    )
+
+                    submissions = submissions.filter(
+                        student_id__in=student_ids
+                    )
+
+            # -----------------------------------
+            # STUDENT
+            # -----------------------------------
+
+            elif user_type == "student":
+
+                registration_id = payload.get("registration_id")
+
+                submissions = submissions.filter(
+                    student__registration_id=registration_id
+                )
+
+        except Exception:
+            return []
+
+        return SubmissionSerializer(
+            submissions,
+            many=True,
+            context={"request": request}
+        ).data
+      
 class AssignmentSimpleSerializer(serializers.ModelSerializer):
     submission_count = serializers.SerializerMethodField()
     class Meta:

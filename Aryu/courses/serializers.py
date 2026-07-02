@@ -161,6 +161,8 @@ class CourseSerializer(serializers.ModelSerializer):
     # duration_list = serializers.JSONField(write_only=True, required=False)
     # duration_type = serializers.CharField(read_only=True)
     duration_list = serializers.SerializerMethodField()
+    video_url = serializers.SerializerMethodField()
+
 
 
 
@@ -170,8 +172,14 @@ class CourseSerializer(serializers.ModelSerializer):
             'course_id', 'course_name', 'course_category', 'category_details',
             'course_pic', 'course_pic_url', 'notes', 'currency_type', 'fee_type',
             'topic', 'syllabus', 'syllabus_url','syllabus_info', 'assignment', 'batches',
-            'duration_list','mode_of_delivery', 'fee', 'status', 'is_archived', 'is_featured', 'created_by', 'created_at'
+            'duration_list','mode_of_delivery', 'fee', 'status', 'is_archived', 'is_featured', 'created_by', 'created_at',
+            'video_url',
         ]
+    def get_video_url(self, obj):
+        if obj.video_url and hasattr(obj.video_url, 'url'):
+            return 'https://aylms.aryuprojects.com/api/' + obj.video_url.url
+        return None
+
         
     def get_notes(self, obj):
     
@@ -222,7 +230,7 @@ class CourseSerializer(serializers.ModelSerializer):
                 "end_date": b.end_date,
                 "start_time": b.start_time,
                 "end_time": b.end_time,
-                "trainers": [
+               "trainers": [
                     {
                         "trainer_id": t.trainer_id,
                         "trainer_name": t.full_name,
@@ -235,121 +243,94 @@ class CourseSerializer(serializers.ModelSerializer):
     
     def get_course_pic_url(self, obj):
         if obj.course_pic and hasattr(obj.course_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.course_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.course_pic.url
         return None
     
     def get_syllabus_url(self, obj):
         if obj.syllabus and hasattr(obj.syllabus, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.syllabus.url
+            return 'https://aylms.aryuprojects.com/api' + obj.syllabus.url
         return None
+    def get_syllabus_info(self, obj):
+        if obj.syllabus:
+            return [{
+                "id": obj.course_id,
+                "date": None,
+                "syllabus": self.get_syllabus_url(obj)
+            }]
+        return []
     
     def get_assignment(self, obj):
-        from aryuapp.serializer import AssignmentSimpleSerializer
-        assignments = Assignment.objects.filter(course=obj, is_archived=False)
-        return AssignmentSimpleSerializer(assignments, many=True).data if assignments else []
+        assignments = Assignment.objects.filter(
+            course=obj,
+            is_archived=False
+        ).order_by("id")
 
-    def get_syllabus_info(self, obj):
-        if not obj.syllabus:
-            return []
+        assignment_data = []
 
-        try:
-            file_path = obj.syllabus.path  # absolute filesystem path
+        for assignment in assignments:
 
-            # File missing on disk → return graceful response
-            if not os.path.exists(file_path):
-                return [{
-                    "id": obj.pk,
-                    "date": obj.updated_at.date().isoformat() if hasattr(obj, "updated_at") else None,
-                    "file": {
-                        "name": os.path.basename(obj.syllabus.name),
-                        "type": None,
-                        "size": None,
-                        "url": None,
-                        "missing": True
-                    }
-                }]
-
-            filename = os.path.basename(obj.syllabus.name)
-            mimetype, _ = mimetypes.guess_type(filename)
-
-            return [{
-                "id": obj.pk,
-                "date": obj.updated_at.date().isoformat() if hasattr(obj, "updated_at") else None,
-                "file": {
-                    "name": filename,
-                    "type": mimetype or "application/octet-stream",
-                    "size": os.path.getsize(file_path),
-                    "url": 'https://portal.aryuacademy.com/api' + obj.syllabus.url,
-                    "missing": False
-                }
-            }]
-
-        except Exception:
-            # Absolute safety net — API must never crash
-            return []
-        
-    def validate_syllabus(self, file):
-        """
-        DOCUMENT SECURITY GATEWAY: Strictly allows only PDFs and Word Documents.
-        """
-        if not file:
-            return file
-
-        # 1. DOS Protection
-        MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB is plenty for a resume
-        if file.size > MAX_UPLOAD_SIZE:
-            raise serializers.ValidationError("File size exceeds the 10MB limit.")
-
-        # 2. Filename Obliteration (Anti-Directory Traversal)
-        original_ext = os.path.splitext(file.name)[1].lower()
-        file.name = f"{uuid.uuid4().hex}{original_ext}"
-
-        # 3. Strict Extension Allowlist
-        allowed_extensions = {'.pdf', '.docx', '.doc'}
-        if original_ext not in allowed_extensions:
-            raise serializers.ValidationError(
-                f"Invalid format. Only PDF and Word documents are allowed."
+            submission_qs = (
+                Submission.objects.filter(
+                    assignment=assignment,
+                    is_archived=False
+                )
+                .select_related("student")
+                .prefetch_related("replies")
+                .order_by("-date")
             )
 
-        # 4. Magic Byte Inspection (Anti-Spoofing)
-        file_head = file.read(2048)
-        file.seek(0)
-        true_mime_type = magic.from_buffer(file_head, mime=True)
+            submissions = []
 
-        valid_mimes = [
-            'application/pdf', 
-            'application/msword', # .doc
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' # .docx
-        ]
-        
-        if true_mime_type not in valid_mimes:
-            raise serializers.ValidationError(
-                "Security Alert: The file extension does not match its true binary format."
-            )
+            for submission in submission_qs:
 
-        # 5. Deep Inspection for DOCX (Preventing XML/Zip attacks)
-        if original_ext == '.docx' or true_mime_type.endswith('document'):
-            try:
-                with zipfile.ZipFile(file, 'r') as zf:
-                    total_uncompressed_size = 0
-                    for info in zf.infolist():
-                        # Block Directory Traversal inside the DOCX
-                        if '..' in info.filename or info.filename.startswith('/'):
-                            raise serializers.ValidationError("Security Alert: Malformed DOCX file detected.")
+                profile_pic = None
+                if submission.student.profile_pic:
+                    try:
+                        profile_pic = (
+                            "https://aylms.aryuprojects.com/api"
+                            + submission.student.profile_pic.url
+                        )
+                    except Exception:
+                        profile_pic = None
 
-                        # Block Zip Bombs (e.g., stopping a 5MB DOCX from unzipping into 5GB of XML)
-                        total_uncompressed_size += info.file_size
-                        if total_uncompressed_size > (50 * 1024 * 1024): # 50 MB uncompressed limit
-                            raise serializers.ValidationError("Security Alert: DOCX decompression size exceeds safe limits.")
-            except zipfile.BadZipFile:
-                raise serializers.ValidationError("Security Alert: Corrupted or invalid Word Document.")
-            finally:
-                file.seek(0)
+                submissions.append({
+                    "id": submission.id,
+                    "student": {
+                        "registration_id": submission.student.registration_id,
+                        "student_name": f"{submission.student.first_name} {submission.student.last_name or ''}".strip(),
+                        "first_name": submission.student.first_name,
+                        "last_name": submission.student.last_name,
+                        "profile_pic": profile_pic,
+                    },
+                    "text": submission.text,
+                    "file": submission.file.url if submission.file else None,
+                    "file_url": (
+                        "https://aylms.aryuprojects.com/api" + submission.file.url
+                        if submission.file else None
+                    ),
+                    "date": submission.date.strftime("%Y-%m-%d %H:%M:%S"),
+                    "status": submission.status,
+                    "replies": [
+                        {
+                            "id": reply.id,
+                            "text": reply.text,
+                            "created_at": reply.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                        for reply in submission.replies.all()
+                    ]
+                })
 
-        # Optional but highly recommended: Keep ClamAV active here if you have it installed,
-        # to scan the PDFs and DOCX files for known malware signatures before saving.
+            assignment_data.append({
+                "id": assignment.id,
+                "title": assignment.title,
+                "course": assignment.course.course_id,
+                "assigned_by": assignment.assigned_by_id,
+                "status": assignment.status,
+                "submission_count": submission_qs.count(),
+                "submissions": submissions
+            })
 
-        return file
+        return assignment_data
 
     def validate_fee(self, value):
         if value is None:

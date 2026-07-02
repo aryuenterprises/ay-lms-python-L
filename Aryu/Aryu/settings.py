@@ -295,8 +295,8 @@ SIMPLE_JWT = {
 
 }
 # 
-SERVER_ROOT = Path("/var/www/ay-lms-python-L")
-# SERVER_ROOT = Path("/home/tamilselvi/Documents/GitHub/ay-lms-python-L")
+# SERVER_ROOT = Path("/var/www/ay-lms-python-L")
+SERVER_ROOT = Path("/home/tamilselvi/Documents/GitHub/ay-lms-python-L")
 
 # SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L")
 

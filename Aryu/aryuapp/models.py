@@ -839,6 +839,7 @@ class SubmissionReply(models.Model):
     text = models.TextField(null=True, blank=True)
     date = models.DateTimeField(auto_now_add=True)
     is_archived = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
     
     def __str__(self):
         return f"Reply to {self.submission.assignment.title} by {self.trainer.full_name}"
