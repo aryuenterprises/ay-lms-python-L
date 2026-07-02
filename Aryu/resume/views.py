@@ -3239,6 +3239,68 @@ def resume_razorpay_webhook(request):
 
     return HttpResponse(status=200)
 
+class SubscriptionService:
+
+    @staticmethod
+    def can_parse_resume(user):
+
+        db_user = ResumeRegistration.objects.select_related(
+            "current_subscription",
+            "current_subscription__subscription",
+        ).get(id=user.id)
+
+        subscription = db_user.current_subscription
+
+        if not subscription:
+            return False, "No subscription"
+
+        if subscription.end_date and subscription.end_date < timezone.now():
+            return False, "Subscription expired"
+
+        limit = subscription.subscription.resume_parse_limit
+
+        if subscription.parse_used >= limit:
+            return False, "Resume parsing limit exceeded"
+
+        return True, subscription
+
+
+    @staticmethod
+    def can_run_ats(user):
+
+        db_user = ResumeRegistration.objects.select_related(
+            "current_subscription",
+            "current_subscription__subscription",
+        ).get(id=user.id)
+        print(db_user)
+        subscription = db_user.current_subscription
+
+        if not subscription:
+            return False, "No subscription"
+
+        if subscription.end_date and subscription.end_date < timezone.now():
+            return False, "Subscription expired"
+
+        limit = subscription.subscription.ats_scan_limit
+
+        if subscription.ats_used >= limit:
+            return False, "ATS Scan limit exceeded"
+
+        return True, subscription
+
+
+    @staticmethod
+    def increase_parse_count(subscription):
+        subscription.parse_used += 1
+        subscription.save(update_fields=["parse_used"])
+
+
+    @staticmethod
+    def increase_ats_count(subscription):
+        subscription.ats_used += 1
+        subscription.save(update_fields=["ats_used"])
+
+
 class SubscriptionViewSet(viewsets.ViewSet):
 
     permission_classes = [permissions.IsAuthenticated]
@@ -3614,6 +3676,157 @@ class SubscriptionViewSet(viewsets.ViewSet):
             },
             status=status.HTTP_200_OK
         )
+
+import requests
+
+class ResumeGateway(APIView):
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+
+        allowed, subscription = SubscriptionService.can_parse_resume(
+            request.user
+        )
+
+        if not allowed:
+            return Response(
+                {
+                    "success": False,
+                    "message": subscription
+                },
+                status=403
+            )
+
+        file = request.FILES["file"]
+
+        files = {
+            "file": (
+                file.name,
+                file.file,
+                file.content_type
+            )
+        }
+
+        data = {}
+
+        for key, value in request.data.items():
+            if key != "file":
+                data[key] = value
+
+        response = requests.post(
+            f"{settings.FASTAPI_URL}/api/v1/resume/parse-resume",
+            files=files,
+            data=data,
+            timeout=120
+        )
+        print("response",response)
+
+        if response.ok:
+            SubscriptionService.increment_parse(subscription)
+
+        return HttpResponse(
+            response.content,
+            status=response.status_code,
+            content_type=response.headers.get(
+                "Content-Type",
+                "application/json"
+            )
+        )
+    
+class ATSGateway(APIView):
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+
+        allowed, subscription = SubscriptionService.can_run_ats(
+            request.user
+        )
+        print('allowed', allowed)
+
+        if not allowed:
+            return Response(
+                {
+                    "success": False,
+                    "message": subscription
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if "file" not in request.FILES:
+            return Response(
+                {
+                    "success": False,
+                    "message": "File is required."
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        uploaded_file = request.FILES["file"]
+
+        files = {
+            "file": (
+                uploaded_file.name,
+                uploaded_file.file,
+                uploaded_file.content_type,
+            )
+        }
+
+        data = {}
+
+        for key, value in request.data.items():
+            if key != "file":
+                data[key] = value
+
+        try:
+            logger.info(f'data: {data}')
+
+            url = f"{settings.FASTAPI_URL}/api/v1/ats/scan-file"
+
+            logger.info(f'url: {url}')
+
+            response = requests.post(
+                url,
+                files=files,
+                data=data,
+                timeout=180,
+            )
+            logger.info(response.status_code)
+            logger.info(response.text)
+
+            if response.ok:
+                SubscriptionService.increase_ats_count(
+                    subscription
+                )
+
+            return HttpResponse(
+                response.content,
+                status=response.status_code,
+                content_type=response.headers.get(
+                    "Content-Type",
+                    "application/json",
+                ),
+            )
+
+        except requests.Timeout:
+            return Response(
+                {
+                    "success": False,
+                    "message": "ATS service timeout."
+                },
+                status=status.HTTP_504_GATEWAY_TIMEOUT
+            )
+
+        except requests.RequestException:
+            return Response(
+                {
+                    "success": False,
+                    "message": "ATS service unavailable."
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+    
 
 class PublicSubscriptionPlansViewSet(viewsets.ViewSet):
 
