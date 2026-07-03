@@ -14,6 +14,7 @@ from aryuapp.models import ModulePermission, Student, Trainer
 from aryuapp.views import has_permission,flatten_errors
 from core.views import secure_throttle
 from core. permissions import verify_admin_privileges
+import traceback
 # Create your views here.
 
 
@@ -625,27 +626,41 @@ class TopicViewSet(LoggingMixin, viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
-        course_id = self.kwargs.get('course_id')
         try:
-            course = Course.objects.get(course_id=course_id, is_archived=False)
-        except Course.DoesNotExist:
+            course_id = self.kwargs.get("course_id")
+
+            try:
+                course = Course.objects.get(course_id=course_id, is_archived=False)
+            except Course.DoesNotExist:
+                return Response(
+                    {"success": False, "message": "Course not found or deleted."},
+                    status=status.HTTP_200_OK
+                )
+
+            
+
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+
+            
+
+            serializer.save(course=course)
+
+            
+
             return Response(
-                {"success": False, "message": "Course not found or deleted."},
-                status=status.HTTP_200_OK
+                {
+                    "success": True,
+                    "message": "Topic created successfully.",
+                    "data": serializer.data
+                },
+                status=status.HTTP_201_CREATED
             )
 
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save(course=course)
-        return Response(
-            {
-                "success": True,
-                "message": "Topic created successfully.",
-                "data": serializer.data
-            },
-            status=status.HTTP_201_CREATED
-        )
-
+        except Exception as e:
+            
+            raise
+    
     # Combine update and partial_update here
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop('partial', False)  # Check if partial update was requested
@@ -661,7 +676,27 @@ class TopicViewSet(LoggingMixin, viewsets.ModelViewSet):
             "data": serializer.data
         }, status=status.HTTP_200_OK)
 
-        
+
+
+def destroy(self, request, *args, **kwargs):
+    try:
+        instance = self.get_object()
+        instance.delete()
+
+        return Response({
+            "success": True,
+            "message": "Topic deleted successfully."
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        print(traceback.format_exc())
+
+        return Response({
+            "success": False,
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)   
+           
 class StudentTopicStatusViewSet(LoggingMixin, viewsets.ModelViewSet):
     serializer_class = StudentTopicStatusSerializer
     permission_classes = [IsAuthenticated]

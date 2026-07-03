@@ -538,11 +538,20 @@ class TopicSerializer(serializers.ModelSerializer):
         fields = ['topic_id','course','title','description','created_date','create_by','is_archived', 'created_at', 'created_by']
         read_only_fields = ['created_date', 'course', 'topic_id']
         
+    
+    # def save(self, **kwargs):
+    #     if "description" in self.validated_data:
+    #         self.validated_data["description"] = escape(
+    #             self.validated_data["description"]
+    #         )
+
+    #     return super().save(**kwargs)
+
     def create(self, validated_data):
         request = self.context.get("request")
-        
+
         if request and request.user:
-            role = getattr(request.user, "user_type", None)  # or from JWT payload
+            role = getattr(request.user, "user_type", None)
 
             if role in ["trainer", "admin"]:
                 validated_data["created_by"] = getattr(request.user, "trainer_id", None)
@@ -556,9 +565,6 @@ class TopicSerializer(serializers.ModelSerializer):
                 validated_data["created_by"] = getattr(request.user, "student_id", None)
                 validated_data["created_by_type"] = role
 
-            else:
-                validated_data["created_by"] = getattr(request.user, "user_id", None)
-                validated_data["created_by_type"] = role
         return super().create(validated_data)
         
 class StudentTopicStatusSerializer(serializers.ModelSerializer):
