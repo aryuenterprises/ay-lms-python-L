@@ -24,6 +24,9 @@ class InputSanitizationMiddleware(MiddlewareMixin):
         "/api/resume/update-plan/",
     ]
 
+    def is_html_allowed(self, path):
+        return any(path.startswith(p) for p in self.HTML_ALLOWED_PATHS)
+
     def process_request(self, request):
 
         # Skip sanitization for HTML → PDF endpoint
