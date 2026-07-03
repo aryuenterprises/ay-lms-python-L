@@ -17,10 +17,17 @@ class InputSanitizationMiddleware(MiddlewareMixin):
       - XSS script injections on string endpoints.
     """
 
+    HTML_ALLOWED_PATHS = [
+        "/api/resume/candidates/generate-pdf",
+        "/api/resume/user-resumes",
+        "/api/resume/create-plan/",
+        "/api/resume/update-plan/",
+    ]
+
     def process_request(self, request):
 
         # Skip sanitization for HTML → PDF endpoint
-        if request.path.startswith("/api/resume/candidates/generate-pdf"):
+        if self.is_html_allowed(request.path):
             return None
 
         if request.method in ["POST", "PUT", "PATCH"]:
