@@ -239,7 +239,7 @@ class Trainer(models.Model):
     experience = models.CharField(max_length=20, null=True, blank=True) 
     last_company = models.CharField(max_length=255, null=True, blank=True)
     linkedin_profile = models.CharField(max_length=100, null=True, blank=True)
-    short_bio = models.CharField(max_length=200, null=True, blank=True)
+    short_bio = models.CharField(max_length=300, null=True, blank=True)
     joining_date = models.DateField(null=True, blank=True)
 
     account_no = models.BigIntegerField(null=True, blank=True)
