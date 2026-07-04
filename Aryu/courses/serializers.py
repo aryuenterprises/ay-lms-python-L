@@ -5,11 +5,16 @@ import mimetypes
 from django.apps import apps
 import os
 import re
-import uuid
-import magic
+from aryuapp.models import Assignment,Submission
+from batches.models import NewBatch
+from django.utils.html import escape
+# import request
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.exceptions import ValidationError
 import json
-import zipfile
-from aryuapp.models import Assignment,Student,Submission
+
+# from aryuapp.models import Student
 
 
 
@@ -90,6 +95,11 @@ class CourseCategorySerializer(serializers.ModelSerializer):
             instance.cascade_category_deactivation()
 
         return instance
+class Student(models.Model):
+    course = models.ForeignKey(
+        Course,
+        on_delete=models.CASCADE
+    )
 
 class CourseListSerializer(serializers.ModelSerializer):
 
@@ -104,10 +114,15 @@ class CourseListSerializer(serializers.ModelSerializer):
     )
 
     course_pic_url = serializers.SerializerMethodField()
+
     duration_list = serializers.SerializerMethodField()
+
+    student_list = serializers.SerializerMethodField()
+
 
     class Meta:
         model = Course
+
         fields = [
             "course_id",
             "course_name",
@@ -124,19 +139,68 @@ class CourseListSerializer(serializers.ModelSerializer):
             "status",
             "is_archived",
             "is_featured",
+            "student_list",
+            "video_url"
         ]
 
+
     def get_course_pic_url(self, obj):
+
         if obj.course_pic:
-            return f"https://portal.aryuacademy.com/api{obj.course_pic.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.course_pic.url}"
+
         return None
-    def get_duration_list(self,obj):
+
+
+    def get_duration_list(self, obj):
+
         if obj.duration:
+
             duration_value = obj.duration
-            duration_type = getattr(obj, "duration_type")  # default to month if field not set
-            return [{"duration":duration_value, "duration_type":duration_type}]
+
+            duration_type = getattr(
+                obj,
+                "duration_type"
+            )
+
+            return [
+                {
+                    "duration": duration_value,
+                    "duration_type": duration_type
+                }
+            ]
+
         return []
 
+
+    def get_student_list(self, obj):
+
+        batches = NewBatch.objects.filter(
+            course=obj
+        ).prefetch_related("students")
+
+        student_data = []
+
+        added_students = set()
+
+        for batch in batches:
+
+            for student in batch.students.all():
+
+                if student.student_id not in added_students:
+
+                    added_students.add(student.student_id)
+
+                    student_data.append({
+                        "student_id": student.student_id,
+                        "student_name": f"{student.first_name} {student.last_name}",
+                        "email": student.email,
+                        "phone": student.contact_no,
+                        "batch_name": batch.title
+                    })
+
+        return student_data
+    
 class CaseInsensitiveSlugRelatedField(serializers.SlugRelatedField):
     def to_internal_value(self, data):
         try:
@@ -563,15 +627,15 @@ class CourseSerializer(serializers.ModelSerializer):
 
         return instance
 
-class CourseSimpleSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Course
-        fields = ['course_id', 'course_name', 'course_pic', 'course_category']
-
 class CourseVideoSerializer(serializers.ModelSerializer):
     class Meta:
         model=CourseVideo
         fields = "__all__"
+
+class CourseSimpleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Course
+        fields = ['course_id', 'course_name', 'course_pic', 'course_category']
 
 class TopicSerializer(serializers.ModelSerializer):
     create_by = serializers.SlugRelatedField(

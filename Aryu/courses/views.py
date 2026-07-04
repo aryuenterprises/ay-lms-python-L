@@ -9,12 +9,12 @@ from rest_framework.decorators import action, api_view
 from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
 from django.contrib.auth.hashers import *
 from django.db.models import Q
-from aryuapp.mixins import LoggingMixin
+from aryuapp.mixins import LoggingMixin,NotesMixin
 from aryuapp.models import ModulePermission, Student, Trainer
 from aryuapp.views import has_permission,flatten_errors
-from core.views import secure_throttle
-from core. permissions import verify_admin_privileges
+from django.shortcuts import get_object_or_404
 import traceback
+from batches.serializers import NewBatchSerializer
 # Create your views here.
 
 
@@ -101,18 +101,10 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
             "message": message
         }, status=status.HTTP_200_OK)
 
-    @secure_throttle(rate_limit=5, period=60)
     def create(self, request, *args, **kwargs):
-        
-        db_user_type, error_response = verify_admin_privileges(request)
-        if error_response:
-            return error_response
-
         category_name = request.data.get('category_name', '').strip()
         user = request.user
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-        
+
         category_module = ModulePermission.objects.filter(
             module__iexact="Category"
         ).only("module_id").first()
@@ -173,8 +165,7 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop('partial', False)
         user = request.user
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
         # Ensure module_id points to Course Categories
         category_module = ModulePermission.objects.filter(module__iexact="Category").first()
         if not category_module:
@@ -211,10 +202,6 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['patch'], url_path='archive')
     def archive_category(self, request, *args, **kwargs):
-        user = request.user
-        if user.user_type not in ["super_admin", "admin"]:
-            return Response({"success": False, "message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-            
         category = self.get_object()
         category.is_archived = True
         category.save()
@@ -520,6 +507,8 @@ class CourseVideoViewSet(viewsets.ModelViewSet):
             id=video_id,
             is_archived=False
         )
+    
+    
     # LIST
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()
@@ -627,7 +616,6 @@ class CourseVideoViewSet(viewsets.ModelViewSet):
             "success": True,
             "message": "Course video deleted successfully"
         }, status=status.HTTP_200_OK)
-     
 class TopicViewSet(LoggingMixin, viewsets.ModelViewSet):
     serializer_class = TopicSerializer
     permission_classes = [IsAuthenticated]

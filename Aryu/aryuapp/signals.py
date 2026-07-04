@@ -54,46 +54,52 @@ def send_student_welcome(sender, instance, created, **kwargs):
     if created:
         send_welcome_email(instance)
 
-@receiver(post_save, sender=Submission)
-def notify_trainer_on_submission(sender, instance, created, **kwargs):
-    if not created or not instance.student or not instance.assignment:
+@receiver(post_save, sender=StudentAnswers)
+def notify_trainer_on_test_submission(sender, instance, created, **kwargs):
+    if not created or not instance.student_id or not instance.test_id:
         return
 
-    student = instance.student
-    assignment = instance.assignment
-    course = assignment.course
+    student = instance.student_id
+    test = instance.test_id
+    course = test.course
 
     # ----------------------------------
-    # 1. Get assigned batches (NEW LOGIC)
+    # 1. Get batches (NEW LOGIC)
     # ----------------------------------
-    assigned_batches = NewBatch.objects.filter(
+    batches = NewBatch.objects.filter(
         students=student,
         course=course,
         is_archived=False,
         status=True
     ).select_related("trainer")
 
-    if not assigned_batches.exists():
+    if not batches.exists():
         return
 
     # ----------------------------------
-    # 2. Notify Trainers
+    # 2. Notify trainer (avoid duplicates)
     # ----------------------------------
-    for batch in assigned_batches:
-        if batch.trainer:
+    notified_trainers = set()
+
+    for batch in batches:
+        trainer = batch.trainer
+
+        if trainer and trainer.id not in notified_trainers:
+            notified_trainers.add(trainer.id)
+
             Notification.objects.create(
-                trainer=batch.trainer,
+                trainer=trainer,
                 student=student,
-                assignment=assignment,
+                test=test,
                 course=course,
                 message=(
-                    f"submission: Student {student.first_name} {student.last_name} "
-                    f"submitted assignment '{assignment.title}' in course '{course.course_name}'."
-                )
+                    f"test_submission: Student {student.first_name} {student.last_name} "
+                    f"submitted answers for Test '{test.test_name}' in Course '{course.course_name}'."
+                ),
             )
 
     # ----------------------------------
-    # 3. Collect company IDs
+    # 3. SAFE COMPANY LOOKUP
     # ----------------------------------
     company_ids = {
         getattr(student.employee, "company_id", None) if hasattr(student, "employee") else None,
@@ -104,7 +110,7 @@ def notify_trainer_on_submission(sender, instance, created, **kwargs):
     company_ids.discard(None)
 
     # ----------------------------------
-    # 4. Notify Sub-Admins
+    # 4. Notify sub-admins
     # ----------------------------------
     for company_id in company_ids:
         sub_admins = SubAdmin.objects.filter(
@@ -116,13 +122,13 @@ def notify_trainer_on_submission(sender, instance, created, **kwargs):
         for sub_admin in sub_admins:
             Notification.objects.create(
                 student=student,
-                sub_admin=sub_admin,
-                assignment=assignment,
+                test=test,
                 course=course,
+                sub_admin=sub_admin,
                 message=(
-                    f"submission: Student {student.first_name} {student.last_name} "
-                    f"submitted assignment '{assignment.title}'."
-                )
+                    f"test_submission: Student {student.first_name} {student.last_name} "
+                    f"submitted answers for Test '{test.test_name}'."
+                ),
             )
 
 @receiver(post_save, sender=SubmissionReply)
