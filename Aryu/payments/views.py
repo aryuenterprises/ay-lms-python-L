@@ -842,11 +842,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "transaction_id": tx.transaction_id,
                 "amount": float(tx.amount or 0),
                 "payment_status": tx.payment_status,
-                "payment_mode": (
-                    tx.payment_mode
-                    if getattr(tx, "payment_mode", None)
-                    else tx.metadata.get("mode") if tx.metadata else None
-                ),
+                "payment_mode":tx.payment_mode,
                 "discount": float(tx.discount or 0),
                 "currency": tx.currency,
                 "gateway": tx.gateway.gatway_name if tx.gateway else None,

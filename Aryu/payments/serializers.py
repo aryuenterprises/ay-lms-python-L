@@ -64,7 +64,8 @@ class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
             "gateway",
             "created_at",
             "discount",
-            "metadata"
+            "metadata",
+            "payment_mode"
         ]
 
     def get_course_name(self, obj):
