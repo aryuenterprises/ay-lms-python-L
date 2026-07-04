@@ -326,6 +326,9 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
                 "success": False,
                 "message": str(e)
             }, status=200)
+        
+    
+
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -441,30 +444,7 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
             "success": True,
             "data": response_serializer.data
         }, status=status.HTTP_200_OK)
-  
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
 
-        request = self.request
-        student = None
-
-        if request.user.user_type == "student":
-            student = Student.objects.filter(
-                student_id=request.user.student_id,
-                is_archived=False
-            ).first()
-
-        else:
-            student_id = request.query_params.get("student_id")
-            if student_id:
-                student = Student.objects.filter(
-                    student_id=student_id,
-                    is_archived=False
-                ).first()
-
-        context["student"] = student
-        return context
-   
     @action(detail=True, methods=['get'], url_path='batches')
     def get_batches(self, request, *args, **kwargs):
         course = self.get_object()  # this is a Course instance
@@ -488,6 +468,28 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
             "success": True,
             "message": f"Course {course.course_name} deleted successfully."
         }, status=status.HTTP_200_OK)
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+
+        request = self.request
+        student = None
+
+        if request.user.user_type == "student":
+            student = Student.objects.filter(
+                student_id=request.user.student_id,
+                is_archived=False
+            ).first()
+
+        else:
+            student_id = request.query_params.get("student_id")
+            if student_id:
+                student = Student.objects.filter(
+                    student_id=student_id,
+                    is_archived=False
+                ).first()
+
+        context["student"] = student
+        return context
    
 class CourseVideoViewSet(viewsets.ModelViewSet):
     serializer_class = CourseVideoSerializer
@@ -701,25 +703,25 @@ class TopicViewSet(LoggingMixin, viewsets.ModelViewSet):
 
 
 
-def destroy(self, request, *args, **kwargs):
-    try:
-        instance = self.get_object()
-        instance.delete()
+    def destroy(self, request, *args, **kwargs):
+        try:
+            instance = self.get_object()
+            instance.delete()
 
-        return Response({
-            "success": True,
-            "message": "Topic deleted successfully."
-        }, status=status.HTTP_200_OK)
+            return Response({
+                "success": True,
+                "message": "Topic deleted successfully."
+            }, status=status.HTTP_200_OK)
 
-    except Exception as e:
-        print(traceback.format_exc())
+        except Exception as e:
+            print(traceback.format_exc())
 
-        return Response({
-            "success": False,
-            "message": str(e),
-            "traceback": traceback.format_exc(),
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)   
-           
+            return Response({
+                "success": False,
+                "message": str(e),
+                "traceback": traceback.format_exc(),
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)   
+            
 class StudentTopicStatusViewSet(LoggingMixin, viewsets.ModelViewSet):
     serializer_class = StudentTopicStatusSerializer
     permission_classes = [IsAuthenticated]

@@ -177,9 +177,8 @@ class CourseSerializer(serializers.ModelSerializer):
         ]
     def get_video_url(self, obj):
         if obj.video_url and hasattr(obj.video_url, 'url'):
-            return 'https://portal.aryuacademy.com/api/' + obj.video_url.url
+            return 'https://aylms.aryuprojects.com/api/' + obj.video_url.url
         return None
-
 
         
     def get_notes(self, obj):
@@ -244,12 +243,12 @@ class CourseSerializer(serializers.ModelSerializer):
     
     def get_course_pic_url(self, obj):
         if obj.course_pic and hasattr(obj.course_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.course_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.course_pic.url
         return None
     
     def get_syllabus_url(self, obj):
         if obj.syllabus and hasattr(obj.syllabus, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.syllabus.url
+            return 'https://aylms.aryuprojects.com/api' + obj.syllabus.url
         return None
     def get_syllabus_info(self, obj):
         if obj.syllabus:
@@ -261,6 +260,19 @@ class CourseSerializer(serializers.ModelSerializer):
         return []
     
     def get_assignment(self, obj):
+        request = self.context.get("request")
+        student = self.context.get("student")
+
+        # If student object wasn't passed, get it from query params
+        if not student and request:
+            student_id = request.query_params.get("student_id")
+
+            if student_id:
+                student = Student.objects.filter(
+                    student_id=student_id,
+                    is_archived=False
+                ).first()
+
         assignments = Assignment.objects.filter(
             course=obj,
             is_archived=False
@@ -270,11 +282,17 @@ class CourseSerializer(serializers.ModelSerializer):
 
         for assignment in assignments:
 
+            submission_qs = Submission.objects.filter(
+                assignment=assignment,
+                is_archived=False,
+            )
+
+            # Filter by student
+            if student:
+                submission_qs = submission_qs.filter(student=student)
+
             submission_qs = (
-                Submission.objects.filter(
-                    assignment=assignment,
-                    is_archived=False
-                )
+                submission_qs
                 .select_related("student")
                 .prefetch_related("replies")
                 .order_by("-date")
@@ -283,30 +301,42 @@ class CourseSerializer(serializers.ModelSerializer):
             submissions = []
 
             for submission in submission_qs:
+                student_obj = submission.student
 
                 profile_pic = None
-                if submission.student.profile_pic:
-                    try:
-                        profile_pic = (
-                            "https://portal.aryuacademy.com/api"
-                            + submission.student.profile_pic.url
-                        )
-                    except Exception:
-                        profile_pic = None
+                registration_id = None
+                student_name = None
+                first_name = None
+                last_name = None
+
+                if student_obj:
+                    registration_id = student_obj.registration_id
+                    first_name = student_obj.first_name
+                    last_name = student_obj.last_name
+                    student_name = f"{first_name} {last_name or ''}".strip()
+
+                    if student_obj.profile_pic:
+                        try:
+                            profile_pic = (
+                                "https://aylms.aryuprojects.com/api"
+                                + student_obj.profile_pic.url
+                            )
+                        except Exception:
+                            pass
 
                 submissions.append({
                     "id": submission.id,
                     "student": {
-                        "registration_id": submission.student.registration_id,
-                        "student_name": f"{submission.student.first_name} {submission.student.last_name or ''}".strip(),
-                        "first_name": submission.student.first_name,
-                        "last_name": submission.student.last_name,
+                        "registration_id": registration_id,
+                        "student_name": student_name,
+                        "first_name": first_name,
+                        "last_name": last_name,
                         "profile_pic": profile_pic,
                     },
                     "text": submission.text,
                     "file": submission.file.url if submission.file else None,
                     "file_url": (
-                        "https://portal.aryuacademy.com/api" + submission.file.url
+                        "https://aylms.aryuprojects.com/api" + submission.file.url
                         if submission.file else None
                     ),
                     "date": submission.date.strftime("%Y-%m-%d %H:%M:%S"),
@@ -332,7 +362,6 @@ class CourseSerializer(serializers.ModelSerializer):
             })
 
         return assignment_data
-
     def validate_fee(self, value):
         if value is None:
             return value
@@ -356,6 +385,8 @@ class CourseSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Fee cannot be negative.")
 
         return value
+    
+    
     
     def get_topic(self, obj):
         request = self.context.get("request")
@@ -404,7 +435,6 @@ class CourseSerializer(serializers.ModelSerializer):
 
         return topic_data
     
-    
     # def validate_duration(self, value):
     #     if value:
     #         try:
@@ -414,7 +444,7 @@ class CourseSerializer(serializers.ModelSerializer):
     #         except ValueError:
     #             raise serializers.ValidationError("Duration must be a number (months).")
     #     return value
-    from rest_framework import serializers
+    
 
     def validate_duration(self, value, duration_type=None):
         """
@@ -532,7 +562,6 @@ class CourseSerializer(serializers.ModelSerializer):
             instance.deactivate_course(instance)
 
         return instance
-
 
 class CourseSimpleSerializer(serializers.ModelSerializer):
     class Meta:
