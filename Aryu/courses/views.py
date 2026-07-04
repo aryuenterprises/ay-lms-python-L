@@ -441,7 +441,30 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
             "success": True,
             "data": response_serializer.data
         }, status=status.HTTP_200_OK)
+  
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
 
+        request = self.request
+        student = None
+
+        if request.user.user_type == "student":
+            student = Student.objects.filter(
+                student_id=request.user.student_id,
+                is_archived=False
+            ).first()
+
+        else:
+            student_id = request.query_params.get("student_id")
+            if student_id:
+                student = Student.objects.filter(
+                    student_id=student_id,
+                    is_archived=False
+                ).first()
+
+        context["student"] = student
+        return context
+   
     @action(detail=True, methods=['get'], url_path='batches')
     def get_batches(self, request, *args, **kwargs):
         course = self.get_object()  # this is a Course instance
