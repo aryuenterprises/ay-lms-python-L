@@ -5,7 +5,7 @@ from django.core.files.base import ContentFile
 from django.db import models
 from django.template.loader import render_to_string
 from django.utils import timezone
-
+from django.db.models import Sum
 from num2words import num2words
 from weasyprint import HTML
 
@@ -260,64 +260,72 @@ class InvoiceService:
                 .title
             )
 
+        # =========================================
+        # EBOOK PAYMENT
+        # =========================================
+
+        if transaction.ebookregistration:
+            return "Ebook Purchase"
+
         return "Payment"
 
     @classmethod
-    def get_previous_transactions(
-        cls,
-        transaction
-    ):
+    def get_previous_transactions(cls, transaction):
 
         queryset = (
-            PaymentTransaction.objects
-            .filter(
+            PaymentTransaction.objects.filter(
                 payment_status__in=[
                     "success",
                     "paid",
-                    "done"
+                    "done",
+                    "partial",
+                    "advanced",
                 ],
-                is_archived=False
+                is_archived=False,
+                invoice_no__isnull=False,
             )
-            .select_related(
-                "student",
-                "course"
-            )
-            .order_by("created_at")
         )
 
-        # =========================================
-        # STUDENT PAYMENTS
-        # =========================================
-
         if transaction.student:
+            queryset = queryset.filter(student=transaction.student)
 
-            queryset = queryset.filter(
-                student=transaction.student,
-            )
-
-            # OPTIONAL COURSE FILTER
             if transaction.course:
-
-                queryset = queryset.filter(
-                    course=transaction.course
-                )
-
-        # =========================================
-        # WEBINAR PAYMENTS
-        # =========================================
+                queryset = queryset.filter(course=transaction.course)
 
         elif transaction.webinar_registration:
-
             queryset = queryset.filter(
-                webinar_registration=
-                transaction.webinar_registration
+                webinar_registration=transaction.webinar_registration
             )
 
-        else:
-            queryset = queryset.none()
+        # Exclude current transaction
+        queryset = queryset.exclude(id=transaction.id)
 
-        return queryset
+        return queryset.order_by("created_at")
+    @classmethod
+    def get_previous_invoice_details(
+        cls,
+        previous_transactions,
+        current_transaction
+    ):
 
+        invoice_list = []
+
+        for index, txn in enumerate(previous_transactions, start=1):
+            invoice_list.append({
+                "sno": index,
+                "invoice_no": txn.invoice_no,
+                "date": txn.invoice_date,
+                "amount": cls.round_amount(txn.amount),
+            })
+
+        invoice_list.append({
+            "sno": len(invoice_list) + 1,
+            "invoice_no": current_transaction.invoice_no,
+            "date": current_transaction.invoice_date,
+            "amount": cls.round_amount(current_transaction.amount),
+        })
+
+        return invoice_list
     @classmethod
     def get_total_received(
         cls,
@@ -339,35 +347,35 @@ class InvoiceService:
         return cls.round_amount(total)
 
     @classmethod
-    def get_balance_due(
-        cls,
-        transaction,
-        total_received
-    ):
-
-        # =========================================
-        # COURSE BALANCE
-        # =========================================
+    def get_balance_due(cls, transaction):
 
         if transaction.course:
 
-            course_fee = Decimal(
-                transaction.course_fee
-                or 0
+            course_fee = Decimal(transaction.course.fee or 0)
+
+            total_received = (
+                PaymentTransaction.objects.filter(
+                    student=transaction.student,
+                    course=transaction.course,
+                    is_archived=False,
+                    payment_status__in=[
+                        "success",
+                        "paid",
+                        "done",
+                        "partial",
+                        "advanced"
+                    ]
+                ).aggregate(
+                    total=Sum("amount")
+                )["total"] or Decimal("0")
             )
 
-            due = (
-                course_fee - total_received
-            )
+            due = course_fee - total_received
 
             return max(
                 cls.round_amount(due),
                 Decimal("0")
             )
-
-        # =========================================
-        # WEBINAR BALANCE
-        # =========================================
 
         if (
             transaction.webinar_registration
@@ -375,16 +383,26 @@ class InvoiceService:
         ):
 
             webinar_price = Decimal(
-                transaction
-                .webinar_registration
-                .webinar
-                .price
-                or 0
+                transaction.webinar_registration.webinar.price or 0
             )
 
-            due = (
-                webinar_price - total_received
+            total_received = (
+                PaymentTransaction.objects.filter(
+                    webinar_registration=transaction.webinar_registration,
+                    is_archived=False,
+                    payment_status__in=[
+                        "success",
+                        "paid",
+                        "done",
+                        "partial",
+                        "advanced"
+                    ]
+                ).aggregate(
+                    total=Sum("amount")
+                )["total"] or Decimal("0")
             )
+
+            due = webinar_price - total_received
 
             return max(
                 cls.round_amount(due),
@@ -392,7 +410,6 @@ class InvoiceService:
             )
 
         return Decimal("0.00")
-
     @classmethod
     def update_transaction_tax_fields(
         cls,
@@ -516,25 +533,27 @@ class InvoiceService:
         # PREVIOUS PAYMENTS
         # =========================================
 
-        previous_transactions = (
-            cls.get_previous_transactions(
-                transaction
-            )
+        previous_transactions = cls.get_previous_transactions(transaction)
+
+        previous_invoice_details = cls.get_previous_invoice_details(
+            previous_transactions,
+            transaction
         )
 
-        total_received = (
-            cls.get_total_received(
-                previous_transactions,
-                transaction
-            )
+        previous_paid_amount = (
+            previous_transactions.aggregate(
+                total=models.Sum("amount")
+            )["total"] or Decimal("0")
         )
 
-        balance_due = (
-            cls.get_balance_due(
-                transaction,
-                total_received
-            )
+        current_payment = cls.round_amount(transaction.amount)
+
+        total_received = cls.round_amount(
+            previous_paid_amount + current_payment
         )
+
+
+        balance_due = cls.get_balance_due(transaction)
 
         # =========================================
         # UPDATE TRANSACTION
@@ -589,20 +608,39 @@ class InvoiceService:
         # =========================================
 
         context = {
+
             "transaction": transaction,
+
             "company": company,
+
             "billing": billing,
+
             "description": description,
+
             "previous_transactions":
                 previous_transactions,
+
+            "previous_invoice_details":
+                previous_invoice_details,
+
+            "previous_paid_amount":
+                previous_paid_amount,
+
+            "current_payment":
+                current_payment,
+
             "total_received":
                 total_received,
+
             "balance_due":
                 balance_due,
+
             "context_amount_words":
                 invoice_total_words,
+
             "tax_amount_words":
                 tax_amount_words,
+
             "hsn_code":
                 cls.HSN_CODE,
         }
