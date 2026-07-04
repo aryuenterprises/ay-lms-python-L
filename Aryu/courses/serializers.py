@@ -325,15 +325,21 @@ class CourseSerializer(serializers.ModelSerializer):
     
     def get_assignment(self, obj):
         request = self.context.get("request")
-        student = self.context.get("student")
 
-        # If student object wasn't passed, get it from query params
-        if not student and request:
-            student_id = request.query_params.get("student_id")
+        student = None
 
-            if student_id:
+        if request and request.user.is_authenticated:
+            # Logged-in student
+            if getattr(request.user, "user_type", "") == "student":
                 student = Student.objects.filter(
-                    student_id=student_id,
+                    student_id=request.user.student_id,
+                    is_archived=False
+                ).first()
+
+            # Admin/Trainer viewing another student's data
+            elif request.query_params.get("student_id"):
+                student = Student.objects.filter(
+                    student_id=request.query_params.get("student_id"),
                     is_archived=False
                 ).first()
 
@@ -348,10 +354,10 @@ class CourseSerializer(serializers.ModelSerializer):
 
             submission_qs = Submission.objects.filter(
                 assignment=assignment,
-                is_archived=False,
+                is_archived=False
             )
 
-            # Filter by student
+            # Filter submissions only for the selected/logged-in student
             if student:
                 submission_qs = submission_qs.filter(student=student)
 
@@ -367,42 +373,22 @@ class CourseSerializer(serializers.ModelSerializer):
             for submission in submission_qs:
                 student_obj = submission.student
 
-                profile_pic = None
-                registration_id = None
-                student_name = None
-                first_name = None
-                last_name = None
-
-                if student_obj:
-                    registration_id = student_obj.registration_id
-                    first_name = student_obj.first_name
-                    last_name = student_obj.last_name
-                    student_name = f"{first_name} {last_name or ''}".strip()
-
-                    if student_obj.profile_pic:
-                        try:
-                            profile_pic = (
-                                "https://portal.aryuacademy.com/api"
-                                + student_obj.profile_pic.url
-                            )
-                        except Exception:
-                            pass
-
                 submissions.append({
                     "id": submission.id,
                     "student": {
-                        "registration_id": registration_id,
-                        "student_name": student_name,
-                        "first_name": first_name,
-                        "last_name": last_name,
-                        "profile_pic": profile_pic,
+                        "registration_id": student_obj.registration_id,
+                        "student_name": f"{student_obj.first_name} {student_obj.last_name or ''}".strip(),
+                        "first_name": student_obj.first_name,
+                        "last_name": student_obj.last_name,
+                        "profile_pic": (
+                            "https://portal.aryuacademy.com/api" + student_obj.profile_pic.url
+                        ) if student_obj.profile_pic else None,
                     },
                     "text": submission.text,
                     "file": submission.file.url if submission.file else None,
                     "file_url": (
                         "https://portal.aryuacademy.com/api" + submission.file.url
-                        if submission.file else None
-                    ),
+                    ) if submission.file else None,
                     "date": submission.date.strftime("%Y-%m-%d %H:%M:%S"),
                     "status": submission.status,
                     "replies": [
@@ -418,7 +404,7 @@ class CourseSerializer(serializers.ModelSerializer):
             assignment_data.append({
                 "id": assignment.id,
                 "title": assignment.title,
-                "description":assignment.description,
+                "description": assignment.description,
                 "course": assignment.course.course_id,
                 "assigned_by": assignment.assigned_by_id,
                 "status": assignment.status,
