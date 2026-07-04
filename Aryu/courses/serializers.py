@@ -418,6 +418,7 @@ class CourseSerializer(serializers.ModelSerializer):
             assignment_data.append({
                 "id": assignment.id,
                 "title": assignment.title,
+                "description":assignment.description,
                 "course": assignment.course.course_id,
                 "assigned_by": assignment.assigned_by_id,
                 "status": assignment.status,
