@@ -424,9 +424,23 @@ class AuthViewSet(viewsets.ViewSet):
             subject = f"{user.first_name}, verify your PassAts account"
             body = f"Please verify your account: {verification_link}"
 
-            transaction.on_commit(
-                lambda: send_verification_email.delay(subject, body, html_message, user.email)
-            )
+            def queue_email():
+                if settings.DEBUG:
+                    send_verification_email(
+                        subject,
+                        body,
+                        html_message,
+                        user.email
+                    )
+                else:
+                    send_verification_email.delay(
+                        subject,
+                        body,
+                        html_message,
+                        user.email
+                    )
+
+            transaction.on_commit(queue_email)
 
             return Response(
                 {"message": "Registration successful. Verification email sent."},
