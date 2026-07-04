@@ -1040,7 +1040,7 @@ class AttendanceSerializer(serializers.ModelSerializer):
         read_only_fields = ['date', 'ip_address', 'batch_id', 'batch_name', 'title', 'new_batch_title']
 
     def get_student_name(self, obj):
-        return f"{obj.student.first_name} {obj.student.last_name}"
+        return f"{obj.student.first_name} "
 
     # def validate_status(self, value):
 
@@ -1906,7 +1906,7 @@ class TrainerSerializer(serializers.ModelSerializer):
                     "students": [
                         {
                             "student_id":      s.student_id,
-                            "student_name":    f"{s.first_name} {s.last_name}".strip(),
+                            "student_name":    f"{s.first_name}".strip(),
                             "registration_id": s.registration_id,
                         }
                         for s in nb.students.all()
@@ -2324,7 +2324,7 @@ class SubmissionStudentSerializer(serializers.ModelSerializer):
         return None
     
     def get_student_name(self, obj):
-        return f"{obj.first_name} {obj.last_name}"
+        return f"{obj.first_name} "
 
 class SubmissionReplySerializer(serializers.ModelSerializer):
     trainer = TrainerSimpleSerializer(read_only=True)
@@ -2348,7 +2348,7 @@ class SubmissionSerializer(serializers.ModelSerializer):
 
     def get_file_url(self, obj):
         if obj.file and hasattr(obj.file, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.file.url
+            return 'https://portal.aryuacademy.com/api' + obj.file.url
         return None
     
     def validate(self, data):
@@ -2688,7 +2688,7 @@ class StudentTicketSerializer(serializers.ModelSerializer):
 
     def get_student_name(self, obj):
         if obj.student:
-            return f"{obj.student.first_name} {obj.student.last_name}".strip()
+            return f"{obj.student.first_name} ".strip()
 
         if obj.webinar_participant:
             return obj.webinar_participant.name  # webinar uses name field

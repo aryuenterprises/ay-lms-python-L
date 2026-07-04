@@ -2261,7 +2261,7 @@ class UserDashboardView(APIView):
 
                 students_info.append({
                     "student_id": student.registration_id,
-                    "student_name": f"{student.first_name} {student.last_name}",
+                    "student_name": f"{student.first_name} ",
                     "submitted": submitted_count,
                     "pending": pending_count
                 })
@@ -2558,7 +2558,7 @@ class ReportsViewSet(ViewSet):
 
                 student_reports.append({
                     "student_id": student.registration_id,
-                    "student_name": f"{student.first_name} {student.last_name}",
+                    "student_name": f"{student.first_name} ",
                     "total_classes": total_classes,
                     "total_cancelled_classes": class_cancelled,
                     "attended_classes": attended_classes,
@@ -2747,7 +2747,7 @@ class ReportsViewSet(ViewSet):
 
                     students_info.append({
                         "student_id": student.registration_id,
-                        "student_name": f"{student.first_name} {student.last_name}",
+                        "student_name": f"{student.first_name} ",
                         "submitted": submitted_count,
                         "pending": pending_count
                     })
@@ -2952,7 +2952,7 @@ class ReportsViewSet(ViewSet):
 
                 payment_report_list.append({
                     "student_id": student.registration_id,
-                    "student_name": f"{student.first_name} {student.last_name}",
+                    "student_name": f"{student.first_name} ",
                     "course_fee": float(expected_fee),
                     "total_paid": float(total_paid),
                     "balance": float(balance),
@@ -4715,7 +4715,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
                         'student_name': (
                             f"{att.student.first_name} "
-                            f"{att.student.last_name}"
+                            
                         ),
 
                         'batch_id': batch_id,
