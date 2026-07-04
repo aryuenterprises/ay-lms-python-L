@@ -9,8 +9,8 @@ import uuid
 import magic
 import json
 import zipfile
-from aryuapp.models import Assignment
-from aryuapp.models import Submission
+from aryuapp.models import Assignment,Student,Submission
+
 
 
 
@@ -358,32 +358,52 @@ class CourseSerializer(serializers.ModelSerializer):
         return value
     
     def get_topic(self, obj):
-        student = self.context.get("student")  # Could be None
-        topics = Topic.objects.filter(course=obj, is_archived=False).order_by('created_date')
+        request = self.context.get("request")
 
-        # Prefetch StudentTopicStatus only if student is provided
+        student = self.context.get("student")
+
+        # If student is not passed in context, get it from query params
+        if not student and request:
+            student_id = request.query_params.get("student_id")
+
+            if student_id:
+                student = Student.objects.filter(
+                    student_id=student_id,
+                    is_archived=False
+                ).first()
+
+        # Fetch all topics
+        topics = Topic.objects.filter(
+            course=obj,
+            is_archived=False
+        ).order_by("created_date")
+
+        # Serialize all topics at once
+        topic_data = TopicSerializer(topics, many=True).data
+
+        # Default empty reviews
+        reviews = {}
+
+        # Fetch all reviews in a single query
         if student:
-            sts_qs = StudentTopicStatus.objects.filter(student=student, topic__in=topics)
-            sts_map = {sts.topic_id: sts for sts in sts_qs}
-        else:
-            sts_map = {}
+            reviews = {
+                row["topic_id"]: row
+                for row in StudentTopicStatus.objects.filter(
+                    student=student,
+                    topic__course=obj
+                )
+                .values("topic_id", "ratings", "notes")
+            }
 
-        topic_data = []
+        # Attach ratings/comments to topics
+        for topic in topic_data:
+            review = reviews.get(topic["topic_id"])
 
-        for topic in topics:
-            topic_serialized = TopicSerializer(topic, context=self.context).data
-
-            if student and topic.topic_id in sts_map:
-                sts = sts_map[topic.topic_id]
-                topic_serialized['student_comment'] = sts.notes
-                topic_serialized['student_rating'] = sts.ratings
-            else:
-                topic_serialized['student_comment'] = None
-                topic_serialized['student_rating'] = None
-
-            topic_data.append(topic_serialized)
+            topic["student_rating"] = review["ratings"] if review else None
+            topic["student_comment"] = review["notes"] if review else None
 
         return topic_data
+    
     
     # def validate_duration(self, value):
     #     if value:
