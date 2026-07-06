@@ -14,7 +14,8 @@ urlpatterns = [
    path('courses/<str:course_id>/topic', TopicViewSet.as_view({'get': 'list','post': 'create'}), name='topic-list'),
    path('courses/<str:course_id>/topic/<str:student_id>/status', StudentTopicStatusViewSet.as_view({ 'get': 'list' ,'post': 'create'}), name='topic-status'),
    path('courses/<str:course_id>/topic/<int:pk>', TopicViewSet.as_view({'get': 'retrieve','put': 'update','patch': 'partial_update',}), name='topic-detail'),
-    path('courses/<str:course_id>/topic/<int:pk>/archive',TopicViewSet.as_view({'delete': 'destroy',})),
+   path('courses/<str:course_id>/topic/<int:pk>/archive',TopicViewSet.as_view({'delete': 'destroy',})),
+   path('courses/<str:course_id>/syllabus/<int:syllabus_id>',CourseSyllabusViewSet.as_view({'delete': 'destroy', 'patch': 'update'})),
 ]
 
    

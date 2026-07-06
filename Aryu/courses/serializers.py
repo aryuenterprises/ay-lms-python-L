@@ -702,3 +702,47 @@ class StudentTopicStatusSerializer(serializers.ModelSerializer):
             'updated_at'
         ]
         read_only_fields = ['updated_at']  # student NOT read-only anymore
+
+class SyllabusSerializer(serializers.ModelSerializer):
+    file = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Syllabus
+        fields = [
+            "id",
+            "course",
+            "file",
+            "title",
+            "date",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_file(self, obj):
+        if obj.file and hasattr(obj.file, "url"):
+            return {
+                "name": obj.file_name,
+                "type": obj.file_type,
+                "size": obj.file_size,
+                "url": "https://aylms.aryuprojects.com/api" + obj.file.url
+            }
+        return None
+class SyllabusCreateSerializer(serializers.ModelSerializer):
+    syllabus = serializers.FileField(source='file', required=True)
+
+    class Meta:
+        model = Syllabus
+        fields = ['syllabus','title'] # removed 'title', 'date' until confirmed present on the model
+
+    
+
+    def create(self, validated_data):
+        course_id = self.context['course_id']
+        return Syllabus.objects.create(course_id=course_id, **validated_data)
+
+    def update(self, instance, validated_data):
+        if 'file' in validated_data:
+            instance.file = validated_data['file']
+        instance.save()
+        return instance
+

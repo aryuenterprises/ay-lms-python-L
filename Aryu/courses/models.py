@@ -217,3 +217,40 @@ class StudentTopicStatus(models.Model):
     class Meta:
         db_table = "aryuapp_studenttopicstatus"
     
+def syllabus_upload_path(instance, filename):
+    return f'courses/{instance.course_id}/syllabus/{filename}'
+ 
+ 
+class Syllabus(models.Model):
+    course = models.ForeignKey(
+        'Course',
+        related_name='syllabus_items',
+        on_delete=models.CASCADE
+    )
+    file = models.FileField(upload_to=syllabus_upload_path)
+
+    # NEW — add these three lines
+    file_name = models.CharField(max_length=255, blank=True)
+    file_type = models.CharField(max_length=100, blank=True)
+    file_size = models.PositiveIntegerField(default=0)
+
+    title = models.CharField(max_length=255, blank=True, null=True)
+    date = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    # NEW — add this method so the fields get populated on save
+    def save(self, *args, **kwargs):
+        if self.file and (not self.file_name or not self.file_size):
+            import mimetypes
+            self.file_name = self.file.name.split('/')[-1]
+            guessed, _ = mimetypes.guess_type(self.file.name)
+            self.file_type = guessed or ''
+            self.file_size = self.file.size
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'Syllabus({self.id}) - Course {self.course_id}'

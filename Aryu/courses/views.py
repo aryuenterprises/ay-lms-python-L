@@ -832,3 +832,113 @@ class StudentTopicStatusViewSet(LoggingMixin, viewsets.ModelViewSet):
             "message": "Topic created successfully.",
             "data": serializer.data
         }, status=status.HTTP_201_CREATED)
+
+class CourseSyllabusViewSet(viewsets.ViewSet):
+    """
+    Routes (add to urls.py):
+ 
+    path('courses/<str:course_id>/syllabus',
+         CourseSyllabusViewSet.as_view({'get': 'list', 'post': 'create'})),
+ 
+    path('courses/<str:course_id>/syllabus/<int:syllabus_id>',
+         CourseSyllabusViewSet.as_view({'delete': 'destroy', 'patch': 'update'})),
+    """
+ 
+    permission_classes = [IsAuthenticated]  # adjust to match your existing permission setup
+    parser_classes = [MultiPartParser, FormParser]
+ 
+    def list(self, request, course_id=None):
+        # select_related('course') avoids a separate query per item if the
+        # serializer ever needs course fields (e.g. course name).
+        # .only() limits the columns pulled back to what's actually
+        # serialized, cutting payload size read from the DB.
+        items = (
+            Syllabus.objects
+            .filter(course_id=course_id)
+            .select_related('course')
+            .only(
+                "id",
+                "course",
+                "file",
+                "file_name",
+                "file_type",
+                "file_size",
+                "title",
+                "date",
+                "created_at",
+                "updated_at",
+                "course__course_id",
+                "course__course_name"
+                )
+        )
+        serializer = SyllabusSerializer(items, many=True, context={'request': request})
+        return Response({
+            'success': True,
+            'data': serializer.data
+        })
+ 
+    def create(self, request, course_id=None):
+        # Ensure the course actually exists before attaching a syllabus item to it
+        try:
+            Course.objects.get(pk=course_id)
+        except Course.DoesNotExist:
+            return Response(
+                {'success': False, 'message': 'Course not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+ 
+        serializer = SyllabusCreateSerializer(
+            data=request.data,
+            context={'course_id': course_id}
+        )
+        if serializer.is_valid():
+            instance = serializer.save()
+            output = SyllabusSerializer(instance, context={'request': request})
+            return Response(
+                {'success': True, 'data': output.data},
+                status=status.HTTP_201_CREATED
+            )
+ 
+        return Response(
+            {'success': False, 'message': serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+ 
+    def update(self, request, course_id=None, syllabus_id=None):
+        try:
+            instance = Syllabus.objects.get(pk=syllabus_id, course_id=course_id)
+        except Syllabus.DoesNotExist:
+            return Response(
+                {'success': False, 'message': 'Syllabus item not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+ 
+        serializer = SyllabusCreateSerializer(
+            instance,
+            data=request.data,
+            partial=True,
+            context={'course_id': course_id}
+        )
+        if serializer.is_valid():
+            updated = serializer.save()
+            output = SyllabusSerializer(updated, context={'request': request})
+            return Response({'success': True, 'data': output.data})
+ 
+        return Response(
+            {'success': False, 'message': serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+ 
+    def destroy(self, request, course_id=None, syllabus_id=None):
+        try:
+            instance = Syllabus.objects.get(pk=syllabus_id, course_id=course_id)
+        except Syllabus.DoesNotExist:
+            return Response(
+                {'success': False, 'message': 'Syllabus item not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+ 
+        instance.file.delete(save=False)  # remove the actual file from storage
+        instance.delete()
+        return Response({'success': True, 'message': 'Syllabus item deleted'})
+ 
