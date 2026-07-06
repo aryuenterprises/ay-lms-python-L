@@ -1983,10 +1983,14 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                 batch.course = course
 
             # ---------- Update Trainer ----------
-            trainer_ids = data.get("trainers")
+            trainer_ids = data.get("trainer_ids")
 
             if trainer_ids is not None:
-                trainers = Trainer.objects.filter(pk__in=trainer_ids)
+
+                trainers = Trainer.objects.filter(
+                    trainer_id__in=trainer_ids,
+                    is_archived=False
+                )
 
                 if trainers.count() != len(trainer_ids):
                     return Response({
