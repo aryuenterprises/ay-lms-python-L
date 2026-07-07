@@ -172,52 +172,54 @@ class   StudentDashboardService:
                 course=course,
                 is_archived=False
             ).annotate(
-                end_datetime=ExpressionWrapper(
-                    F("scheduled_date") + F("end_time"),
+                start_datetime=ExpressionWrapper(
+                    F("scheduled_date") + F("start_time"),
                     output_field=DateTimeField()
                 )
             )
 
-            # Completed classes
-            completed_schedules = schedules.filter(
-                end_datetime__lt=now
+            # Total scheduled classes
+            total_classes = schedules.count()
+
+            # Future/Ongoing classes
+            upcoming_classes = schedules.filter(
+                start_datetime__gte=now
             )
 
-            # Upcoming / Ongoing classes
-            upcoming_schedules = schedules.filter(
-                end_datetime__gte=now
-            )
+            upcoming_count = upcoming_classes.count()
 
-            total = completed_schedules.count()
-
-            cancelled = completed_schedules.filter(
+            # Cancelled classes
+            cancelled = schedules.filter(
                 is_class_cancelled=True
             ).count()
 
+            # Classes that should have been attended
+            completed_count = total_classes - upcoming_count - cancelled
+
             attended = Attendance.objects.filter(
                 student_id=self.student_id,
-                schedule_id__in=completed_schedules.values_list(
+                schedule_id__in=schedules.values_list(
                     "schedule_id",
                     flat=True
                 )
             ).values("schedule_id").distinct().count()
 
-            absent = max(0, total - attended - cancelled)
+            absent = max(0, completed_count - attended)
 
-            percentage = (
-                (attended / total) * 100
-                if total else 0
+            attendance_percentage = (
+                (attended / completed_count) * 100
+                if completed_count else 0
             )
 
             attendance_by_course.append({
                 "course_id": course.course_id,
                 "course_name": course.course_name,
-                "total_classes": total,
+                "total_classes": total_classes,
                 "attended": attended,
                 "absent": absent,
                 "cancelled_classes": cancelled,
-                "percentage": round(percentage, 2),
-                "upcoming_classes_count": upcoming_schedules.count()
+                "percentage": round(attendance_percentage, 2),
+                "upcoming_classes_count": upcoming_count
             })
 
         return attendance_by_course
