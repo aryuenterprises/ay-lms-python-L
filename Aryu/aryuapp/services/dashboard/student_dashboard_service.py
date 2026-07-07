@@ -80,7 +80,7 @@ class   StudentDashboardService:
             "student_name": f"{self.student.first_name}",
             "student_id": self.student.registration_id,
             "email": self.student.email,
-            "profile_pic": f"https://aylms.aryuprojects.com/api/media/{self.student.profile_pic}",
+            "profile_pic": f"https://portal.aryuacademy.com/api/media/{self.student.profile_pic}",
             "badge": None
         }
 
@@ -527,12 +527,12 @@ class   StudentDashboardService:
 
         for item in data:
             if item["content_pic"]:
-                item["content_pic_url"] = f"https://aylms.aryuprojects.com/api/media/{item['content_pic']}"
+                item["content_pic_url"] = f"https://portal.aryuacademy.com/api/media/{item['content_pic']}"
             else:
                 item["content_pic_url"] = None
 
             if item["background_pic"]:
-                item["background_pic_url"] = f"https://aylms.aryuprojects.com/api/media/{item['background_pic']}"
+                item["background_pic_url"] = f"https://portal.aryuacademy.com/api/media/{item['background_pic']}"
             else:
                 item["background_pic_url"] = None
 
