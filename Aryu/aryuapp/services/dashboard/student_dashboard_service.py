@@ -80,7 +80,7 @@ class   StudentDashboardService:
             "student_name": f"{self.student.first_name}",
             "student_id": self.student.registration_id,
             "email": self.student.email,
-            "profile_pic": f"https://portal.aryuacademy.com/api/media/{self.student.profile_pic}",
+            "profile_pic": f"https://aylms.aryuprojects.com/api/media/{self.student.profile_pic}",
             "badge": None
         }
 
@@ -154,8 +154,8 @@ class   StudentDashboardService:
     # ---------------------------------------------------------
 
     def get_attendance_stats(self):
-        now = datetime.now()
-    
+        now = timezone.now()
+
         courses = Course.objects.filter(
             Q(new_batches__students=self.student_id) |
             Q(batchcoursetrainer__student_id=self.student_id),
@@ -165,85 +165,125 @@ class   StudentDashboardService:
         attendance_by_course = []
 
         for course in courses:
-        
+
             schedules = ClassSchedule.objects.filter(
                 Q(new_batch__students=self.student_id) |
                 Q(batch__batchcoursetrainer__student_id=self.student_id),
                 course=course,
                 is_archived=False
+            ).annotate(
+                end_datetime=ExpressionWrapper(
+                    F("scheduled_date") + F("end_time"),
+                    output_field=DateTimeField()
+                )
             )
 
-            total = schedules.count()
-            cancelled = schedules.filter(is_class_cancelled=True).count()
+            # Completed classes
+            completed_schedules = schedules.filter(
+                end_datetime__lt=now
+            )
+
+            # Upcoming / Ongoing classes
+            upcoming_schedules = schedules.filter(
+                end_datetime__gte=now
+            )
+
+            total = completed_schedules.count()
+
+            cancelled = completed_schedules.filter(
+                is_class_cancelled=True
+            ).count()
 
             attended = Attendance.objects.filter(
                 student_id=self.student_id,
-                schedule_id__in=schedules.values_list("schedule_id", flat=True)
+                schedule_id__in=completed_schedules.values_list(
+                    "schedule_id",
+                    flat=True
+                )
             ).values("schedule_id").distinct().count()
 
             absent = max(0, total - attended - cancelled)
-            percentage = (attended / total * 100) if total else 0
-            upcoming_qs = schedules.annotate(
-                start_datetime=ExpressionWrapper(
-                    F("scheduled_date") + F("start_time"),
-                    output_field=DateTimeField()
-                )
-            ).filter(start_datetime__gte=now)
-            upcoming_classes_count = upcoming_qs .count()
+
+            percentage = (
+                (attended / total) * 100
+                if total else 0
+            )
 
             attendance_by_course.append({
-            "course_id": course.course_id,
-            "course_name": course.course_name,
-            "total_classes": total,
-            "attended": attended,
-            "absent": absent,
-            "cancelled_classes": cancelled,
-            "percentage": round(percentage, 2),
-            "upcoming_classes_count": upcoming_classes_count 
+                "course_id": course.course_id,
+                "course_name": course.course_name,
+                "total_classes": total,
+                "attended": attended,
+                "absent": absent,
+                "cancelled_classes": cancelled,
+                "percentage": round(percentage, 2),
+                "upcoming_classes_count": upcoming_schedules.count()
             })
 
         return attendance_by_course
-    
 
     def get_attendance_with_upcoming(self):
+        now = timezone.now()
+
         courses = Course.objects.filter(
             Q(new_batches__students=self.student_id) |
             Q(batchcoursetrainer__student_id=self.student_id),
             is_archived=False
         ).distinct()
 
-        now = datetime.now()
         result = []
 
         for course in courses:
+
             schedules = ClassSchedule.objects.filter(
                 Q(new_batch__students=self.student_id) |
                 Q(batch__batchcoursetrainer__student_id=self.student_id),
                 course=course,
                 is_archived=False
+            ).annotate(
+                end_datetime=ExpressionWrapper(
+                    F("scheduled_date") + F("end_time"),
+                    output_field=DateTimeField()
+                )
             )
 
-            total = schedules.count()
-            cancelled = schedules.filter(is_class_cancelled=True).count()
+            # Completed classes
+            completed_schedules = schedules.filter(
+                end_datetime__lt=now
+            )
+
+            # Upcoming / Ongoing classes
+            upcoming_qs = schedules.filter(
+                end_datetime__gte=now
+            )
+
+            total = completed_schedules.count()
+
+            cancelled = completed_schedules.filter(
+                is_class_cancelled=True
+            ).count()
+
             attended = Attendance.objects.filter(
                 student_id=self.student_id,
-                schedule_id__in=schedules.values_list("schedule_id", flat=True)
+                schedule_id__in=completed_schedules.values_list(
+                    "schedule_id",
+                    flat=True
+                )
             ).values("schedule_id").distinct().count()
 
             absent = max(0, total - attended - cancelled)
-            percentage = (attended / total * 100) if total else 0
 
-            # --- Upcoming Classes (all) ---
-            upcoming_qs = schedules.annotate(
-                start_datetime=ExpressionWrapper(
-                    F("scheduled_date") + F("start_time"),
-                    output_field=DateTimeField()
-                )
-            ).filter(start_datetime__gte=now)
+            percentage = (
+                (attended / total) * 100
+                if total else 0
+            )
 
-            upcoming_schedules_count = upcoming_qs.count()  # ✅ total upcoming classes
-            upcoming_schedules = upcoming_qs.select_related(
-                "course", "trainer", "new_batch"
+            upcoming_classes_count = upcoming_qs.count()
+
+            upcoming_classes = upcoming_qs.select_related(
+                "course",
+                "trainer",
+                "new_batch"
             ).values(
                 "scheduled_date",
                 "start_time",
@@ -251,7 +291,10 @@ class   StudentDashboardService:
                 "course__course_name",
                 "trainer__full_name",
                 "new_batch__title"
-            ).order_by("scheduled_date", "start_time")[:3]  # ✅ next 3 classes
+            ).order_by(
+                "scheduled_date",
+                "start_time"
+            )[:3]
 
             result.append({
                 "course_id": course.course_id,
@@ -261,12 +304,11 @@ class   StudentDashboardService:
                 "absent": absent,
                 "cancelled_classes": cancelled,
                 "percentage": round(percentage, 2),
-                "upcoming_classes_count": upcoming_schedules_count,  # now included
-                "upcoming_classes": list(upcoming_schedules)
+                "upcoming_classes_count": upcoming_classes_count,
+                "upcoming_classes": list(upcoming_classes)
             })
 
         return result
-
     # ---------------------------------------------------------
     # ASSIGNMENTS
     # ---------------------------------------------------------
@@ -485,12 +527,12 @@ class   StudentDashboardService:
 
         for item in data:
             if item["content_pic"]:
-                item["content_pic_url"] = f"https://portal.aryuacademy.com/api/media/{item['content_pic']}"
+                item["content_pic_url"] = f"https://aylms.aryuprojects.com/api/media/{item['content_pic']}"
             else:
                 item["content_pic_url"] = None
 
             if item["background_pic"]:
-                item["background_pic_url"] = f"https://portal.aryuacademy.com/api/media/{item['background_pic']}"
+                item["background_pic_url"] = f"https://aylms.aryuprojects.com/api/media/{item['background_pic']}"
             else:
                 item["background_pic_url"] = None
 
