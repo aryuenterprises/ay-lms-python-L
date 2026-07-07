@@ -6422,7 +6422,7 @@ class CertificateViewSet(viewsets.ModelViewSet):
 
 
 class RegisterThrottle(AnonRateThrottle):
-    rate = "20/hour"
+    rate = "5/hour"
 
 class PublicTrainerRegisterAPIView(APIView):
     permission_classes = [AllowAny]
@@ -6463,45 +6463,45 @@ class PublicTrainerRegisterAPIView(APIView):
             status=status.HTTP_201_CREATED
         )
 
-def _trainer_prefetches():
-    """
-    Returns a list of Prefetch objects that eliminate every N+1 query
-    present in the serializer (notes, attendance, batches + their students).
-    """
-    return [
-        # Attendance  →  prefetched_attendance
-        Prefetch(
-            "trainerattendance_set",
-            queryset=TrainerAttendance.objects.order_by("-date"),
-            to_attr="prefetched_attendance",
-        ),
-        # New-system batches  →  prefetched_batches
-        # course is select_related (1 JOIN), students is a further prefetch
-        Prefetch(
-            "new_batches",
-            queryset=(
-                NewBatch.objects
-                .filter(is_archived=False)
-                .select_related("course")
-                .prefetch_related(
-                    Prefetch(
-                        "students",
-                        queryset=Student.objects.only(
-                            "student_id", "first_name", "last_name", "registration_id"
-                        ),
-                    )
-                )
+    def _trainer_prefetches():
+        """
+        Returns a list of Prefetch objects that eliminate every N+1 query
+        present in the serializer (notes, attendance, batches + their students).
+        """
+        return [
+            # Attendance  →  prefetched_attendance
+            Prefetch(
+                "trainerattendance_set",
+                queryset=TrainerAttendance.objects.order_by("-date"),
+                to_attr="prefetched_attendance",
             ),
-            to_attr="prefetched_batches",
-        ),
-        # Notes (GenericRelation)  →  prefetched_notes
-        Prefetch(
-            "notes",
-            queryset=Note.objects.order_by("-created_at"),
-            to_attr="prefetched_notes",
-        ),
-    ]
- 
+            # New-system batches  →  prefetched_batches
+            # course is select_related (1 JOIN), students is a further prefetch
+            Prefetch(
+                "new_batches",
+                queryset=(
+                    NewBatch.objects
+                    .filter(is_archived=False)
+                    .select_related("course")
+                    .prefetch_related(
+                        Prefetch(
+                            "students",
+                            queryset=Student.objects.only(
+                                "student_id", "first_name", "last_name", "registration_id"
+                            ),
+                        )
+                    )
+                ),
+                to_attr="prefetched_batches",
+            ),
+            # Notes (GenericRelation)  →  prefetched_notes
+            Prefetch(
+                "notes",
+                queryset=Note.objects.order_by("-created_at"),
+                to_attr="prefetched_notes",
+            ),
+        ]
+    
  
 class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     serializer_class        = TrainerSerializer
@@ -7039,6 +7039,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
 class TutorSignupView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = [RegisterThrottle]
 
     def post(self, request):
 
@@ -7066,7 +7067,7 @@ class TutorSignupView(APIView):
             "success": False,
             "errors": serializer.errors
         }, status=400)
-        
+     
 BASE_MEDIA_URL = "https://portal.aryuacademy.com/api/media/"
   
 class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
