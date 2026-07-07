@@ -221,13 +221,11 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
     
 
     def list(self, request):
-
         user = request.user
         user_type = getattr(user, "user_type", "")
         user_created_id = getattr(user, "trainer_id", None)
 
         if getattr(user, "user_type", "") != "super_admin":
-
             return Response(
                 {
                     "success": False,
@@ -240,15 +238,25 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             user_created_id = getattr(user, "user_id", None)
 
         # ================================================================
-        # STEP 1: Base queryset
+        # OPTIMIZATION 1: Global queries pulled OUTSIDE the loop (Runs only 1 time)
+        # ================================================================
+        companies = list(
+            Employer.objects.filter(is_archived=False).values("company_id", "company_name")
+        )
+
+        courses_list = list(
+            Course.objects.filter(is_archived=False, status="Active").values("course_id", "course_name")
+        )
+
+        settings = Settings.objects.filter(is_archived=False).only(
+            "stripe_enabled", "paypal_enabled", "razorpay_enabled"
+        ).order_by("-created_at").first()
+
+        # ================================================================
+        # STEP 1 & 2: Base queryset & Hierarchy filter (FIXED: Removed select_related)
         # ================================================================
         students_qs = Student.objects.filter(is_archived=False)
 
-        
-
-        # ================================================================
-        # STEP 2: Hierarchy filter
-        # ================================================================
         if user_type == "admin" and user_created_id:
             students_qs = students_qs.filter(created_by=user_created_id)
 
@@ -269,10 +277,10 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         students_qs = students_qs.filter(transactions__is_archived=False).distinct()
 
         # ================================================================
-        # STEP 3: Prefetch (IMPORTANT)
+        # STEP 3: Prefetch (Prefetching relationships cleanly)
         # ================================================================
         students_qs = students_qs.prefetch_related(
-            "new_batches__course",  # for courses
+            "new_batches__course",  
             Prefetch(
                 "transactions",
                 queryset=PaymentTransaction.objects.filter(is_archived=False)
@@ -282,62 +290,38 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         )
 
         # ================================================================
-        # STEP 4: Build response properly
+        # STEP 4: Build response using the OPTIMIZED students_qs
         # ================================================================
         student_list = []
-        students = Student.objects.filter(is_archived=False)
 
-        
-
-        # ================================================================
-        # STEP 2: Hierarchy filter
-        # ================================================================
-        if user_type == "admin" and user_created_id:
-            students = students.filter(created_by=user_created_id)
-
-        elif user_type == "super_admin" and user_created_id:
-            admin_ids = list(
-                Trainer.objects.filter(
-                    created_by=user_created_id,
-                    created_by_type="super_admin",
-                    is_archived=False
-                ).values_list("trainer_id", flat=True)
-            )
-
-            students = students.filter(
-                Q(created_by_type="super_admin", created_by=user_created_id) |
-                Q(created_by_type="admin", created_by__in=admin_ids)
-            )
-
-        
-
-        for student in students:
+        for student in students_qs:
             try:
-                
                 courses_data = []
 
-                # Get student courses via batches
+                # Reads from memory cache now (0 database hits)
                 batches = student.new_batches.all()
+                all_transactions = student.transactions.all()
 
                 for batch in batches:
                     course = batch.course
+                    if not course:
+                        continue
 
-                    # Get transactions for this course
+                    # Filter in Python memory instead of hitting the DB
                     txs = [
-                        tx for tx in student.transactions.all()
+                        tx for tx in all_transactions
                         if tx.course_id == course.course_id
                     ]
 
                     paid_amount = sum(
                         float(tx.amount)
                         for tx in txs
-                        if tx.payment_status and tx.payment_status.lower() in ["success", "done", "paid", "partial","advanced","complete"]
+                        if tx.payment_status and tx.payment_status.lower() in ["success", "done", "paid", "partial", "advanced", "complete"]
                     )
 
-                    course_fee = float(course.fee) if course and course.fee else 0
+                    course_fee = float(course.fee) if course.fee else 0
                     discount = float(getattr(student, "discount", 0))
                     
-                    # Calculate new metrics
                     total_after_discount = course_fee - discount
                     due_amount = max(total_after_discount - paid_amount, 0.0)
 
@@ -346,9 +330,9 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                         "course_name": course.course_name,
                         "course_fee": course_fee,
                         "discount": discount,
-                        "total_after_discount": total_after_discount,   # Replaces final_fee
-                        "paid_amount": paid_amount,                     # Represents total paid
-                        "due_amount": due_amount,                       # Replaces balance
+                        "total_after_discount": total_after_discount,   
+                        "paid_amount": paid_amount,                     
+                        "due_amount": due_amount,                       
                         "transactions": [
                             {
                                 "transaction_id": tx.transaction_id,
@@ -357,67 +341,31 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                                 "payment_mode": tx.metadata.get("mode") if tx.metadata else None, 
                                 "currency": tx.currency,
                                 "created_at": tx.created_at,
-                            
                             } for tx in txs
                         ]
                     })
 
-                companies = list(
-                    Employer.objects.filter(
-                        is_archived=False
-                    ).values(
-                        "company_id",
-                        "company_name"
-                    )
-                )
+                # Safe evaluation for employer matching your original code strategy
+                employer = getattr(student, "employer", None) if hasattr(student, "employer") else None
 
-                courses_list = list(
-                    Course.objects.filter(
-                        is_archived=False,
-                        status="Active"
-                    ).values(
-                        "course_id",
-                        "course_name"
-                    )
-                )
-
-                # ✅ FINAL STUDENT OBJECT
                 student_list.append({
                     "student_id": student.student_id,
                     "registration_id": student.registration_id,
                     "student_name": f"{student.first_name}".strip(),
                     "email": student.email,
                     "phone": student.contact_no,
-                    "courses": courses_data,  # ✅ correct structure
-                    "company_id": (
-                        getattr(student.employer, "company_id", None)
-                        if hasattr(student, "employer")
-                        else None
-                    ),
-
-                    "company_name": (
-                        getattr(student.employer, "company_name", None)
-                        if hasattr(student, "employer")
-                        else None
-                    ),
+                    "courses": courses_data,  
+                    "company_id": getattr(employer, "company_id", None) if employer else None,
+                    "company_name": getattr(employer, "company_name", None) if employer else None,
                 })
-
-               
 
             except Exception as e:
                 print(f"Error processing student {student.student_id}: {e}")
 
         # ================================================================
-        # STEP 5: Serializer (optional)
+        # STEP 5: Serializer & Gateways
         # ================================================================
         serializer = StudentPaymentSummarySerializer(students_qs, many=True)
-
-        # ================================================================
-        # STEP 6: Gateways
-        # ================================================================
-        settings = Settings.objects.filter(is_archived=False).only(
-            "stripe_enabled", "paypal_enabled", "razorpay_enabled"
-        ).order_by("-created_at").first()
 
         enabled_gateways = []
         if settings:
@@ -443,7 +391,8 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "total_students": len(student_list),
                 "user_type": user_type
             }
-        })
+        })   
+
 
     def create(self, request):
 
