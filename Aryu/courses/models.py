@@ -65,6 +65,12 @@ class CourseCategory(models.Model):
 
     def __str__(self):
         return self.category_name
+# class StudentCourseList(models.Model):
+#     course = models.ForeignKey(
+#         "courses.Course",
+#         on_delete=models.CASCADE
+#     )
+#     student_id = models.ForeignKey()
 
 class Course(models.Model):
     course_id = models.AutoField(primary_key=True)
