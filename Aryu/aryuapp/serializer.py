@@ -28,7 +28,7 @@ from batches.serializers import BatchSerializer
 import requests
 from django.utils.timezone import make_aware
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
-
+from html import unescape
 class CustomTokenRefreshSerializer(TokenRefreshSerializer):
 
     def validate(self, attrs):
@@ -1845,7 +1845,7 @@ class TrainerSerializer(serializers.ModelSerializer):
  
     def get_profile_pic_url(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, "url"):
-            return "https://aylms.aryuprojects.com/api" + obj.profile_pic.url
+            return "https://portal.aryuacademy.com/api" + obj.profile_pic.url
         return None
  
     def get_notes(self, obj):
@@ -2615,7 +2615,7 @@ class AssignmentSerializer(serializers.ModelSerializer):
             many=True,
             context={"request": request}
         ).data
-   
+    
 class AssignmentSimpleSerializer(serializers.ModelSerializer):
     submission_count = serializers.SerializerMethodField()
     class Meta:
