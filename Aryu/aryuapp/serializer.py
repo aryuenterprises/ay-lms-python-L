@@ -1845,7 +1845,7 @@ class TrainerSerializer(serializers.ModelSerializer):
  
     def get_profile_pic_url(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, "url"):
-            return "https://portal.aryuacademy.com/api" + obj.profile_pic.url
+            return "https://aylms.aryuprojects.com/api" + obj.profile_pic.url
         return None
  
     def get_notes(self, obj):
@@ -1987,26 +1987,67 @@ class TrainerSerializer(serializers.ModelSerializer):
 
         # ----------- HANDLE courses ----------
         courses = mutable_data.get("courses")
-        if courses:
-            try:
-                mutable_data["courses"] = json.loads(courses)
-            except:
-                raise serializers.ValidationError({
-                    "courses": "Invalid format. Expected [1,2,3]"
-                })
+
+        if courses is not None:
+
+            if isinstance(courses, list):
+                mutable_data["courses"] = [
+                    int(i) for i in courses
+                ]
+
+            elif isinstance(courses, int):
+                mutable_data["courses"] = [courses]
+
+            elif isinstance(courses, str):
+
+                courses = courses.strip()
+
+                try:
+                    if courses.startswith("["):
+                        mutable_data["courses"] = json.loads(courses)
+                    else:
+                        mutable_data["courses"] = [int(courses)]
+
+                except Exception:
+                    raise serializers.ValidationError({
+                        "courses": "Invalid format. Expected [1,2,3]"
+                    })
 
         # ----------- HANDLE batch_ids ----------
         batch_ids = mutable_data.get("batch_ids")
-        if batch_ids:
-            try:
-                mutable_data["batch_ids"] = json.loads(batch_ids)
-            except:
-                raise serializers.ValidationError({
-                    "batch_ids": "Invalid format. Expected [1,2,3]"
-                })
 
-        return super().to_internal_value(mutable_data)
+        if batch_ids is not None:
 
+            # Already a Python list
+            if isinstance(batch_ids, list):
+                mutable_data["batch_ids"] = [
+                    int(i) for i in batch_ids
+                ]
+
+            # Single integer
+            elif isinstance(batch_ids, int):
+                mutable_data["batch_ids"] = [batch_ids]
+
+            # String value
+            elif isinstance(batch_ids, str):
+
+                batch_ids = batch_ids.strip()
+
+                try:
+                    # JSON list: "[1,2,3]"
+                    if batch_ids.startswith("["):
+                        mutable_data["batch_ids"] = json.loads(batch_ids)
+
+                    # Single value: "122"
+                    else:
+                        mutable_data["batch_ids"] = [int(batch_ids)]
+
+                except Exception:
+                    raise serializers.ValidationError({
+                        "batch_ids": "Invalid format. Expected [1,2,3]"
+                    })
+            return super().to_internal_value(mutable_data)
+                
     def create(self, validated_data):
         batch_ids = validated_data.pop("batch_ids", [])
         courses = validated_data.pop("courses", [])  # extract M2M
@@ -2045,34 +2086,45 @@ class TrainerSerializer(serializers.ModelSerializer):
         return trainer
  
     def update(self, instance, validated_data):
+
         batch_ids = validated_data.pop("batch_ids", None)
         courses = validated_data.pop("courses", None)
 
         password = validated_data.pop("password", None)
+
         if password:
             instance.password = make_password(password)
 
+        # Update normal fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
         instance.save()
 
-        # UPDATE COURSES
+        # ---------------- UPDATE COURSES ----------------
+
         if courses is not None:
             instance.courses.set(courses)
 
-        # UPDATE BATCHES
+        # ---------------- UPDATE BATCHES ----------------
+
         if batch_ids is not None:
-            if batch_ids is not None:
 
-                for batch in instance.new_batches.all():
-                    batch.trainers.remove(instance)
+            # Remove trainer from all existing batches
+            for batch in instance.new_batches.all():
+                batch.trainers.remove(instance)
 
-                for batch in NewBatch.objects.filter(batch_id__in=batch_ids):
-                    batch.trainers.add(instance)
+            # Add trainer to selected batches
+            batches = NewBatch.objects.filter(batch_id__in=batch_ids)
 
-        return instance
-      
+            for batch in batches:
+                batch.trainers.add(instance)
+
+        # Reload many-to-many relations
+        instance.refresh_from_db()
+
+        return instance 
+     
 class TrainerPreviewSerializer(serializers.ModelSerializer):
     trainer_name = serializers.CharField(source="full_name")
 

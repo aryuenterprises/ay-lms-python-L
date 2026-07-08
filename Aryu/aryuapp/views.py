@@ -6519,7 +6519,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
             Trainer.objects
             .filter(is_archived=False)
             .select_related("role")              # eliminates role N+1
-            .prefetch_related(*_trainer_prefetches())
+            # .prefetch_related(*_trainer_prefetches())
         )
  
         employee_id = self.request.query_params.get("employee_id")
@@ -6639,44 +6639,91 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     # ── Update ───────────────────────────────────────────────────────────
  
     def update(self, request, *args, **kwargs):
-        tutors_module = (
-            ModulePermission.objects
-            .filter(module__iexact="Tutors")
-            .values("module_id")
-            .first()
-        )
-        if not tutors_module:
+        try:
+            tutors_module = (
+                ModulePermission.objects
+                .filter(module__iexact="Tutors")
+                .values("module_id")
+                .first()
+            )
+
+            if not tutors_module:
+                return Response(
+                    {"success": False, "message": "Tutors module not found"},
+                    status=status.HTTP_200_OK,
+                )
+
+            if not has_permission(
+                request.user,
+                module_id=tutors_module["module_id"],
+                actions=["update"]
+            ):
+                return Response(
+                    {"success": False, "message": "You do not have permission"},
+                    status=status.HTTP_200_OK,
+                )
+
+            instance = self.get_object()
+
+            serializer = self.get_serializer(
+                instance,
+                data=request.data,
+                partial=True
+            )
+
+            serializer.is_valid(raise_exception=True)
+
+            self.perform_update(serializer)
+
+            notes_text = request.data.get("notes")
+
+            if notes_text:
+                self.save_notes(instance, notes_text, request=request)
+
+            # Reload trainer with latest batches
+            instance = (
+                Trainer.objects
+                .filter(pk=instance.pk)
+                .select_related("role")
+                .prefetch_related(
+                    Prefetch(
+                        "new_batches",
+                        queryset=NewBatch.objects
+                            .select_related("course")
+                            .prefetch_related("students"),
+                        to_attr="prefetched_batches",
+                    ),
+                    Prefetch(
+                        "notes",
+                        queryset=Note.objects.order_by("-created_at"),
+                        to_attr="prefetched_notes",
+                    ),
+                )
+                .first()
+            )
+
+            serializer = self.get_serializer(instance)
+
             return Response(
-                {"success": False, "message": "Tutors module not found"},
+                {
+                    "success": True,
+                    "message": "Trainer Profile updated successfully",
+                    "data": serializer.data,
+                },
                 status=status.HTTP_200_OK,
             )
- 
-        if not has_permission(request.user, module_id=tutors_module["module_id"], actions=["update"]):
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+
             return Response(
-                {"success": False, "message": "You do not have permission"},
+                {
+                    "success": False,
+                    "message": str(e),
+                },
                 status=status.HTTP_200_OK,
-            )
- 
-        instance   = self.get_object()
-        serializer = self.get_serializer(instance, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
- 
-        notes_text = request.data.get("notes")
-        if notes_text:
-            self.save_notes(instance, notes_text, request=request)
- 
-        instance.refresh_from_db()
- 
-        return Response(
-            {
-                "success": True,
-                "message": "Trainer Profile updated successfully",
-                "data":    serializer.data,
-            },
-            status=status.HTTP_200_OK,
-        )   
-    
+            )  
     @action(detail=True, methods=['get'], url_path='courses')
     def get_courses_taken(self, request, employee_id=None):
         try:
