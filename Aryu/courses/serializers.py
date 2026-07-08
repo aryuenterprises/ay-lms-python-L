@@ -315,13 +315,34 @@ class CourseSerializer(serializers.ModelSerializer):
             return 'https://portal.aryuacademy.com/api' + obj.syllabus.url
         return None
     def get_syllabus_info(self, obj):
-        if obj.syllabus:
-            return [{
-                "id": obj.course_id,
-                "date": None,
-                "syllabus": self.get_syllabus_url(obj)
-            }]
-        return []
+        request = self.context.get("request")
+
+        items = (
+            Syllabus.objects
+            .filter(course=obj)
+            .select_related("course")
+            .only(
+                "id",
+                "course",
+                "file",
+                "file_name",
+                "file_type",
+                "file_size",
+                "title",
+                "date",
+                "created_at",
+                "updated_at",
+                "course__course_id",
+                "course__course_name",
+            )
+            .order_by("-created_at")
+        )
+
+        return SyllabusSerializer(
+            items,
+            many=True,
+            context={"request": request}
+        ).data
     
     def get_assignment(self, obj):
         request = self.context.get("request")
@@ -705,6 +726,7 @@ class StudentTopicStatusSerializer(serializers.ModelSerializer):
 
 class SyllabusSerializer(serializers.ModelSerializer):
     file = serializers.SerializerMethodField()
+    syllabus_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Syllabus
@@ -716,6 +738,7 @@ class SyllabusSerializer(serializers.ModelSerializer):
             "date",
             "created_at",
             "updated_at",
+            "syllabus_url"
         ]
 
     def get_file(self, obj):
@@ -726,6 +749,10 @@ class SyllabusSerializer(serializers.ModelSerializer):
                 "size": obj.file_size,
                 "url": "https://portal.aryuacademy.com/api" + obj.file.url
             }
+        return None
+    def get_syllabus_url(self, obj):
+        if obj.file:
+            return "https://portal.aryuacademy.com/api" + obj.file.url
         return None
 class SyllabusCreateSerializer(serializers.ModelSerializer):
     syllabus = serializers.FileField(source='file', required=True)

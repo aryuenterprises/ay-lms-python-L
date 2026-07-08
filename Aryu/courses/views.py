@@ -477,6 +477,46 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
 
         context["student"] = student
         return context
+    
+    @action(detail=True, methods=["get"], url_path="syllabus")
+    def syllabus(self, request, *args, **kwargs):
+        course = self.get_object()
+
+        items = (
+            Syllabus.objects
+            .filter(course=course)
+            .select_related("course")
+            .only(
+                "id",
+                "course",
+                "file",
+                "file_name",
+                "file_type",
+                "file_size",
+                "title",
+                "date",
+                "created_at",
+                "updated_at",
+                "course__course_id",
+                "course__course_name",
+            )
+            .order_by("-created_at")
+        )
+
+        serializer = SyllabusSerializer(
+            items,
+            many=True,
+            context={"request": request}
+        )
+
+        return Response(
+            {
+                "success": True,
+                "message": "Syllabus fetched successfully.",
+                "data": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
    
 class CourseVideoViewSet(viewsets.ModelViewSet):
     serializer_class = CourseVideoSerializer
