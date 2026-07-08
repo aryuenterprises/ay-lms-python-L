@@ -8414,47 +8414,58 @@ class SubmissionViewSet(LoggingMixin, viewsets.ModelViewSet):
 
 
     def create(self, request, *args, **kwargs):
-        registration_id = request.data.get("registration_id")
-        assignment_id = request.data.get("assignment")
-
-        # Validate student
         try:
-            student = Student.objects.get(registration_id=registration_id, is_archived=False)
-        except Student.DoesNotExist:
-            return Response({"success": False, "message": "Invalid registration ID"}, status=status.HTTP_200_OK)
+            registration_id = request.data.get("registration_id")
+            assignment_id = request.data.get("assignment")
 
-        # Validate assignment
-        try:
-            assignment = Assignment.objects.get(id=assignment_id)
-        except Assignment.DoesNotExist:
-            return Response({"success": False, "message": "Invalid assignment ID"}, status=status.HTTP_200_OK)
+            try:
+                student = Student.objects.get(
+                    registration_id=registration_id,
+                    is_archived=False
+                )
+            except Student.DoesNotExist:
+                return Response({
+                    "success": False,
+                    "message": "Invalid registration ID"
+                }, status=status.HTTP_200_OK)
 
-        # Serialize and save submission
-        serializer = self.get_serializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save(student=student, assignment=assignment)
-            # Async virus scan triggered via signal
+            try:
+                assignment = Assignment.objects.get(id=assignment_id)
+            except Assignment.DoesNotExist:
+                return Response({
+                    "success": False,
+                    "message": "Invalid assignment ID"
+                }, status=status.HTTP_200_OK)
+
+            serializer = self.get_serializer(data=request.data)
+
+            if serializer.is_valid():
+
+                serializer.save(
+                    student=student,
+                    assignment=assignment
+                )
+
+                return Response({
+                    "success": True,
+                    "message": "Submission created successfully.",
+                    "data": serializer.data
+                }, status=status.HTTP_201_CREATED)
+
             return Response({
-                "success": True,
-                "message": "Submission created successfully. File will be scanned for viruses.",
-                "data": serializer.data
-            }, status=status.HTTP_201_CREATED)
-            
-        # Convert serializer.errors to a single message string
-        error_messages = []
-        for field_errors in serializer.errors.values():
-            if isinstance(field_errors, list):
-                error_messages.extend(field_errors)
-            elif isinstance(field_errors, dict):
-                # nested serializer errors
-                for sub_errors in field_errors.values():
-                    error_messages.extend(sub_errors)
+                "success": False,
+                "message": serializer.errors
+            }, status=status.HTTP_200_OK)
 
-        return Response({
-            "success": False,
-            "message": error_messages[0] if error_messages else "Validation error"
-        }, status=status.HTTP_200_OK)
+        except Exception as e:
+            print(traceback.format_exc())
 
+            return Response({
+                "success": False,
+                "message": str(e),
+                "traceback": traceback.format_exc()
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
     @action(detail=False, methods=['get'], url_path='<registration_id>')
     def by_student(self, request, registration_id=None):
         try:

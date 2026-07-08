@@ -2363,6 +2363,7 @@ class TrainerSimpleSerializer(serializers.ModelSerializer):
             return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
 
+
 class SubmissionStudentSerializer(serializers.ModelSerializer):
     profile_pic = serializers.SerializerMethodField()
     student_name = serializers.SerializerMethodField()
@@ -2420,7 +2421,7 @@ class SubmissionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"course": "Cannot submit because the course's category is inactive."})
 
         return data
-    
+  
 class AssignmentSerializer(serializers.ModelSerializer):
     course = CourseSimpleSerializer(read_only=True)
     assigned_by = TrainerSerializer(read_only=True)
