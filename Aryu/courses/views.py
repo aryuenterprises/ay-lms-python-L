@@ -616,6 +616,7 @@ class CourseVideoViewSet(viewsets.ModelViewSet):
             "success": True,
             "message": "Course video deleted successfully"
         }, status=status.HTTP_200_OK)
+   
 class TopicViewSet(LoggingMixin, viewsets.ModelViewSet):
     serializer_class = TopicSerializer
     permission_classes = [IsAuthenticated]

@@ -147,7 +147,7 @@ class CourseListSerializer(serializers.ModelSerializer):
     def get_course_pic_url(self, obj):
 
         if obj.course_pic:
-            return f"https://portal.aryuacademy.com/api{obj.course_pic.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.course_pic.url}"
 
         return None
 
@@ -241,7 +241,7 @@ class CourseSerializer(serializers.ModelSerializer):
         ]
     def get_video_url(self, obj):
         if obj.video_url and hasattr(obj.video_url, 'url'):
-            return 'https://portal.aryuacademy.com/api/' + obj.video_url.url
+            return 'https://aylms.aryuprojects.com/api/' + obj.video_url.url
         return None
 
         
@@ -307,12 +307,12 @@ class CourseSerializer(serializers.ModelSerializer):
     
     def get_course_pic_url(self, obj):
         if obj.course_pic and hasattr(obj.course_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.course_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.course_pic.url
         return None
     
     def get_syllabus_url(self, obj):
         if obj.syllabus and hasattr(obj.syllabus, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.syllabus.url
+            return 'https://aylms.aryuprojects.com/api' + obj.syllabus.url
         return None
     def get_syllabus_info(self, obj):
         if obj.syllabus:
@@ -382,7 +382,7 @@ class CourseSerializer(serializers.ModelSerializer):
                     if student_obj.profile_pic:
                         try:
                             profile_pic = (
-                                "https://portal.aryuacademy.com/api"
+                                "https://aylms.aryuprojects.com/api"
                                 + student_obj.profile_pic.url
                             )
                         except Exception:
@@ -400,7 +400,7 @@ class CourseSerializer(serializers.ModelSerializer):
                     "text": submission.text,
                     "file": submission.file.url if submission.file else None,
                     "file_url": (
-                        "https://portal.aryuacademy.com/api" + submission.file.url
+                        "https://aylms.aryuprojects.com/api" + submission.file.url
                         if submission.file else None
                     ),
                     "date": submission.date.strftime("%Y-%m-%d %H:%M:%S"),
