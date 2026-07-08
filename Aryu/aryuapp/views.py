@@ -6504,6 +6504,7 @@ class PublicTrainerRegisterAPIView(APIView):
             ),
         ]
     
+  
  
 class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     serializer_class        = TrainerSerializer
@@ -7116,7 +7117,7 @@ class TutorSignupView(APIView):
             "success": False,
             "errors": serializer.errors
         }, status=400)
-     
+       
 BASE_MEDIA_URL = "https://portal.aryuacademy.com/api/media/"
   
 class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
