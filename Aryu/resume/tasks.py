@@ -3,6 +3,9 @@ from resume.models import ResumeRegistration
 from django.core.mail import EmailMultiAlternatives
 import logging
 import time
+from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 @shared_task
 def resume_reg(registration_id):
