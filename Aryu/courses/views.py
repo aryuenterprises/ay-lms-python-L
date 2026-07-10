@@ -517,7 +517,7 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
-   
+    
 class CourseVideoViewSet(viewsets.ModelViewSet):
     serializer_class = CourseVideoSerializer
     permission_classes = [IsAuthenticated]

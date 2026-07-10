@@ -334,6 +334,7 @@ class CourseSerializer(serializers.ModelSerializer):
                 "updated_at",
                 "course__course_id",
                 "course__course_name",
+                
             )
             .order_by("-created_at")
         )
