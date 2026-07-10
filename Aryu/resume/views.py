@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 
 SIGNING_SALT = "resume-email-verification"
 
-class AuthViewSet(viewsets.ViewSet):
+class AuthViewSet(viewsets.ViewSet): 
 
     permission_classes = [AllowAny]
 
@@ -424,21 +424,33 @@ class AuthViewSet(viewsets.ViewSet):
             subject = f"{user.first_name}, verify your PassAts account"
             body = f"Please verify your account: {verification_link}"
 
+            logger = logging.getLogger(__name__)
+
             def queue_email():
-                if settings.DEBUG:
-                    send_verification_email(
-                        subject,
-                        body,
-                        html_message,
-                        user.email
-                    )
-                else:
-                    send_verification_email.delay(
-                        subject,
-                        body,
-                        html_message,
-                        user.email
-                    )
+                logger.info("========== QUEUE EMAIL START ==========")
+
+                try:
+                    if settings.DEBUG:
+                        logger.info("DEBUG MODE")
+                        send_verification_email(
+                            subject,
+                            body,
+                            html_message,
+                            user.email
+                        )
+                    else:
+                        logger.info("PRODUCTION MODE")
+                        send_verification_email.delay(
+                            subject,
+                            body,
+                            html_message,
+                            user.email
+                        )
+
+                    logger.info("EMAIL FUNCTION CALLED")
+
+                except Exception as e:
+                    logger.exception(e)
 
             transaction.on_commit(queue_email)
 
