@@ -427,30 +427,25 @@ class AuthViewSet(viewsets.ViewSet):
             logger = logging.getLogger(__name__)
 
             def queue_email():
-                logger.info("========== QUEUE EMAIL START ==========")
+                print("queue_email called")
 
-                try:
-                    if settings.DEBUG:
-                        logger.info("DEBUG MODE")
-                        send_verification_email(
-                            subject,
-                            body,
-                            html_message,
-                            user.email
-                        )
-                    else:
-                        logger.info("PRODUCTION MODE")
-                        send_verification_email.delay(
-                            subject,
-                            body,
-                            html_message,
-                            user.email
-                        )
-
-                    logger.info("EMAIL FUNCTION CALLED")
-
-                except Exception as e:
-                    logger.exception(e)
+                if settings.DEBUG:
+                    print("Calling task directly")
+                    send_verification_email.run(
+                        subject,
+                        body,
+                        html_message,
+                        user.email
+                    )
+                else:
+                    print("Queueing Celery task")
+                    task = send_verification_email.delay(
+                        subject,
+                        body,
+                        html_message,
+                        user.email
+                    )
+                    print("Task ID:", task.id)
 
             transaction.on_commit(queue_email)
 

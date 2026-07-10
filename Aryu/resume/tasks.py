@@ -1,46 +1,31 @@
 from celery import shared_task
-from resume.models import ResumeRegistration
 from django.core.mail import EmailMultiAlternatives
+from django.conf import settings
 import logging
-import time
+
+logger = logging.getLogger(__name__)
 
 @shared_task
-def resume_reg(registration_id):
+def send_verification_email(subject, body, html_message, recipient):
+    logger.info(f"Sending verification email to {recipient}")
 
-    start = time.perf_counter()
+    try:
+        email_message = EmailMultiAlternatives(
+            subject=subject,
+            body=body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=[recipient],
+        )
 
-    logger.info("Task started")
+        email_message.attach_alternative(
+            html_message,
+            "text/html"
+        )
 
-    # existing code
+        email_message.send(fail_silently=False)
 
-    logger.info(
-        f"Task completed in "
-        f"{time.perf_counter() - start:.4f}s"
-    )
+        logger.info("Verification email sent successfully")
 
-    # tasks.py
-
-
-
-@shared_task
-def send_verification_email(
-    subject,
-    body,
-    html_message,
-    recipient
-):
-    email_message = EmailMultiAlternatives(
-        subject=subject,
-        body=body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[recipient],
-    )
-
-    email_message.attach_alternative(
-        html_message,
-        "text/html"
-    )
-
-    email_message.send(
-        fail_silently=False
-    )
+    except Exception as e:
+        logger.exception(f"Email sending failed: {e}")
+        raise
