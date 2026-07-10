@@ -47,7 +47,6 @@ def apply_custom_throttle(request, rate_limit=5, period=60):
         
     # Record the current request timestamp and save back to fast cache memory
     request_history.append(current_time)
-    cache.get_backend_timeout = lambda: period  # Ensure cache expires correctly
     cache.set(cache_key, request_history, timeout=period)
     
     return True, None
