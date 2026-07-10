@@ -45,7 +45,6 @@ from weasyprint import HTML, CSS
 from django.db.models import Q
 from django.utils.timezone import now
 # from celery import shared_task
-from .tasks import resume_reg
 from collections import defaultdict
 import time
 import os
@@ -1843,7 +1842,7 @@ class CustomTokenRefreshView(APIView):
 
         return response
 
-from .tasks import resume_reg
+from .tasks import send_verification_email
 
 
 class ResumeRegistrationViewset(viewsets.ModelViewSet):
@@ -2030,7 +2029,7 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
         celery_start = time.perf_counter()
 
-        resume_reg.delay(
+        send_verification_email.delay(
             registration.id
         )
 
@@ -2378,7 +2377,7 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
         celery_start = time.perf_counter()
 
-        resume_reg.delay(
+        send_verification_email.delay(
             registration.id
         )
 
