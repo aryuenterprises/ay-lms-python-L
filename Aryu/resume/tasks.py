@@ -2,6 +2,8 @@ from celery import shared_task
 from django.core.mail import EmailMultiAlternatives
 from django.conf import settings
 import logging
+import time
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
