@@ -28,7 +28,7 @@ from batches.serializers import BatchSerializer
 import requests
 from django.utils.timezone import make_aware
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
-from html import unescape
+
 class CustomTokenRefreshSerializer(TokenRefreshSerializer):
 
     def validate(self, attrs):
@@ -726,6 +726,7 @@ class StudentSerializer(serializers.ModelSerializer):
     employee = EmployeeSerializer(required=False)
     source_type = serializers.CharField(required=False, allow_blank=True)
     source_name = serializers.CharField(required=False, allow_blank=True)
+    converter = serializers.CharField(required = False,allow_blank=True)
 
     class Meta:
         model = Student
@@ -739,6 +740,9 @@ class StudentSerializer(serializers.ModelSerializer):
             'course_detail','course_ids', 'category_id', 'category_name', 'joining_date', 'created_by', 'created_at','student_sub_type'
         ]
         read_only_fields = ['registration_id']
+
+    def get_converter(self,obj):
+        return obj.converter
 
     def get_source_type(self, obj):
         return obj.source_type
@@ -1040,7 +1044,7 @@ class AttendanceSerializer(serializers.ModelSerializer):
         read_only_fields = ['date', 'ip_address', 'batch_id', 'batch_name', 'title', 'new_batch_title']
 
     def get_student_name(self, obj):
-        return f"{obj.student.first_name} "
+        return f"{obj.student.first_name}"
 
     # def validate_status(self, value):
 
@@ -2124,7 +2128,7 @@ class TrainerSerializer(serializers.ModelSerializer):
         instance.refresh_from_db()
 
         return instance 
-     
+    
 class TrainerPreviewSerializer(serializers.ModelSerializer):
     trainer_name = serializers.CharField(source="full_name")
 
@@ -2135,7 +2139,7 @@ class TrainerPreviewSerializer(serializers.ModelSerializer):
             "trainer_name",
             "employee_id",
         )
-    
+         
 class TrainerTravelExpenseImageSerializer(serializers.ModelSerializer):
     image = serializers.SerializerMethodField()
 
@@ -2363,7 +2367,6 @@ class TrainerSimpleSerializer(serializers.ModelSerializer):
             return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
 
-
 class SubmissionStudentSerializer(serializers.ModelSerializer):
     profile_pic = serializers.SerializerMethodField()
     student_name = serializers.SerializerMethodField()
@@ -2421,7 +2424,7 @@ class SubmissionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"course": "Cannot submit because the course's category is inactive."})
 
         return data
-  
+    
 class AssignmentSerializer(serializers.ModelSerializer):
     course = CourseSimpleSerializer(read_only=True)
     assigned_by = TrainerSerializer(read_only=True)
@@ -2741,7 +2744,7 @@ class StudentTicketSerializer(serializers.ModelSerializer):
 
     def get_student_name(self, obj):
         if obj.student:
-            return f"{obj.student.first_name} ".strip()
+            return f"{obj.student.first_name}".strip()
 
         if obj.webinar_participant:
             return obj.webinar_participant.name  # webinar uses name field

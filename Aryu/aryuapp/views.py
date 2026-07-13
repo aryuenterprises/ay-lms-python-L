@@ -53,6 +53,7 @@ from rest_framework.authentication import SessionAuthentication
 from rest_framework.pagination import PageNumberPagination
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.hashers import make_password
+import traceback
 
 class IsAdminOrSuperAdmin(BasePermission):
     def has_permission(self, request, view):
@@ -2261,7 +2262,7 @@ class UserDashboardView(APIView):
 
                 students_info.append({
                     "student_id": student.registration_id,
-                    "student_name": f"{student.first_name} ",
+                    "student_name": f"{student.first_name} {student.last_name}",
                     "submitted": submitted_count,
                     "pending": pending_count
                 })
@@ -2366,7 +2367,6 @@ class UserDashboardView(APIView):
         }, status=200)
     
 
-import traceback
 import logging     
 logger = logging.getLogger(__name__)  
 class ReportsViewSet(ViewSet):
@@ -2558,7 +2558,7 @@ class ReportsViewSet(ViewSet):
 
                 student_reports.append({
                     "student_id": student.registration_id,
-                    "student_name": f"{student.first_name} ",
+                    "student_name": f"{student.first_name} {student.last_name}",
                     "total_classes": total_classes,
                     "total_cancelled_classes": class_cancelled,
                     "attended_classes": attended_classes,
@@ -2747,7 +2747,7 @@ class ReportsViewSet(ViewSet):
 
                     students_info.append({
                         "student_id": student.registration_id,
-                        "student_name": f"{student.first_name} ",
+                        "student_name": f"{student.first_name} {student.last_name}",
                         "submitted": submitted_count,
                         "pending": pending_count
                     })
@@ -2952,7 +2952,7 @@ class ReportsViewSet(ViewSet):
 
                 payment_report_list.append({
                     "student_id": student.registration_id,
-                    "student_name": f"{student.first_name} ",
+                    "student_name": f"{student.first_name} {student.last_name}",
                     "course_fee": float(expected_fee),
                     "total_paid": float(total_paid),
                     "balance": float(balance),
@@ -3679,45 +3679,44 @@ class StudentRegistration(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def perform_create(self, serializer):
-
-        user = self.request.user  # this is JWTUser from your CustomJWTAuthentication
+        # DRF calls this automatically when you use self.perform_create()
+        user = self.request.user
         admin_trainer_id = getattr(user, "trainer_id", None)
-
         serializer.save(created_by=admin_trainer_id)
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        
         user = request.user
         
-        # Ensure module_id points to Students
+        # 1. Permission checks
         student_module = ModulePermission.objects.filter(module__iexact="Students").first()
         if not student_module:
-            return Response({"success": False, "message": "Students module not found"}, status=200)
+            return Response({"success": False, "message": "Students module not found"}, status=status.HTTP_404_NOT_FOUND)
 
         if not has_permission(user, module_id=student_module.module_id, actions=["create"]):
-            return Response({"success": False, "message": "You do not have permission"}, status=200)
+            return Response({"success": False, "message": "You do not have permission"}, status=status.HTTP_403_FORBIDDEN)
         
-        # Validate without raising exception
+        # 2. Initialize serializer
+        serializer = self.get_serializer(data=request.data)
+        
+        # 3. Validate and catch errors properly
         if not serializer.is_valid():
-            error_messages = flatten_errors(serializer.errors)
-            error_message = ". ".join(error_messages)
-
             return Response({
                 "success": False,
                 "message": serializer.errors
-            }, status=200)
+            }, status=status.HTTP_400_BAD_REQUEST)  # Use 400 so frontend knows it failed
 
-        # Save and return proper response
-        student = serializer.save()
+        # 4. Trigger the standard save sequence (which fires perform_create internally)
+        self.perform_create(serializer)
+        student = serializer.instance
+        
         headers = self.get_success_headers(serializer.data)
 
         return Response({
             "success": True,
             "message": "Student registered successfully.",
-            "registration_id": student.registration_id  # or other relevant field
+            "registration_id": student.registration_id
         }, status=status.HTTP_201_CREATED, headers=headers)
-
+    
 class StudentListAPIView(viewsets.ViewSet):
 
     def get(self, request):
@@ -4717,7 +4716,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
                         'student_name': (
                             f"{att.student.first_name} "
-                            
+                           
                         ),
 
                         'batch_id': batch_id,
@@ -5347,23 +5346,77 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
                 status=403
             )
 
-        serializer = StudentProfileSerializer(student, context={'request': request})
-        return Response({"success": True, "data": serializer.data})
+        
 
+        try:
+            serializer = StudentProfileSerializer(
+                student,
+                context={"request": request}
+            )
+            return Response({
+                "success": True,
+                "data": serializer.data
+            })
+        except Exception:
+            traceback.print_exc()
+            raise
+
+    @transaction.atomic
     def partial_update(self, request, student_id=None):
         try:
+            # Fetches based on user role security restrictions defined in your get_queryset
             student = self.get_queryset().get(student_id=student_id)
         except Student.DoesNotExist:
             return Response(
                 {"success": False, "message": "Not found or access denied."},
-                status=404
+                status=status.HTTP_404_NOT_FOUND
             )
 
+        # 1. Update the base student information
         serializer = StudentUpdateSerializer(student, data=request.data, partial=True)
         if not serializer.is_valid():
-            return Response({"success": False, "message": serializer.errors}, status=400)
+            return Response({"success": False, "message": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        
+        student = serializer.save()
 
-        serializer.save()
+        # 2. Extract and dynamically write sub-table data
+        student_type = request.data.get('student_type', student.student_type)
+        
+        sub_profile_mappings = {
+            'college_student': ('college_student', College_Student),
+            'school_student': ('school_student', School_Student),
+            'job_seeker': ('jobseeker', JobSeeker),
+            'employee': ('employee', Employee),
+        }
+
+        if student_type in sub_profile_mappings:
+            payload_key, model_class = sub_profile_mappings[student_type]
+            sub_data = request.data.get(payload_key)
+
+            # If sent via FormData stringified, convert to native dictionary
+            if isinstance(sub_data, str):
+                import json
+                try:
+                    sub_data = json.loads(sub_data)
+                except json.JSONDecodeError:
+                    sub_data = None
+
+            if sub_data and isinstance(sub_data, dict):
+                # Pull file uploads (like resumes) safely from request structures
+                file_fields = ['resume']
+                for field in file_fields:
+                    file_key = f"{payload_key}.{field}"
+                    if file_key in request.FILES:
+                        sub_data[field] = request.FILES[file_key]
+                    elif field in request.FILES:
+                        sub_data[field] = request.FILES[field]
+
+                # Update or automatically create if it doesn't exist yet
+                model_class.objects.update_or_create(
+                    student=student,
+                    defaults=sub_data
+                )
+
         return Response({"success": True, "message": "Updated successfully."})
     
     def get_serializer_class(self):
@@ -5387,13 +5440,11 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['patch'], permission_classes=[IsAuthenticated], url_path='change_password')
-    def change_password(self, request, *args, **kwargs):
-        registration_id = kwargs.get('registration_id')
-
+    def change_password(self, request, student_id=None):
         try:
-            student = Student.objects.get(registration_id=registration_id)
+            student = Student.objects.get(student_id=student_id)
         except Student.DoesNotExist:
-            return Response({"error": "Student not found"}, status=status.HTTP_200_OK)
+            return Response({"success": False, "message": "Student not found"}, status=status.HTTP_404_NOT_FOUND)
 
         old_password = request.data.get("old_password")
         new_password = request.data.get("new_password")
@@ -6504,7 +6555,6 @@ class PublicTrainerRegisterAPIView(APIView):
             ),
         ]
     
-  
  
 class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
     serializer_class        = TrainerSerializer
@@ -7089,7 +7139,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
 class TutorSignupView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    # throttle_classes = [RegisterThrottle]
+    throttle_classes = [RegisterThrottle]
 
     def post(self, request):
 
@@ -7117,7 +7167,7 @@ class TutorSignupView(APIView):
             "success": False,
             "errors": serializer.errors
         }, status=400)
-       
+        
 BASE_MEDIA_URL = "https://portal.aryuacademy.com/api/media/"
   
 class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
@@ -7238,6 +7288,8 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                 category_ids = []
                 category_names = []
 
+                course_details = []
+
                 # -------- OLD BATCH --------
 
                 for bct in old_batch_map.get(t.trainer_id, []):
@@ -7256,6 +7308,13 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                         category_ids.append(category.category_id)
                         category_names.append(category.category_name)
 
+                    course_details.append({
+                        "course_id": course.course_id if course else None,
+                        "course_name": course.course_name if course else None,
+                        "batch_id": bct.batch.batch_id,
+                        "batch_title": bct.batch.title or bct.batch.batch_name
+                    })
+
                 # -------- NEW BATCH --------
 
                 for nb in new_batch_map.get(t.trainer_id, []):
@@ -7273,6 +7332,13 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                     if category:
                         category_ids.append(category.category_id)
                         category_names.append(category.category_name)
+
+                    course_details.append({
+                        "course_id": course.course_id if course else None,
+                        "course_name": course.course_name if course else None,
+                        "batch_id": nb.batch_id,
+                        "batch_title": nb.title
+                    })
 
                 batch_ids = list(dict.fromkeys(batch_ids))
                 titles = list(dict.fromkeys(titles))
@@ -7308,12 +7374,17 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                     **trainer_fields,
                     "role": t.role.role_id if t.role else None,
                     "notes": notes,
+
                     "batch_id": batch_ids,
                     "title": titles,
+
                     "course_id": course_ids,
                     "course_name": course_names,
+
                     "category_id": category_ids,
                     "category_name": category_names,
+
+                    "course_details": course_details
                 })
 
             # ---------------- COURSES ----------------
