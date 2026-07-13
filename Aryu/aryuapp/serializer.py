@@ -28,6 +28,7 @@ from batches.serializers import BatchSerializer
 import requests
 from django.utils.timezone import make_aware
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from html import unescape
 
 class CustomTokenRefreshSerializer(TokenRefreshSerializer):
 
@@ -2620,6 +2621,13 @@ class AssignmentSerializer(serializers.ModelSerializer):
             context={"request": request}
         ).data
     
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+
+        if data.get("description"):
+            data["description"] = unescape(data["description"])
+
+        return data
 class AssignmentSimpleSerializer(serializers.ModelSerializer):
     submission_count = serializers.SerializerMethodField()
     class Meta:
