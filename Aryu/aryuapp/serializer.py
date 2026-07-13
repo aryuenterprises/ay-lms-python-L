@@ -2051,7 +2051,7 @@ class TrainerSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({
                         "batch_ids": "Invalid format. Expected [1,2,3]"
                     })
-            return super().to_internal_value(mutable_data)
+        return super().to_internal_value(mutable_data)
                 
     def create(self, validated_data):
         batch_ids = validated_data.pop("batch_ids", [])
