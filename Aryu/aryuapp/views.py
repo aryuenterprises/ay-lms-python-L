@@ -7139,7 +7139,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
 class TutorSignupView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [RegisterThrottle]
+    # throttle_classes = [RegisterThrottle]
 
     def post(self, request):
 
