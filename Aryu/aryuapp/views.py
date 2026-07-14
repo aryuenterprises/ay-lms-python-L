@@ -6439,6 +6439,37 @@ class CertificateViewSet(viewsets.ModelViewSet):
             "data": serializer.data
         }, status=status.HTTP_200_OK)
     
+    def create(self, request, *args, **kwargs):
+        """
+        POST /api/certificates/
+        Creates a certificate record and triggers the image/PDF generation.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        # 1. Save the instance to the database
+        certificate = serializer.save()
+
+        # 2. Trigger the PDF generation
+        # If generate_and_send_certificate_pdf is decorated with @shared_task, use:
+        # generate_and_send_certificate_pdf.delay(certificate.id)
+        # Otherwise, run it synchronously:
+        try:
+            generate_and_send_certificate_pdf(certificate.id)
+            # Refresh from DB to get the newly updated file path if needed
+            certificate.refresh_from_db()
+        except Exception as e:
+            logger.error("Failed to generate certificate file: %s", str(e))
+            # Optional: You can choose to fail the request or return success 
+            # with a warning that the file is generating.
+
+        # 3. Return response with serialized data
+        return Response({
+            "success": True,
+            "message": "Certificate created and file generation triggered successfully.",
+            "data": self.get_serializer(certificate).data
+        }, status=status.HTTP_201_CREATED)
+    
     @action(detail=False, methods=['get'], url_path='<student_id>' )
     def student_certificates(self, request, student_id=None):
         certificates = Certificate.objects.filter(student=student_id)

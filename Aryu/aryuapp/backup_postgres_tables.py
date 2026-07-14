@@ -5,7 +5,7 @@ import psycopg2
 
 DB_NAME = "aylms_live"
 DB_USER = "aylms_live"
-DB_HOST = "69.62.78.109"
+DB_HOST = "187.127.178.144"
 DB_PASSWORD = "KfdW543FDdfg"
 BACKUP_ROOT = "/home/aryu_user/Arun/Live Backup"
 
