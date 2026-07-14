@@ -6,8 +6,10 @@ from django.conf.urls.static import static
 urlpatterns = [
     # Webinar CRUD
     path('web', WebinarViewSet.as_view({'get': 'list','post': 'create'}), name='webinar-list'),
+    path('bootcamp',BootcampViewSet.as_view({'get':'list','post':'create'}),name='webinar-list'),   
     path("webhooks/whatsapp/", whatsapp_webhook),
     path('web/<slug:slug>/', WebinarViewSet.as_view({'get': 'retrieve','put': 'update','patch': 'update','delete': 'destroy'}), name='webinar-detail'),
+    path('bootcamp/<slug:slug>/',BootcampViewSet.as_view({'get': 'retrieve','put': 'update','patch': 'update','delete': 'destroy'}), name='webinar-detail'),
     path("<uuid:uuid>/tools/<int:pk>/", WebinarToolUpdateDeleteView.as_view(), name="webinar-tool-update-delete"),
     
     # Webinar Registration
