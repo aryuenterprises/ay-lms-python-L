@@ -3,10 +3,8 @@
 from django.db import models
 import uuid
 from django.conf import settings
-from lead.models import Lead
 
 User = settings.AUTH_USER_MODEL
-
 
 class Webinar(models.Model):
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
@@ -23,6 +21,7 @@ class Webinar(models.Model):
         null=True,
         help_text="YouTube/Vimeo embed URL"
     )
+    testimonial_url = models.URLField(blank=True,null=True)
     waba_link = models.URLField(blank=True, null=True, help_text="whatsapp redirect url")
     created_by = models.CharField(max_length=50)
     created_by_type = models.CharField(max_length=20,)
@@ -45,6 +44,7 @@ class Webinar(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_deleted = models.BooleanField(default=False)
+    type = models.BooleanField(default = True)
     
     def get_image_url(self):
         if self.webinar_image:
@@ -114,8 +114,6 @@ class WebinarRegistration(models.Model):
     course = models.CharField(max_length=100, blank=True, null=True)
     #profession, state, city
     profession = models.CharField(max_length=100, blank=True, null=True)
-    state = models.CharField(max_length=100, blank=True, null=True)
-    city = models.CharField(max_length=100, blank=True, null=True)
     wants_reminder = models.BooleanField(default=True)
     is_paid = models.BooleanField(default=False)
     payment_transaction = models.ForeignKey(
@@ -126,8 +124,8 @@ class WebinarRegistration(models.Model):
     )
 
     # 🔹 CRM link (optional but powerful)
-    lead=models.ForeignKey(
-        Lead,
+    lead = models.ForeignKey(
+        'lead.Lead',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -137,13 +135,14 @@ class WebinarRegistration(models.Model):
     attended = models.BooleanField(default=False)
     source = models.CharField(
         max_length=100,
-        blank=True,
-        null = True
+        default='webinar'
     )
 
     registered_at = models.DateTimeField(auto_now_add=True)
+    student_type = models.CharField(max_length = 150,null = False,default = False)
 
     class Meta:
+        unique_together = ('webinar', 'phone')
         indexes = [
             models.Index(fields=["-registered_at"]),
             models.Index(fields=["webinar"]),
@@ -209,7 +208,6 @@ class WebinarAttendanceLog(models.Model):
             models.Index(fields=["-registration"]),
         ]
 
-
 class WebinarAttendanceSummary(models.Model):
     registration = models.OneToOneField(
         WebinarRegistration,
@@ -246,7 +244,7 @@ class WebinarFeedback(models.Model):
         blank=True,
         db_index=True
     )
-    phone = models.CharField(max_length=15,default="91")
+    phone = models.CharField(max_length=15)
 
      # Overall experience
     overall_rating = models.PositiveSmallIntegerField()  # 1–5
@@ -285,6 +283,11 @@ class WebinarFeedback(models.Model):
     class Meta:
         db_table = "webinar_feedback"
         unique_together = ("webinar", "registration")
+        indexes = [
+            models.Index(fields=["webinar"]),
+            models.Index(fields=["submitted_at"]),
+            models.Index(fields=["overall_rating"]),
+        ]
 
     def __str__(self):
         return f"Feedback → {self.webinar.title}"

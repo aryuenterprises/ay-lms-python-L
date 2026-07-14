@@ -11,6 +11,7 @@ import json
 from aryuapp.models import StudentTicket, TicketAttachment, TicketReply, Certificate
 from lead.models import Lead
 from django.utils.text import slugify
+import requests
 
 
 class WebinarAttendanceLogSerializer(serializers.ModelSerializer):
@@ -49,11 +50,6 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
         source="webinar.waba_link",
         read_only=True
     )
-    source = serializers.CharField(
-    required=False,
-    allow_null=True,
-    allow_blank=True
-        )
 
     class Meta:
         model = WebinarRegistration
@@ -69,8 +65,6 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
             "profession",
             "payment_status",
             "certificate_url",
-            "state",
-            "city",
             "feedback",
             "total_hours_participated",
             "wants_reminder",
@@ -82,6 +76,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
             "registered_at",
             "certificate_sent",
             "source",
+            "student_type"
         )
 
     def get_logs(self, obj):
@@ -142,7 +137,8 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
 
         phone = validated_data.get('phone')
         email = validated_data.get('email')
-        source = validated_data.get('source')
+        name = validated_data.get('name')
+        
 
         # Create or fetch Lead
         lead, created = Lead.objects.get_or_create(
@@ -159,9 +155,48 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
             webinar=webinar,   # explicitly assign
             lead=lead,
             is_paid=False,
-            # source=validated_data.get("source"),
             **validated_data
         )
+        # -----------------------------
+        # TELECRM LEAD CREATE
+        # -----------------------------
+        try:
+            url = f"https://next-api.telecrm.in/enterprise/6a13da730fbcb752673e080c/autoupdatelead"
+
+            headers = {
+                "Authorization": f"Bearer 2b5fa0b5-b45c-4150-ab6f-09a001575ca01779800797507:0d16d31d-e820-45fa-aafc-869ef640917d",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "fields": {
+                    "name": name,
+                    "phone": phone,
+                    "email": email,
+                    "source":validated_data.get('source'),
+                    "course":validated_data.get('course'),
+                },
+                "actions": [
+                    {
+                        "type": "ACTION_1001",
+                        "fields": {
+                            "note": "Webinar registration"
+                        }
+                    }
+                ]
+            }
+
+            response = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=10
+            )
+
+            print("TeleCRM Response:", response.json())
+
+        except Exception as e:
+            print("TeleCRM Error:", str(e))
 
         return registration
 
@@ -191,13 +226,6 @@ class WebinarFeedbackSerializer(serializers.ModelSerializer):
 
         attrs["registration"] = registration
         return attrs
-    def validate_phone(self, value):
-        cleaned = ''.join(filter(str.isdigit, value))
-
-        if cleaned.startswith('91'):
-            cleaned = cleaned[2:]
- 
-        return '91' + cleaned
 
 class WebinarlistFeedbackSerializer(serializers.ModelSerializer):
 
@@ -221,7 +249,7 @@ class WebinarToolSerializer(serializers.ModelSerializer):
 
     def get_image_url(self, obj):
         if obj.tools_image:
-            return f"https://portal.aryuacademy.com/api{obj.tools_image.url}"
+            return f"{settings.MEDIA_BASE_URL}{obj.tools_image.url}"
         return None
     
 class WebinarMetadataSerializer(serializers.ModelSerializer):
@@ -233,7 +261,7 @@ class WebinarMetadataSerializer(serializers.ModelSerializer):
 
     def get_image_url(self, obj):
         if obj.meta_image:
-            return f"https://portal.aryuacademy.com/api{obj.meta_image.url}"
+            return f"{settings.MEDIA_BASE_URL}{obj.meta_image.url}"
         return None
 
 class WebinarFAQSerializer(serializers.ModelSerializer):
@@ -263,7 +291,7 @@ class WebinarSerializer(serializers.ModelSerializer):
 
     def get_webinar_image_url(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
-            return f"https://portal.aryuacademy.com/api{obj.webinar_image.url}"
+            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
         return None
     
     def get_total_amount_received(self, obj):
@@ -293,8 +321,6 @@ class WebinarSerializer(serializers.ModelSerializer):
                     "https://portal.aryuacademy.com/api" + certificate.certificate_file.url
                     if certificate and certificate.certificate_file else None
                 ),
-                "state": r.state,
-                "city": r.city,
                 "feedback": WebinarFeedbackSerializer(r.feedback).data if getattr(r, "feedback", None) else None,
                 "total_duration_minutes": summary.total_duration_seconds // 60 if summary else 0,
                 "total_hours_participated": round(summary.total_duration_seconds / 3600, 2) if summary else 0,
@@ -310,7 +336,6 @@ class WebinarSerializer(serializers.ModelSerializer):
                 ],
                 "registered_at": r.registered_at,
                 "certificate_sent": r.certificate_sent,
-                "source":r.source
             })
 
         return result
@@ -430,8 +455,9 @@ class WebinarListSerializer(serializers.ModelSerializer):
 
     def get_webinar_image_url(self, obj):
         if obj.webinar_image:
-            return f"https://portal.aryuacademy.com/api{obj.webinar_image.url}"
+            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
         return None
+
     def get_participants_count(self, obj):
             return obj.registrations.filter(
                 payment_transaction__payment_status="done"
@@ -663,6 +689,7 @@ class PublicWebinarListSerializer(serializers.ModelSerializer):
             "mentor",
             "language",
             "video_url",
+            "testimonial_url",
             "mode",
             "registration_link",
             "price",
@@ -685,7 +712,7 @@ class PublicWebinarListSerializer(serializers.ModelSerializer):
 
     def get_webinar_image(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
-            return f"https://portal.aryuacademy.com/api{obj.webinar_image.url}"
+            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
         return None
     
     def get_registered_count(self, obj):
