@@ -18,6 +18,7 @@ from courses.models import CourseCategory
 from aryuapp.views import has_permission
 from aryuapp.utils import cache_api, delete_cache_pattern
 from rest_framework.viewsets import ModelViewSet
+from aryuapp.models import StudentRecording
 # Create your views here.
 
 
@@ -2105,6 +2106,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
 
 class BatchRecordingViewSet(ModelViewSet):
     serializer_class = BatchRecordingSerializer
+    queryset = BatchRecording.objects.all()
 
     def get_queryset(self):
         queryset = BatchRecording.objects.all().order_by("-recording_id")
@@ -2128,3 +2130,27 @@ class BatchRecordingViewSet(ModelViewSet):
             )
             for student in students
         ])
+
+    def perform_update(self, serializer):
+        recording = serializer.save()
+
+        # Remove old student recordings
+        StudentRecording.objects.filter(recording=recording).delete()
+
+        # Create new ones based on the updated batch
+        students = recording.batch.students.all()
+
+        StudentRecording.objects.bulk_create([
+            StudentRecording(
+                student=student,
+                recording=recording
+            )
+            for student in students
+        ])
+
+    def perform_destroy(self, instance):
+        # Delete related StudentRecording entries
+        StudentRecording.objects.filter(recording=instance).delete()
+
+        # Delete the BatchRecording
+        instance.delete()
