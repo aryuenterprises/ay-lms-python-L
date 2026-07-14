@@ -1650,11 +1650,23 @@ class InvoiceSerializer(serializers.ModelSerializer):
         return None
      
 class CertificateSerializer(serializers.ModelSerializer):
+    certificate_url = serializers.SerializerMethodField()
+
     class Meta:
         model = Certificate
         fields = '__all__'
         read_only_fields = ['certificate_number']
 
+    def get_certificate_url(self, obj):
+        """
+        Builds the full production URL for the certificate file.
+        Matches the model field name: 'certificate_file'
+        """
+        if obj.certificate_file and hasattr(obj.certificate_file, 'url'):
+            # This joins your custom domain with Django's media URL path
+            return 'https://portal.aryuacademy.com/api' + obj.certificate_file.url
+        return None
+    
     def to_internal_value(self, data):
         """
         Intercepts incoming data before field validation to pull 
