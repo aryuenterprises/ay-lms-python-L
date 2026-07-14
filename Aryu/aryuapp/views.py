@@ -6454,6 +6454,7 @@ class CertificateViewSet(viewsets.ModelViewSet):
         
         # 1. Save the instance to the database
         certificate = serializer.save()
+        from .certificate_filler import generate_and_send_certificate_pdf
 
         # 2. Trigger the PDF generation
         # If generate_and_send_certificate_pdf is decorated with @shared_task, use:
