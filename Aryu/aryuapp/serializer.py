@@ -1655,11 +1655,64 @@ class CertificateSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['certificate_number']
 
+    def to_internal_value(self, data):
+        """
+        Intercepts incoming data before field validation to pull 
+        student name, course name, and duration out of the batch details.
+        """
+        # Copy the data to a mutable dictionary if it's a QueryDict
+        data = data.copy() if hasattr(data, 'copy') else data
+        
+        student_id = data.get('student')
+        
+        if student_id:
+            # 1. Look up the student's active batch
+            # We filter by student ID, make sure it's not archived, and look up the latest one
+            active_batch = NewBatch.objects.filter(
+                students__student_id=student_id,
+                is_archived=False
+            ).select_related('course').order_by('-start_date').first()
+            
+            if active_batch:
+                # 2. Extract and assign the data to validation payload
+                # Find the student instance from the batch to safely grab their profile name
+                student_obj = active_batch.students.filter(student_id=student_id).first()
+                
+                if student_obj:
+                    # If student model has a user profile relation or direct first/last names:
+                    # Adjust 'first_name' / 'get_full_name()' to match your actual Student model field
+                    first_name = getattr(student_obj, 'first_name', '')
+                    last_name = getattr(student_obj, 'last_name', '')
+                    full_name = f"{first_name} {last_name}".strip() or f"Student #{student_id}"
+                    
+                    data['student_name'] = data.get('student_name', full_name)
+                
+                # Fetch Course name
+                if active_batch.course:
+                    data['course_name'] = data.get('course_name', active_batch.course.course_name)
+                
+                # Format Course Duration (e.g., "Jan 2026 - Apr 2026")
+                start_str = active_batch.start_date.strftime("%b %Y")
+                end_str = active_batch.end_date.strftime("%b %Y")
+                duration_string = f"{start_str} - {end_str}"
+                
+                data['course_duration'] = data.get('course_duration', duration_string)
+            else:
+                raise ValidationError({
+                    "student": "This student is not enrolled in an active, unarchived batch."
+                })
+        else:
+            raise ValidationError({
+                "student": "A valid student ID must be provided to fetch certificate details."
+            })
+
+        return super().to_internal_value(data)
+
     def create(self, validated_data):
         request = self.context.get("request")
         
         if request and request.user:
-            role = getattr(request.user, "user_type", None)  # or from JWT payload
+            role = getattr(request.user, "user_type", None)
 
             if role in ["trainer", "admin"]:
                 validated_data["created_by"] = getattr(request.user, "trainer_id", None)
@@ -1676,6 +1729,7 @@ class CertificateSerializer(serializers.ModelSerializer):
             else:
                 validated_data["created_by"] = getattr(request.user, "user_id", None)
                 validated_data["created_by_type"] = role
+                
         return super().create(validated_data)
 
 class PublicTrainerRegisterSerializer(serializers.ModelSerializer):
