@@ -17,6 +17,7 @@ from aryuapp.mixins import *
 from courses.models import CourseCategory
 from aryuapp.views import has_permission
 from aryuapp.utils import cache_api, delete_cache_pattern
+from rest_framework.viewsets import ModelViewSet
 # Create your views here.
 
 
@@ -2098,3 +2099,32 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
             }, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
+
+
+
+
+class BatchRecordingViewSet(ModelViewSet):
+    serializer_class = BatchRecordingSerializer
+
+    def get_queryset(self):
+        queryset = BatchRecording.objects.all().order_by("-recording_id")
+
+        batch_id = self.request.query_params.get("batch")
+
+        if batch_id and batch_id != "undefined":
+            queryset = queryset.filter(batch_id=batch_id)
+
+        return queryset
+
+    def perform_create(self, serializer):
+        recording = serializer.save()
+
+        students = recording.batch.students.all()
+
+        StudentRecording.objects.bulk_create([
+            StudentRecording(
+                student=student,
+                recording=recording
+            )
+            for student in students
+        ])

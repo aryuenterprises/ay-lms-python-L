@@ -54,7 +54,8 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.hashers import make_password
 import traceback
-
+from batches.models import BatchRecording
+from batches.serializers import BatchRecordingSerializer
 class IsAdminOrSuperAdmin(BasePermission):
     def has_permission(self, request, view):
         return getattr(request.user, "user_type", "") in ["admin", "super_admin"]
@@ -8666,3 +8667,15 @@ class AdminfullLogViewSet(ReadOnlyModelViewSet):
             return Response({'error': 'Unauthorized'}, status=status.HTTP_200_OK)
         return super().list(request, *args, **kwargs)
 
+class StudentBatchRecordingView(APIView):
+    def get(self, request, student_id):
+        student = Student.objects.get(student_id=student_id)
+
+        recordings = BatchRecording.objects.filter(
+            batch__students=student,
+            status=True
+        ).order_by("-created_at")
+
+        serializer = BatchRecordingSerializer(recordings, many=True)
+
+        return Response(serializer.data)

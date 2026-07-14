@@ -55,6 +55,7 @@ urlpatterns = [
    path("recordings/<str:student_id>", RecordingsView.as_view({'get': 'list', 'post': 'create'})),
    path("recordings/<str:student_id>/<str:recording_id>", RecordingsView.as_view({'get': 'retrieve', 'patch': 'partial_update', 'put': 'update'})),
    path("recordings/<str:student_id>/<str:recording_id>/archive", RecordingsView.as_view({'patch': 'is_archived'})),
+   path("student-recordings/<int:student_id>/",StudentBatchRecordingView.as_view(),),
    path('invoice', InvoiceCreateView.as_view({'get': 'list', 'post': 'create'})),
    path('invoice/<str:student_id>', InvoiceDetailView.as_view({'get': 'download_pdf'})),
    path('invoice_list', InvoiceListViewSet.as_view({'get': 'list', 'post': 'create'}), name='invoice_list'),

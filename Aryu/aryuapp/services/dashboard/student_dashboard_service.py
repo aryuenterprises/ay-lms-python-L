@@ -16,6 +16,7 @@ from batches.models import ClassSchedule
 from django.db.models import F, ExpressionWrapper, DateTimeField, Q
 from django.contrib.postgres.aggregates import StringAgg
 from batches.models import NewBatch
+from courses.models import Topic
 class   StudentDashboardService:
 
     CACHE_TIMEOUT = 60
@@ -292,7 +293,8 @@ class   StudentDashboardService:
                 "class_link",
                 "course__course_name",
                 "trainer__full_name",
-                "new_batch__title"
+                "new_batch__title",
+                "topics_title"
             ).order_by(
                 "scheduled_date",
                 "start_time"
@@ -351,17 +353,17 @@ class   StudentDashboardService:
 
         return result
 
-        for assignment in assignments:
-            result.append({
-                "assignment_id": assignment.id,   # ✅ correct field
-                "assignment_name": assignment.title,
-                # "description": assignment.description,
-                "course_id": assignment.course.course_id if assignment.course else None,
-                "course_name": assignment.course.course_name if assignment.course else None,
-                "status": "Completed" if assignment.id in submitted_ids else "Pending"
-            })
+        # for assignment in assignments:
+        #     result.append({
+        #         "assignment_id": assignment.id,   # ✅ correct field
+        #         "assignment_name": assignment.title,
+        #         # "description": assignment.description,
+        #         "course_id": assignment.course.course_id if assignment.course else None,
+        #         "course_name": assignment.course.course_name if assignment.course else None,
+        #         "status": "Completed" if assignment.id in submitted_ids else "Pending"
+        #     })
 
-        return result  
+        # return result  
         
 
     # ---------------------------------------------------------
@@ -395,7 +397,10 @@ class   StudentDashboardService:
                 "course__course_name",
                 "batch__batch_name",
                 "batch__title",
-                "new_batch__title"
+                "new_batch__title",
+                "course_id",  
+                # "topics",
+                # "topics__title"
             )
             .order_by("-scheduled_date", "-start_time")
         )
@@ -466,10 +471,17 @@ class   StudentDashboardService:
                 or sched["batch__title"]
                 or sched["new_batch__title"]
             )
+            topics = list(
+                Topic.objects.filter(
+                    course_id=sched["course_id"],
+                    is_archived=False
+                ).values_list("title", flat=True)
+            )
 
             result.append({
                 "schedule_id": sched["schedule_id"],
                 "course_name": sched["course__course_name"],
+                "topics":topics,
                 "batch_name": batch_name,
                 "scheduled_date": sched["scheduled_date"],
                 "start_time": start_time.strftime("%I:%M %p"),
@@ -483,29 +495,78 @@ class   StudentDashboardService:
     # UPCOMING CLASSES
     # ---------------------------------------------------------
 
+    # def get_upcoming_classes(self):
+
+    #     schedules = (
+    #         ClassSchedule.objects
+    #         .filter(
+    #             new_batch__students=self.student_id,
+    #             scheduled_date__gte=date.today(),
+    #             is_archived=False
+    #         )
+    #         .select_related("course", "trainer", "new_batch")
+    #         .values(
+    #             "scheduled_date",
+    #             "start_time",
+    #             "class_link",
+    #             "course__course_name",
+    #             "trainer__full_name",
+    #             "new_batch__title"
+    #         )
+    #         .order_by("scheduled_date", "start_time")[:3]
+    #     )
+
+    #     return list(schedules)
+
     def get_upcoming_classes(self):
+        today = date.today()
+        next_week = today + timedelta(days=7)
 
         schedules = (
-            ClassSchedule.objects
-            .filter(
+            ClassSchedule.objects.filter(
                 new_batch__students=self.student_id,
-                scheduled_date__gte=date.today(),
-                is_archived=False
+                scheduled_date__range=[today, next_week],
+                is_archived=False,
+                new_batch__is_archived=False,
             )
-            .select_related("course", "trainer", "new_batch")
-            .values(
-                "scheduled_date",
-                "start_time",
-                "class_link",
-                "course__course_name",
-                "trainer__full_name",
-                "new_batch__title"
-            )
-            .order_by("scheduled_date", "start_time")[:3]
+            .select_related("course", "new_batch", "trainer")
+            .order_by("scheduled_date", "start_time")
         )
 
-        return list(schedules)
+        upcoming_classes = []
 
+        for schedule in schedules:
+            topics = (
+                Topic.objects.filter(
+                    course=schedule.course,
+                    scheduled_date=schedule.scheduled_date,
+                    is_archived=False,
+                )
+                .values(
+                    "topic_id",
+                    "title",
+                    "scheduled_date",
+                    "scheduled_start_time",
+                    "scheduled_end_time",
+                )
+                .order_by("scheduled_start_time")
+            )
+
+            upcoming_classes.append({
+                "schedule_id": schedule.schedule_id,
+                "course_id": schedule.course.course_id,
+                "course_name": schedule.course.course_name,
+                "batch_id": schedule.new_batch.batch_id,
+                "batch_name": schedule.new_batch.title,
+                "trainer_name": schedule.trainer.full_name if schedule.trainer else None,
+                "scheduled_date": schedule.scheduled_date,
+                "start_time": schedule.start_time,
+                "end_time": schedule.end_time,
+                "class_link": schedule.class_link,
+                "topics": list(topics),
+            })
+
+        return upcoming_classes
     # ---------------------------------------------------------
     # ANNOUNCEMENTS
     # ---------------------------------------------------------

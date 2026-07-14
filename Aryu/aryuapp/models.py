@@ -11,7 +11,7 @@ import uuid
 from batches.models import ClassSchedule, NewBatch, Batch
 from courses.models import Course
 from webinar.models import WebinarRegistration
-
+from batches.models import BatchRecording
 
 
 def validate_image_or_svg(file):
@@ -410,6 +410,26 @@ class Student(models.Model):
         return f"{prefix}{month}{year}{number:03d}"
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
+
+
+class StudentRecording(models.Model):
+    student = models.ForeignKey(
+        "aryuapp.Student",
+        on_delete=models.CASCADE,
+        related_name="student_recordings"
+    )
+
+    recording = models.ForeignKey(
+        BatchRecording,
+        on_delete=models.CASCADE,
+        related_name="student_recordings"
+    )
+
+    assigned_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("student", "recording")
+        db_table = "aryuapp_student_recordings"
 
 class Studentusertype(models.Model):
     student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True)

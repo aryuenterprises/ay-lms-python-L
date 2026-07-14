@@ -298,3 +298,23 @@ class NewBatch(models.Model):
     def __str__(self):
         return f"{self.title} ({self.course.course_name})"
     
+class BatchRecording(models.Model):
+    recording_id = models.AutoField(primary_key=True)
+
+    batch = models.ForeignKey(
+        "NewBatch",
+        on_delete=models.CASCADE,
+        related_name="recordings"
+    )
+
+    title = models.CharField(max_length=255)
+    url = models.URLField(max_length=500)
+    status = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "aryuapp_batch_recordings"
+
+    def __str__(self):
+        return self.title

@@ -671,7 +671,19 @@ class TopicSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Topic
-        fields = ['topic_id','course','title','description','created_date','create_by','is_archived', 'created_at', 'created_by']
+        fields = [
+            'topic_id',
+            'course',
+            'title',
+            'description',
+            'created_date',
+            'create_by',
+            'is_archived', 
+            'created_at', 
+            'created_by',
+            'scheduled_date',
+            'scheduled_start_time',
+            'scheduled_end_time']
         read_only_fields = ['created_date', 'course', 'topic_id']
         
     

@@ -204,6 +204,9 @@ class Topic(models.Model):
     created_by = models.CharField(max_length=100, null=True, blank=True)
     created_by_type = models.CharField(max_length=50, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    scheduled_date = models.DateField(null=True, blank=True)
+    scheduled_start_time = models.TimeField(null=True, blank=True)
+    scheduled_end_time = models.TimeField(null=True, blank=True)
 
     class Meta:
         db_table = "aryuapp_topic"

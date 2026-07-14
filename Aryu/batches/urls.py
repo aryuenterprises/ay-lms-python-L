@@ -17,4 +17,5 @@ urlpatterns = [
    path('batches', NewBatchViewSet.as_view({'get': 'list', 'post': 'create'})),
    path('batches/<str:batch_id>', NewBatchViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'update'})),
    path('batches/<str:batch_id>/archive', NewBatchViewSet.as_view({'patch': 'is_archived'})),
+   path('batch-recordings/',BatchRecordingViewSet.as_view({'post':'create','get':'list'}))
 ]

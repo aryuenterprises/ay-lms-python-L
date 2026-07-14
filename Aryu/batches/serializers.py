@@ -6,6 +6,7 @@ import calendar
 from collections import defaultdict
 import holidays
 from aryuapp.models import TrainerAttendance, Trainer, Student
+# from aryuapp.serializer import TrainerPreviewSerializer
 from rest_framework.response import Response
 
 
@@ -646,6 +647,7 @@ class BatchSerializer(serializers.ModelSerializer):
             instance.deactivate_batch(instance)
 
         return batch
+                   
     
 class NewBatchSerializer(serializers.ModelSerializer):
     course = serializers.PrimaryKeyRelatedField(queryset=Course.objects.all())
@@ -777,3 +779,12 @@ class NewBatchSerializer(serializers.ModelSerializer):
 
         return instance 
     
+class BatchRecordingSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = BatchRecording
+        fields = "__all__"
+
+    def get_url(self, obj):
+        if obj.url:
+            return f"https://portal.aryuacademy.com/api{obj.url.url}"
