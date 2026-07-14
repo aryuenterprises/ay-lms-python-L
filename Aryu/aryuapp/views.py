@@ -8609,70 +8609,143 @@ class SubmissionViewSet(LoggingMixin, viewsets.ModelViewSet):
                 "message": str(e)
             }, status=status.HTTP_200_OK)
 
-class SubmissionReplyViewSet(LoggingMixin, viewsets.ModelViewSet):
+class SubmissionReplyViewSet(viewsets.ModelViewSet):
     serializer_class = SubmissionReplySerializer
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
 
     def get_queryset(self):
-        submission_id = self.kwargs.get('submission_id')
-        return SubmissionReply.objects.filter(submission_id=submission_id)
+        submission_id = self.kwargs.get("submission_id")
+
+        return SubmissionReply.objects.filter(
+            submission_id=submission_id,
+            is_archived=False
+        ).order_by("date")
 
     def create(self, request, *args, **kwargs):
-        submission_id = self.kwargs.get('submission_id')
-        employee_id = request.data.get("employee_id")
+
+        submission_id = self.kwargs.get("submission_id")
 
         if not submission_id:
-            return Response({
-                "success": False,
-                "message": "submission_id is required in URL."
-            }, status=status.HTTP_200_OK)
-
-        if not employee_id:
-            return Response({
-                "success": False,
-                "message": "employee_id is required in data."
-            }, status=status.HTTP_200_OK)
+            return Response(
+                {
+                    "success": False,
+                    "message": "submission_id is required."
+                },
+                status=status.HTTP_200_OK,
+            )
 
         try:
             submission = Submission.objects.get(id=submission_id)
         except Submission.DoesNotExist:
-            return Response({
-                "success": False,
-                "message": "Invalid submission ID."
-            }, status=status.HTTP_200_OK)
-
-        try:
-            trainer = Trainer.objects.get(employee_id=employee_id)
-        except Trainer.DoesNotExist:
-            return Response({
-                "success": False,
-                "message": "Invalid trainer ID."
-            }, status=status.HTTP_200_OK)
+            return Response(
+                {
+                    "success": False,
+                    "message": "Invalid submission."
+                },
+                status=status.HTTP_200_OK,
+            )
 
         serializer = self.get_serializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save(submission=submission, trainer=trainer)
-            return Response({
+
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "success": False,
+                    "message": serializer.errors
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        jwt_user = request.user
+
+        # -----------------------------
+        # Tutor
+        # -----------------------------
+        if jwt_user.user_type == "tutor":
+
+            employee_id = request.data.get("employee_id")
+
+            if not employee_id:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "employee_id is required."
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            trainer = Trainer.objects.filter(
+                employee_id=employee_id
+            ).first()
+
+            if not trainer:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Invalid trainer."
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            serializer.save(
+                submission=submission,
+                trainer=trainer
+            )
+
+        # -----------------------------
+        # Admin & Super Admin
+        # -----------------------------
+        elif jwt_user.user_type in ["admin", "super_admin"]:
+
+            try:
+                db_user = User.objects.get(id=jwt_user.user_id)
+            except User.DoesNotExist:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "User not found."
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            serializer.save(
+                submission=submission,
+                user=db_user
+            )
+
+        else:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Only Tutor, Admin and Super Admin can reply."
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        return Response(
+            {
                 "success": True,
                 "message": "Reply created successfully.",
-                "data": serializer.data
-            }, status=status.HTTP_201_CREATED)
-        else:
-            return Response({
-                "success": False,
-                "message": serializer.errors
-            }, status=status.HTTP_200_OK)
+                "data": SubmissionReplySerializer(serializer.instance).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
-    @action(detail=True, methods=['patch'], url_path='archive')
+    @action(detail=True, methods=["patch"], url_path="archive")
     def is_archived(self, request, *args, **kwargs):
+
         reply = self.get_object()
         reply.is_archived = True
         reply.save()
-        return Response({
-            "success": True,
-            "message": f"Reply {reply.id} deleted successfully."
-        }, status=status.HTTP_200_OK)
+
+        return Response(
+            {
+                "success": True,
+                "message": "Reply deleted successfully."
+            },
+            status=status.HTTP_200_OK,
+        )
         
 class UserPresenceViewSet(viewsets.ModelViewSet):
     queryset = UserPresence.objects.all()

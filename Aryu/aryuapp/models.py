@@ -853,16 +853,34 @@ class Submission(models.Model):
     def __str__(self):
         return f"{self.assignment.title} ← {self.student.registration_id}"
 
+
 class SubmissionReply(models.Model):
-    submission = models.ForeignKey(Submission, on_delete=models.CASCADE, related_name='replies', null=True, blank=True)
-    trainer = models.ForeignKey(Trainer, on_delete=models.CASCADE, related_name='replies', null=True, blank=True)
+    submission = models.ForeignKey(
+        Submission,
+        on_delete=models.CASCADE,
+        related_name="replies"
+    )
+
+    trainer = models.ForeignKey(
+        Trainer,
+        on_delete=models.CASCADE,
+        related_name="replies",
+        null=True,
+        blank=True
+    )
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="submission_replies",
+        null=True,
+        blank=True
+    )
+
     text = models.TextField(null=True, blank=True)
     date = models.DateTimeField(auto_now_add=True)
     is_archived = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
-    
-    def __str__(self):
-        return f"Reply to {self.submission.assignment.title} by {self.trainer.full_name}"
   
 class StudentTicket(models.Model):
     ticket_id = models.AutoField(primary_key=True)
