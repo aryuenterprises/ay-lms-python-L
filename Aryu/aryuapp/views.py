@@ -6445,6 +6445,11 @@ class CertificateViewSet(viewsets.ModelViewSet):
         Creates a certificate record and triggers the image/PDF generation.
         """
         serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            print("--- VALIDATION ERRORS ---")
+            print(serializer.errors)  # This will print {'field_name': ['This field is required.']}
+            print("------------------------")
+            
         serializer.is_valid(raise_exception=True)
         
         # 1. Save the instance to the database
