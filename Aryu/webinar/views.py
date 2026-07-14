@@ -430,7 +430,8 @@ class WebinarViewSet(
                 "created_at"
             ),
             slug=slug,
-            is_deleted=False
+            is_deleted=False,
+            type = True
         )
         MEDIA_PREFIX = "https://portal.aryuacademy.com/api/media/"
         registrations = (
@@ -1025,7 +1026,8 @@ class BootcampViewSet(
                 "created_at"
             ),
             slug=slug,
-            is_deleted=False
+            is_deleted=False,
+            type = False
         )
         MEDIA_PREFIX = "https://portal.aryuacademy.com/api/media/"
         registrations = (
@@ -1186,7 +1188,8 @@ class BootcampViewSet(
         })
 
     def list(self, request):
-        cache_key = "webinar_list_v1"
+        cache_key = "bootcamp_list_v1"
+
         data = cache.get(cache_key)
 
         if not data:
