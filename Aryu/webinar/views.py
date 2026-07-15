@@ -184,7 +184,6 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             "amount": int(float(amount) * 100),
             "currency": "INR",
             "payment_capture": 1,
-            "email":email,
             "notes": {
                 "webinar_id": webinar_id,
                 "name": name,
