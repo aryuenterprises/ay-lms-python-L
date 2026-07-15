@@ -2007,32 +2007,32 @@ class TrainerSerializer(serializers.ModelSerializer):
                 new_errors[field] = new_messages
             raise serializers.ValidationError(new_errors)
  
-    def validate_email(self, value):
-        value = value.lower()
-        try:
-            validate_email(value)
-        except DjangoValidationError:
-            raise serializers.ValidationError("Enter a valid email address.")
+    # def validate_email(self, value):
+    #     value = value.lower()
+    #     try:
+    #         validate_email(value)
+    #     except DjangoValidationError:
+    #         raise serializers.ValidationError("Enter a valid email address.")
  
-        allowed_domains = {
-            "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
-            "rediffmail.com", "icloud.com",
-            "aryutechnologies.com", "aryuenterprise.com", "aryuacademy.com",
-        }
-        domain = value.split("@")[-1]
-        if domain not in allowed_domains:
-            raise serializers.ValidationError(
-                "Please enter a valid email domain (e.g., gmail.com, yahoo.com)."
-            )
+    #     allowed_domains = {
+    #         "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
+    #         "rediffmail.com", "icloud.com",
+    #         "aryutechnologies.com", "aryuenterprise.com", "aryuacademy.com",
+    #     }
+    #     domain = value.split("@")[-1]
+    #     if domain not in allowed_domains:
+    #         raise serializers.ValidationError(
+    #             "Please enter a valid email domain (e.g., gmail.com, yahoo.com)."
+    #         )
  
-        instance = getattr(self, "instance", None)
-        if instance and instance.email.lower() == value:
-            return value  # unchanged — skip duplicate check
+    #     instance = getattr(self, "instance", None)
+    #     if instance and instance.email.lower() == value:
+    #         return value  # unchanged — skip duplicate check
  
-        if Trainer.objects.filter(email__iexact=value, is_archived=False).exists():
-            raise serializers.ValidationError("Email already exists.")
+    #     if Trainer.objects.filter(email__iexact=value, is_archived=False).exists():
+    #         raise serializers.ValidationError("Email already exists.")
  
-        return value
+    #     return value
  
     def validate_full_name(self, value):
         if not re.match(r"^[A-Za-z ]+$", value):
