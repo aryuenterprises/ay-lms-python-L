@@ -301,8 +301,8 @@ SIMPLE_JWT = {
 FASTAPI_URL="https://ai.aryuacademy.com"
 
 # 
-SERVER_ROOT = Path("/var/www/ay-lms-python-L")
-# SERVER_ROOT = Path("/home/tamilselvi/Documents/GitHub/ay-lms-python-L")
+# SERVER_ROOT = Path("/var/www/ay-lms-python-L")
+SERVER_ROOT = Path("/home/tamilselvi/Documents/GitHub/ay-lms-python-L")
 
 # SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L")
 
