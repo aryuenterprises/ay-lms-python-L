@@ -58,10 +58,8 @@ class AryuReportView(APIView):
                     NewBatch.objects.filter(
                         students__student_id=student.student_id
                     )
-                    .select_related(
-                        "course",
-                        "trainer"
-                    )
+                    .select_related("course")
+                    .prefetch_related("trainers")
                     .distinct()
                 )
 
@@ -89,6 +87,7 @@ class AryuReportView(APIView):
                     )
 
                     payment_history = []
+                    trainer = batch.trainers.first()
 
                     for payment in transactions:
 
@@ -138,8 +137,8 @@ class AryuReportView(APIView):
                         "batch_start_date": batch.start_date,
                         "batch_end_date": batch.end_date,
                         "trainer_name": (
-                            batch.trainer.full_name
-                            if batch.trainer
+                            trainer.full_name
+                            if trainer
                             else "N/A"
                         ),
                         "total_amount": float(

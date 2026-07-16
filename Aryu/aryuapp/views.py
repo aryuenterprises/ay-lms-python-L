@@ -5540,25 +5540,17 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
         # ----------------------------------
         # 1. STUDENT-SPECIFIC BATCHES
         # ----------------------------------
-        student_batches = (
-            NewBatch.objects
-            .filter(students=student, is_archived=False)
-            .select_related("course")
-            .only(
-                "batch_id", "title",
-                "course__course_id",
-                "course__course_name",
-                "course__duration",
-                "course__fee",
-                "course__course_pic"
-            )
+        student_courses = (
+            StudentCourse.objects
+            .filter(student=student)
+            .select_related("course", "batch")
         )
 
         # ----------------------------------
         # 2. GET COURSE IDS (for progress)
         # ----------------------------------
         course_ids = list(
-            student_batches.values_list("course_id", flat=True)
+            student_courses.values_list("course_id", flat=True)
         )
 
         # ----------------------------------
@@ -5593,8 +5585,11 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
         # ----------------------------------
         result = {}
 
-        for b in student_batches:
-            course = b.course
+        for sc in student_courses:
+
+            course = sc.course
+            batch = sc.batch
+
             cid = course.course_id
 
             course_pic_url = (
@@ -5609,15 +5604,16 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
                     "duration": course.duration,
                     "fee": course.fee,
                     "course_pic": course_pic_url,
-                    "discount": student.discount,
+                    "discount": sc.discount,
                     "progress": progress_map.get(cid, 0),
                     "batches": []
                 }
 
             result[cid]["batches"].append({
-                "batch_id": b.batch_id,
-                "batch_title": b.title
+                "batch_id": batch.batch_id,
+                "batch_title": batch.title
             })
+
 
         # ----------------------------------
         # 5. ALL COURSES (GLOBAL)
@@ -5699,9 +5695,12 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
         # assign (no extra query)
         batch.students.add(student)
 
-        # update discount only if provided
-        if discount is not None:
-            Student.objects.filter(student_id=student.student_id).update(discount=discount)
+        StudentCourse.objects.create(
+            student=student,
+            course=batch.course,
+            batch=batch,
+            discount=discount or 0
+        )
 
         return Response({
             "success": True,
@@ -5744,9 +5743,9 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
 
         return Response({
             "success": True,
-            "discount": student.discount,
+            "discount": student_course.discount if student_course else 0,
             "data": {
-                "course": serializer.data,   # full course data
+                "course": serializer.data,
                 "batch": {
                     "batch_id": batch.batch_id,
                     "batch_title": batch.title,
@@ -5821,19 +5820,28 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
                     })
 
                 # Update batch
-                old_batch.students.remove(student)
-                new_batch.students.add(student)
+                StudentCourse.objects.filter(
+                    student=student,
+                    course_id=request.data.get("course_id"),
+                    batch_id=old_batch_id
+                ).update(
+                    batch=new_batch
+                )
 
             # ----------------------------------
             # 2. Handle invalid batch case
             # ----------------------------------
             elif new_batch_id and old_batch_id and new_batch_id == old_batch_id:
                 # only error if NO discount update
-                if discount is None:
-                    return Response({
-                        "success": False,
-                        "message": "Both batches are same"
-                    })
+                if discount is not None:
+
+                    StudentCourse.objects.filter(
+                        student=student,
+                        course_id=request.data.get("course_id"),
+                        batch_id=old_batch_id
+                    ).update(
+                        discount=discount
+                    )
 
             # ----------------------------------
             # 3. Update discount (always allowed)
@@ -5854,21 +5862,37 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
     def remove_course(self, request, student_id=None, batch_id=None):
         student = self._get_student(student_id)
         if not student:
-            return Response({"success": False, "message": "Student not found"}, status=404)
+            return Response(
+                {"success": False, "message": "Student not found"},
+                status=404
+            )
 
-        batch = NewBatch.objects.filter(batch_id=batch_id).only("batch_id").first()
+        batch = NewBatch.objects.filter(
+            batch_id=batch_id,
+            is_archived=False
+        ).first()
 
         if not batch:
-            return Response({"success": False, "message": "Batch not found"}, status=404)
+            return Response(
+                {"success": False, "message": "Batch not found"},
+                status=404
+            )
 
-        # remove in single query
-        if not NewBatch.objects.filter(
-            batch_id=batch_id,
-            students__student_id=student.student_id
-        ).exists():
-            return Response({"success": False, "message": "Student not in batch"})
+        # Check student assignment
+        if not batch.students.filter(student_id=student.student_id).exists():
+            return Response(
+                {"success": False, "message": "Student not assigned to this batch"},
+                status=404
+            )
 
+        # Remove student from batch
         batch.students.remove(student)
+
+        # Remove StudentCourse record
+        StudentCourse.objects.filter(
+            student=student,
+            batch=batch
+        ).delete()
 
         return Response({
             "success": True,

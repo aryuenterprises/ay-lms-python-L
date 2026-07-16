@@ -444,6 +444,40 @@ class Studentsubusertype(models.Model):
     is_active = models.BooleanField(default=True, null=False, blank=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
+class StudentCourse(models.Model):
+    student = models.ForeignKey(
+        Student,
+        on_delete=models.CASCADE,
+        related_name="student_courses"
+    )
+
+    course = models.ForeignKey(
+        Course,
+        on_delete=models.CASCADE,
+        related_name="student_courses"
+    )
+
+    batch = models.ForeignKey(
+        NewBatch,
+        on_delete=models.CASCADE,
+        related_name="student_courses"
+    )
+
+    discount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0
+    )
+
+    assigned_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "aryuapp_studentcourse"
+        unique_together = ("student", "course", "batch")
+
+    def __str__(self):
+        return f"{self.student.first_name} - {self.course.course_name}"
+    
 class Employer(models.Model):
     """ Represents a company """
     company_id = models.AutoField(primary_key=True)
