@@ -675,6 +675,11 @@ class PublicWebinarListSerializer(serializers.ModelSerializer):
     registered_count = serializers.SerializerMethodField()
     pending_seats = serializers.SerializerMethodField()
     webinar_image = serializers.SerializerMethodField()
+    testimonial_url = serializers.URLField(
+        required=False,
+        allow_blank=True,
+        allow_null=True
+    )
     
     class Meta:
         model = Webinar
