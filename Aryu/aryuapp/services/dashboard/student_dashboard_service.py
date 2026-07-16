@@ -522,6 +522,9 @@ class   StudentDashboardService:
         today = date.today()
         next_week = today + timedelta(days=7)
 
+        now = timezone.localtime()
+        current_time = now.time()
+
         schedules = (
             ClassSchedule.objects.filter(
                 new_batch__students=self.student_id,
@@ -536,6 +539,17 @@ class   StudentDashboardService:
         upcoming_classes = []
 
         for schedule in schedules:
+
+            # Skip completed classes
+            if (
+                schedule.scheduled_date < today or
+                (
+                    schedule.scheduled_date == today and
+                    schedule.end_time <= current_time
+                )
+            ):
+                continue
+
             topics = (
                 Topic.objects.filter(
                     course=schedule.course,
