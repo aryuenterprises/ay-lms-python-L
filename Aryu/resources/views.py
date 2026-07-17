@@ -11,7 +11,7 @@ from rest_framework.permissions import (
 
 from .models import *
 from .serializers import *
-
+from django.shortcuts import get_object_or_404
 
 # =====================================================
 # RESOURCE VIEWSET
@@ -39,6 +39,18 @@ class ResourcesViewset(
         return {
             "request": self.request
         }
+    def retrieve(self, request, slug=None):
+        resource = get_object_or_404(Resources, slug=slug)
+
+        serializer = self.get_serializer(resource)
+
+        return Response(
+            {
+                "success": True,
+                "data": serializer.data
+            },
+            status=status.HTTP_200_OK,
+    )
 
 
 # =====================================================
