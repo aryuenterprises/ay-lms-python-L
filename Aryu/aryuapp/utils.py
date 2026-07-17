@@ -181,7 +181,7 @@ def send_otp_email(email, otp):
     return email_msg.send()
 
 
-def send_welcome_email(student):
+def send_welcome_email(student,plain_password):
     subject = f"🎉 Welcome {student.first_name}! Your Aryu Academy Journey Begins 🚀"
     from_email = settings.DEFAULT_FROM_EMAIL
     to = [student.email]
@@ -234,9 +234,10 @@ Team Aryu Academy
             </p>
 
             <p style="margin:6px 0 0; font-size:12px; line-height:2;">
-                👤 <b>Username:</b> {student.username} &nbsp; | &nbsp; <br>
+        
                 📧 <b>Email:</b> {student.email} &nbsp; | &nbsp; <br>
-                🆔 <b>ID:</b> {student.registration_id}
+                👤 <b>Username:</b> {plain_password} &nbsp; | &nbsp; <br>
+                🆔 <b>Student ID:</b> {student.registration_id}
             </p>
         </div>
 

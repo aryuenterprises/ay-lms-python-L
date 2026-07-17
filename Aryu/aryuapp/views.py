@@ -3709,7 +3709,7 @@ class StudentRegistration(viewsets.ModelViewSet):
         # 4. Trigger the standard save sequence (which fires perform_create internally)
         self.perform_create(serializer)
         student = serializer.instance
-        
+        send_welcome_email(student, student._plain_password)
         headers = self.get_success_headers(serializer.data)
 
         return Response({
