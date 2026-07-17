@@ -255,10 +255,11 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         # ================================================================
         # STEP 1 & 2: Base queryset & Hierarchy filter (FIXED: Removed select_related)
         # ================================================================
-        students_qs = Student.objects.filter(is_archived=False)
+        # ALL STUDENTS
+        all_students = Student.objects.filter(is_archived=False)
 
         if user_type == "admin" and user_created_id:
-            students_qs = students_qs.filter(created_by=user_created_id)
+            all_students = all_students.filter(created_by=user_created_id)
 
         elif user_type == "super_admin" and user_created_id:
             admin_ids = list(
@@ -269,16 +270,22 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 ).values_list("trainer_id", flat=True)
             )
 
-            students_qs = students_qs.filter(
+            all_students = all_students.filter(
                 Q(created_by_type="super_admin", created_by=user_created_id) |
                 Q(created_by_type="admin", created_by__in=admin_ids)
             )
 
-        students_qs = students_qs.filter(transactions__is_archived=False).distinct()
+        # ONLY STUDENTS WITH TRANSACTIONS
+        students_qs = all_students.filter(
+            transactions__is_archived=False
+        ).distinct()
 
         # ================================================================
         # STEP 3: Prefetch (Prefetching relationships cleanly)
         # ================================================================
+        all_students = all_students.prefetch_related(
+            "new_batches__course"
+        )
         students_qs = students_qs.prefetch_related(
             "new_batches__course",  
             Prefetch(
@@ -292,6 +299,32 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         # ================================================================
         # STEP 4: Build response using the OPTIMIZED students_qs
         # ================================================================
+        students = []
+
+        for student in all_students:
+
+            employer = getattr(student, "employer", None)
+
+            courses = []
+
+            for batch in student.new_batches.all():
+
+                if batch.course:
+                    courses.append({
+                        "course_id": batch.course.course_id,
+                        "course_name": batch.course.course_name,
+                    })
+
+            students.append({
+                "student_id": student.student_id,
+                "registration_id": student.registration_id,
+                "student_name": student.first_name,
+                "email": student.email,
+                "phone": student.contact_no,
+                "company_id": getattr(employer, "company_id", None) if employer else None,
+                "company_name": getattr(employer, "company_name", None) if employer else None,
+                "courses": courses,
+            })
         student_list = []
 
         for student in students_qs:
@@ -381,17 +414,26 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         # ================================================================
         return Response({
             "success": True,
+
+            # Students who have payment transactions
             "student_payment_summaries": serializer.data,
-            "students_count": len(student_list),
-            "students": student_list,
+
+            # All students
+            "students": students,
+
+            "students_count": len(students),
+
             "companies": companies,
             "courses_list": courses_list,
             "enabled_gateways": enabled_gateways,
+
             "meta": {
-                "total_students": len(student_list),
+                "total_students": len(students),
+                "students_with_transactions": len(student_list),
                 "user_type": user_type
             }
-        })   
+        })  
+
 
 
     def create(self, request):
