@@ -39,6 +39,7 @@ from zoneinfo import ZoneInfo
 from datetime import timedelta
 import traceback
 from webinar.models import Webinar
+from django.db.models import Max
 # Create your views here.
 
 
@@ -290,9 +291,11 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             "new_batches__course",  
             Prefetch(
                 "transactions",
-                queryset=PaymentTransaction.objects.filter(is_archived=False)
-                .select_related("course", "gateway")
-                .order_by("-created_at")
+                queryset=PaymentTransaction.objects.filter(
+                    is_archived=False
+                ).select_related(
+                    "course", "gateway"
+                ).order_by("-created_at")
             )
         )
 
@@ -308,12 +311,47 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             courses = []
 
             for batch in student.new_batches.all():
+                if not batch.course:
+                    continue
 
-                if batch.course:
-                    courses.append({
-                        "course_id": batch.course.course_id,
-                        "course_name": batch.course.course_name,
-                    })
+                course = batch.course
+
+                # Get all transactions for this student & course
+                txs = PaymentTransaction.objects.filter(
+                    student=student,
+                    course=course,
+                    is_archived=False
+                )
+
+                paid_amount = sum(
+                    float(tx.amount)
+                    for tx in txs
+                    if tx.payment_status
+                    and tx.payment_status.lower() in [
+                        "success",
+                        "done",
+                        "paid",
+                        "partial",
+                        "advanced",
+                        "complete",
+                    ]
+                )
+
+                course_fee = float(course.fee or 0)
+                discount = float(getattr(student, "discount", 0) or 0)
+
+                total_after_discount = course_fee - discount
+                due_amount = max(total_after_discount - paid_amount, 0)
+
+                courses.append({
+                    "course_id": course.course_id,
+                    "course_name": course.course_name,
+                    "course_fee": course_fee,
+                    "discount": discount,
+                    "total_after_discount": total_after_discount,
+                    "paid_amount": paid_amount,
+                    "due_amount": due_amount,
+                })
 
             students.append({
                 "student_id": student.student_id,
@@ -341,20 +379,32 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                         continue
 
                     # Filter in Python memory instead of hitting the DB
-                    txs = [
-                        tx for tx in all_transactions
-                        if tx.course_id == course.course_id
-                    ]
-
-                    paid_amount = sum(
-                        float(tx.amount)
-                        for tx in txs
-                        if tx.payment_status and tx.payment_status.lower() in ["success", "done", "paid", "partial", "advanced", "complete"]
+                    txs = sorted(
+                        [
+                            tx for tx in student.transactions.all()
+                            if tx.course_id == course.course_id
+                        ],
+                        key=lambda x: x.created_at,
+                        reverse=True
                     )
 
-                    course_fee = float(course.fee) if course.fee else 0
-                    discount = float(getattr(student, "discount", 0))
-                    
+                    discount = float(getattr(student, "discount", None) or 0)
+                    paid_amount = sum(
+                        float(tx.amount or 0)
+                        for tx in txs
+                        if tx.payment_status and tx.payment_status.lower() in [
+                            "success",
+                            "done",
+                            "paid",
+                            "partial",
+                            "advanced",
+                            "complete"
+                        ]
+                    )
+
+                    course_fee = float(getattr(course, "fee", None) or 0)
+                    discount = float(getattr(discount, "discount", None) or 0)
+
                     total_after_discount = course_fee - discount
                     due_amount = max(total_after_discount - paid_amount, 0.0)
 
@@ -398,6 +448,13 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         # ================================================================
         # STEP 5: Serializer & Gateways
         # ================================================================
+
+        students_qs = (
+            students_qs
+            .annotate(last_payment=Max("transactions__created_at"))
+            .order_by("-last_payment")
+        )
+
         serializer = StudentPaymentSummarySerializer(students_qs, many=True)
 
         enabled_gateways = []
@@ -433,7 +490,6 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "user_type": user_type
             }
         })  
-
 
 
     def create(self, request):
@@ -555,7 +611,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                         "transaction_id": tx.transaction_id,
                         "amount": float(tx.amount),
                         "payment_status": tx.payment_status,
-                        "payment_mode": tx.metadata.get("mode") if tx.metadata else None, 
+                        "payment_mode": tx.payment_mode, 
                         "discount": (
                             tx.discount if tx.discount 
                             else (student.discount if batch else 0)
@@ -853,7 +909,6 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "payment_logs": payment_logs,
             }
         )
-      
     # 2. Delete FULL student + all transactions
     @action(detail=True, methods=['delete'], url_path='delete-student')
     def delete_student(self, request, pk=None):

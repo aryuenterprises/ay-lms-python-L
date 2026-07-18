@@ -206,7 +206,8 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
         "invoice_date",
         "invoice_url",
         "screenshot",
-        "screenshot_url"
+        "screenshot_url",
+        "transaction_id"
     ]
 
     def get_invoice_url(self, obj):
@@ -349,10 +350,23 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
         # TRANSACTION ID
         # ====================================
 
-        validated_data["transaction_id"] = (
-            validated_data.get("transaction_id")
-            or f"TXN{uuid.uuid4().hex[:8].upper()}"
-        )
+        payment_mode = validated_data.get("payment_mode")
+
+        if payment_mode in ["OFFLINE", "CHEQUE"]:
+            # Auto generate transaction id
+            validated_data["transaction_id"] = (
+                f"TXN{uuid.uuid4().hex[:8].upper()}"
+            )
+        else:
+            # User must enter transaction id
+            transaction_id = validated_data.get("transaction_id")
+
+            if not transaction_id:
+                raise serializers.ValidationError({
+                    "transaction_id": "Transaction ID is required for this payment mode."
+                })
+
+            validated_data["transaction_id"] = transaction_id
 
         # ====================================
         # DATE
@@ -591,8 +605,8 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
                 if tx.payment_status and tx.payment_status.lower() in ["success", "done", "paid", "partial","advanced","complete"]
             )
 
-            course_fee = float(getattr(course, "fee", 0))
-            discount = float(getattr(obj, "discount", 0))
+            course_fee = float(course.fee or 0)
+            discount = float(obj.discount or 0)
             
             # Calculate final numbers for the specific course
             total_after_discount = course_fee - discount
@@ -631,7 +645,7 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
         return obj.registration_id
 
     def get_discount(self, obj):
-        return float(getattr(obj, "discount", 0))
+        return float(getattr(obj, "discount", None) or 0)
 
     def get_courses(self, obj):
         return self._get_course_calculations(obj)["courses"]
