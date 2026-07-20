@@ -1911,6 +1911,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
                 if search:
                     filtered = []
+
                     for r in all_rows:
                         searchable = (
                             f"{r['payment_id']} "
@@ -1918,8 +1919,13 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                             f"{r['email']} "
                             f"{r['phone']}"
                         ).lower()
-                        if search in searchable:
+
+                        # Match amount exactly
+                        amount_match = search == str(int(float(r["amount"])))
+
+                        if search in searchable or amount_match:
                             filtered.append(r)
+
                     all_rows = filtered
 
             # ✅ total_records = actual count of all matching rows

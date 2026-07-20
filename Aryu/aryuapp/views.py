@@ -5860,13 +5860,18 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
     # DELETE: Remove course (optimized)
     # ----------------------------------
     def remove_course(self, request, student_id=None, batch_id=None):
+        # Get student
         student = self._get_student(student_id)
         if not student:
             return Response(
-                {"success": False, "message": "Student not found"},
+                {
+                    "success": False,
+                    "message": "Student not found"
+                },
                 status=404
             )
 
+        # Get batch
         batch = NewBatch.objects.filter(
             batch_id=batch_id,
             is_archived=False
@@ -5874,31 +5879,42 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
 
         if not batch:
             return Response(
-                {"success": False, "message": "Batch not found"},
+                {
+                    "success": False,
+                    "message": "Batch not found"
+                },
                 status=404
             )
 
-        # Check student assignment
-        if not batch.students.filter(student_id=student.student_id).exists():
-            return Response(
-                {"success": False, "message": "Student not assigned to this batch"},
-                status=404
-            )
-
-        # Remove student from batch
-        batch.students.remove(student)
-
-        # Remove StudentCourse record
-        StudentCourse.objects.filter(
+        # Check StudentCourse assignment
+        student_course = StudentCourse.objects.filter(
             student=student,
             batch=batch
-        ).delete()
+        ).first()
 
-        return Response({
-            "success": True,
-            "message": "Course removed successfully"
-        })
+        if not student_course:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Student not assigned to this batch"
+                },
+                status=404
+            )
 
+        # Remove from batch.students if present
+        batch.students.remove(student)
+
+        # Delete StudentCourse record
+        student_course.delete()
+
+        return Response(
+            {
+                "success": True,
+                "message": "Course removed successfully"
+            },
+            status=200
+        )
+    
 class StudentusertypeViewSet(viewsets.ViewSet):
     def get(self, request):
         student_id = request.GET.get('student_id')
