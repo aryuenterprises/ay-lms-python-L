@@ -253,8 +253,6 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
         return Response({"success": True})
 
-
-
 class PublicWebinarViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
@@ -281,7 +279,6 @@ class PublicWebinarViewSet(
             "success": True,
             "data": response.data
         })
-
 
 class WebinarViewSet(
     mixins.ListModelMixin,
