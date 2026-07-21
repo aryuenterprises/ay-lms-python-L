@@ -757,12 +757,25 @@ class WebinarViewSet(
                         meta_ids.append(obj.id)
 
                     else:
-                        obj = webinar_metadata.objects.create(
-                            webinar=webinar,
-                            meta_title=title,
-                            meta_description=desc,
-                            meta_image=image
-                        )
+                        obj = webinar_metadata.objects.filter(
+                            webinar=webinar
+                        ).first()
+
+                        if obj:
+                            obj.meta_title = title
+                            obj.meta_description = desc
+
+                            if image:
+                                obj.meta_image = image
+
+                            obj.save()
+                        else:
+                            obj = webinar_metadata.objects.create(
+                                webinar=webinar,
+                                meta_title=title,
+                                meta_description=desc,
+                                meta_image=image
+                            )
                         meta_ids.append(obj.id)
 
                     j += 1
@@ -1354,12 +1367,25 @@ class BootcampViewSet(
                         meta_ids.append(obj.id)
 
                     else:
-                        obj = webinar_metadata.objects.create(
-                            webinar=webinar,
-                            meta_title=title,
-                            meta_description=desc,
-                            meta_image=image
-                        )
+                        obj = webinar_metadata.objects.filter(
+                            webinar=webinar
+                        ).first()
+
+                        if obj:
+                            obj.meta_title = title
+                            obj.meta_description = desc
+
+                            if image:
+                                obj.meta_image = image
+
+                            obj.save()
+                        else:
+                            obj = webinar_metadata.objects.create(
+                                webinar=webinar,
+                                meta_title=title,
+                                meta_description=desc,
+                                meta_image=image
+                            )
                         meta_ids.append(obj.id)
 
                     j += 1
