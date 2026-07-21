@@ -39,7 +39,7 @@ def validate_file(value):
 class Resources(models.Model):
 
     title = models.CharField(max_length=250)
-    slug = models.CharField(max_length=250)
+    slug = models.CharField(max_length=250, unique=True)
     image = models.ImageField(upload_to="resources/",validators=[validate_image_size])
     file = models.FileField(upload_to="resources/",validators=[validate_file])
     status = models.CharField(max_length=100)

@@ -17,22 +17,14 @@ from django.shortcuts import get_object_or_404
 # RESOURCE VIEWSET
 # =====================================================
 
-class ResourcesViewset(
-    viewsets.ModelViewSet
-):
-
-    queryset = (
-        Resources.objects.all()
-        .order_by("-id")
-    )
-
-    serializer_class = (
-        ResourcesSerializers
-    )
+class ResourcesViewset(viewsets.ModelViewSet):
+    queryset = Resources.objects.all().order_by("-id")
+    serializer_class = ResourcesSerializers
 
     permission_classes = [AllowAny]
-
     authentication_classes = []
+
+    lookup_field = "slug"
 
     def get_serializer_context(self):
 
