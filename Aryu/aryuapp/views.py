@@ -8128,27 +8128,28 @@ class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
                     F("student__first_name"),
                     Value(" "),
                     F("student__last_name")
-                )
+                ),
+
+                batch_name=F("student__new_batches__title"),
+                batch_id_val=F("student__new_batches__batch_id"),
 
             ).values().aggregate(
 
                 logs=JSONBAgg(
-
                     JSONObject(
-
                         name=F("student_name"),
                         course=F("course__course_name"),
                         user_type=Value("student", output_field=CharField()),
-                        batch=F("batch__batch_name"),
-                        title=F("batch__title"),
-                        batch_id=F("batch__batch_id"),
+
+                        batch=F("batch_name"),
+                        title=F("batch_name"),
+                        batch_id=F("batch_id_val"),
+
                         course_id=F("course__course_id"),
                         status=F("status"),
                         ip=F("ip_address"),
                         date_time=Cast(F("date"), CharField())
-
                     )
-
                 )
 
             )["logs"] or []
