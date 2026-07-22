@@ -5997,7 +5997,7 @@ class StudentsubusertypeViewset(viewsets.ViewSet):
             queryset = queryset.filter(student_id=student_id)
 
         if user_type:
-            queryset = queryset.filter(user_type=user_type)
+            queryset = queryset.filter(user_type__iexact=user_type)
 
         serializer = StudentsubusertypeSerializer(queryset, many=True)
 
