@@ -288,24 +288,6 @@ class WebinarSerializer(serializers.ModelSerializer):
         model = Webinar
         fields = "__all__"
         read_only_fields = ("created_by", "created_by_type")
-        extra_kwargs = {
-            "slug": {
-                "validators": []
-            }
-        }
-
-    # 💡 FIX 2: Custom validation that ONLY checks ACTIVE (non-deleted) webinars
-    def validate_slug(self, value):
-        queryset = Webinar.objects.filter(slug=value, is_deleted=False)
-        
-        # If updating, exclude the current instance from the check
-        if self.instance:
-            queryset = queryset.exclude(pk=self.instance.pk)
-
-        if queryset.exists():
-            raise serializers.ValidationError("An active webinar with this slug already exists.")
-            
-        return value
 
     def get_webinar_image_url(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
