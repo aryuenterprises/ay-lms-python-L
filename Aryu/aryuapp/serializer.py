@@ -1289,7 +1289,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
 
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
 
     def get_course(self, obj):
@@ -1481,7 +1481,7 @@ class StudentUpdateSerializer(serializers.ModelSerializer):
 
     def get_profile_pic_url(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
         return None
 
     def validate_contact_no(self, value):
