@@ -14,7 +14,6 @@ from rest_framework import status
 from rest_framework.exceptions import ValidationError
 import json
 
-
 # from aryuapp.models import Student
 
 
@@ -95,8 +94,7 @@ class CourseCategorySerializer(serializers.ModelSerializer):
         if 'status' in validated_data and not validated_data['status']:
             instance.cascade_category_deactivation()
 
-        return 
-    
+        return instance
 class Student(models.Model):
     course = models.ForeignKey(
         Course,
@@ -769,7 +767,6 @@ class SyllabusSerializer(serializers.ModelSerializer):
         if obj.file:
             return "https://portal.aryuacademy.com/api" + obj.file.url
         return None
-    
 class SyllabusCreateSerializer(serializers.ModelSerializer):
     syllabus = serializers.FileField(source='file', required=True)
 
