@@ -46,6 +46,7 @@ from django.db.models.expressions import ExpressionWrapper
 from urllib.parse import quote
 from .services.zoom_service import get_zoom_access_token
 from django.db.models import DecimalField
+import time
 # from celery import shared_task
 logger = logging.getLogger(__name__)
 
@@ -1485,8 +1486,10 @@ class BootcampViewSet(
             is_deleted=False
         )
 
+        # 💡 Rename slug when soft-deleted so the original name can be reused cleanly
+        webinar.slug = f"{webinar.slug}-deleted-{int(time.time())}"
         webinar.is_deleted = True
-        webinar.save(update_fields=["is_deleted", "updated_at"])
+        webinar.save(update_fields=["slug", "is_deleted", "updated_at"])
 
         return Response(
             {
