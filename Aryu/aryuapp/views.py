@@ -3895,7 +3895,7 @@ class StudentListAPIView(viewsets.ViewSet):
                     "category_id": unique(category_id_list),
                     "category_name": unique(category_name_list),
                     "profile_pic": (
-                        f"https://portal.aryuacademy.com/api{s.profile_pic.url}"
+                        f"https://aylms.aryuprojects.com/api{s.profile_pic.url}"
                         if s.profile_pic else None
                     ),
                     "school_student": School_StudentSerializer(s.school_student).data if getattr(s, "school_student", None) else None,
