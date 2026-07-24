@@ -461,19 +461,25 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
         request = self.request
         student = None
 
+        # Student login
         if request.user.user_type == "student":
             student = Student.objects.filter(
                 student_id=request.user.student_id,
                 is_archived=False
             ).first()
 
+        # Admin/Super Admin/Trainer viewing a student's profile
         else:
             student_id = request.query_params.get("student_id")
+
             if student_id:
                 student = Student.objects.filter(
                     student_id=student_id,
-                    is_archived=False
-                ).first()
+                    is_archived=False,
+                    new_batches__course__course_id=self.kwargs.get("course_id"),
+                    new_batches__is_archived=False,
+                    new_batches__status=True,
+                ).distinct().first()
 
         context["student"] = student
         return context

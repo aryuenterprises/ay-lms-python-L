@@ -2582,109 +2582,127 @@ class AssignmentSerializer(serializers.ModelSerializer):
             is_archived=False
         ).count()
 
+    # def get_submissions(self, obj):
+
+    #     request = self.context.get("request")
+
+    #     submissions = obj.submissions.filter(
+    #         is_archived=False
+    #     ).select_related(
+    #         "student",
+    #         "assignment"
+    #     ).prefetch_related(
+    #         "replies"
+    #     ).order_by("-date")
+
+    #     if not request:
+    #         return SubmissionSerializer(
+    #             submissions,
+    #             many=True,
+    #             context={"request": request}
+    #         ).data
+
+    #     auth_header = request.headers.get("Authorization")
+
+    #     if not auth_header:
+    #         return []
+
+    #     if not auth_header.startswith("Bearer "):
+    #         return []
+
+    #     try:
+
+    #         token = auth_header.split()[1]
+
+    #         payload = jwt.decode(
+    #             token,
+    #             settings.SECRET_KEY,
+    #             algorithms=["HS256"]
+    #         )
+
+    #         user_type = payload.get("user_type")
+
+    #         # -----------------------------------
+    #         # SUPER ADMIN
+    #         # -----------------------------------
+
+    #         if user_type == "super_admin":
+
+    #             pass
+
+    #         # -----------------------------------
+    #         # ADMIN
+    #         # -----------------------------------
+
+    #         elif user_type == "admin":
+
+    #             pass
+
+    #         # -----------------------------------
+    #         # TRAINER
+    #         # -----------------------------------
+
+    #         elif user_type == "trainer":
+
+    #             username = payload.get("username")
+
+    #             trainer = Trainer.objects.filter(
+    #                 username=username
+    #             ).first()
+
+    #             if trainer:
+
+    #                 student_ids = Student.objects.filter(
+    #                     new_batches__trainers=trainer,
+    #                     new_batches__course=obj.course,
+    #                     new_batches__status=True,
+    #                     new_batches__is_archived=False
+    #                 ).values_list(
+    #                     "student_id",
+    #                     flat=True
+    #                 )
+
+    #                 submissions = submissions.filter(
+    #                     student_id__in=student_ids
+    #                 )
+
+    #         # -----------------------------------
+    #         # STUDENT
+    #         # -----------------------------------
+
+    #         elif user_type == "student":
+
+    #             registration_id = payload.get("registration_id")
+
+    #             submissions = submissions.filter(
+    #                 student__registration_id=registration_id
+    #             )
+
+    #     except Exception:
+    #         return []
+
+    #     return SubmissionSerializer(
+    #         submissions,
+    #         many=True,
+    #         context={"request": request}
+    #     ).data
     def get_submissions(self, obj):
+        student = self.context.get("student")
 
-        request = self.context.get("request")
+        submissions = (
+            obj.submissions.filter(is_archived=False)
+            .select_related("student", "assignment")
+            .prefetch_related("replies")
+            .order_by("-date")
+        )
 
-        submissions = obj.submissions.filter(
-            is_archived=False
-        ).select_related(
-            "student",
-            "assignment"
-        ).prefetch_related(
-            "replies"
-        ).order_by("-date")
-
-        if not request:
-            return SubmissionSerializer(
-                submissions,
-                many=True,
-                context={"request": request}
-            ).data
-
-        auth_header = request.headers.get("Authorization")
-
-        if not auth_header:
-            return []
-
-        if not auth_header.startswith("Bearer "):
-            return []
-
-        try:
-
-            token = auth_header.split()[1]
-
-            payload = jwt.decode(
-                token,
-                settings.SECRET_KEY,
-                algorithms=["HS256"]
-            )
-
-            user_type = payload.get("user_type")
-
-            # -----------------------------------
-            # SUPER ADMIN
-            # -----------------------------------
-
-            if user_type == "super_admin":
-
-                pass
-
-            # -----------------------------------
-            # ADMIN
-            # -----------------------------------
-
-            elif user_type == "admin":
-
-                pass
-
-            # -----------------------------------
-            # TRAINER
-            # -----------------------------------
-
-            elif user_type == "trainer":
-
-                username = payload.get("username")
-
-                trainer = Trainer.objects.filter(
-                    username=username
-                ).first()
-
-                if trainer:
-
-                    student_ids = Student.objects.filter(
-                        new_batches__trainers=trainer,
-                        new_batches__course=obj.course,
-                        new_batches__status=True,
-                        new_batches__is_archived=False
-                    ).values_list(
-                        "student_id",
-                        flat=True
-                    )
-
-                    submissions = submissions.filter(
-                        student_id__in=student_ids
-                    )
-
-            # -----------------------------------
-            # STUDENT
-            # -----------------------------------
-
-            elif user_type == "student":
-
-                registration_id = payload.get("registration_id")
-
-                submissions = submissions.filter(
-                    student__registration_id=registration_id
-                )
-
-        except Exception:
-            return []
+        if student:
+            submissions = submissions.filter(student=student)
 
         return SubmissionSerializer(
             submissions,
             many=True,
-            context={"request": request}
+            context=self.context
         ).data
     
     def to_representation(self, instance):
