@@ -66,6 +66,9 @@ def razorpay_webhook(request):
     payload = request.body
     received_signature = request.headers.get("X-Razorpay-Signature")
 
+    if not received_signature:
+        logger.error("Signature missing")
+        return HttpResponse(status=400)
 
     gateway = PaymentGateway.objects.filter(
         gatway_name__icontains="razorpay"
@@ -1193,16 +1196,20 @@ class BootcampViewSet(
             "data": data
         })
 
+    # def list(self, request):
+    #     cache_key = "bootcamp_list_v1"
+
+    #     data = cache.get(cache_key)
+
+    #     if not data:
+    #         queryset = self.get_queryset()
+    #         data = WebinarListSerializer(queryset, many=True).data
+    #         cache.set(cache_key, data, 60)
+
+    #     return Response(data)
     def list(self, request):
-        cache_key = "bootcamp_list_v1"
-
-        data = cache.get(cache_key)
-
-        if not data:
-            queryset = self.get_queryset()
-            data = WebinarListSerializer(queryset, many=True).data
-            cache.set(cache_key, data, 60)
-
+        queryset = self.get_queryset()
+        data = WebinarListSerializer(queryset, many=True).data
         return Response(data)
 
     def create(self, request):
@@ -2090,8 +2097,6 @@ def whatsapp_webhook(request):
 
     return JsonResponse({"status": "ok"})
 
-
-
 def _create_payment(self, request, webinar):
     razorpay_view = RazorpayPaymentViewSet()
 
@@ -2176,7 +2181,6 @@ class WebinarLifecycleViewSet(viewsets.ViewSet):
 
         return Response({"detail": "Webinar cancelled"})
     
-
 class WebinarFeedbackViewSet(viewsets.ViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     permission_classes = [permissions.AllowAny]
@@ -2469,7 +2473,6 @@ class WebinarCertificateViewSet(viewsets.ViewSet):
             "message": "Certificates sent successfully",
             "count": sent_count
         })
-
 
 class FormViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]

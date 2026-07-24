@@ -32,7 +32,6 @@ class WebinarAttendanceLogSerializer(serializers.ModelSerializer):
     def get_duration_minutes(self, obj):
         return obj.duration_seconds // 60
 
-
 class WebinarRegistrationSerializer(serializers.ModelSerializer):
     logs = serializers.SerializerMethodField()
     total_duration_minutes = serializers.SerializerMethodField()
@@ -606,7 +605,6 @@ class WebinarTicketCreateSerializer(serializers.Serializer):
 class WebinarReplyCreateSerializer(serializers.Serializer):
     message = serializers.CharField()
 
-
 class PublicTicketCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
@@ -680,7 +678,6 @@ class PublicWebinarListSerializer(serializers.ModelSerializer):
         allow_blank=True,
         allow_null=True
     )
-    
     class Meta:
         model = Webinar
         fields = [
