@@ -47,114 +47,109 @@ from urllib.parse import quote
 from .services.zoom_service import get_zoom_access_token
 from django.db.models import DecimalField
 # from celery import shared_task
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("razorpay_webhook")
 
+# Valid completed status lookup set across payment gateways
+VALID_DONE_STATUSES = {
+    "success",
+    "done",
+    "paid",
+    "captured",
+    "complete",
+    "partial",
+    "advanced",
+}
+
+
+# ============================================================================
+# RAZORPAY WEBHOOK HANDLER
+# ============================================================================
 @csrf_exempt
-@api_view(["POST"])
-@permission_classes([AllowAny])
 def razorpay_webhook(request):
-    logger = logging.getLogger("razorpay_webhook")
-    logger.info("=" * 80)
-    logger.info("Webhook received")
-
-    logger.info("Headers:")
-    logger.info(dict(request.headers))
-
-    logger.info("Raw body:")
-    logger.info(request.body.decode(errors="ignore"))
+    """
+    Webhook handler for real-time state updates from Razorpay.
+    """
+    if request.method != "POST":
+        return HttpResponse("Method Not Allowed", status=405)
 
     payload = request.body
     received_signature = request.headers.get("X-Razorpay-Signature")
 
     if not received_signature:
-        logger.error("Signature missing")
-        return HttpResponse(status=400)
+        logger.error("Razorpay Webhook Error: Missing signature header")
+        return HttpResponse("Signature Missing", status=400)
 
-    gateway = PaymentGateway.objects.filter(
-        gatway_name__icontains="razorpay"
-    ).first()
+    gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay").first()
+    if not gateway or not gateway.webhook_secret:
+        logger.error("Razorpay Webhook Error: Webhook secret unconfigured")
+        return HttpResponse("Server Misconfiguration", status=500)
 
-    logger.info("Secret repr = %r", gateway.webhook_secret)
-    logger.info("Secret length = %d", len(gateway.webhook_secret))
-
+    # Verify HMAC Signature
     expected_signature = hmac.new(
-        gateway.webhook_secret.encode(),
+        gateway.webhook_secret.encode("utf-8"),
         payload,
         hashlib.sha256
     ).hexdigest()
 
-    logger.info("Expected Signature = %s", expected_signature)
-
-    logger.info("Received = %s", received_signature)
-
     if not hmac.compare_digest(expected_signature, received_signature):
-        logger.error("Signature mismatch")
-        return HttpResponse(status=400)
-    
-    logger.info("Signature verified")
+        logger.error("Razorpay Webhook Error: Invalid signature")
+        return HttpResponse("Invalid Signature", status=400)
 
-    data = request.data
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except json.JSONDecodeError:
+        return HttpResponse("Invalid JSON", status=400)
+
     event = data.get("event")
+    logger.info(f"Razorpay Webhook event received: {event}")
 
-    if event == "payment.captured":
+    if event in ["payment.captured", "payment.authorized"]:
         entity = data["payload"]["payment"]["entity"]
         order_id = entity.get("order_id")
+        transaction_id = entity.get("id")  # e.g., 'pay_Nx82xyz...'
+        notes = entity.get("notes", {})
+
+        phone = notes.get("phone")
+        webinar_id = notes.get("webinar_id")
 
         with db_transaction.atomic():
-            txn = PaymentTransaction.objects.select_for_update().filter(
-                order_id=order_id,
-                payment_status="pending"
-            ).first()
+            txn = PaymentTransaction.objects.select_for_update().filter(order_id=order_id).first()
+            if txn:
+                txn.payment_status = "done"
+                txn.transaction_id = transaction_id
+                txn.save(update_fields=["payment_status", "transaction_id"])
 
-            if not txn:
-                return HttpResponse(status=200)
+            if phone and webinar_id:
+                registration = WebinarRegistration.objects.select_for_update().filter(
+                    phone=phone,
+                    webinar__uuid=webinar_id
+                ).first()
 
-            txn.payment_status = "done"
-            txn.transaction_id = entity["id"]
-            txn.save()
-            registration = WebinarRegistration.objects.filter(
-                phone=txn.metadata.get("phone"),
-                webinar__uuid=txn.metadata.get("webinar_id")
-            ).first()
-
-            if registration:
-                registration.is_paid = True
-                registration.payment_transaction = txn
-                registration.save(
-                    update_fields=[
-                        "is_paid",
-                        "payment_transaction"
-                    ]
-                )
-
-            WebinarRegistrationViewSet.create_registration_from_transaction(txn)
+                if registration:
+                    registration.is_paid = True
+                    if txn:
+                        registration.payment_transaction = txn
+                    registration.save(update_fields=["is_paid", "payment_transaction"])
 
     elif event == "payment.failed":
         entity = data["payload"]["payment"]["entity"]
         order_id = entity.get("order_id")
-
-        PaymentTransaction.objects.filter(
-            order_id=order_id
-        ).update(payment_status="failed")
+        PaymentTransaction.objects.filter(order_id=order_id).update(payment_status="failed")
 
     return HttpResponse(status=200)
 
 
+# ============================================================================
+# RAZORPAY PAYMENT VIEWSET
+# ============================================================================
 class RazorpayPaymentViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
 
     def _get_client(self):
-        gateway = PaymentGateway.objects.filter(
-            gatway_name__icontains="razorpay"
-        ).first()
-
-
-        if not gateway:
+        gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay").first()
+        if not gateway or not gateway.public_key or not gateway.secret_key:
             return None, None
-
-        client = razorpay.Client(
-            auth=(gateway.public_key, gateway.secret_key)
-        )
+        client = razorpay.Client(auth=(gateway.public_key, gateway.secret_key))
         return client, gateway
 
     @action(detail=False, methods=["post"])
@@ -165,50 +160,71 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         name = request.data.get("name")
         email = request.data.get("email")
         phone = request.data.get("phone")
-        profession = request.data.get("profession")
 
         if not all([amount, webinar_id, phone]):
             return Response(
                 {"success": False, "message": "Missing required fields"},
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         client, gateway = self._get_client()
         if not client:
             return Response(
-                {"success": False, "message": "Razorpay not configured"},
-                status=400
+                {"success": False, "message": "Razorpay not properly configured"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-        order = client.order.create({
-            "amount": int(float(amount) * 100),
+        webinar = get_object_or_404(Webinar, uuid=webinar_id)
+        amount_in_paise = int(float(amount) * 100)
+
+        order_data = {
+            "amount": amount_in_paise,
             "currency": "INR",
             "payment_capture": 1,
             "notes": {
-                "webinar_id": webinar_id,
-                "name": name,
-                "email": email,
-                "phone": phone,
-                "description":webinar_title 
+                "webinar_id": str(webinar_id),
+                "name": name or "",
+                "email": email or "",
+                "phone": str(phone),
+                "description": webinar_title or webinar.title
             }
-        })
+        }
+        order = client.order.create(order_data)
 
-        webinar = get_object_or_404(Webinar, uuid=webinar_id)
+        # Reuse existing pending/failed transaction for the same user & webinar
+        existing_txn = PaymentTransaction.objects.filter(
+            metadata__phone=str(phone),
+            metadata__webinar_id=str(webinar_id),
+            payment_status__in=["pending", "failed"],
+            is_archived=False
+        ).first()
+
+        if existing_txn:
+            existing_txn.order_id = order["id"]
+            existing_txn.amount = amount
+            existing_txn.payment_status = "pending"
+            existing_txn.metadata = order_data["notes"]
+            existing_txn.save()
+        else:
+            PaymentTransaction.objects.create(
+                order_id=order["id"],
+                amount=amount,
+                currency="INR",
+                payment_status="pending",
+                description=f"Webinar payment via Razorpay Checkout - {webinar.title}",
+                metadata=order_data["notes"]
+            )
 
         return Response({
             "success": True,
             "order_id": order["id"],
             "key": gateway.public_key,
-            "amount": int(float(amount) * 100),
+            "amount": amount_in_paise,
             "currency": "INR",
             "webinar_title": webinar.title,
-            "waba_link": webinar.waba_link
+            "waba_link": getattr(webinar, "waba_link", "")
         })
 
-
-    # -------------------------
-    # Verify Razorpay Payment
-    # -------------------------
     @csrf_exempt
     @action(detail=False, methods=['post'], url_path="verify")
     def verify_payment(self, request):
@@ -218,41 +234,53 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
         if not all([payment_id, order_id, signature]):
             return Response(
-                {"success": False, "message": "Missing payment verification fields"},
-                status=400
+                {"success": False, "message": "Missing payment verification parameters"},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
-        gateway = PaymentGateway.objects.filter(
-            gatway_name__icontains="razorpay"
-        ).first()
-
-        if not gateway or not gateway.secret_key:
+        client, gateway = self._get_client()
+        if not client:
             return Response(
                 {"success": False, "message": "Razorpay secret not configured"},
-                status=500
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
         try:
-            razorpay_client = razorpay.Client(
-                auth=(gateway.public_key, gateway.secret_key)
-            )
-
-            razorpay_client.utility.verify_payment_signature({
+            client.utility.verify_payment_signature({
                 "razorpay_payment_id": payment_id,
                 "razorpay_order_id": order_id,
                 "razorpay_signature": signature
             })
-
         except razorpay.errors.SignatureVerificationError:
             return Response(
                 {"success": False, "message": "Invalid payment signature"},
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Let webhook handle final status
+        # Update database transaction status to 'done'
+        with db_transaction.atomic():
+            txn = PaymentTransaction.objects.select_for_update().filter(order_id=order_id).first()
+            if txn:
+                txn.payment_status = "done"
+                txn.transaction_id = payment_id
+                txn.save(update_fields=["payment_status", "transaction_id"])
 
-        return Response({"success": True})
+                phone = txn.metadata.get("phone") if txn.metadata else None
+                webinar_id = txn.metadata.get("webinar_id") if txn.metadata else None
 
+                if phone and webinar_id:
+                    registration = WebinarRegistration.objects.select_for_update().filter(
+                        phone=phone,
+                        webinar__uuid=webinar_id
+                    ).first()
+
+                    if registration:
+                        registration.is_paid = True
+                        registration.payment_transaction = txn
+                        registration.save(update_fields=["is_paid", "payment_transaction"])
+
+        return Response({"success": True, "message": "Payment verified successfully"})
+    
 class PublicWebinarViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
