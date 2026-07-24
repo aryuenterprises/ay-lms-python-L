@@ -62,76 +62,74 @@ VALID_DONE_STATUSES = {
 # ============================================================================
 # RAZORPAY WEBHOOK HANDLER
 # ============================================================================
+import json
+import logging
+from django.http import HttpResponse, JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.conf import settings
+import razorpay
+from razorpay.errors import SignatureVerificationError
+
+# 1. Get the specific logger you defined in LOGGING settings
+logger = logging.getLogger('razorpay_webhook')
+
 @csrf_exempt
-def razorpay_webhook(request):
-    """
-    Webhook handler for real-time state updates from Razorpay.
-    """
+def razorpay_webhook_view(request):
     if request.method != "POST":
-        return HttpResponse("Method Not Allowed", status=405)
+        return HttpResponse(status=405)
 
-    payload = request.body
-    received_signature = request.headers.get("X-Razorpay-Signature")
+    webhook_body = request.body.decode('utf-8')
+    webhook_signature = request.headers.get('X-Razorpay-Signature')
 
-    gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay").first()
-    
-    # Optional Signature Verification if webhook_secret is configured
-    if gateway and getattr(gateway, "webhook_secret", None) and received_signature:
-        expected_signature = hmac.new(
-            gateway.webhook_secret.encode("utf-8"),
-            payload,
-            hashlib.sha256
-        ).hexdigest()
+    logger.debug(f"Received Webhook Headers: {request.headers}")
+    logger.debug(f"Received Webhook Payload: {webhook_body}")
 
-        if not hmac.compare_digest(expected_signature, received_signature):
-            logger.error("Razorpay Webhook Error: Invalid signature")
-            return HttpResponse("Invalid Signature", status=400)
+    # 2. Initialize Razorpay Client
+    client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+
+    # 3. Verify Signature
+    # NOTE: Set RAZORPAY_WEBHOOK_SECRET in settings.py (the secret string you entered in Razorpay Dashboard)
+    webhook_secret = getattr(settings, 'RAZORPAY_WEBHOOK_SECRET', settings.RAZORPAY_KEY_SECRET)
 
     try:
-        data = json.loads(payload.decode("utf-8"))
-    except json.JSONDecodeError:
-        return HttpResponse("Invalid JSON", status=400)
+        client.utility.verify_webhook_signature(
+            webhook_body, 
+            webhook_signature, 
+            webhook_secret
+        )
+        logger.info("Razorpay webhook signature verified successfully.")
+    except SignatureVerificationError as e:
+        logger.error(f"Signature Verification Failed: {str(e)}")
+        return JsonResponse({"status": "invalid signature"}, status=400)
+    except Exception as e:
+        logger.error(f"Error verifying webhook: {str(e)}")
+        return JsonResponse({"status": "error"}, status=400)
 
-    event = data.get("event")
-    logger.info(f"Razorpay Webhook event received: {event}")
+    # 4. Process Webhook Payload
+    data = json.loads(webhook_body)
+    event = data.get('event')
 
-    if event in ["payment.captured", "payment.authorized", "order.paid"]:
-        entity = data.get("payload", {}).get("payment", {}).get("entity", {})
-        order_id = entity.get("order_id")
-        transaction_id = entity.get("id")  # e.g., 'pay_Nx82xyz...'
-        notes = entity.get("notes", {})
+    logger.info(f"Processing Razorpay Event: {event}")
 
-        phone = notes.get("phone")
-        webinar_id = notes.get("webinar_id")
+    if event in ['payment.captured', 'order.paid']:
+        payment_entity = data.get('payload', {}).get('payment', {}).get('entity', {})
+        
+        transaction_id = payment_entity.get('id')
+        order_id = payment_entity.get('order_id')
+        email = payment_entity.get('email')
 
-        if order_id:
-            with db_transaction.atomic():
-                txn = PaymentTransaction.objects.select_for_update().filter(order_id=order_id).first()
-                if txn:
-                    txn.payment_status = "done"
-                    txn.transaction_id = transaction_id
-                    txn.save(update_fields=["payment_status", "transaction_id"])
+        logger.info(f"Payment Captured! Transaction ID: {transaction_id}, Order ID: {order_id}, Email: {email}")
 
-                if phone and webinar_id:
-                    registration = WebinarRegistration.objects.select_for_update().filter(
-                        phone=phone,
-                        webinar__uuid=webinar_id
-                    ).first()
+        # -------------------------------------------------------------
+        # TODO: UPDATE YOUR DATABASE HERE
+        # Example:
+        # order = Order.objects.get(razorpay_order_id=order_id)
+        # order.payment_status = 'done'
+        # order.transaction_id = transaction_id
+        # order.save()
+        # -------------------------------------------------------------
 
-                    if registration:
-                        registration.is_paid = True
-                        if txn:
-                            registration.payment_transaction = txn
-                        registration.save(update_fields=["is_paid", "payment_transaction"])
-
-    elif event == "payment.failed":
-        entity = data.get("payload", {}).get("payment", {}).get("entity", {})
-        order_id = entity.get("order_id")
-        if order_id:
-            PaymentTransaction.objects.filter(order_id=order_id).update(payment_status="failed")
-
-    return HttpResponse(status=200)
-
+    return JsonResponse({"status": "success"}, status=200)
 
 # ============================================================================
 # RAZORPAY PAYMENT VIEWSET
