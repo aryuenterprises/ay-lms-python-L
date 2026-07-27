@@ -65,76 +65,190 @@ VALID_DONE_STATUSES = {
 # RAZORPAY WEBHOOK HANDLER
 # ============================================================================
 @csrf_exempt
+@csrf_exempt
 def razorpay_webhook(request):
     """
-    Webhook handler for real-time state updates from Razorpay.
+    Razorpay Webhook Handler
     """
+
+    logger.info("=" * 80)
+    logger.info("Razorpay Webhook Received")
+
     if request.method != "POST":
+        logger.error("Invalid request method: %s", request.method)
         return HttpResponse("Method Not Allowed", status=405)
 
     payload = request.body
     received_signature = request.headers.get("X-Razorpay-Signature")
 
+    logger.info("Request Headers:")
+    logger.info(dict(request.headers))
+
+    logger.info("Payload Length: %s", len(payload))
+
     if not received_signature:
-        logger.error("Razorpay Webhook Error: Missing signature header")
+        logger.error("Missing X-Razorpay-Signature header")
         return HttpResponse("Signature Missing", status=400)
 
-    gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay").first()
-    if not gateway or not gateway.webhook_secret:
-        logger.error("Razorpay Webhook Error: Webhook secret unconfigured")
+    logger.info("Received Signature: %s", received_signature)
+
+    gateway = PaymentGateway.objects.filter(
+        gatway_name__icontains="razorpay"
+    ).first()
+
+    if not gateway:
+        logger.error("PaymentGateway configuration not found")
         return HttpResponse("Server Misconfiguration", status=500)
 
-    # Verify HMAC Signature
+    if not gateway.webhook_secret:
+        logger.error("Webhook secret is empty")
+        return HttpResponse("Server Misconfiguration", status=500)
+
+    secret = gateway.webhook_secret.strip()
+
+    logger.info("Webhook Secret: %r", secret)
+    logger.info("Webhook Secret Length: %s", len(secret))
+
     expected_signature = hmac.new(
-        gateway.webhook_secret.encode("utf-8"),
+        secret.encode("utf-8"),
         payload,
-        hashlib.sha256
+        hashlib.sha256,
     ).hexdigest()
 
+    logger.info("Expected Signature: %s", expected_signature)
+    logger.info("Received Signature: %s", received_signature)
+
     if not hmac.compare_digest(expected_signature, received_signature):
-        logger.error("Razorpay Webhook Error: Invalid signature")
+        logger.error("❌ Signature mismatch")
         return HttpResponse("Invalid Signature", status=400)
+
+    logger.info("✅ Signature verification successful")
 
     try:
         data = json.loads(payload.decode("utf-8"))
     except json.JSONDecodeError:
+        logger.exception("Invalid JSON payload")
         return HttpResponse("Invalid JSON", status=400)
 
     event = data.get("event")
-    logger.info(f"Razorpay Webhook event received: {event}")
 
-    if event in ["payment.captured", "payment.authorized"]:
-        entity = data["payload"]["payment"]["entity"]
-        order_id = entity.get("order_id")
-        transaction_id = entity.get("id")  # e.g., 'pay_Nx82xyz...'
-        notes = entity.get("notes", {})
+    logger.info("Webhook Event: %s", event)
 
-        phone = notes.get("phone")
-        webinar_id = notes.get("webinar_id")
+    try:
 
-        with db_transaction.atomic():
-            txn = PaymentTransaction.objects.select_for_update().filter(order_id=order_id).first()
-            if txn:
-                txn.payment_status = "done"
-                txn.transaction_id = transaction_id
-                txn.save(update_fields=["payment_status", "transaction_id"])
+        if event in ["payment.captured", "payment.authorized"]:
 
-            if phone and webinar_id:
-                registration = WebinarRegistration.objects.select_for_update().filter(
-                    phone=phone,
-                    webinar__uuid=webinar_id
-                ).first()
+            entity = data["payload"]["payment"]["entity"]
 
-                if registration:
-                    registration.is_paid = True
-                    if txn:
-                        registration.payment_transaction = txn
-                    registration.save(update_fields=["is_paid", "payment_transaction"])
+            order_id = entity.get("order_id")
+            transaction_id = entity.get("id")
+            notes = entity.get("notes", {})
 
-    elif event == "payment.failed":
-        entity = data["payload"]["payment"]["entity"]
-        order_id = entity.get("order_id")
-        PaymentTransaction.objects.filter(order_id=order_id).update(payment_status="failed")
+            phone = notes.get("phone")
+            webinar_id = notes.get("webinar_id")
+
+            logger.info("Order ID: %s", order_id)
+            logger.info("Payment ID: %s", transaction_id)
+            logger.info("Phone: %s", phone)
+            logger.info("Webinar UUID: %s", webinar_id)
+
+            with db_transaction.atomic():
+
+                txn = (
+                    PaymentTransaction.objects
+                    .select_for_update()
+                    .filter(order_id=order_id)
+                    .first()
+                )
+
+                if txn:
+
+                    txn.payment_status = "done"
+                    txn.transaction_id = transaction_id
+                    txn.save(
+                        update_fields=[
+                            "payment_status",
+                            "transaction_id",
+                        ]
+                    )
+
+                    logger.info(
+                        "PaymentTransaction updated successfully"
+                    )
+
+                else:
+                    logger.warning(
+                        "PaymentTransaction not found for Order ID: %s",
+                        order_id,
+                    )
+
+                if phone and webinar_id:
+
+                    registration = (
+                        WebinarRegistration.objects
+                        .select_for_update()
+                        .filter(
+                            phone=phone,
+                            webinar__uuid=webinar_id,
+                        )
+                        .first()
+                    )
+
+                    if registration:
+
+                        registration.is_paid = True
+
+                        if txn:
+                            registration.payment_transaction = txn
+
+                        registration.save(
+                            update_fields=[
+                                "is_paid",
+                                "payment_transaction",
+                            ]
+                        )
+
+                        logger.info(
+                            "WebinarRegistration updated successfully"
+                        )
+
+                    else:
+
+                        logger.warning(
+                            "Registration not found "
+                            "(Phone=%s Webinar=%s)",
+                            phone,
+                            webinar_id,
+                        )
+
+        elif event == "payment.failed":
+
+            entity = data["payload"]["payment"]["entity"]
+
+            order_id = entity.get("order_id")
+
+            PaymentTransaction.objects.filter(
+                order_id=order_id
+            ).update(
+                payment_status="failed"
+            )
+
+            logger.info(
+                "Payment marked as FAILED for Order ID: %s",
+                order_id,
+            )
+
+        else:
+
+            logger.info("Unhandled Event: %s", event)
+
+    except Exception:
+
+        logger.exception("Webhook processing failed")
+        return HttpResponse("Internal Server Error", status=500)
+
+    logger.info("Webhook processed successfully")
+    logger.info("=" * 80)
 
     return HttpResponse(status=200)
 
