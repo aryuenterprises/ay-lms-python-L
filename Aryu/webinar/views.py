@@ -18,6 +18,7 @@ import razorpay
 from rest_framework.viewsets import ReadOnlyModelViewSet
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.response import Response
+import json
 from django.http import HttpResponse, JsonResponse
 from django.utils.timezone import make_aware, is_naive
 from .services.webinar_emails import send_webinar_registration_email
@@ -31,9 +32,10 @@ import hmac
 import hashlib
 from django.core.cache import cache
 from django.conf import settings
+from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from aryuapp.auth import CustomJWTAuthentication
-from django.db.models import Count, Prefetch, Sum, Q, Avg, F, Value, IntegerField, Case, When, FloatField, CharField, DecimalField
+from django.db.models import Count, Prefetch, Sum, Q, Avg, F, Value, IntegerField, Case, When, FloatField, Value, CharField
 from .models import *
 from .serializers import *
 import logging
@@ -43,8 +45,8 @@ from django.db.models.functions import Coalesce, JSONObject, Concat
 from django.db.models.expressions import ExpressionWrapper
 from urllib.parse import quote
 from .services.zoom_service import get_zoom_access_token
-from decimal import Decimal
-
+from django.db.models import DecimalField
+# from celery import shared_task
 logger = logging.getLogger("razorpay_webhook")
 
 # Valid completed status lookup set across payment gateways
@@ -62,74 +64,194 @@ VALID_DONE_STATUSES = {
 # ============================================================================
 # RAZORPAY WEBHOOK HANDLER
 # ============================================================================
-import json
-import logging
-from django.http import HttpResponse, JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.conf import settings
-import razorpay
-from razorpay.errors import SignatureVerificationError
-
-# 1. Get the specific logger you defined in LOGGING settings
-logger = logging.getLogger('razorpay_webhook')
-
 @csrf_exempt
-def razorpay_webhook_view(request):
+@csrf_exempt
+def razorpay_webhook(request):
+    """
+    Razorpay Webhook Handler
+    """
+
+    logger.info("=" * 80)
+    logger.info("Razorpay Webhook Received")
+
     if request.method != "POST":
-        return HttpResponse(status=405)
+        logger.error("Invalid request method: %s", request.method)
+        return HttpResponse("Method Not Allowed", status=405)
 
-    webhook_body = request.body.decode('utf-8')
-    webhook_signature = request.headers.get('X-Razorpay-Signature')
+    payload = request.body
+    received_signature = request.headers.get("X-Razorpay-Signature")
 
-    logger.debug(f"Received Webhook Headers: {request.headers}")
-    logger.debug(f"Received Webhook Payload: {webhook_body}")
+    logger.info("Request Headers:")
+    logger.info(dict(request.headers))
 
-    # 2. Initialize Razorpay Client
-    client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+    logger.info("Payload Length: %s", len(payload))
 
-    # 3. Verify Signature
-    # NOTE: Set RAZORPAY_WEBHOOK_SECRET in settings.py (the secret string you entered in Razorpay Dashboard)
-    webhook_secret = getattr(settings, 'RAZORPAY_WEBHOOK_SECRET', settings.RAZORPAY_KEY_SECRET)
+    if not received_signature:
+        logger.error("Missing X-Razorpay-Signature header")
+        return HttpResponse("Signature Missing", status=400)
+
+    logger.info("Received Signature: %s", received_signature)
+
+    gateway = PaymentGateway.objects.filter(
+        gatway_name__icontains="razorpay"
+    ).first()
+
+    if not gateway:
+        logger.error("PaymentGateway configuration not found")
+        return HttpResponse("Server Misconfiguration", status=500)
+
+    if not gateway.webhook_secret:
+        logger.error("Webhook secret is empty")
+        return HttpResponse("Server Misconfiguration", status=500)
+
+    secret = gateway.webhook_secret.strip()
+
+    logger.info("Webhook Secret: %r", secret)
+    logger.info("Webhook Secret Length: %s", len(secret))
+
+    expected_signature = hmac.new(
+        secret.encode("utf-8"),
+        payload,
+        hashlib.sha256,
+    ).hexdigest()
+
+    logger.info("Expected Signature: %s", expected_signature)
+    logger.info("Received Signature: %s", received_signature)
+
+    if not hmac.compare_digest(expected_signature, received_signature):
+        logger.error("❌ Signature mismatch")
+        return HttpResponse("Invalid Signature", status=400)
+
+    logger.info("✅ Signature verification successful")
 
     try:
-        client.utility.verify_webhook_signature(
-            webhook_body, 
-            webhook_signature, 
-            webhook_secret
-        )
-        logger.info("Razorpay webhook signature verified successfully.")
-    except SignatureVerificationError as e:
-        logger.error(f"Signature Verification Failed: {str(e)}")
-        return JsonResponse({"status": "invalid signature"}, status=400)
-    except Exception as e:
-        logger.error(f"Error verifying webhook: {str(e)}")
-        return JsonResponse({"status": "error"}, status=400)
+        data = json.loads(payload.decode("utf-8"))
+    except json.JSONDecodeError:
+        logger.exception("Invalid JSON payload")
+        return HttpResponse("Invalid JSON", status=400)
 
-    # 4. Process Webhook Payload
-    data = json.loads(webhook_body)
-    event = data.get('event')
+    event = data.get("event")
 
-    logger.info(f"Processing Razorpay Event: {event}")
+    logger.info("Webhook Event: %s", event)
 
-    if event in ['payment.captured', 'order.paid']:
-        payment_entity = data.get('payload', {}).get('payment', {}).get('entity', {})
-        
-        transaction_id = payment_entity.get('id')
-        order_id = payment_entity.get('order_id')
-        email = payment_entity.get('email')
+    try:
 
-        logger.info(f"Payment Captured! Transaction ID: {transaction_id}, Order ID: {order_id}, Email: {email}")
+        if event in ["payment.captured", "payment.authorized"]:
 
-        # -------------------------------------------------------------
-        # TODO: UPDATE YOUR DATABASE HERE
-        # Example:
-        # order = Order.objects.get(razorpay_order_id=order_id)
-        # order.payment_status = 'done'
-        # order.transaction_id = transaction_id
-        # order.save()
-        # -------------------------------------------------------------
+            entity = data["payload"]["payment"]["entity"]
 
-    return JsonResponse({"status": "success"}, status=200)
+            order_id = entity.get("order_id")
+            transaction_id = entity.get("id")
+            notes = entity.get("notes", {})
+
+            phone = notes.get("phone")
+            webinar_id = notes.get("webinar_id")
+
+            logger.info("Order ID: %s", order_id)
+            logger.info("Payment ID: %s", transaction_id)
+            logger.info("Phone: %s", phone)
+            logger.info("Webinar UUID: %s", webinar_id)
+
+            with db_transaction.atomic():
+
+                txn = (
+                    PaymentTransaction.objects
+                    .select_for_update()
+                    .filter(order_id=order_id)
+                    .first()
+                )
+
+                if txn:
+
+                    txn.payment_status = "done"
+                    txn.transaction_id = transaction_id
+                    txn.save(
+                        update_fields=[
+                            "payment_status",
+                            "transaction_id",
+                        ]
+                    )
+
+                    logger.info(
+                        "PaymentTransaction updated successfully"
+                    )
+
+                else:
+                    logger.warning(
+                        "PaymentTransaction not found for Order ID: %s",
+                        order_id,
+                    )
+
+                if phone and webinar_id:
+
+                    registration = (
+                        WebinarRegistration.objects
+                        .select_for_update()
+                        .filter(
+                            phone=phone,
+                            webinar__uuid=webinar_id,
+                        )
+                        .first()
+                    )
+
+                    if registration:
+
+                        registration.is_paid = True
+
+                        if txn:
+                            registration.payment_transaction = txn
+
+                        registration.save(
+                            update_fields=[
+                                "is_paid",
+                                "payment_transaction",
+                            ]
+                        )
+
+                        logger.info(
+                            "WebinarRegistration updated successfully"
+                        )
+
+                    else:
+
+                        logger.warning(
+                            "Registration not found "
+                            "(Phone=%s Webinar=%s)",
+                            phone,
+                            webinar_id,
+                        )
+
+        elif event == "payment.failed":
+
+            entity = data["payload"]["payment"]["entity"]
+
+            order_id = entity.get("order_id")
+
+            PaymentTransaction.objects.filter(
+                order_id=order_id
+            ).update(
+                payment_status="failed"
+            )
+
+            logger.info(
+                "Payment marked as FAILED for Order ID: %s",
+                order_id,
+            )
+
+        else:
+
+            logger.info("Unhandled Event: %s", event)
+
+    except Exception:
+
+        logger.exception("Webhook processing failed")
+        return HttpResponse("Internal Server Error", status=500)
+
+    logger.info("Webhook processed successfully")
+    logger.info("=" * 80)
+
+    return HttpResponse(status=200)
+
 
 # ============================================================================
 # RAZORPAY PAYMENT VIEWSET
@@ -138,18 +260,10 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
 
     def _get_client(self):
-        gateway = PaymentGateway.objects.filter(
-            Q(gatway_name__icontains="razorpay") | Q(gatway_name__icontains="razorpay_test")
-        ).first()
-
-        if gateway and gateway.public_key and gateway.secret_key:
-            client = razorpay.Client(auth=(gateway.public_key, gateway.secret_key))
-            return client, gateway
-        
-        # Fallback keys if PaymentGateway configuration is missing
-        public_key = "rzp_live_SKfiZYRJEe8WuU"
-        secret_key = "Du4L7ebKchXQSOMcgzx5wE3h"
-        client = razorpay.Client(auth=(public_key, secret_key))
+        gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay").first()
+        if not gateway or not gateway.public_key or not gateway.secret_key:
+            return None, None
+        client = razorpay.Client(auth=(gateway.public_key, gateway.secret_key))
         return client, gateway
 
     @action(detail=False, methods=["post"])
@@ -215,12 +329,10 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 metadata=order_data["notes"]
             )
 
-        public_key = gateway.public_key if gateway else "rzp_live_SKfiZYRJEe8WuU"
-
         return Response({
             "success": True,
             "order_id": order["id"],
-            "key": public_key,
+            "key": gateway.public_key,
             "amount": amount_in_paise,
             "currency": "INR",
             "webinar_title": webinar.title,
@@ -230,18 +342,9 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
     @csrf_exempt
     @action(detail=False, methods=['post'], url_path="verify")
     def verify_payment(self, request):
-        payment_id = (
-            request.data.get("razorpay_payment_id") or 
-            request.data.get("payment_id")
-        )
-        order_id = (
-            request.data.get("razorpay_order_id") or 
-            request.data.get("order_id")
-        )
-        signature = (
-            request.data.get("razorpay_signature") or 
-            request.data.get("signature")
-        )
+        payment_id = request.data.get("razorpay_payment_id")
+        order_id = request.data.get("razorpay_order_id")
+        signature = request.data.get("razorpay_signature")
 
         if not all([payment_id, order_id, signature]):
             return Response(
@@ -252,7 +355,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         client, gateway = self._get_client()
         if not client:
             return Response(
-                {"success": False, "message": "Razorpay client not configured"},
+                {"success": False, "message": "Razorpay secret not configured"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -290,9 +393,8 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                         registration.payment_transaction = txn
                         registration.save(update_fields=["is_paid", "payment_transaction"])
 
-        return Response({"success": True, "message": "Payment verified successfully and status set to done"})
-
-
+        return Response({"success": True, "message": "Payment verified successfully"})
+    
 class PublicWebinarViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
@@ -304,7 +406,7 @@ class PublicWebinarViewSet(
     permission_classes = []
     authentication_classes = []
 
-    lookup_field = "slug"
+    lookup_field = "slug"   # or "slug" or "id"
 
     def list(self, request, *args, **kwargs):
         response = super().list(request, *args, **kwargs)
@@ -319,7 +421,6 @@ class PublicWebinarViewSet(
             "success": True,
             "data": response.data
         })
-
 
 class WebinarViewSet(
     mixins.ListModelMixin,
@@ -339,7 +440,7 @@ class WebinarViewSet(
         if self.action == "list":
             return (
                 Webinar.objects
-                .filter(is_deleted=False, type=True)
+                .filter(is_deleted=False,type = True)
                 .annotate(
                     participants_count=Count("registrations", distinct=True),
                     total_amount_received=Sum(
@@ -468,7 +569,7 @@ class WebinarViewSet(
             ),
             slug=slug,
             is_deleted=False,
-            type=True
+            type = True
         )
         MEDIA_PREFIX = "https://portal.aryuacademy.com/api/media/"
         registrations = (
@@ -597,9 +698,9 @@ class WebinarViewSet(
         participants = list(registrations)
 
         participants_count = sum(
-            1
+                1
             for participant in participants
-            if str(participant.get("payment_status", "")).lower() in VALID_DONE_STATUSES
+            if str(participant.get("payment_status", "")).lower() == "done"
         )
 
         data = {
@@ -689,9 +790,10 @@ class WebinarViewSet(
             "data": WebinarSerializer(webinar, context={"request": request}).data
         }, status=201)
 
-    def update(self, request, *args, **kwargs):
+
+    def update(self, request, *args,**kwargs):
         try:
-            with db_transaction.atomic():
+            with transaction.atomic():
                 slug = kwargs.get("slug") 
 
                 webinar = get_object_or_404(Webinar, slug=slug)
@@ -717,14 +819,21 @@ class WebinarViewSet(
                     image = request.FILES.get(f"tools[{i}][tools_image]")
                     is_deleted = request.data.get(f"tools[{i}][is_deleted]")
 
+                    # =================================================
+                    # DELETE
+                    # =================================================
                     if tool_id and str(is_deleted).lower() == "true":
                         WebinarTool.objects.filter(
                             id=tool_id,
                             webinar=webinar
                         ).delete()
+
                         i += 1
                         continue
 
+                    # =================================================
+                    # UPDATE
+                    # =================================================
                     if tool_id:
                         obj = WebinarTool.objects.filter(
                             id=tool_id,
@@ -737,12 +846,18 @@ class WebinarViewSet(
                                 "message": f"Tool id {tool_id} not found"
                             }, status=400)
 
+                        # update only provided fields
                         if title is not None:
                             obj.tools_title = title
+
                         if image:
                             obj.tools_image = image
 
                         obj.save()
+
+                    # =================================================
+                    # CREATE
+                    # =================================================
                     else:
                         if not title:
                             return Response({
@@ -757,6 +872,7 @@ class WebinarViewSet(
                         )
 
                     i += 1
+
 
                 # =====================================================
                 # METADATA
@@ -790,8 +906,10 @@ class WebinarViewSet(
                         if obj:
                             obj.meta_title = title
                             obj.meta_description = desc
+
                             if image:
                                 obj.meta_image = image
+
                             obj.save()
                         else:
                             obj = webinar_metadata.objects.create(
@@ -806,12 +924,15 @@ class WebinarViewSet(
 
                 webinar_metadata.objects.filter(webinar=webinar).exclude(id__in=meta_ids).delete()
 
+
                 # =====================================================
                 # FAQ
                 # =====================================================
                 faq_payload = request.data.get("faqs", None)
 
                 if faq_payload is not None:
+
+                    # fix: convert string → list
                     if isinstance(faq_payload, str):
                         try:
                             faq_payload = json.loads(faq_payload)
@@ -830,10 +951,12 @@ class WebinarViewSet(
                     faq_ids = []
 
                     for faq in faq_payload:
+
                         faq_id = faq.get("id")
                         question = faq.get("question")
                         answer = faq.get("answer")
 
+                        # ---------------- DELETE ----------------
                         if faq.get("is_deleted") is True and faq_id:
                             Webinar_FAQ.objects.filter(
                                 id=faq_id,
@@ -841,6 +964,7 @@ class WebinarViewSet(
                             ).delete()
                             continue
 
+                        # ---------------- UPDATE ----------------
                         if faq_id:
                             obj = Webinar_FAQ.objects.filter(
                                 id=faq_id,
@@ -860,6 +984,8 @@ class WebinarViewSet(
 
                             obj.save()
                             faq_ids.append(obj.id)
+
+                        # ---------------- CREATE ----------------
                         else:
                             obj = Webinar_FAQ.objects.create(
                                 webinar=webinar,
@@ -868,7 +994,10 @@ class WebinarViewSet(
                             )
                             faq_ids.append(obj.id)
 
+                    # optional: delete removed ones (sync style)
                     Webinar_FAQ.objects.filter(webinar=webinar).exclude(id__in=faq_ids).delete()
+
+                # =====================================================
 
                 return Response({
                     "status": True,
@@ -902,7 +1031,6 @@ class WebinarViewSet(
             status=status.HTTP_200_OK
         )
 
-
 class BootcampViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
@@ -921,7 +1049,7 @@ class BootcampViewSet(
         if self.action == "list":
             return (
                 Webinar.objects
-                .filter(is_deleted=False, type=False)
+                .filter(is_deleted=False,type = False)
                 .annotate(
                     participants_count=Count("registrations", distinct=True),
                     total_amount_received=Sum(
@@ -951,14 +1079,17 @@ class BootcampViewSet(
         return (
             Webinar.objects
             .prefetch_related(
+
                 Prefetch(
                     "tools",
                     queryset=WebinarTool.objects.filter(is_deleted=False)
                 ),
+
                 Prefetch(
                     "metadata",
                     queryset=webinar_metadata.objects.filter(is_deleted=False)
                 ),
+
                 Prefetch(
                     "faqs",
                     queryset=Webinar_FAQ.objects.filter(is_deleted=False)
@@ -1009,6 +1140,7 @@ class BootcampViewSet(
                         .order_by("-submitted_at")
                 ),
             )
+
             .annotate(
                 participants_count=Count("registrations", distinct=True),
 
@@ -1022,6 +1154,7 @@ class BootcampViewSet(
                 feedback_count=Count("feedbacks", distinct=True),
                 avg_rating=Avg("feedbacks__overall_rating"),
             )
+
             .filter(is_deleted=False)
         )
 
@@ -1045,13 +1178,14 @@ class BootcampViewSet(
             ),
             slug=slug,
             is_deleted=False,
-            type=False
+            type = False
         )
         MEDIA_PREFIX = "https://portal.aryuacademy.com/api/media/"
         registrations = (
             WebinarRegistration.objects
             .filter(webinar_id=webinar.id)
             .annotate(
+
                 payment_status=Coalesce(
                     F("payment_transaction__payment_status"),
                     Value("free")
@@ -1074,6 +1208,8 @@ class BootcampViewSet(
                     default=Value(None),
                     output_field=CharField()
                 ),
+
+                # total hours participated
                 total_hours_participated=ExpressionWrapper(
                     Coalesce(
                         F("attendance_summary__total_duration_seconds"),
@@ -1081,6 +1217,8 @@ class BootcampViewSet(
                     ) / 3600.0,
                     output_field=FloatField()
                 ),
+
+                # full feedback JSON
                 feedback_data=JSONObject(
                     id=F("feedback__uuid"),
                     overall_rating=F("feedback__overall_rating"),
@@ -1096,6 +1234,7 @@ class BootcampViewSet(
                     interested_in_future_webinars=F("feedback__interested_in_future_webinars"),
                     interested_in_paid_courses=F("feedback__interested_in_paid_courses"),
                     submitted_at=F("feedback__submitted_at"),
+
                     rating_screenshot=Case(
                         When(
                             feedback__rating_screenshot__isnull=False,
@@ -1109,6 +1248,7 @@ class BootcampViewSet(
                         output_field=CharField()
                     )
                 ),
+
                 logs=JSONBAgg(
                     JSONObject(
                         join_time=F("attendance_logs__join_time"),
@@ -1167,9 +1307,9 @@ class BootcampViewSet(
         participants = list(registrations)
 
         participants_count = sum(
-            1
+                1
             for participant in participants
-            if str(participant.get("payment_status", "")).lower() in VALID_DONE_STATUSES
+            if str(participant.get("payment_status", "")).lower() == "done"
         )
 
         data = {
@@ -1198,6 +1338,17 @@ class BootcampViewSet(
             "data": data
         })
 
+    # def list(self, request):
+    #     cache_key = "bootcamp_list_v1"
+
+    #     data = cache.get(cache_key)
+
+    #     if not data:
+    #         queryset = self.get_queryset()
+    #         data = WebinarListSerializer(queryset, many=True).data
+    #         cache.set(cache_key, data, 60)
+
+    #     return Response(data)
     def list(self, request):
         queryset = self.get_queryset()
         data = WebinarListSerializer(queryset, many=True).data
@@ -1253,9 +1404,10 @@ class BootcampViewSet(
             "data": WebinarSerializer(webinar, context={"request": request}).data
         }, status=201)
 
-    def update(self, request, *args, **kwargs):
+
+    def update(self, request, *args,**kwargs):
         try:
-            with db_transaction.atomic():
+            with transaction.atomic():
                 slug = kwargs.get("slug") 
 
                 webinar = get_object_or_404(Webinar, slug=slug)
@@ -1264,6 +1416,9 @@ class BootcampViewSet(
                 serializer.is_valid(raise_exception=True)
                 serializer.save()
 
+                # =====================================================
+                # TOOLS (PARTIAL PATCH STYLE)
+                # =====================================================
                 i = 0
 
                 while (
@@ -1278,14 +1433,21 @@ class BootcampViewSet(
                     image = request.FILES.get(f"tools[{i}][tools_image]")
                     is_deleted = request.data.get(f"tools[{i}][is_deleted]")
 
+                    # =================================================
+                    # DELETE
+                    # =================================================
                     if tool_id and str(is_deleted).lower() == "true":
                         WebinarTool.objects.filter(
                             id=tool_id,
                             webinar=webinar
                         ).delete()
+
                         i += 1
                         continue
 
+                    # =================================================
+                    # UPDATE
+                    # =================================================
                     if tool_id:
                         obj = WebinarTool.objects.filter(
                             id=tool_id,
@@ -1298,12 +1460,18 @@ class BootcampViewSet(
                                 "message": f"Tool id {tool_id} not found"
                             }, status=400)
 
+                        # update only provided fields
                         if title is not None:
                             obj.tools_title = title
+
                         if image:
                             obj.tools_image = image
 
                         obj.save()
+
+                    # =================================================
+                    # CREATE
+                    # =================================================
                     else:
                         if not title:
                             return Response({
@@ -1319,6 +1487,10 @@ class BootcampViewSet(
 
                     i += 1
 
+
+                # =====================================================
+                # METADATA
+                # =====================================================
                 j = 0
                 meta_ids = []
 
@@ -1348,8 +1520,10 @@ class BootcampViewSet(
                         if obj:
                             obj.meta_title = title
                             obj.meta_description = desc
+
                             if image:
                                 obj.meta_image = image
+
                             obj.save()
                         else:
                             obj = webinar_metadata.objects.create(
@@ -1364,9 +1538,15 @@ class BootcampViewSet(
 
                 webinar_metadata.objects.filter(webinar=webinar).exclude(id__in=meta_ids).delete()
 
+
+                # =====================================================
+                # FAQ
+                # =====================================================
                 faq_payload = request.data.get("faqs", None)
 
                 if faq_payload is not None:
+
+                    # fix: convert string → list
                     if isinstance(faq_payload, str):
                         try:
                             faq_payload = json.loads(faq_payload)
@@ -1385,10 +1565,12 @@ class BootcampViewSet(
                     faq_ids = []
 
                     for faq in faq_payload:
+
                         faq_id = faq.get("id")
                         question = faq.get("question")
                         answer = faq.get("answer")
 
+                        # ---------------- DELETE ----------------
                         if faq.get("is_deleted") is True and faq_id:
                             Webinar_FAQ.objects.filter(
                                 id=faq_id,
@@ -1396,6 +1578,7 @@ class BootcampViewSet(
                             ).delete()
                             continue
 
+                        # ---------------- UPDATE ----------------
                         if faq_id:
                             obj = Webinar_FAQ.objects.filter(
                                 id=faq_id,
@@ -1416,6 +1599,7 @@ class BootcampViewSet(
                             obj.save()
                             faq_ids.append(obj.id)
 
+                        # ---------------- CREATE ----------------
                         else:
                             obj = Webinar_FAQ.objects.create(
                                 webinar=webinar,
@@ -1424,7 +1608,10 @@ class BootcampViewSet(
                             )
                             faq_ids.append(obj.id)
 
+                    # optional: delete removed ones (sync style)
                     Webinar_FAQ.objects.filter(webinar=webinar).exclude(id__in=faq_ids).delete()
+
+                # =====================================================
 
                 return Response({
                     "status": True,
@@ -1458,7 +1645,6 @@ class BootcampViewSet(
             status=status.HTTP_200_OK
         )
 
-
 class WebinarToolUpdateDeleteView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1480,25 +1666,26 @@ class WebinarToolUpdateDeleteView(APIView):
         tool.delete()
         return Response({"status": True, "message": "Tool deleted successfully"})
 
-
 class WebinarRegistrationViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
 
     def _get_client(self):
         gateway = PaymentGateway.objects.filter(
-            Q(gatway_name__icontains="razorpay") | Q(gatway_name__icontains="razorpay_test")
+            gatway_name__icontains="razorpay"
         ).first()
 
-        if gateway and gateway.public_key and gateway.secret_key:
-            client = razorpay.Client(auth=(gateway.public_key, gateway.secret_key))
-            return client, gateway
 
-        # Fallback Razorpay credentials
-        public_key = "rzp_live_SKfiZYRJEe8WuU"
-        secret_key = "Du4L7ebKchXQSOMcgzx5wE3h"
-        client = razorpay.Client(auth=(public_key, secret_key))
+        if not gateway:
+            return None, None
+
+        client = razorpay.Client(
+            auth=(gateway.public_key, gateway.secret_key)
+        )
         return client, gateway
 
+    # -----------------------------
+    # PAYMENT CREATION
+    # -----------------------------
     def _create_payment(self, request, webinar, txn):
         data = request.data.copy()
 
@@ -1518,9 +1705,12 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
         request._full_data = data
         return RazorpayPaymentViewSet().create(request)
 
+    # -----------------------------
+    # REGISTRATION CREATION (SINGLE SOURCE)
+    # -----------------------------
     @classmethod
     def create_registration_from_transaction(cls, txn):
-        meta = txn.metadata or {}
+        meta = txn.metadata
 
         webinar = Webinar.objects.get(uuid=meta["webinar_id"])
 
@@ -1540,18 +1730,23 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
             try:
                 send_webinar_welcome_whatsapp(registration)
             except Exception as e:
-                logger.error(f"Error sending welcome task: {e}")
+                print("Error sending welcome task:", str(e))
             try:
                 send_webinar_registration_email(registration)
             except Exception as e:
-                logger.error(f"Error sending registration email: {e}")
+                print("Error sending registration email:", str(e))
             try:
+
                 schedule_webinar_messages(registration)
             except Exception as e:
-                logger.error(f"Error scheduling webinar messages: {e}")
+                print("Error scheduling webinar messages:", str(e))
+            
 
         return registration
 
+    # -----------------------------
+    # CREATE API
+    # -----------------------------
     def create(self, request, slug=None):
         webinar = get_object_or_404(Webinar, slug=slug)
 
@@ -1563,7 +1758,7 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
 
         phone = request.data.get("phone")
 
-        if WebinarRegistration.objects.filter(webinar=webinar, phone=phone, is_paid=True).exists():
+        if WebinarRegistration.objects.filter(webinar=webinar, phone=phone,is_paid =True).exists():
             return Response(
                 {"message": "Already registered"},
                 status=status.HTTP_400_BAD_REQUEST
@@ -1579,6 +1774,10 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
                 data=data,
                 context={"webinar": webinar}
             )
+            # serializer = WebinarRegistrationSerializer(
+            #     data=request.data,
+            #     context={"webinar": webinar}
+            # )
 
             serializer.is_valid(raise_exception=True)
             registration = serializer.save()
@@ -1586,16 +1785,18 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
             try:
                 send_webinar_welcome_whatsapp(registration)
             except Exception as e:
-                logger.error(f"Error sending welcome task: {e}")
+                print("Error sending welcome task:", str(e))
                 
             try:
                 send_webinar_registration_email(registration)
             except Exception as e:
-                logger.error(f"Error sending registration email: {e}")
+                print("Error sending registration email:", str(e))
             try:
+
                 schedule_webinar_messages(registration)
             except Exception as e:
-                logger.error(f"Error scheduling webinar messages: {e}")
+                print("Error scheduling webinar messages:", str(e))
+            
 
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         
@@ -1622,6 +1823,7 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
             }
         })
 
+
         # -----------------------------------
         # PAID WEBINAR → PAYMENT ONLY
         # -----------------------------------
@@ -1634,8 +1836,8 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
                 "email": request.data.get("email"),
                 "phone": phone,
                 "profession": request.data.get("profession"),
-                "source": request.data.get("source", "webinar"),
-            },
+                "source":request.data.get("source","webinar"),
+                },
             gateway=gateway,
             billing_type="webinar",
             currency="INR",
@@ -1678,6 +1880,7 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
             .order_by("-created_at")
         )
 
+
     def list(self, request, slug=None):
         if not request.user.is_authenticated:
             return Response(status=status.HTTP_403_FORBIDDEN)
@@ -1691,7 +1894,6 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
 
         serializer = WebinarRegistrationSerializer(qs, many=True)
         return Response(serializer.data)
-
     def destroy(self, request, pk=None, slug=None):
 
         registration = get_object_or_404(
@@ -1709,8 +1911,7 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
             },
             status=status.HTTP_200_OK
         )
-
-
+    
 def fetch_zoom_participants(meeting_id):
     token = get_zoom_access_token()
 
@@ -1745,7 +1946,6 @@ def fetch_zoom_participants(meeting_id):
 
     return participants
 
-
 class WebinarAttendanceViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
 
@@ -1755,6 +1955,7 @@ class WebinarAttendanceViewSet(viewsets.ViewSet):
         for l in logs:
             intervals.append((l.join_time, l.leave_time))
 
+        # sort by start time
         intervals.sort()
 
         merged = []
@@ -1766,7 +1967,7 @@ class WebinarAttendanceViewSet(viewsets.ViewSet):
 
             last_start, last_end = merged[-1]
 
-            if start <= last_end:
+            if start <= last_end:  # overlap
                 merged[-1][1] = max(last_end, end)
             else:
                 merged.append([start, end])
@@ -1786,9 +1987,13 @@ class WebinarAttendanceViewSet(viewsets.ViewSet):
             return Response({"message": "Session not ended"}, status=400)
 
         participants = fetch_zoom_participants(session.zoom_meeting_id)
-        print("zoom meeting id", session.zoom_meeting_id)
+        print("zoom meeting  id",session.zoom_meeting_id)
 
         registrations = list(webinar.registrations.all())
+
+        # ----------------------------------
+        # BUILD FAST LOOKUP MAPS
+        # ----------------------------------
 
         email_map = {}
         name_map = {}
@@ -1805,6 +2010,10 @@ class WebinarAttendanceViewSet(viewsets.ViewSet):
                 if first not in first_name_map:
                     first_name_map[first] = r
 
+        # ----------------------------------
+        # CREATE ATTENDANCE LOGS
+        # ----------------------------------
+
         logs_to_create = []
 
         for p in participants:
@@ -1820,12 +2029,15 @@ class WebinarAttendanceViewSet(viewsets.ViewSet):
 
             registration = None
 
+            # email match
             if email:
                 registration = email_map.get(email)
 
+            # exact name match
             if not registration and zoom_name:
                 registration = name_map.get(zoom_name)
 
+            # first name fallback
             if not registration and zoom_name:
                 first = zoom_name.split()[0]
                 registration = first_name_map.get(first)
@@ -1848,6 +2060,10 @@ class WebinarAttendanceViewSet(viewsets.ViewSet):
             logs_to_create,
             batch_size=500
         )
+
+        # ----------------------------------
+        # CALCULATE ATTENDANCE SUMMARY
+        # ----------------------------------
 
         aggregates = (
             WebinarAttendanceLog.objects
@@ -1883,6 +2099,7 @@ class WebinarAttendanceViewSet(viewsets.ViewSet):
             reg.attended = True
             reg_updates.append(reg)
 
+        # UPSERT summaries
         WebinarAttendanceSummary.objects.bulk_create(
             summaries,
             update_conflicts=True,
@@ -1894,6 +2111,7 @@ class WebinarAttendanceViewSet(viewsets.ViewSet):
             ]
         )
 
+        # BULK UPDATE registrations
         WebinarRegistration.objects.bulk_update(
             reg_updates,
             ["attended"]
@@ -1944,11 +2162,14 @@ class WebinarAttendanceViewSet(viewsets.ViewSet):
         })
 
 
-VERIFY_TOKEN = "akzworld"
+VERIFY_TOKEN = "akzworld"  # same token you give Meta
 
 @csrf_exempt
 def whatsapp_webhook(request):
 
+    # =================================
+    # META VERIFICATION (GET)
+    # =================================
     if request.method == "GET":
         mode = request.GET.get("hub.mode")
         token = request.GET.get("hub.verify_token")
@@ -1959,6 +2180,10 @@ def whatsapp_webhook(request):
 
         return HttpResponse("Invalid token", status=403)
 
+
+    # =================================
+    # EVENTS (POST)
+    # =================================
     payload = json.loads(request.body.decode("utf-8"))
 
     print("===== WHATSAPP WEBHOOK RECEIVED =====")
@@ -1969,10 +2194,13 @@ def whatsapp_webhook(request):
         for change in entry.get("changes", []):
             value = change.get("value", {})
 
+            # =================================
+            # A) DELIVERY STATUS (IMPORTANT)
+            # =================================
             for status in value.get("statuses", []):
                 print(
                     "STATUS:",
-                    status.get("status"),
+                    status.get("status"),           # sent/delivered/read/failed
                     "TIME:",
                     status.get("timestamp"),
                     "PHONE:",
@@ -1981,6 +2209,9 @@ def whatsapp_webhook(request):
                     status.get("id")
                 )
 
+            # =================================
+            # B) USER MESSAGES (buttons etc.)
+            # =================================
             for message in value.get("messages", []):
 
                 phone = message["from"]
@@ -2008,7 +2239,6 @@ def whatsapp_webhook(request):
 
     return JsonResponse({"status": "ok"})
 
-
 def _create_payment(self, request, webinar):
     razorpay_view = RazorpayPaymentViewSet()
 
@@ -2021,7 +2251,6 @@ def _create_payment(self, request, webinar):
     }
 
     return razorpay_view.create(payment_request)
-
 
 class WebinarSessionViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
@@ -2073,13 +2302,12 @@ class WebinarSessionViewSet(viewsets.ViewSet):
         webinar.save(update_fields=["status"])
 
         return Response({"message": "Session ended"})
-
-
+    
 class WebinarLifecycleViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     @action(detail=True, methods=['post'])
-    @db_transaction.atomic
+    @transaction.atomic
     def cancel(self, request, slug=None):
         webinar = get_object_or_404(Webinar, slug=slug)
 
@@ -2094,8 +2322,7 @@ class WebinarLifecycleViewSet(viewsets.ViewSet):
         webinar.save()
 
         return Response({"detail": "Webinar cancelled"})
-
-
+    
 class WebinarFeedbackViewSet(viewsets.ViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     permission_classes = [permissions.AllowAny]
@@ -2165,8 +2392,11 @@ class WebinarFeedbackViewSet(viewsets.ViewSet):
                 "message": str(e)
             }, status=400)
 
-
 class WebinarTicketViewSet(viewsets.ViewSet):
+    """
+    Token-based ticketing for webinar participants.
+    Multi-use token until expiry.
+    """
 
     def _get_token(self, request):
         return (
@@ -2174,6 +2404,7 @@ class WebinarTicketViewSet(viewsets.ViewSet):
             or request.query_params.get("token")
         )
 
+    # GET /webinar/tickets/
     def list(self, request):
         mobile = request.query_params.get("mobile")
 
@@ -2197,6 +2428,8 @@ class WebinarTicketViewSet(viewsets.ViewSet):
         serializer = WebinarTicketSerializer(ticket)
         return Response({"success": True, "data": serializer.data})
 
+    # POST /webinar/tickets/
+    
     def create(self, request):
         mobile = request.data.get("mobile")
 
@@ -2212,7 +2445,7 @@ class WebinarTicketViewSet(viewsets.ViewSet):
         serializer.is_valid(raise_exception=True)
 
         ticket = StudentTicket.objects.create(
-            webinar_participant=participant,
+            webinar_participant=participant,  # IMPORTANT FIX
             subject=serializer.validated_data["subject"],
             message=serializer.validated_data["message"],
             priority=serializer.validated_data["priority"],
@@ -2224,6 +2457,7 @@ class WebinarTicketViewSet(viewsets.ViewSet):
             "ticket_id": ticket.ticket_id
         }, status=201)
     
+    # POST /webinar/tickets/{id}/reply/
     def reply(self, request, pk=None):
         ticket = StudentTicket.objects.filter(ticket_id=pk).first()
 
@@ -2243,12 +2477,12 @@ class WebinarTicketViewSet(viewsets.ViewSet):
 
         return Response({"success": True}, status=201)
 
-
 class PublicTicketViewSet(viewsets.ViewSet):
 
     permission_classes = [permissions.AllowAny]
 
-    @db_transaction.atomic
+    # CREATE TICKET
+    @transaction.atomic
     def create(self, request):
 
         serializer = PublicTicketCreateSerializer(data=request.data)
@@ -2270,6 +2504,7 @@ class PublicTicketViewSet(viewsets.ViewSet):
             status=status.HTTP_201_CREATED
         )
 
+    # GET OPEN TICKET DETAILS
     def retrieve(self, request):
 
         mobile = request.query_params.get("mobile")
@@ -2284,7 +2519,7 @@ class PublicTicketViewSet(viewsets.ViewSet):
             StudentTicket.objects
             .prefetch_related("replies", "attachments")
             .filter(phone=mobile)
-            .exclude(status="closed")
+            .exclude(status="closed")   # ignore closed tickets
             .order_by("-created_at")
             .first()
         )
@@ -2307,8 +2542,8 @@ class PublicTicketViewSet(viewsets.ViewSet):
             }
         )
     
-    @db_transaction.atomic
-    def reply(self, request, pk=None):
+    @transaction.atomic
+    def reply(self, request, pk= None):
 
         if not pk:
             return Response({"detail": "Id required"}, status=400)
@@ -2328,10 +2563,9 @@ class PublicTicketViewSet(viewsets.ViewSet):
 
         return Response({"success": True}, status=201)
 
-
 class WebinarCertificateViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
-
+    # @shared_task
     @action(detail=False, methods=["post"])
     def send(self, request):
 
@@ -2382,7 +2616,6 @@ class WebinarCertificateViewSet(viewsets.ViewSet):
             "count": sent_count
         })
 
-
 class FormViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -2390,6 +2623,7 @@ class FormViewSet(viewsets.ViewSet):
     def create(self, request):
         data = request.data.dict() if hasattr(request.data, 'dict') else dict(request.data)
 
+        # Parse questions JSON string → list (sent as text in multipart)
         questions = data.get("questions")
         if isinstance(questions, str):
             try:
@@ -2400,6 +2634,7 @@ class FormViewSet(viewsets.ViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         elif isinstance(questions, list) and len(questions) == 1 and isinstance(questions[0], str):
+            # QueryDict wraps everything in a list — unwrap and parse
             try:
                 data["questions"] = json.loads(questions[0])
             except json.JSONDecodeError:
@@ -2408,12 +2643,12 @@ class FormViewSet(viewsets.ViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+        # Re-attach the file from original request (dict() doesn't carry files)
         if "form_image" not in data and "form_image" in request.data:
             data["form_image"] = request.data["form_image"]
-            
         print("FINAL DATA FOR SERIALIZER:", data)
         serializer = FormCreateSerializer(
-            data=data,
+            data=data,  # pass the FIXED data, not request.data
             context={"request": request}
         )
 
@@ -2584,7 +2819,6 @@ class FormViewSet(viewsets.ViewSet):
             status=status.HTTP_200_OK
         )
 
-
 class SubmissionViewSet(viewsets.ViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
@@ -2648,6 +2882,7 @@ class SubmissionViewSet(viewsets.ViewSet):
         raw_answers = request.data.get("answers")
         print("RAW ANSWERS:", raw_answers)
 
+        # multipart → JSON string → Python list
         if isinstance(raw_answers, str):
             answers = json.loads(raw_answers)
         else:
@@ -2684,7 +2919,10 @@ class SubmissionViewSet(viewsets.ViewSet):
             status=status.HTTP_201_CREATED,
         )
 
-    @db_transaction.atomic
+    # --------------------------------------------------
+    # FAST + ATOMIC SUBMISSION HANDLER
+    # --------------------------------------------------
+    @transaction.atomic
     def _create_submission(self, form, answers_payload, files):
         submission = Submission.objects.create(
             form=form,
@@ -2706,6 +2944,7 @@ class SubmissionViewSet(viewsets.ViewSet):
             if not question:
                 continue
 
+            # secure file mapping
             file_obj = None
             if "file_key" in item:
                 file_obj = files.get(item["file_key"])
@@ -2742,10 +2981,8 @@ class SubmissionViewSet(viewsets.ViewSet):
             status=status.HTTP_200_OK,
         )
 
-
 class PublicFormThrottle(AnonRateThrottle):
     rate = "30/hour"
-
 
 class PublicFormViewSet(ReadOnlyModelViewSet):
     permission_classes = [AllowAny]
@@ -2777,3 +3014,4 @@ class PublicFormViewSet(ReadOnlyModelViewSet):
             "success": True,
             "data": serializer.data
         })
+    
