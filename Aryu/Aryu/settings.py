@@ -1,6 +1,8 @@
+
+from datetime import timedelta
+from corsheaders.defaults import default_headers
 from pathlib import Path
 import os
-from corsheaders.defaults import default_headers
 from dotenv import load_dotenv
 from datetime import timedelta
 
@@ -10,7 +12,6 @@ load_dotenv(BASE_DIR.parent / ".env")
 
 TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY")
 
-
 CORS_ALLOW_HEADERS = list(default_headers) + [
     'access-control-allow-origin',
     'authorization',
@@ -19,7 +20,7 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 
 
 """
-pip install channels-redis paypalrestsdk reportlab pyclamd pytesseract Pillow django_countries django_filter dj_rest_auth django-cors-headers django-allauth channels psycopg2-binary pytz stripe twilio holidays razorpay num2words djangorestframework Django qrcode django_redis django-axes captcha django_crontab celery daphne
+pip install channels-redis paypalrestsdk reportlab pyclamd pytesseract Pillow django_countries django_filter dj_rest_auth django-cors-headers django-allauth channels psycopg2-binary pytz stripe twilio holidays razorpay num2words djangorestframework Django qrcode django_redis django-axes captcha django_crontab 
 """
 
 
@@ -49,7 +50,7 @@ INSTALLED_APPS = [
 
     'rest_framework',
     'rest_framework.authtoken',
-    'django.contrib.postgres',
+    "rest_framework_simplejwt.token_blacklist",
 
     'dj_rest_auth',
     'dj_rest_auth.registration',
@@ -60,17 +61,18 @@ INSTALLED_APPS = [
     'allauth.socialaccount',
     "allauth.socialaccount.providers.github",
     "allauth.socialaccount.providers.google",
+    "rest_framework_simplejwt",
     # "captcha",
     'django_crontab',
-
-    
+    'django.contrib.postgres',
+    "django_celery_beat",
+    "drf_spectacular",
     
     'django_countries',
     'channels',
     'aryuapp',
     'live_quiz',
     "axes",
-    'django_ratelimit',
     "mock_interview",
     "webinar",
     "announcements",
@@ -78,13 +80,16 @@ INSTALLED_APPS = [
     "tests",
     "feedback",
     "courses",
+    "core",
     "batches",
     "payments",
-    "resources",
-    "resume",
     "ebook",
-    'lead',
+    "resume",
+    "resources",
+    "lead",
     "reports",
+    "lead.whatsapp"
+    
 ]
 
 ASGI_APPLICATION = "Aryu.asgi.application"
@@ -129,23 +134,27 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": ["redis://:35l1VUx9@49.207.178.161:6379/0"],
+            "hosts": ["redis://:35l1VUx9@49.207.178.161:6379/1"],
             "capacity": 1500,
             "expiry": 10,
         },
     },
 }
 
-CELERY_BROKER_URL = "redis://:35l1VUx9@49.207.178.161:6379/2"
-CELERY_RESULT_BACKEND = "redis://:35l1VUx9@49.207.178.161:6379/4"
-
 # CELERY_BROKER_URL = "redis://127.0.0.1:6379/2"
 # CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/4"
 
+CELERY_BROKER_URL = "redis://:35l1VUx9@49.207.178.161:6379/3"
+CELERY_RESULT_BACKEND = "redis://:35l1VUx9@49.207.178.161:6379/5"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 CELERY_TIMEZONE = "Asia/Kolkata"
 CELERY_ENABLE_UTC = False
+CELERY_TASK_TIME_LIMIT = 1800
+CELERY_TASK_SOFT_TIME_LIMIT = 1500
+CELERY_TASK_ACKS_LATE = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
@@ -156,6 +165,7 @@ MIDDLEWARE = [
 
     # CSRF must come *before* AuthenticationMiddleware
     "django.middleware.csrf.CsrfViewMiddleware",
+
 
     # Authentication
     "django.contrib.auth.middleware.AuthenticationMiddleware",
@@ -175,7 +185,6 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
-
 
 
 REST_FRAMEWORK = {
@@ -273,6 +282,11 @@ REST_FRAMEWORK = {
         "drf_spectacular.openapi.AutoSchema",
 }
 
+DATA_UPLOAD_MAX_MEMORY_SIZE = 15 * 1024 * 1024
+
+PDF_MAX_HTML_BYTES = 10 * 1024 * 1024
+
+
 SIMPLE_JWT = {
 
     # access token short life
@@ -298,13 +312,44 @@ SIMPLE_JWT = {
 
 }
 
+SOCIALACCOUNT_PROVIDERS = {
+    "github": {
+        "SCOPE": ["user:email"],
+        "VERIFIED_EMAIL": True,
+        "APP": {
+            "client_id": "Ov23liv2hQNjYO3xLdwn",
+            "secret": "c022f82b1ba78bff67ea1ceafb623a9c3b6afd82",
+            "key": "",
+        }
+    },
+    "google": {
+        "SCOPE": [
+            "profile",
+            "email",
+        ],
+        "AUTH_PARAMS": {
+            "access_type": "online",
+        },
+        "APP": {
+            "client_id": "454548779156-ntr8e0vv52001oiejk0ee3knggtula8m.apps.googleusercontent.com",
+            "secret": "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",
+            "key": "",
+        },
+    },
+}
+
 FASTAPI_URL="https://ai.aryuacademy.com"
+
+TELECRM_TOKEN="2b5fa0b5-b45c-4150-ab6f-09a001575ca01779800797507:0d16d31d-e820-45fa-aafc-869ef640917d"
+TELECRM_ID="6a13da730fbcb752673e080c"
+TELECRM_API = "https://next-api.telecrm.in"
+
 
 # 
 # SERVER_ROOT = Path("/var/www/ay-lms-python-L")
-SERVER_ROOT = Path("/home/tamilselvi/Documents/GitHub/ay-lms-python-L")
+# SERVER_ROOT = Path("/home/tamilselvi/Documents/GitHub/ay-lms-python-L")
 
-# SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L")
+SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L")
 
 LOGGING = {
     "version": 1,
@@ -379,33 +424,43 @@ CRONJOBS = [
 # CORS_ALLOW_ALL_ORIGINS = True
 
 CORS_ALLOWED_ORIGINS = [
-    "https://portal.aryuacademy.com",
-    "https://workshop.aryuacademy.com",
-    "https://aryuacademy.com",
-    "https://passats.aryuacademy.com",
-    "http://127.0.0.1:8000",
     "http://localhost:3000",
+    "https://workshop.aryuacademy.com",
+    "https://webminar.aryuprojects.com",
+    "https://airesumebuilder.aryuacademy.com",
+    "https://passats.aryuacademy.com",
+    "https://aryuacademy.com"
 ]
 
 CSRF_TRUSTED_ORIGINS = [
-    "https://portal.aryuacademy.com",
-    "https://workshop.aryuacademy.com",
-    "https://aryuacademy.com",
-    "https://passats.aryuacademy.com",
-    "http://127.0.0.1:8000",
     "http://localhost:3000",
-]
-
-ALLOWED_HOSTS = [
-    "portal.aryuacademy.com",
-    "workshop.aryuacademy.com",
-    "aryuacademy.com",
-    "passats.aryuacademy.com",
-    "localhost",
-    "127.0.0.1",
+    "https://workshop.aryuacademy.com",
+    "https://webminar.aryuprojects.com",
+    "https://airesumebuilder.aryuacademy.com",
+    "https://passats.aryuacademy.com",
+    "https://aryuacademy.com"
     
 ]
 
+ALLOWED_HOSTS = [
+    "workshop.aryuacademy.com",
+    "localhost",
+    "webminar.aryuprojects.com",
+    "airesumebuilder.aryuacademy.com",
+    "passats.aryuacademy.com",
+    "aryuacademy.com",
+    "127.0.0.1"
+]  # Allow all hosts for development; change in production
+
+
+# LOCAL DEVELOPMENT:
+KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
+
+# PRODUCTION (Using Server IP):
+# KAFKA_BOOTSTRAP_SERVERS = "192.168.1.150:9092"
+
+# PRODUCTION (Using Domain/DNS Name):
+# KAFKA_BOOTSTRAP_SERVERS = "kafka.yourdomain.com:9092"
 
 ACCOUNT_LOGOUT_ON_PASSWORD_CHANGE = True
 
@@ -428,7 +483,7 @@ CORS_ALLOW_METHODS = (
     "PUT",
 )
 
-MAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 DEFAULT_FROM_EMAIL = 'support@aryuacademy.com'
 EMAIL_HOST = "smtp.hostinger.com"
 EMAIL_PORT = 587
@@ -436,7 +491,6 @@ EMAIL_USE_TLS = True
 EMAIL_HOST_USER = "support@aryuacademy.com"
 EMAIL_HOST_PASSWORD = "A/cMu5nqYs16"
 # DEFAULT_FROM_EMAIL = "Aryu Academy <support@aryuacademy.com>"
-
 
 
 SITE_ID = 1
@@ -455,6 +509,11 @@ CSRF_COOKIE_SAMESITE = "Lax"
 
 SESSION_COOKIE_AGE = 1800  # 30 minutes in seconds
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+
+GOOGLE_CLIENT_ID = "1004056077681-qfeuc4edcpob49o1gk4168a3ap7lrnqs.apps.googleusercontent.com"
+GOOGLE_CLIENT_SECRET = "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"
+GOOGLE_REDIRECT_URI = "http://127.0.0.1:8000/api/oauth2callback/"
+
 
 ACCOUNT_LOGIN_METHODS = {'email'}
 ACCOUNT_SIGNUP_FIELDS = ['email*', 'password1*', 'password2*']
@@ -488,7 +547,7 @@ TWILIO_PHONE_NUMBER = "+15075854260"
 
 
 MEDIA_URL = '/api/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+MEDIA_ROOT = os.path.join(BASE_DIR, 'api/media')
 
 MEDIA_BASE_URL = "https://portal.aryuacademy.com/api"
 

@@ -18,6 +18,7 @@ import csv
 import io
 import mimetypes
 import re
+from django.utils.dateparse import parse_date, parse_datetime
 import openpyxl
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, JSONParser, FormParser
@@ -104,27 +105,14 @@ class LeadSecurityMixin:
 # MAIN ADMIN VIEWSET
 # =========================================================
 
-class LeadViewSet(
-    LeadSecurityMixin,
-    viewsets.ViewSet
-):
-
-
+class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
     authentication_classes = [
         CustomJWTAuthentication,
         SessionAuthentication,
     ]
-
-    permission_classes = [
-        IsAuthenticated
-    ]
-
-    throttle_classes = [
-        AdminLeadThrottle
-    ]
-
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [AdminLeadThrottle]
     parser_classes = [MultiPartParser, JSONParser]
-
     pagination_class = LeadPagination
 
     # =====================================================
@@ -132,30 +120,13 @@ class LeadViewSet(
     # =====================================================
 
     def paginate_queryset(self, queryset, request):
-
         paginator = self.pagination_class()
-
-        paginated_queryset = paginator.paginate_queryset(
-            queryset,
-            request
-        )
-
+        paginated_queryset = paginator.paginate_queryset(queryset, request)
         return paginated_queryset, paginator
 
-    # =====================================================
-    # DIRECT LEADS QUERYSET
-    # =====================================================
-
     def get_lead_queryset(self):
-
         return (
-
-            Lead.objects
-
-            .filter(
-                is_archived=False
-            )
-
+            Lead.objects.filter(is_archived=False)
             .only(
                 "id",
                 "name",
@@ -175,110 +146,118 @@ class LeadViewSet(
                 "created_by",
                 "created_by_type",
             )
-
             .annotate(
                 lead_origin=Value(
                     "lead",
                     output_field=CharField(),
                 )
             )
-
             .order_by("-created_at")
-
         )
 
+    def get_active_handled_by_users(self):
+        """
+        Fetches active, non-archived users as lightweight dictionaries.
+        Uses Django cache to serve subsequent reads in O(1) time.
+        """
+
+        users = list(
+            User.objects.filter(
+                is_active=True,
+                is_archived=False
+            ).values("id", "full_name")
+        )
+
+        return users
+
     def get_active_courses(self):
-
         cache_key = "active_courses"
-
         courses = cache.get(cache_key)
 
         if courses is not None:
             return courses
 
         courses = list(
-
             Course.objects.filter(
-
-                status="Active",
-
-                is_archived=False
-
-            ).values(
-
-                "course_id",
-
-                "course_name"
-
-            )
-
+                status="Active", is_archived=False
+            ).values("course_id", "course_name")
         )
 
-        cache.set(
-
-            cache_key,
-
-            courses,
-
-            timeout=600
-
-        )
-
+        cache.set(cache_key, courses, timeout=600)
         return courses
+
+    # =====================================================
+    # MAIN LIST METHOD
+    # =====================================================
 
     def list(self, request):
         self.validate_admin_access(request)
 
-        cache_key = (
-            f"lead-engine:"
-            f"{request.user.id}:"
-            f"{hash(request.get_full_path())}"
-        )
-
+        cache_key = f"lead-engine:{request.user.id}:{hash(request.get_full_path())}"
         cached_response = cache.get(cache_key)
         if cached_response:
             return Response(cached_response)
 
-        # 1. Start with the model queryset for DB filtering
+        # 1. Base queryset (O(1) memory overhead lazily evaluated)
         leads_queryset = self.get_lead_queryset()
 
+        # O(1) space, O(log N) DB index scan for total active leads count
+        total_active_leads = leads_queryset.count()
+
         # =====================================
-        # SEARCH
+        # 1. SEARCH FILTER
         # =====================================
         search = request.query_params.get("search")
-
         if search:
-
             search = search.strip()
-
             if search.isdigit():
-
                 leads_queryset = leads_queryset.filter(phone__startswith=search)
-
             elif "@" in search:
-
                 leads_queryset = leads_queryset.filter(email__iexact=search)
-
             else:
-
                 leads_queryset = leads_queryset.filter(name__istartswith=search)
 
         # =====================================
-        # STATUS FILTER
+        # 2. STATUS & SOURCE FILTERS
         # =====================================
         status_filter = request.query_params.get("status")
         if status_filter:
             leads_queryset = leads_queryset.filter(status=status_filter)
 
-        # =====================================
-        # SOURCE FILTER
-        # =====================================
         source_filter = request.query_params.get("source")
         if source_filter:
             leads_queryset = leads_queryset.filter(source=source_filter)
 
         # =====================================
-        # FIX: CONVERT MODEL INSTANCES TO DICTIONARIES
+        # 3. DATE FILTERS (`created_at__gte`, `created_at__lte`)
+        # =====================================
+        created_at_gte = request.query_params.get("created_at__gte")
+        if created_at_gte:
+            parsed_date = parse_datetime(created_at_gte) or parse_date(created_at_gte)
+            if parsed_date:
+                leads_queryset = leads_queryset.filter(created_at__gte=parsed_date)
+
+        created_at_lte = request.query_params.get("created_at__lte")
+        if created_at_lte:
+            parsed_date = parse_datetime(created_at_lte) or parse_date(created_at_lte)
+            if parsed_date:
+                leads_queryset = leads_queryset.filter(created_at__lte=parsed_date)
+
+        # =====================================
+        # 4. COURSES FILTER (Supports multi-select `DJANGO,PYTHON`)
+        # =====================================
+        courses_param = request.query_params.get("courses")
+        if courses_param:
+            # Hash-Set conversion for O(K) lookup efficiency
+            courses_list = [c.strip() for c in courses_param.split(",") if c.strip()]
+            if courses_list:
+                if len(courses_list) == 1:
+                    leads_queryset = leads_queryset.filter(course__iexact=courses_list[0])
+                else:
+                    leads_queryset = leads_queryset.filter(course__in=courses_list)
+
+        # =====================================
+        # 5. DICT PROJECTION & CURSOR PAGINATION
         # =====================================
         leads_values_queryset = leads_queryset.values(
             "id",
@@ -301,29 +280,22 @@ class LeadViewSet(
             "lead_origin",
         )
 
-        # =====================================
-        # CURSOR PAGINATION
-        # =====================================
-        # Passing the dictionary-yielding values queryset to the paginator
         paginated_queryset, paginator = self.paginate_queryset(
-            leads_values_queryset,
-            request
+            leads_values_queryset, request
         )
 
         response_data = paginator.get_paginated_response(
             paginated_queryset
         ).data
 
+        response_data["total_active_leads"] = total_active_leads
         response_data["courses"] = self.get_active_courses()
+        response_data["users"] = self.get_active_handled_by_users()
 
         # =====================================
-        # SHORT CACHE
+        # CACHE PRESERVATION
         # =====================================
-        cache.set(
-            cache_key,
-            response_data,
-            timeout=60
-        )
+        cache.set(cache_key, response_data, timeout=60)
 
         return Response(response_data)
     
@@ -435,6 +407,8 @@ class LeadViewSet(
             key=lambda x: x["created_at"],
             reverse=True
         )
+        response_data["courses"] = self.get_active_courses()
+        response_data["users"] = self.get_active_handled_by_users()
 
         cache.set(
             cache_key,
@@ -471,8 +445,23 @@ class LeadViewSet(
         # =====================================
         # CACHE INVALIDATION
         # =====================================
-
-        cache.delete_pattern("lead-engine:*")
+        try:
+            # 1. Grab the raw client safely using Django's internal wrapper
+            raw_client = cache._cache
+            
+            # 2. Use a wildcard search that accounts for Django's built-in key prefix matching
+            # This matches strings ending in your pattern (e.g., ":1:lead-engine:...")
+            keys_to_delete = raw_client.keys("*lead-engine:*")
+            
+            if keys_to_delete:
+                # 3. Strip out Django's prefix processing by executing the delete directly on the raw client
+                # decode("utf-8") ensures the keys are handled correctly if they return as bytes
+                decoded_keys = [k.decode("utf-8") if isinstance(k, bytes) else k for k in keys_to_delete]
+                raw_client.delete(*decoded_keys)
+                
+        except Exception as e:
+            # Prevent cache layer issues from crashing the entire database transaction
+            print(f"Cache invalidation failed: {e}")
 
         return Response(
             {
@@ -926,8 +915,26 @@ class LeadViewSet(
 
         serializer.save()
 
-        cache.delete_pattern("lead-engine:*")
-        cache.delete(f"lead-detail:{pk}")
+        # =====================================
+        # CACHE INVALIDATION
+        # =====================================
+        try:
+            # 1. Grab the raw client safely using Django's internal wrapper
+            raw_client = cache._cache
+            
+            # 2. Use a wildcard search that accounts for Django's built-in key prefix matching
+            # This matches strings ending in your pattern (e.g., ":1:lead-engine:...")
+            keys_to_delete = raw_client.keys("*lead-engine:*")
+            
+            if keys_to_delete:
+                # 3. Strip out Django's prefix processing by executing the delete directly on the raw client
+                # decode("utf-8") ensures the keys are handled correctly if they return as bytes
+                decoded_keys = [k.decode("utf-8") if isinstance(k, bytes) else k for k in keys_to_delete]
+                raw_client.delete(*decoded_keys)
+                
+        except Exception as e:
+            # Prevent cache layer issues from crashing the entire database transaction
+            print(f"Cache invalidation failed: {e}")
 
         return Response(
             {
