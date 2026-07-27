@@ -451,7 +451,7 @@ ALLOWED_HOSTS = [
     "airesumebuilder.aryuacademy.com",
     "passats.aryuacademy.com",
     "aryuacademy.com",
-    "127.0.0.1"
+    "127.0.0.1",
     "portal.aryuacademy.com"
 ]  # Allow all hosts for development; change in production
 
