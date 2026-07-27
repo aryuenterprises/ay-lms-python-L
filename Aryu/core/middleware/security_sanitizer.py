@@ -17,20 +17,10 @@ class InputSanitizationMiddleware(MiddlewareMixin):
       - XSS script injections on string endpoints.
     """
 
-    HTML_ALLOWED_PATHS = [
-        "/api/resume/candidates/generate-pdf",
-        "/api/resume/user-resumes",
-        "/api/resume/create-plan/",
-        "/api/resume/update-plan/",
-    ]
-
-    def is_html_allowed(self, path):
-        return any(path.startswith(p) for p in self.HTML_ALLOWED_PATHS)
-
     def process_request(self, request):
 
         # Skip sanitization for HTML → PDF endpoint
-        if self.is_html_allowed(request.path):
+        if request.path.startswith("/api/resume/candidates/generate-pdf"):
             return None
 
         if request.method in ["POST", "PUT", "PATCH"]:
@@ -61,34 +51,50 @@ class InputSanitizationMiddleware(MiddlewareMixin):
 
         return None
 
-
     def sanitize_data(self, data, depth=0):
-        """
-        Recursively clean and escape inputs. 
-        Enforces defensive max depth bounds to block deep recursive stack-exhaustion payloads.
-        """
+
         if depth > 10:
             raise PermissionDenied("Payload nesting depth threshold exceeded.")
 
         if isinstance(data, dict):
-            # Block MongoDB NoSQL style operators completely (e.g. keys starting with $)
             cleaned_dict = {}
-            for k, v in data.items():
-                if isinstance(k, str) and k.startswith("$"):
-                    logger.warning(f"NoSQL injection pattern key '{k}' detected and blocked.")
+
+            for key, value in data.items():
+
+                # Block MongoDB operators
+                if isinstance(key, str) and key.startswith("$"):
+                    logger.warning(
+                        f"NoSQL injection pattern key '{key}' detected and blocked."
+                    )
                     continue
-                cleaned_dict[k] = self.sanitize_data(v, depth + 1)
+
+                # Allow HTML for rich text fields
+                if key in [
+                    "description",
+                    "content",
+                    "body",
+                    "notes",
+                    "message",
+                    "html"
+                ]:
+                    if isinstance(value, str):
+                        cleaned_dict[key] = value.strip()
+                    else:
+                        cleaned_dict[key] = self.sanitize_data(value, depth + 1)
+
+                else:
+                    cleaned_dict[key] = self.sanitize_data(value, depth + 1)
+
             return cleaned_dict
 
         elif isinstance(data, list):
             return [self.sanitize_data(item, depth + 1) for item in data]
 
         elif isinstance(data, str):
-            # Escapes <script> tag blocks to safe equivalents and strip trailing spaces
+            print("ESCAPING STRING:", data)
             return html.escape(data.strip())
-
         return data
-
+    
     def process_exception(self, request, exception):
         """
         Catches database lookup casting failures (like a dictionary passed to an Integer PK field lookup)
