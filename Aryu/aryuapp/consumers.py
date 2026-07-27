@@ -12,12 +12,21 @@ from chats.models import ChatRoom, Message, Notification
 from chats.serializers import MessageSerializer, NotificationSerializer
 
 
+# ══════════════════════════════════════════════════════════════════
+# CHAT CONSUMER — WhatsApp style
+# Flow:
+#   connect()     → join room group, send last 30 messages as history
+#   receive()     → save message to DB + broadcast to room group
+#   chat_message()→ channel layer handler, sends to this WebSocket
+#   disconnect()  → leave room group
+# ══════════════════════════════════════════════════════════════════
+
 class ChatConsumer(AsyncWebsocketConsumer):
 
     async def connect(self):
         self.room_id = self.scope["url_route"]["kwargs"]["room_id"]
         self.room_group_name = f"chat_{self.room_id}"
-        self.room = None  # always initialize before any early return
+        self.room = None  # ✅ always initialize before any early return
 
         self.room = await self._get_room(self.room_id)
         if not self.room:
@@ -37,7 +46,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }))
 
     async def disconnect(self, close_code):
-        # guard — room_group_name may not be set if connect() failed early
+        # ✅ guard — room_group_name may not be set if connect() failed early
         if hasattr(self, "room_group_name"):
             await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
@@ -197,12 +206,26 @@ class ChatConsumer(AsyncWebsocketConsumer):
         finally:
             connection.close()
 
+
+# ══════════════════════════════════════════════════════════════════
+# NOTIFICATION CONSUMER — push only
+# Flow:
+#   connect()   → join personal group, send unread COUNT only
+#   notify()    → channel layer handler called by signals.py on new notification
+#   receive()   → handle mark_read from frontend
+#   disconnect()→ leave group
+#
+# NOTE: signals.py calls group_send("type": "notify") when a
+#       Notification is saved — this consumer just delivers it live.
+#       Full notification list comes from REST API (NotificationListView).
+# ══════════════════════════════════════════════════════════════════
+
 class NotificationConsumer(AsyncWebsocketConsumer):
 
     async def connect(self):
         from urllib.parse import parse_qs
 
-        # Always initialize — prevents AttributeError in disconnect()
+        # ✅ Always initialize — prevents AttributeError in disconnect()
         self.group_name = None
         self.user_type = None
         self.user_id = None
@@ -224,8 +247,10 @@ class NotificationConsumer(AsyncWebsocketConsumer):
                 self.user_id = payload.get("employee_id")
             elif self.user_type == "employer":
                 self.user_id = payload.get("employer_id")
-            elif self.user_type in ["admin", "super_admin"]:
-                self.user_id = payload.get("user_id") or payload.get("employee_id")
+            elif self.user_type == "admin":
+                self.user_id = payload.get("employee_id")   # admin is a Trainer
+            elif self.user_type == "super_admin":
+                self.user_id = payload.get("user_id")        # super_admin is a User
             else:
                 await self.close(code=4002)
                 return
@@ -255,7 +280,7 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         }))
 
     async def disconnect(self, close_code):
-        # FIXED — self.group_name is always initialized so this never crashes
+        # ✅ FIXED — self.group_name is always initialized so this never crashes
         if self.group_name:
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
@@ -308,24 +333,21 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         try:
             if self.user_type == "student":
                 return Notification.objects.filter(
-                    student__registration_id=self.user_id,
-                    is_read=False,
-                ).count()
+                    student__registration_id=self.user_id, is_read=False).count()
             elif self.user_type == "tutor":
                 return Notification.objects.filter(
-                    trainer__employee_id=self.user_id,
-                    is_read=False,
-                ).count()
+                    trainer__employee_id=self.user_id, is_read=False).count()
             elif self.user_type == "employer":
                 return Notification.objects.filter(
-                    sub_admin__employer_id=self.user_id,
-                    is_read=False,
-                ).count()
-            elif self.user_type in ["admin", "super_admin"]:
+                    sub_admin__employer_id=self.user_id, is_read=False).count()
+            elif self.user_type == "admin":
+                # admin is a Trainer with user_type=admin
                 return Notification.objects.filter(
-                    trainer__employee_id=self.user_id,
-                    is_read=False,
-                ).count()
+                    trainer__employee_id=self.user_id, is_read=False).count()
+            elif self.user_type == "super_admin":
+                # super_admin is a User (Django User model)
+                return Notification.objects.filter(
+                    super_admin__id=self.user_id, is_read=False).count()
             return 0
         finally:
             connection.close()
