@@ -429,7 +429,8 @@ CORS_ALLOWED_ORIGINS = [
     "https://webminar.aryuprojects.com",
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
-    "https://aryuacademy.com"
+    "https://aryuacademy.com",
+    "https://portal.aryuacademy.com",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -438,8 +439,9 @@ CSRF_TRUSTED_ORIGINS = [
     "https://webminar.aryuprojects.com",
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
-    "https://aryuacademy.com"
-    
+    "https://aryuacademy.com",
+    "https://portal.aryuacademy.com",
+
 ]
 
 ALLOWED_HOSTS = [
@@ -450,6 +452,7 @@ ALLOWED_HOSTS = [
     "passats.aryuacademy.com",
     "aryuacademy.com",
     "127.0.0.1"
+    "portal.aryuacademy.com"
 ]  # Allow all hosts for development; change in production
 
 
