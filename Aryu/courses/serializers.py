@@ -7,7 +7,7 @@ import os
 import re
 from aryuapp.models import Assignment,Submission
 from batches.models import NewBatch
-from django.utils.html import escape
+# from django.utils.html import escape
 # import request
 from rest_framework.response import Response
 from rest_framework import status

@@ -5,7 +5,7 @@ import logging
 from django.utils.deprecation import MiddlewareMixin
 from django.http import JsonResponse
 from django.core.exceptions import PermissionDenied, ValidationError
-
+import bleach
 logger = logging.getLogger(__name__)
 
 class InputSanitizationMiddleware(MiddlewareMixin):
@@ -91,8 +91,15 @@ class InputSanitizationMiddleware(MiddlewareMixin):
             return [self.sanitize_data(item, depth + 1) for item in data]
 
         elif isinstance(data, str):
-            print("ESCAPING STRING:", data)
-            return html.escape(data.strip())
+            return bleach.clean(
+                data.strip(),
+                tags=[],
+                attributes={},
+                protocols=["http", "https"],
+                strip=True,
+                strip_comments=True,
+            )
+
         return data
     
     def process_exception(self, request, exception):

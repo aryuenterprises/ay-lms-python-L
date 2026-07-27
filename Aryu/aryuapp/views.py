@@ -54,8 +54,8 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.hashers import make_password
 import traceback
-from batches.models import BatchRecording
 from batches.serializers import BatchRecordingSerializer
+
 class IsAdminOrSuperAdmin(BasePermission):
     def has_permission(self, request, view):
         return getattr(request.user, "user_type", "") in ["admin", "super_admin"]
@@ -3710,6 +3710,7 @@ class StudentRegistration(viewsets.ModelViewSet):
         self.perform_create(serializer)
         student = serializer.instance
         send_welcome_email(student, student._plain_password)
+
         headers = self.get_success_headers(serializer.data)
 
         return Response({
@@ -6479,43 +6480,6 @@ class CertificateViewSet(viewsets.ModelViewSet):
             "data": serializer.data
         }, status=status.HTTP_200_OK)
     
-    def create(self, request, *args, **kwargs):
-        """
-        POST /api/certificates/
-        Creates a certificate record and triggers the image/PDF generation.
-        """
-        serializer = self.get_serializer(data=request.data)
-        if not serializer.is_valid():
-            print("--- VALIDATION ERRORS ---")
-            print(serializer.errors)  # This will print {'field_name': ['This field is required.']}
-            print("------------------------")
-            
-        serializer.is_valid(raise_exception=True)
-        
-        # 1. Save the instance to the database
-        certificate = serializer.save()
-        from .certificate_filler import generate_and_send_certificate_pdf
-
-        # 2. Trigger the PDF generation
-        # If generate_and_send_certificate_pdf is decorated with @shared_task, use:
-        # generate_and_send_certificate_pdf.delay(certificate.id)
-        # Otherwise, run it synchronously:
-        try:
-            generate_and_send_certificate_pdf(certificate.id)
-            # Refresh from DB to get the newly updated file path if needed
-            certificate.refresh_from_db()
-        except Exception as e:
-            logger.error("Failed to generate certificate file: %s", str(e))
-            # Optional: You can choose to fail the request or return success 
-            # with a warning that the file is generating.
-
-        # 3. Return response with serialized data
-        return Response({
-            "success": True,
-            "message": "Certificate created and file generation triggered successfully.",
-            "data": self.get_serializer(certificate).data
-        }, status=status.HTTP_201_CREATED)
-    
     @action(detail=False, methods=['get'], url_path='<student_id>' )
     def student_certificates(self, request, student_id=None):
         certificates = Certificate.objects.filter(student=student_id)
@@ -6705,6 +6669,7 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
+    
  
     # ── Create ───────────────────────────────────────────────────────────
  
@@ -7361,8 +7326,10 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
 
                 batch_ids = []
                 titles = []
-                course_ids = []
-                course_names = []
+                trainer_courses = t.courses.all()
+
+                course_ids = [c.course_id for c in trainer_courses]
+                course_names = [c.course_name for c in trainer_courses]
                 category_ids = []
                 category_names = []
 
@@ -7395,7 +7362,15 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
 
                 # -------- NEW BATCH --------
 
-                for nb in new_batch_map.get(t.trainer_id, []):
+                # Get batches from trainer courses
+
+                trainer_batches = NewBatch.objects.filter(
+                    course__in=trainer_courses,
+                    is_archived=False,
+                    status=True
+                ).select_related("course", "course__course_category")
+
+                for nb in trainer_batches:
 
                     course = nb.course
                     category = course.course_category if course else None
@@ -7403,17 +7378,13 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                     batch_ids.append(nb.batch_id)
                     titles.append(nb.title)
 
-                    if course:
-                        course_ids.append(course.course_id)
-                        course_names.append(course.course_name)
-
                     if category:
                         category_ids.append(category.category_id)
                         category_names.append(category.category_name)
 
                     course_details.append({
-                        "course_id": course.course_id if course else None,
-                        "course_name": course.course_name if course else None,
+                        "course_id": course.course_id,
+                        "course_name": course.course_name,
                         "batch_id": nb.batch_id,
                         "batch_title": nb.title
                     })
@@ -7474,12 +7445,36 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                 ).values(
                     "course_id",
                     "course_name",
-                    "course_category"
+                    "course_category",
                 )
             )
 
             for c in courses:
                 c["category_id"] = c.pop("course_category")
+
+
+            batches = []
+
+            course_queryset = Course.objects.filter(
+                is_archived=False,
+                status__iexact="Active"
+            )
+
+            for course in course_queryset:
+                course_batches = NewBatch.objects.filter(
+                    course=course,
+                    status=True,
+                    is_archived=False
+                ).values(
+                    "batch_id",
+                    "title"
+                )
+
+                batches.append({
+                    "course_id": course.course_id,
+                    "course_name": course.course_name,
+                    "batches": list(course_batches)
+                })
 
             # ---------------- CATEGORIES ----------------
 
@@ -7495,16 +7490,28 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
 
             # ---------------- BATCHES ----------------
 
-            batches = list(
-                Batch.objects.filter(
-                    is_archived=False,
-                    status=True
-                ).values(
-                    "batch_id",
-                    "batch_name",
-                    "title"
-                )
-            )
+            # batches = []
+
+            # courses = Course.objects.filter(
+            #     is_archived=False,
+            #     status__iexact="Active"
+            # )
+
+            # for course in courses:
+            #     course_batches = NewBatch.objects.filter(
+            #         course=course,
+            #         status=True,
+            #         is_archived=False
+            #     ).values(
+            #         "batch_id",
+            #         "title"
+            #     )
+
+            #     batches.append({
+            #         "course_id": course.course_id,
+            #         "course_name": course.course_name,
+            #         "batches": list(course_batches)
+            #     })
 
             # ---------------- STUDENTS ----------------
 
@@ -8650,6 +8657,7 @@ class SubmissionViewSet(LoggingMixin, viewsets.ModelViewSet):
                 "message": str(e)
             }, status=status.HTTP_200_OK)
 
+
 class SubmissionReplyViewSet(viewsets.ModelViewSet):
     serializer_class = SubmissionReplySerializer
     permission_classes = [IsAuthenticated]
@@ -8787,7 +8795,7 @@ class SubmissionReplyViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
-        
+     
 class UserPresenceViewSet(viewsets.ModelViewSet):
     queryset = UserPresence.objects.all()
     serializer_class = UserPresenceSerializer
@@ -8817,6 +8825,7 @@ class AdminfullLogViewSet(ReadOnlyModelViewSet):
         if not user or user.get('user_type') != 'admin':
             return Response({'error': 'Unauthorized'}, status=status.HTTP_200_OK)
         return super().list(request, *args, **kwargs)
+
 
 class StudentBatchRecordingView(APIView):
     def get(self, request, student_id):
