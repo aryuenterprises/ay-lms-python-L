@@ -195,6 +195,8 @@ class LeadSerializer(serializers.ModelSerializer):
             "qualification",
             "user_type",
             "message",
+            "profession",
+            "rating",
 
             # ADDRESS
             "address",
@@ -218,6 +220,7 @@ class LeadSerializer(serializers.ModelSerializer):
             "source_campaign",
             "source_platform",
             "source_type",
+            "facebook_campaign",
 
             # FOLLOWUP
             "followup_by",
@@ -227,6 +230,8 @@ class LeadSerializer(serializers.ModelSerializer):
             "followup_date",
             "next_followup_date",
             "last_contacted_at",
+            "demo_scheduled_date",
+            "demo_done_date",
 
             # TRACKING
             "no_of_dms",
