@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from aryuapp.models import Student
 from batches.models import NewBatch
 from payments.models import PaymentTransaction
-
+from courses.models import Course
 
 class AryuReportView(APIView):
 
@@ -14,6 +14,7 @@ class AryuReportView(APIView):
 
             search = request.GET.get("search", "").strip()
             tutor_id = request.GET.get("tutor_id", "").strip()
+            course_id = request.GET.get("course_id", "").strip()
 
             students = Student.objects.filter(
                 is_archived=False
@@ -32,6 +33,18 @@ class AryuReportView(APIView):
                 students = students.filter(
                     new_batches__trainer__trainer_id=tutor_id
                 ).distinct()
+            if course_id:
+                students = students.filter(
+                    new_batches__course__course_id=course_id,
+                    new_batches__is_archived=False,
+                    new_batches__status=True,
+                ).distinct()
+
+            courses = (
+                Course.objects.filter(is_archived=False)
+                .values("course_id", "course_name")
+                .order_by("course_name")
+            )
 
             data = []
 
@@ -56,12 +69,17 @@ class AryuReportView(APIView):
 
                 batches = (
                     NewBatch.objects.filter(
-                        students__student_id=student.student_id
+                        students__student_id=student.student_id,
+                        is_archived=False,
+                        status=True,
                     )
                     .select_related("course")
                     .prefetch_related("trainers")
-                    .distinct()
                 )
+
+               
+
+                batches = batches.distinct()
 
                 for batch in batches:
 
@@ -186,27 +204,8 @@ class AryuReportView(APIView):
                     student_data["payment_history"] = payment_history
 
                 data.append(student_data)
-                course_list = (
-                    NewBatch.objects.filter(
-                        is_archived=False,
-                        status=True
-                    )
-                    .select_related("course")
-                    .values(
-                        "course__course_id",
-                        "course__course_name"
-                    )
-                    .distinct()
-                )
-
                 courses = (
-                    Course.objects.filter(
-                        is_archived=False,
-                        status=True,
-                        new_batches__is_archived=False,
-                        new_batches__status=True,
-                    )
-                    .distinct()
+                    Course.objects.filter(is_archived=False)
                     .values("course_id", "course_name")
                     .order_by("course_name")
                 )
@@ -215,7 +214,7 @@ class AryuReportView(APIView):
                 "success": True,
                 "total_records": students.count(),
                 "data": data,
-                "courses": courses,
+                "courses": list(courses),
             })
 
         except Exception as e:
