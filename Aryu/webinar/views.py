@@ -64,7 +64,7 @@ VALID_DONE_STATUSES = {
 # ============================================================================
 # RAZORPAY WEBHOOK HANDLER
 # ============================================================================
-@csrf_exempt
+
 @csrf_exempt
 def razorpay_webhook(request):
     """
