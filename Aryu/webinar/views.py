@@ -160,11 +160,13 @@ def razorpay_webhook(request):
                     .filter(order_id=order_id)
                     .first()
                 )
-
+                
+                logger.info("txn", txn)
                 if txn:
 
                     txn.payment_status = "done"
                     txn.transaction_id = transaction_id
+                    logger.info("transaction id ", transaction_id)
                     txn.save(
                         update_fields=[
                             "payment_status",
