@@ -636,7 +636,7 @@ class PublicLeadCreateSerializer(serializers.ModelSerializer):
 
         validated_data.setdefault(
             "status",
-            "new"
+            "fresh"
         )
 
         validated_data.setdefault(
