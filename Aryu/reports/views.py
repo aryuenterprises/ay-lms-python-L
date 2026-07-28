@@ -186,11 +186,36 @@ class AryuReportView(APIView):
                     student_data["payment_history"] = payment_history
 
                 data.append(student_data)
+                course_list = (
+                    NewBatch.objects.filter(
+                        is_archived=False,
+                        status=True
+                    )
+                    .select_related("course")
+                    .values(
+                        "course__course_id",
+                        "course__course_name"
+                    )
+                    .distinct()
+                )
+
+                courses = (
+                    Course.objects.filter(
+                        is_archived=False,
+                        status=True,
+                        new_batches__is_archived=False,
+                        new_batches__status=True,
+                    )
+                    .distinct()
+                    .values("course_id", "course_name")
+                    .order_by("course_name")
+                )
 
             return Response({
                 "success": True,
                 "total_records": students.count(),
-                "data": data
+                "data": data,
+                "courses": courses,
             })
 
         except Exception as e:
