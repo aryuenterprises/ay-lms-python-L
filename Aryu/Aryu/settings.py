@@ -201,6 +201,8 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ],
 
+    'NUM_PROXIES': 1,
+
     # FILTERS
 
     "DEFAULT_FILTER_BACKENDS": [
