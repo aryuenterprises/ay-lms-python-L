@@ -75,59 +75,78 @@ class ResourcesViewSet(viewsets.ModelViewSet):
             # 1. Process Lead Form if enabled on resource
             if resource.form:
                 lead_serializer = LeadCaptureSerializer(data=request.data)
-                
-                # If frontend validation fails, return 400 with details
+
+                # Validation failure
                 if not lead_serializer.is_valid():
                     return Response(
                         {
                             "success": False,
                             "message": "Validation failed",
-                            "errors": lead_serializer.errors
+                            "errors": lead_serializer.errors,
                         },
-                        status=status.HTTP_400_BAD_REQUEST
+                        status=status.HTTP_400_BAD_REQUEST,
                     )
 
                 validated_data = lead_serializer.validated_data
-                
-                # Safely get phone without throwing KeyError
                 phone = validated_data.get("phone")
 
+                lead_defaults = {
+                    "name": validated_data.get("name") or None,
+                    "email": validated_data.get("email") or None,
+                    "city": validated_data.get("city") or None,
+                    "qualification": validated_data.get("qualification") or None,
+                    "course_interested_in": validated_data.get("course_interested_in") or None,
+                    "interested": validated_data.get("interested", True),
+                    "source": validated_data.get("source") or "Resource Download",
+                    "source_campaign": f"Downloaded: {resource.title}",
+                    "status": "fresh",
+                }
+
+                # Atomic execution handling duplicate phone entries safely
                 with transaction.atomic():
-                    Lead.objects.update_or_create(
-                        phone=phone,
-                        defaults={
-                            "name": validated_data.get("name") or None,
-                            "email": validated_data.get("email") or None,
-                            "city": validated_data.get("city") or None,
-                            "qualification": validated_data.get("qualification") or None,
-                            "course_interested_in": validated_data.get("course_interested_in") or None,
-                            "interested": validated_data.get("interested", True),
-                            "source": validated_data.get("source") or "Resource Download",
-                            "status": "fresh",
-                        },
-                    )
+                    existing_lead = Lead.objects.filter(phone=phone).order_by("-id").first()
+
+                    if existing_lead:
+                        # Update fields
+                        for key, value in lead_defaults.items():
+                            if value is not None:
+                                setattr(existing_lead, key, value)
+
+                        # Append download history to message log
+                        download_note = f"Downloaded: {resource.title}"
+                        if existing_lead.message:
+                            if download_note not in existing_lead.message:
+                                existing_lead.message = f"{existing_lead.message} | {download_note}"
+                        else:
+                            existing_lead.message = download_note
+
+                        existing_lead.save()
+                    else:
+                        Lead.objects.create(
+                            phone=phone,
+                            message=f"Downloaded: {resource.title}",
+                            **lead_defaults,
+                        )
 
             # 2. Return Response
             resource_serializer = self.get_serializer(resource)
             return Response(
                 {
                     "success": True,
-                    "message": "Information captured successfully" if resource.form else "Download ready",
+                    "message": f"Downloaded: {resource.title}",
                     "download_url": resource_serializer.data.get("file_url"),
-                    "data": resource_serializer.data,
                 },
                 status=status.HTTP_200_OK,
             )
 
         except Exception as e:
-            # Logs actual error in Django console / Gunicorn logs
             logger.error(f"Error processing resource download for slug '{slug}': {str(e)}", exc_info=True)
             return Response(
                 {
                     "success": False,
-                    "message": f"An unexpected server error occurred: {str(e)}"
+                    "message": f"An unexpected server error occurred: {str(e)}",
                 },
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
 
