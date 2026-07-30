@@ -4,7 +4,7 @@ from rest_framework import (
 )
 
 from rest_framework.response import Response
-
+import logging
 from rest_framework.permissions import (
     AllowAny
 )
@@ -14,6 +14,7 @@ from rest_framework.decorators import action
 from .models import *
 from .serializers import *
 from django.shortcuts import get_object_or_404
+logger = logging.getLogger("razorpay_webhook")
 
 class ResourceDownloadRateThrottle(AnonRateThrottle):
     """
@@ -68,55 +69,68 @@ class ResourcesViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="download")
     def download(self, request, slug=None):
-        """
-        POST /api/resources/<slug>/download/
-        Handles synchronous lead capture and provides download URL.
-        """
-        resource = get_object_or_404(Resources, slug=slug)
+        try:
+            resource = get_object_or_404(Resources, slug=slug)
 
-        # 1. If resource requires user information (form = True)
-        if resource.form:
-            lead_serializer = LeadCaptureSerializer(data=request.data)
-            if not lead_serializer.is_valid():
-                return Response(
-                    {
-                        "success": False,
-                        "errors": lead_serializer.errors
-                    },
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+            # 1. Process Lead Form if enabled on resource
+            if resource.form:
+                lead_serializer = LeadCaptureSerializer(data=request.data)
+                
+                # If frontend validation fails, return 400 with details
+                if not lead_serializer.is_valid():
+                    return Response(
+                        {
+                            "success": False,
+                            "message": "Validation failed",
+                            "errors": lead_serializer.errors
+                        },
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
 
-            data = lead_serializer.validated_data
-            phone = data.pop("phone")
+                validated_data = lead_serializer.validated_data
+                
+                # Safely get phone without throwing KeyError
+                phone = validated_data.get("phone")
 
-            # Synchronously create/update lead in an atomic transaction to avoid race conditions
-            with transaction.atomic():
-                Lead.objects.update_or_create(
-                    phone=phone,
-                    defaults={
-                        "name": data.get("name"),
-                        "email": data.get("email"),
-                        "city": data.get("city"),
-                        "qualification": data.get("qualification"),
-                        "course_interested_in": data.get("course_interested_in"),
-                        "interested": data.get("interested", True),
-                        "source": data.get("source", "Resource Download"),
-                        "source_campaign": f"Downloaded: {resource.title}",
-                        "status": "fresh",
-                    },
-                )
+                with transaction.atomic():
+                    Lead.objects.update_or_create(
+                        phone=phone,
+                        defaults={
+                            "name": validated_data.get("name") or None,
+                            "email": validated_data.get("email") or None,
+                            "city": validated_data.get("city") or None,
+                            "qualification": validated_data.get("qualification") or None,
+                            "course_interested_in": validated_data.get("course_interested_in") or None,
+                            "interested": validated_data.get("interested", True),
+                            "source": validated_data.get("source") or "Resource Download",
+                            "source_campaign": f"Downloaded: {resource.title}",
+                            "created_by_type": "Public API",
+                            "status": "fresh",
+                        },
+                    )
 
-        # 2. Return file URL dynamically back to user
-        resource_serializer = self.get_serializer(resource)
+            # 2. Return Response
+            resource_serializer = self.get_serializer(resource)
+            return Response(
+                {
+                    "success": True,
+                    "message": "Information captured successfully" if resource.form else "Download ready",
+                    "download_url": resource_serializer.data.get("file_url"),
+                    "data": resource_serializer.data,
+                },
+                status=status.HTTP_200_OK,
+            )
 
-        return Response(
-            {
-                "success": True,
-                "message": "Information captured successfully" if resource.form else "Download ready",
-                "download_url": resource_serializer.data.get("file_url"),
-            },
-            status=status.HTTP_200_OK,
-        )
+        except Exception as e:
+            # Logs actual error in Django console / Gunicorn logs
+            logger.error(f"Error processing resource download for slug '{slug}': {str(e)}", exc_info=True)
+            return Response(
+                {
+                    "success": False,
+                    "message": f"An unexpected server error occurred: {str(e)}"
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 # =====================================================
