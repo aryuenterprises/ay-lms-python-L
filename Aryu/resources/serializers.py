@@ -1,22 +1,51 @@
 from rest_framework import serializers
-
+import re
 from .models import *
 from lead.serializers import LeadSerializer
+from lead.models import Lead
 
-# =====================================================
-# RESOURCE SERIALIZER
-# =====================================================
+class LeadCaptureSerializer(serializers.ModelSerializer):
+    """
+    Validates and sanitizes payload sent from frontend before resource access.
+    """
+    name = serializers.CharField(max_length=150, required=False, allow_null=True, allow_blank=True)
+    phone = serializers.CharField(max_length=20, required=True)
+    email = serializers.EmailField(required=False, allow_null=True, allow_blank=True)
+    city = serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True)
+    qualification = serializers.CharField(max_length=150, required=False, allow_null=True, allow_blank=True)
+    course_interested_in = serializers.CharField(max_length=255, required=False, allow_null=True, allow_blank=True)
+    interested = serializers.BooleanField(default=True, required=False)
+    source = serializers.CharField(max_length=150, default="Resource Download", required=False)
 
-class ResourcesSerializers(serializers.ModelSerializer):
-
-    image_url = (serializers.SerializerMethodField())
-    file_url = (serializers.SerializerMethodField())
-    form = serializers.BooleanField(required=False, default=False)
     class Meta:
+        model = Lead
+        fields = [
+            "name",
+            "phone",
+            "email",
+            "city",
+            "qualification",
+            "course_interested_in",
+            "interested",
+            "source",
+        ]
 
+    def validate_phone(self, value):
+        """Sanitize phone number to digits and standard phone characters."""
+        cleaned = re.sub(r"[^\d+]", "", value)
+        if len(cleaned) < 7 or len(cleaned) > 15:
+            raise serializers.ValidationError("Enter a valid phone number (7-15 digits).")
+        return cleaned
+
+
+class ResourcesSerializer(serializers.ModelSerializer):
+    image_url = serializers.SerializerMethodField()
+    file_url = serializers.SerializerMethodField()
+
+    class Meta:
         model = Resources
-        fields = "__all__"
-
+        fields = ["id", "title", "slug", "image_url", "file_url", "status", "form", "created_at"]
+        
     def get_image_url(self, obj):
         if obj.image and hasattr(obj.image, 'url'):
             return 'https://portal.aryuacademy.com/api' + obj.image.url
