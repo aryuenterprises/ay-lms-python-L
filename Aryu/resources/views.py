@@ -17,10 +17,27 @@ from django.shortcuts import get_object_or_404
 
 class ResourceDownloadRateThrottle(AnonRateThrottle):
     """
-    Prevents API abuse and automated bots from spamming downloads.
-    Allows up to 30 submissions per minute per IP.
+    Rates-limits downloads per individual user IP.
+    Uses the X-Forwarded-For header set by Nginx (port 8003 proxy).
     """
     rate = "30/minute"
+
+    def get_ident(self, request):
+        # 1. Read X-Forwarded-For header set by your Nginx location /api/ block
+        x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
+        
+        if x_forwarded_for:
+            # Format from Nginx: "client_ip, proxy_ip"
+            # The first IP is always the end user's real public IP
+            return x_forwarded_for.split(",")[0].strip()
+
+        # 2. Fallback to X-Real-IP
+        x_real_ip = request.META.get("HTTP_X_REAL_IP")
+        if x_real_ip:
+            return x_real_ip.strip()
+
+        # 3. Direct connection fallback (e.g. local dev without Nginx)
+        return request.META.get("REMOTE_ADDR")
 
 
 class ResourcesViewSet(viewsets.ModelViewSet):
