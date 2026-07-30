@@ -7,7 +7,8 @@ DB_NAME = "aylms_live"
 DB_USER = "aylms_live"
 DB_HOST = "187.127.178.144"
 DB_PASSWORD = "KfdW543FDdfg"
-BACKUP_ROOT = "/home/tamilselvi/Documents/backup"
+# BACKUP_ROOT = "/home/tamilselvi/Documents/backup"
+BACKUP_ROOT = "/home/aryu_user/Arun/Live Backup"
 
 PG_DUMP = "/usr/lib/postgresql/16/bin/pg_dump"
 
