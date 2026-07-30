@@ -1735,7 +1735,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
     # Create Razorpay Payment Link
     # -------------------------
     @action(detail=False, methods=['post'])
-    def create(self, request,webinar):
+    def create(self, request, webinar):
         amount = float(request.data.get("amount", 0))
         currency = request.data.get("currency", "INR")
         success_url = request.data.get("success_url")
@@ -1769,6 +1769,14 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                     "email": data.get("email"),
                     "contact": data.get("phone")
                 },
+                # Attach metadata inside notes so Razorpay returns it on payment objects
+                "notes": {
+                    "webinar_name": webinar.title,
+                    "webinar_id": str(getattr(webinar, "uuid", getattr(webinar, "id", ""))),
+                    "name": data.get("name"),
+                    "email": data.get("email"),
+                    "phone": data.get("phone")
+                },
                 "notify": {"sms": True, "email": True},
                 "reminder_enable": True,
                 "callback_url": success_url,
@@ -1780,18 +1788,18 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             # Save transaction as pending
             PaymentTransaction.objects.create(
                 student=student,
-                gateway=gateway,  # link your PaymentGateway if needed
+                gateway=gateway,
                 amount=amount,
                 currency=currency,
                 payment_status="pending",
                 order_id=payment_link.get("id"),
-                description="Payment via Razorpay Link",
+                description=webinar.title,
                 created_at=timezone.now()
             )
 
             return Response({
                 "success": True,
-                "payment_url": payment_link.get("short_url"),  # direct payment link
+                "payment_url": payment_link.get("short_url"),
                 "order_id": payment_link.get("id")
             })
 
@@ -1800,8 +1808,8 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
     def get(self, request):
         try:
-
             status_filter = request.GET.get("status", "all")
+            course_filter = request.GET.get("course", "all").strip().lower()
             search = request.GET.get("search", "").strip().lower()
             start_date = request.GET.get("start_date")
             end_date = request.GET.get("end_date")
@@ -1829,12 +1837,8 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                     .timestamp()
                 )
 
-            has_filter = search or (status_filter.lower() != "all")
+            has_filter = search or (status_filter.lower() != "all") or (course_filter != "all")
 
-            # ✅ ALWAYS fetch all records in batches of 100
-            # Razorpay does NOT provide a real total count field —
-            # "count" in the response = items returned, not total available.
-            # The only reliable way is to fetch everything and count ourselves.
             all_payments = []
             batch_size = 100
             skip = 0
@@ -1858,13 +1862,44 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
                 all_payments.extend(batch)
 
-                # If fewer items returned than requested, we've reached the end
                 if len(batch) < batch_size:
                     break
 
                 skip += batch_size
 
-            # ── Build rows ──
+            # ── 1. Fetch active courses directly from your Course model ──
+            # Exclude archived/empty names and extract course_name
+            db_courses = (
+                Course.objects.filter(is_archived=False)
+                .exclude(course_name__isnull=True)
+                .exclude(course_name__exact="")
+                .values_list('course_name', flat=True)
+            )
+            courses_set = set(db_courses)
+
+            # ── 2. Match payment notes to Course IDs / Webinar IDs ──
+            course_ids = set()
+            for payment in all_payments:
+                if isinstance(payment, dict):
+                    notes = payment.get("notes") if isinstance(payment.get("notes"), dict) else {}
+                    c_id = notes.get("course_id") or notes.get("webinar_id")
+                    if c_id:
+                        course_ids.add(c_id)
+
+            # Map IDs to course names
+            course_map = {}
+            if course_ids:
+                # Search by course_id in Course model
+                matched_courses = Course.objects.filter(course_id__in=[c for c in course_ids if str(c).isdigit()])
+                course_map.update({str(c.course_id): c.course_name for c in matched_courses})
+
+                # Fallback check for Webinar model if applicable
+                try:
+                    webinars = Webinar.objects.filter(uuid__in=course_ids)
+                    course_map.update({str(w.uuid): w.title for w in webinars})
+                except Exception:
+                    pass
+
             all_rows = []
 
             for payment in all_payments:
@@ -1875,22 +1910,30 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 if not isinstance(notes, dict):
                     notes = {}
 
-                webinar_name = payment.get("description")
+                # Priority order to resolve course name
+                webinar_name = notes.get("course_name") or notes.get("webinar_name") or notes.get("title")
+                
+                if not webinar_name:
+                    c_id = notes.get("course_id") or notes.get("webinar_id")
+                    if c_id:
+                        webinar_name = course_map.get(str(c_id))
 
-                webinar_id = notes.get("webinar_id")
-                if webinar_id:
-                    webinar = Webinar.objects.filter(uuid=webinar_id).first()
+                if not webinar_name:
+                    webinar_name = payment.get("description")
 
-                    if webinar:
-                        webinar_name = webinar.title
+                desc_str = str(webinar_name or "N/A").strip()
+
+                # Add to set if valid title
+                if desc_str and desc_str.upper() != "N/A" and not desc_str.startswith("#"):
+                    courses_set.add(desc_str)
 
                 row = {
                     "payment_id": payment.get("id"),
-                    "customer": notes.get("name", "N/A"),
+                    "customer": notes.get("name") or notes.get("customer_name") or "N/A",
                     "email": notes.get("email") or payment.get("email"),
-                    "phone": notes.get("phone") or payment.get("contact"),
-                    "description": f"{webinar_name}",
-                    "amount": round(payment.get("amount", 0) / 100,2),
+                    "phone": notes.get("phone") or notes.get("contact") or payment.get("contact"),
+                    "description": desc_str,
+                    "amount": round(payment.get("amount", 0) / 100, 2),
                     "status": payment.get("status"),
                     "method": payment.get("method"),
                     "upi_id": payment.get("vpa"),
@@ -1901,8 +1944,18 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 }
 
                 all_rows.append(row)
-            # ── Apply filters if active ──
+
+            # Sorted list of clean course names
+            courses_list = sorted([c for c in courses_set if c and not str(c).startswith("#")])
+
+            # ── 3. Apply Filters ──
             if has_filter:
+                if course_filter != "all":
+                    all_rows = [
+                        r for r in all_rows
+                        if r["description"].lower() == course_filter
+                    ]
+
                 if status_filter.lower() != "all":
                     all_rows = [
                         r for r in all_rows
@@ -1911,52 +1964,50 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
                 if search:
                     filtered = []
-
                     for r in all_rows:
                         searchable = (
                             f"{r['payment_id']} "
                             f"{r['customer']} "
                             f"{r['email']} "
-                            f"{r['phone']}"
+                            f"{r['phone']} "
+                            f"{r['description']}"
                         ).lower()
 
-                        # Match amount exactly
-                        amount_match = search == str(int(float(r["amount"])))
+                        try:
+                            amount_match = float(search) == float(r["amount"])
+                        except ValueError:
+                            amount_match = False
 
                         if search in searchable or amount_match:
                             filtered.append(r)
 
                     all_rows = filtered
 
-            # ✅ total_records = actual count of all matching rows
             total_records = len(all_rows)
-            success_amount = sum(
-                float(row.get("amount", 0))
-                for row in all_rows
-            )
 
-            # ✅ Paginate AFTER filtering
             start_index = (page - 1) * page_size
             end_index = start_index + page_size
             paginated_data = all_rows[start_index:end_index]
+            
             for idx, row in enumerate(paginated_data, start=start_index + 1):
                 row["sno"] = idx
+
             success_amount = sum(
                 float(row.get("amount", 0))
                 for row in all_rows
-                if row.get("status", "").lower() == "captured"
+                if str(row.get("status", "")).lower() == "captured"
             )
 
             failed_amount = sum(
                 float(row.get("amount", 0))
                 for row in all_rows
-                if row.get("status", "").lower() == "failed"
+                if str(row.get("status", "")).lower() == "failed"
             )
 
             refunded_amount = sum(
                 float(row.get("amount", 0))
                 for row in all_rows
-                if row.get("status", "").lower() == "refunded"
+                if str(row.get("status", "")).lower() == "refunded"
             )
 
             return Response({
@@ -1964,9 +2015,10 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 "page": page,
                 "page_size": page_size,
                 "total_records": total_records,
-                "success_amount": success_amount,
-                "failed_amount": failed_amount,
-                "refunded_amount": refunded_amount,
+                "success_amount": round(success_amount, 2),
+                "failed_amount": round(failed_amount, 2),
+                "refunded_amount": round(refunded_amount, 2),
+                "courses": courses_list,
                 "data": paginated_data
             })
 
@@ -1977,7 +2029,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 {"success": False, "message": str(e)},
                 status=500
             )
-        
+         
     # -------------------------
     # Verify Razorpay Payment
     # -------------------------
