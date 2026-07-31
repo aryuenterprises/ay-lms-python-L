@@ -896,6 +896,7 @@ class BootcampViewSet(
 ):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
+    required_module = "BootCamp"
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     serializer_class = WebinarSerializer
     lookup_field = "slug"

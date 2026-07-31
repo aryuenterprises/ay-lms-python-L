@@ -1722,6 +1722,7 @@ class PayPalPaymentViewSet(viewsets.ViewSet):
 class RazorpayPaymentViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
+    required_module = "Transcation History"
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def _get_client(self):
@@ -2072,6 +2073,9 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             return Response({"success": False, "message": "Payment verification failed"}, status=200)
 
 class RazorpaySettlementViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+    required_module = "Transcation History"
 
     def list(self, request):
         try:
