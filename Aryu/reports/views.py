@@ -1,13 +1,17 @@
 from django.db.models import Q, Sum
 from rest_framework.views import APIView
 from rest_framework.response import Response
-
+from rest_framework.permissions import IsAuthenticated
+from aryuapp.auth import CustomJWTAuthentication
 from aryuapp.models import Student
 from batches.models import NewBatch
 from payments.models import PaymentTransaction
 from courses.models import Course
 
 class AryuReportView(APIView):
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+    required_module = "Aryu Report"
 
     def get(self, request):
         try:

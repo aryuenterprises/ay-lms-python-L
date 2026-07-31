@@ -2075,7 +2075,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 class RazorpaySettlementViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
-    required_module = "Transcation History"
+    required_module = "Settlement"
 
     def list(self, request):
         try:
