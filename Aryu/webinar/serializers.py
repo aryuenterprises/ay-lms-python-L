@@ -1,4 +1,3 @@
-from asyncio.log import logger
 from decimal import ROUND_HALF_UP, Decimal
 import logging
 from rest_framework import serializers
@@ -12,6 +11,8 @@ from aryuapp.models import StudentTicket, TicketAttachment, TicketReply, Certifi
 from lead.models import Lead
 from django.utils.text import slugify
 import requests
+import logging
+logger = logging.getLogger("general")
 
 
 class WebinarAttendanceLogSerializer(serializers.ModelSerializer):
@@ -192,10 +193,10 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
                 timeout=10
             )
 
-            print("TeleCRM Response:", response.json())
+            logger.debug("TeleCRM Response:", response.json())
 
         except Exception as e:
-            print("TeleCRM Error:", str(e))
+            logger.exception("TeleCRM Error:", str(e))
 
         return registration
 
@@ -351,8 +352,6 @@ class WebinarSerializer(serializers.ModelSerializer):
     def get_is_full(self, obj):
         return getattr(obj, "participants_count", 0) >= obj.seats_available
     
-    import logging
-    logger = logging.getLogger(__name__)
 
     def create(self, validated_data):
         price = validated_data.get("price")
