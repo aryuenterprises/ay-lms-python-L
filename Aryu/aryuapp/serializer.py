@@ -1253,6 +1253,10 @@ class StudentProfileSerializer(serializers.ModelSerializer):
             final_batches.append({
                 "batch_id": nb.batch_id,
                 "batch_name": nb.title,
+                "batch_start_time":nb.start_time,
+                "batch_end_time":nb.end_time,
+                "batch_start_date":nb.start_date,
+                "batch_end_date":nb.end_date,
                 "title": nb.title,
                 "course_id": nb.course.course_id if nb.course else None,
                 "course_name": nb.course.course_name if nb.course else None,
@@ -1289,7 +1293,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
 
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
         return None
 
     def get_course(self, obj):
