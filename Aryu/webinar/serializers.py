@@ -193,7 +193,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
                 timeout=10
             )
 
-            logger.debug("TeleCRM Response:", response.json())
+            logger.debug(f"TeleCRM Response: {response.json()}")
 
         except Exception as e:
             logger.exception("TeleCRM Error:", str(e))

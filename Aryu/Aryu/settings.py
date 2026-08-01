@@ -375,6 +375,18 @@ LOGGING = {
             "filename": SERVER_ROOT / "logs" / "razorpay_webhook.log",
             "formatter": "verbose",
         },
+        "general_file": {
+            "level": "DEBUG",
+            "class": "logging.FileHandler",
+            "filename": SERVER_ROOT / "logs" / "general.log",
+            "formatter": "verbose",
+        },
+        "whatsapp_file": {
+            "level": "DEBUG",
+            "class": "logging.FileHandler",
+            "filename": SERVER_ROOT / "logs" / "whatsapp.log",
+            "formatter": "verbose",
+        },
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "simple",
@@ -386,6 +398,18 @@ LOGGING = {
         "razorpay_webhook": {
             "handlers": ["webhook_file"],
             "level": "DEBUG",
+            "propagate": False,
+        },
+
+        "general": {
+            "handlers": ["general_file", "console"],  # Logs to file AND terminal
+            "level": "DEBUG",                          # Ensures logger.debug() writes to the file
+            "propagate": False,
+        },
+
+        "whatsapp": {
+            "handlers": ["whatsapp_file", "console"],  # Logs to file AND terminal
+            "level": "DEBUG",                          # Ensures logger.debug() writes to the file
             "propagate": False,
         },
 
