@@ -28,18 +28,35 @@ from batches.serializers import BatchSerializer
 import requests
 from django.utils.timezone import make_aware
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
-from html import unescape
+from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
+from rest_framework_simplejwt.exceptions import TokenError
 
 class CustomTokenRefreshSerializer(TokenRefreshSerializer):
-
     def validate(self, attrs):
-        validated_data = super().validate(attrs)
+        # Validate refresh token using SimpleJWT
+        try:
+            refresh = RefreshToken(attrs['refresh'])
+        except TokenError as e:
+            raise serializers.ValidationError({"detail": str(e)})
+
+        # Generate new access token directly from the refresh token payload
+        data = {"access": str(refresh.access_token)}
+
+        old_refresh_payload = refresh.payload
+        new_access = AccessToken(data['access'])
+
+        default_claims = {"exp", "jti", "token_type", "user_id", "iat"}
+
+        # Preserve custom user claims across refresh calls
+        for claim, value in old_refresh_payload.items():
+            if claim not in default_claims:
+                new_access.payload[claim] = value
 
         return {
-            "access_token": validated_data["access"],
-            "refresh_token_obj": validated_data.get("refresh")
+            "access_token": str(new_access),
+            "refresh_token_obj": refresh if settings.SIMPLE_JWT.get('ROTATE_REFRESH_TOKENS', False) else None
         }
-
+        
 
 class SettingsPicsSerializer(serializers.ModelSerializer):
     general_logo_url = serializers.SerializerMethodField()
@@ -51,12 +68,12 @@ class SettingsPicsSerializer(serializers.ModelSerializer):
 
     def get_general_logo_url(self, obj):
         if obj.general_logo and hasattr(obj.general_logo, "url"):
-            return "https://portal.aryuacademy.com/api" + obj.general_logo.url
+            return "https://aylms.aryuprojects.com/api" + obj.general_logo.url
         return None
 
     def get_secondary_logo_url(self, obj):
         if obj.secondary_logo and hasattr(obj.secondary_logo, "url"):
-            return "https://portal.aryuacademy.com/api" + obj.secondary_logo.url
+            return "https://aylms.aryuprojects.com/api" + obj.secondary_logo.url
         return None
 
 class SettingsSerializer(serializers.ModelSerializer):
@@ -70,17 +87,17 @@ class SettingsSerializer(serializers.ModelSerializer):
 
     def get_general_logo_url(self, obj):
         if obj.general_logo and hasattr(obj.general_logo, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.general_logo.url
+            return 'https://aylms.aryuprojects.com/api' + obj.general_logo.url
         return None
 
     def get_secondary_logo_url(self, obj):
         if obj.secondary_logo and hasattr(obj.secondary_logo, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.secondary_logo.url
+            return 'https://aylms.aryuprojects.com/api' + obj.secondary_logo.url
         return None
 
     def get_signature_url(self, obj):
         if obj.signature and hasattr(obj.signature, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.signature.url
+            return 'https://aylms.aryuprojects.com/api' + obj.signature.url
         return None
 
     def create(self, validated_data):
@@ -298,7 +315,7 @@ class College_StudentSerializer(serializers.ModelSerializer):
 
     def get_resume_url(self, obj):
         if obj.resume and hasattr(obj.resume, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.resume.url
+            return 'https://aylms.aryuprojects.com/api' + obj.resume.url
         return None
 
 class JobSeekerSerializer(serializers.ModelSerializer):
@@ -313,7 +330,7 @@ class JobSeekerSerializer(serializers.ModelSerializer):
     
     def get_resume_url(self, obj):
         if obj.resume and hasattr(obj.resume, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.resume.url
+            return 'https://aylms.aryuprojects.com/api' + obj.resume.url
         return None
     
 class EmployeeSerializer(serializers.ModelSerializer):
@@ -1011,6 +1028,136 @@ class StudentSerializer(serializers.ModelSerializer):
     def validate(self, data):
         return data
 
+class StudentPublicSignupSerializer(serializers.ModelSerializer):
+    status = serializers.BooleanField(default=True)
+    school_student = School_StudentSerializer(required=False, write_only=True)
+    college_student = College_StudentSerializer(required=False, write_only=True)
+    jobseeker = JobSeekerSerializer(required=False, write_only=True)
+    employee = EmployeeSerializer(required=False, write_only=True)
+
+    source_type = serializers.CharField(required=False, allow_blank=True)
+    source_name = serializers.CharField(required=False, allow_blank=True)
+    converter = serializers.CharField(required=False, allow_blank=True, default="Self")
+    profile_pic = serializers.ImageField(required=False,allow_null=True)
+
+    class Meta:
+        model = Student
+        fields = [
+            'student_id', 'registration_id', 'profile_pic', 'username', 'password',
+            'first_name', 'last_name', 'dob', 'email', 'contact_no', 'gender',
+            'current_address', 'city', 'state', 'country',
+            'parent_guardian_name', 'parent_guardian_phone', 'parent_guardian_occupation',
+            'student_type', 'student_sub_type', 'source_type', 'source_name',
+            'converter', 'internship_required', 'internship', 'status',
+            'school_student', 'college_student', 'jobseeker', 'employee',
+            'information','batch_timing','notes',
+        ]
+        read_only_fields = ['student_id', 'registration_id']
+    def get_profile_pic(self, obj):
+                    if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
+                        return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
+                    return None
+
+    def validate_contact_no(self, value):
+        value = value.strip()
+        if Student.objects.filter(contact_no=value, is_archived=False).exists():
+            raise serializers.ValidationError("Phone number already registered.")
+        if Trainer.objects.filter(contact_no=value, is_archived=False).exists():
+            raise serializers.ValidationError("Phone number already registered.")
+        return value
+
+    def validate_email(self, value):
+        ALLOWED_EMAIL_DOMAINS = {
+            "gmail.com", "yahoo.com", "hotmail.com",
+            "outlook.com", "rediffmail.com", "icloud.com",
+            "aryutechnologies.com", "farida.co.in",
+        }
+        value = value.lower().strip()
+        try:
+            validate_email(value)
+        except DjangoValidationError:
+            raise serializers.ValidationError("Enter a valid email address.")
+
+        domain = value.split("@")[-1]
+        if domain not in ALLOWED_EMAIL_DOMAINS:
+            raise serializers.ValidationError("Please use an accepted email domain.")
+
+        if Student.objects.filter(email__iexact=value, is_archived=False).exists():
+            raise serializers.ValidationError("Email address already registered.")
+
+        return value
+
+    def to_internal_value(self, data):
+        mutable_data = data.copy()
+        stype = mutable_data.get("student_type")
+
+        # Set default active status
+        mutable_data['status'] = True
+
+        if stype == "school_student" and "school_student" not in mutable_data:
+            mutable_data["school_student"] = {
+                "school_name": mutable_data.get("school_name") or mutable_data.get("institution_name"),
+                "school_class": mutable_data.get("school_class") or mutable_data.get("degree_class"),
+                "company_id": mutable_data.get("company_id")
+            }
+        elif stype == "college_student" and "college_student" not in mutable_data:
+            mutable_data["college_student"] = {
+                "college_name": mutable_data.get("college_name") or mutable_data.get("institution_name"),
+                "degree": mutable_data.get("degree") or mutable_data.get("degree_class"),
+                "year_of_study": mutable_data.get("year_of_study") or 1,
+                "resume": mutable_data.get("resume"),
+                "company_id": mutable_data.get("company_id")
+            }
+        elif stype == "jobseeker" and "jobseeker" not in mutable_data:
+            mutable_data["jobseeker"] = {
+                "passed_out_year": mutable_data.get("passed_out_year") or 2024,
+                "current_qualification": mutable_data.get("current_qualification") or mutable_data.get("degree_class"),
+                "preferred_job_role": mutable_data.get("preferred_job_role") or "Software Engineer",
+                "resume": mutable_data.get("resume"),
+                "company_id": mutable_data.get("company_id")
+            }
+        elif stype == "employee" and "employee" not in mutable_data:
+            mutable_data["employee"] = {
+                "company_name": mutable_data.get("company_name") or "N/A",
+                "designation": mutable_data.get("designation") or "Employee",
+                "experience": str(mutable_data.get("experience") or "0"),
+                "skills": mutable_data.get("skills") or "N/A",
+                "company_id": mutable_data.get("company_id")
+            }
+
+        return super().to_internal_value(mutable_data)
+
+    def create(self, validated_data):
+        plain_password = validated_data.get('password')
+        validated_data['password'] = make_password(plain_password)
+        
+        # Enforce status = True
+        validated_data['status'] = True
+
+        student_role = Role.objects.filter(name__iexact="Student").first()
+        if student_role:
+            validated_data["role"] = student_role
+
+        school_data = validated_data.pop('school_student', None)
+        college_data = validated_data.pop('college_student', None)
+        jobseeker_data = validated_data.pop('jobseeker', None)
+        employee_data = validated_data.pop('employee', None)
+        student_type = validated_data.get('student_type')
+
+        student = Student.objects.create(**validated_data)
+
+        # Create subtype object
+        if student_type == 'school_student' and school_data:
+            School_Student.objects.create(student=student, **school_data)
+        elif student_type == 'college_student' and college_data:
+            College_Student.objects.create(student=student, **college_data)
+        elif student_type == 'jobseeker' and jobseeker_data:
+            JobSeeker.objects.create(student=student, **jobseeker_data)
+        elif student_type == 'employee' and employee_data:
+            Employee.objects.create(student=student, **employee_data)
+
+        return student
+    
 class AttendanceSerializer(serializers.ModelSerializer):
     ip_address = serializers.CharField(write_only=True, required=False)
 
@@ -1485,7 +1632,7 @@ class StudentUpdateSerializer(serializers.ModelSerializer):
 
     def get_profile_pic_url(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
         return None
 
     def validate_contact_no(self, value):
@@ -1650,85 +1797,20 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
     def get_pdf_url(self, obj):
         if obj.pdf_file and hasattr(obj.pdf_file, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.pdf_file.url
+            return 'https://aylms.aryuprojects.com/api' + obj.pdf_file.url
         return None
      
 class CertificateSerializer(serializers.ModelSerializer):
-    certificate_url = serializers.SerializerMethodField()
-
     class Meta:
         model = Certificate
         fields = '__all__'
         read_only_fields = ['certificate_number']
 
-    def get_certificate_url(self, obj):
-        """
-        Builds the full production URL for the certificate file.
-        Matches the model field name: 'certificate_file'
-        """
-        if obj.certificate_file and hasattr(obj.certificate_file, 'url'):
-            # This joins your custom domain with Django's media URL path
-            return 'https://portal.aryuacademy.com/api' + obj.certificate_file.url
-        return None
-    
-    def to_internal_value(self, data):
-        """
-        Intercepts incoming data before field validation to pull 
-        student name, course name, and duration out of the batch details.
-        """
-        # Copy the data to a mutable dictionary if it's a QueryDict
-        data = data.copy() if hasattr(data, 'copy') else data
-        
-        student_id = data.get('student')
-        
-        if student_id:
-            # 1. Look up the student's active batch
-            # We filter by student ID, make sure it's not archived, and look up the latest one
-            active_batch = NewBatch.objects.filter(
-                students__student_id=student_id,
-                is_archived=False
-            ).select_related('course').order_by('-start_date').first()
-            
-            if active_batch:
-                # 2. Extract and assign the data to validation payload
-                # Find the student instance from the batch to safely grab their profile name
-                student_obj = active_batch.students.filter(student_id=student_id).first()
-                
-                if student_obj:
-                    # If student model has a user profile relation or direct first/last names:
-                    # Adjust 'first_name' / 'get_full_name()' to match your actual Student model field
-                    first_name = getattr(student_obj, 'first_name', '')
-                    last_name = getattr(student_obj, 'last_name', '')
-                    full_name = f"{first_name} {last_name}".strip() or f"Student #{student_id}"
-                    
-                    data['student_name'] = data.get('student_name', full_name)
-                
-                # Fetch Course name
-                if active_batch.course:
-                    data['course_name'] = data.get('course_name', active_batch.course.course_name)
-                
-                # Format Course Duration (e.g., "Jan 2026 - Apr 2026")
-                start_str = active_batch.start_date.strftime("%b %Y")
-                end_str = active_batch.end_date.strftime("%b %Y")
-                duration_string = f"{start_str} - {end_str}"
-                
-                data['course_duration'] = data.get('course_duration', duration_string)
-            else:
-                raise ValidationError({
-                    "student": "This student is not enrolled in an active, unarchived batch."
-                })
-        else:
-            raise ValidationError({
-                "student": "A valid student ID must be provided to fetch certificate details."
-            })
-
-        return super().to_internal_value(data)
-
     def create(self, validated_data):
         request = self.context.get("request")
         
         if request and request.user:
-            role = getattr(request.user, "user_type", None)
+            role = getattr(request.user, "user_type", None)  # or from JWT payload
 
             if role in ["trainer", "admin"]:
                 validated_data["created_by"] = getattr(request.user, "trainer_id", None)
@@ -1745,7 +1827,6 @@ class CertificateSerializer(serializers.ModelSerializer):
             else:
                 validated_data["created_by"] = getattr(request.user, "user_id", None)
                 validated_data["created_by_type"] = role
-                
         return super().create(validated_data)
 
 class PublicTrainerRegisterSerializer(serializers.ModelSerializer):
@@ -1844,9 +1925,10 @@ class TrainerSerializer(serializers.ModelSerializer):
         write_only=True,
         required=False
     )
-    courses = serializers.PrimaryKeyRelatedField(
-        many=True,
-        queryset=Course.objects.all(),
+    courses = serializers.SerializerMethodField()
+    course_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        write_only=True,
         required=False
     )
  
@@ -1867,7 +1949,11 @@ class TrainerSerializer(serializers.ModelSerializer):
             # ── Professional ──────────────────────────────────────────────
             "specialization", "working_hours", "experience",
             "last_company", "joining_date",
-            "linkedin_profile", "short_bio", "courses", "batch_ids",
+            "linkedin_profile",
+            "short_bio",
+            "courses",
+            "course_ids",
+            "batch_ids",
  
             # ── Financial ─────────────────────────────────────────────────
             "salary", "salary_type",
@@ -1920,8 +2006,37 @@ class TrainerSerializer(serializers.ModelSerializer):
  
     def get_profile_pic_url(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, "url"):
-            return "https://portal.aryuacademy.com/api" + obj.profile_pic.url
+            return "https://aylms.aryuprojects.com/api" + obj.profile_pic.url
         return None
+    def get_photo_url(self,obj):
+        if obj.photo and hasattr(obj.photo,"url"):
+            return "https://aylms.aryuprojects.com/api" + obj.photo.url
+        return None
+    def get_pan_card_url(self,obj):
+        if obj.pan_card and hasattr(obj.pan_card,"url"):
+            return "https://aylms.aryuprojects.com/api" + obj.pan_card.url
+        return None
+    def get_aadhar_card_url(self,obj):
+        if obj.aadhar_card and hasattr(obj.aadhar_card,"url"):
+            return "https://aylms.aryuprojects.com/api" + obj.aadhar_card.url
+        return None
+    def get_resume_url(self,obj):
+        if obj.resume and hasattr(obj.resume,"url"):
+            return "https://aylms.aryuprojects.com/api" + obj.resume.url
+        return None
+    def get_certificate_url(self,obj):
+        if obj.certificate and hasattr(obj.certificate,"url"):
+            return "https://aylms.aryuprojects.com/api" + obj.certificate.url
+        return None
+    def get_courses(self, obj):
+        return [
+            {
+                "course_id": course.course_id,
+                "course_name": course.course_name,
+            }
+            for course in obj.courses.all()
+        ]
+    
  
     def get_notes(self, obj):
         """
@@ -1953,42 +2068,21 @@ class TrainerSerializer(serializers.ModelSerializer):
         return TrainerAttendanceSerializer(qs, many=True).data if qs else []
  
     def get_batch(self, obj):
-        """
-        Uses prefetched_batches when available (zero extra query).
-        Students and course are already joined via prefetch in the viewset,
-        so iterating over nb.students.all() hits the prefetch cache.
-        """
         batches = getattr(obj, "prefetched_batches", None)
+
         if batches is None:
-            # Safe fallback (used outside the optimised viewset)
-            batches = (
-                NewBatch.objects
-                .filter(trainers=obj, is_archived=False)
-                .select_related("course")
-                .prefetch_related("students")
+            batches = NewBatch.objects.filter(
+                trainers=obj,
+                is_archived=False
             )
- 
-        result = []
-        for nb in batches:
-            result.append(
-                {
-                    "batch_id":    nb.batch_id,
-                    "batch_name":  nb.title,
-                    "title":       nb.title,
-                    "course_id":   nb.course.course_id   if nb.course else None,
-                    "course_name": nb.course.course_name if nb.course else None,
-                    # students already in prefetch cache — no extra query
-                    "students": [
-                        {
-                            "student_id":      s.student_id,
-                            "student_name":    f"{s.first_name}".strip(),
-                            "registration_id": s.registration_id,
-                        }
-                        for s in nb.students.all()
-                    ],
-                }
-            )
-        return result
+
+        return [
+            {
+                "batch_id": batch.batch_id,
+                "batch_name": batch.title,
+            }
+            for batch in batches
+        ]
  
     # ── Validation ────────────────────────────────────────────────────────
  
@@ -2064,18 +2158,16 @@ class TrainerSerializer(serializers.ModelSerializer):
         courses = mutable_data.get("courses")
 
         if courses is not None:
-
             if isinstance(courses, list):
-                mutable_data["courses"] = [
-                    int(i) for i in courses
-                ]
-
-            elif isinstance(courses, int):
-                mutable_data["courses"] = [courses]
+                mutable_data["courses"] = [int(i) for i in courses]
 
             elif isinstance(courses, str):
-
                 courses = courses.strip()
+
+                if courses.startswith("["):
+                    mutable_data["courses"] = json.loads(courses)
+                else:
+                    mutable_data["courses"] = [int(courses)]
 
                 try:
                     if courses.startswith("["):
@@ -2162,9 +2254,8 @@ class TrainerSerializer(serializers.ModelSerializer):
  
     def update(self, instance, validated_data):
 
+        course_ids = validated_data.pop("course_ids", None)
         batch_ids = validated_data.pop("batch_ids", None)
-        courses = validated_data.pop("courses", None)
-
         password = validated_data.pop("password", None)
 
         if password:
@@ -2176,28 +2267,27 @@ class TrainerSerializer(serializers.ModelSerializer):
 
         instance.save()
 
-        # ---------------- UPDATE COURSES ----------------
+        # Update courses
+        if course_ids is not None:
+            instance.courses.set(
+                Course.objects.filter(course_id__in=course_ids)
+            )
 
-        if courses is not None:
-            instance.courses.set(courses)
-
-        # ---------------- UPDATE BATCHES ----------------
-
+        # Update batches
         if batch_ids is not None:
-
-            # Remove trainer from all existing batches
-            for batch in instance.new_batches.all():
-                batch.trainers.remove(instance)
-
-            # Add trainer to selected batches
             batches = NewBatch.objects.filter(batch_id__in=batch_ids)
 
-            for batch in batches:
-                batch.trainers.add(instance)
+            print("Batch IDs:", batch_ids)
+            print("Batches found:", list(batches.values("batch_id", "title")))
 
-        # Reload many-to-many relations
+            instance.new_batches.set(batches)
+
+            print(
+                "Trainer batches:",
+                list(instance.new_batches.values("batch_id", "title"))
+            )
+
         instance.refresh_from_db()
-
         return instance 
     
 class TrainerPreviewSerializer(serializers.ModelSerializer):
@@ -2220,7 +2310,7 @@ class TrainerTravelExpenseImageSerializer(serializers.ModelSerializer):
 
     def get_image(self, obj):
         if obj.image and hasattr(obj.image, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.image.url
+            return 'https://aylms.aryuprojects.com/api' + obj.image.url
         return None
 
 
@@ -2399,7 +2489,7 @@ class StudentDetailSerializer(serializers.ModelSerializer):
     
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
         return None
 
 class TrainerForStudentSerializer(serializers.ModelSerializer):
@@ -2424,7 +2514,7 @@ class TrainerForStudentSerializer(serializers.ModelSerializer):
     
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
         return None
 
 class TrainerSimpleSerializer(serializers.ModelSerializer):
@@ -2435,7 +2525,7 @@ class TrainerSimpleSerializer(serializers.ModelSerializer):
         
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
         return None
 
 class SubmissionStudentSerializer(serializers.ModelSerializer):
@@ -2447,7 +2537,7 @@ class SubmissionStudentSerializer(serializers.ModelSerializer):
         
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
         return None
     
     def get_student_name(self, obj):
@@ -2475,7 +2565,7 @@ class SubmissionSerializer(serializers.ModelSerializer):
 
     def get_file_url(self, obj):
         if obj.file and hasattr(obj.file, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.file.url
+            return 'https://aylms.aryuprojects.com/api' + obj.file.url
         return None
     
     def validate(self, data):
@@ -2690,6 +2780,7 @@ class AssignmentSerializer(serializers.ModelSerializer):
     #         many=True,
     #         context={"request": request}
     #     ).data
+
     def get_submissions(self, obj):
         student = self.context.get("student")
 
@@ -2709,13 +2800,6 @@ class AssignmentSerializer(serializers.ModelSerializer):
             context=self.context
         ).data
     
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-
-        if data.get("description"):
-            data["description"] = unescape(data["description"])
-
-        return data
 class AssignmentSimpleSerializer(serializers.ModelSerializer):
     submission_count = serializers.SerializerMethodField()
     class Meta:
@@ -2735,7 +2819,7 @@ class TicketAttachmentSerializer(serializers.ModelSerializer):
 
     def get_file(self, obj):
         if obj.file and hasattr(obj.file, 'url'):
-            return'https://portal.aryuacademy.com/api' +obj.file.url
+            return'https://aylms.aryuprojects.com/api' +obj.file.url
         return None
 
 
