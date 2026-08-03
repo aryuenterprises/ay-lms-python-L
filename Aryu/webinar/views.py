@@ -87,11 +87,11 @@ def razorpay_webhook(request):
 
     logger.info("Received = %s", received_signature)
 
-    if not hmac.compare_digest(expected_signature, received_signature):
-        logger.error("Signature mismatch")
-        return HttpResponse(status=400)
-    
-    logger.info("Signature verified")
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except json.JSONDecodeError:
+        logger.exception("Invalid JSON payload")
+        return HttpResponse("Invalid JSON", status=400)
 
     data = request.data
     event = data.get("event")
