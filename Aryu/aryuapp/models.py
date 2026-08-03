@@ -346,6 +346,7 @@ def student_profile_pic_path(instance, filename):
         reg_id = str(instance.registration_id).replace(" ", "_")
         return f'profile_pics/{reg_id}/{filename}'
 
+
 class Student(models.Model):
     student_id = models.AutoField(primary_key=True)
     registration_id = models.CharField(max_length=50, unique=True)
@@ -358,7 +359,7 @@ class Student(models.Model):
     is_archived = models.BooleanField(default=False)
     gender = models.CharField(max_length=255, null=True, blank=True)
     discount = models.DecimalField(max_digits=10, decimal_places=2, null =True)
-    dob = models.DateField()
+    dob = models.DateField(null=True, blank=True )
     email = models.EmailField( null=False, blank=False)
     contact_no = models.CharField(max_length=20, null=False, blank=False)
     alternate_mobile_no = models.CharField(max_length=20, null=True, blank=True)
@@ -389,6 +390,9 @@ class Student(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     payment_mode = models.CharField(max_length = 150 , blank=True,null= True)
     stu_gst_number = models.CharField(max_length=50, null = True, blank=True)
+    information = models.BooleanField(default = True, null = True, blank = True)
+    batch_timing = models.TimeField(null = True,blank = True)
+    
 
     def save(self, *args, **kwargs):
         if self.email:
@@ -410,7 +414,6 @@ class Student(models.Model):
         return f"{prefix}{month}{year}{number:03d}"
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
-
 
 class StudentRecording(models.Model):
     student = models.ForeignKey(
