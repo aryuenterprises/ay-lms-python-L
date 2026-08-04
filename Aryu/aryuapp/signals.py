@@ -49,10 +49,10 @@ def push_realtime_notification(sender, instance, created, **kwargs):
             pass  # Never crash a DB save because of a WebSocket push failure
 
 
-@receiver(post_save, sender=Student)
-def send_student_welcome(sender, instance, created, **kwargs):
-    if created:
-        send_welcome_email(instance)
+# @receiver(post_save, sender=Student)
+# def send_student_welcome(sender, instance, created, **kwargs):
+#     if created:
+#         send_welcome_email(instance)
 
 @receiver(post_save, sender=StudentAnswers)
 def notify_trainer_on_test_submission(sender, instance, created, **kwargs):
