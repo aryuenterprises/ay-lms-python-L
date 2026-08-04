@@ -6088,7 +6088,7 @@ def generate_secure_password(length=8):
 
 def send_student_welcome_email(student, plain_password):
     """Dispatches an HTML email with student login details."""
-    login_url = getattr(settings, "STUDENT_LOGIN_URL", "https://aylms.aryuprojects.com/login")
+    login_url = getattr(settings, "STUDENT_LOGIN_URL", "https://portal.aryuacademy.com/login")
     subject = "Welcome to ARYU Academy - Registration Credentials"
     
     # Hostinger requires from_email to strictly match EMAIL_HOST_USER
