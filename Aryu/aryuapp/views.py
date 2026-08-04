@@ -36,6 +36,8 @@ from django.conf import settings
 from django.contrib.auth.hashers import *
 from django.db.models import Q, Count, F, Max, ExpressionWrapper, Prefetch, DateField, Case, When,  IntegerField, Sum, Avg, Value, CharField,Subquery, Window
 import holidays
+import secrets
+import string
 from core.permissions import IsSelfOrAdmin, IsAdminOrTrainer
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from django.db.models.functions import Concat,Lag, JSONObject, Coalesce
@@ -6062,6 +6064,165 @@ class StudentsubusertypeViewset(viewsets.ViewSet):
                 "success": False,
                 "message": "Record not found"
             }, status=status.HTTP_404_NOT_FOUND)
+
+def generate_secure_password(length=8):
+    """
+    Generates a secure auto-password with minimum length of 8.
+    Guarantees: 1 uppercase, 1 lowercase, 1 digit, 1 special character.
+    """
+    if length < 8:
+        length = 8
+
+    upper = secrets.choice(string.ascii_uppercase)
+    lower = secrets.choice(string.ascii_lowercase)
+    digit = secrets.choice(string.digits)
+    special = secrets.choice("!@#$%^&*")
+    
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    remaining = [secrets.choice(alphabet) for _ in range(length - 4)]
+    
+    pwd_list = [upper, lower, digit, special] + remaining
+    secrets.SystemRandom().shuffle(pwd_list)
+    return "".join(pwd_list)
+
+
+def send_student_welcome_email(student, plain_password):
+    """Dispatches an HTML email with student login details."""
+    login_url = getattr(settings, "STUDENT_LOGIN_URL", "https://aylms.aryuprojects.com/login")
+    subject = "Welcome to ARYU Academy - Registration Credentials"
+    
+    # Hostinger requires from_email to strictly match EMAIL_HOST_USER
+    from_email = getattr(settings, "EMAIL_HOST_USER", "support@aryuacademy.com")
+    to_email = [student.email]
+
+    text_content = f"""
+Hello {student.first_name},
+
+Thank you for registering with ARYU Academy.
+
+Your Login Credentials:
+-----------------------
+Student ID: {student.student_id}
+Registration ID: {student.registration_id}
+Username / Email: {student.email}
+Password: {plain_password}
+
+Login URL: {login_url}
+
+Regards,
+ARYU Academy
+"""
+
+    html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {{ font-family: Arial, sans-serif; background-color: #f4f6f9; color: #333; padding: 20px; }}
+        .container {{ max-width: 600px; background: #ffffff; padding: 30px; margin: 0 auto; border-radius: 8px; }}
+        .header {{ background-color: #6200ee; color: #ffffff; padding: 15px; text-align: center; border-radius: 6px 6px 0 0; }}
+        .credentials {{ background-color: #f8f9fa; border-left: 4px solid #6200ee; padding: 15px; margin: 20px 0; font-family: monospace; }}
+        .btn {{ display: inline-block; padding: 12px 20px; background-color: #6200ee; color: #ffffff !important; text-decoration: none; border-radius: 4px; font-weight: bold; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2>ARYU Academy Registration Successful</h2>
+        </div>
+        <div style="padding: 20px 0;">
+            <p>Hi <strong>{student.first_name} {student.last_name or ''}</strong>,</p>
+            <p>Your registration with ARYU Academy has been processed successfully.</p>
+            
+            <div class="credentials">
+                <p><strong>Student ID:</strong> {student.student_id}</p>
+                <p><strong>Registration ID:</strong> {student.registration_id}</p>
+                <p><strong>Username / Email:</strong> {student.email}</p>
+                <p><strong>Password:</strong> {plain_password}</p>
+            </div>
+
+            <p><a href="{login_url}" class="btn" target="_blank">Access Student Portal</a></p>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+    try:
+        msg = EmailMultiAlternatives(subject, text_content, from_email, to_email)
+        msg.attach_alternative(html_content, "text/html")
+        msg.send(fail_silently=False)
+    except Exception as e:
+        logger.error(f"Failed to dispatch welcome email to {student.email}: {str(e)}")
+        raise e
+
+
+class StudentPublicSignupView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def post(self, request):
+        data = request.data.copy()
+
+        # 1. Auto-generate secure 8-character password
+        raw_password = generate_secure_password(length=8)
+        data['password'] = raw_password
+
+        # 2. Force status = True (Active) in student table
+        data['status'] = True
+
+        # 3. Assign username = email if not explicitly provided
+        if not data.get('username') and data.get('email'):
+            data['username'] = data.get('email').lower().strip()
+
+        # 4. Validate Serializer
+        serializer = StudentPublicSignupSerializer(data=data)
+        if not serializer.is_valid():
+            return Response({
+                "success": False,
+                "errors": serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # 5. Database Transaction Scope
+        student = None
+        try:
+            with transaction.atomic():
+                student = serializer.save(
+                    created_by="3",
+                    created_by_type="super_admin",
+                    status=True
+                )
+        except Exception as exc:
+            return Response({
+                "success": False,
+                "message": f"Failed to register student in database: {str(exc)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # 6. Dispatch Email (OUTSIDE transaction)
+        try:
+            send_student_welcome_email(student, raw_password)
+        except Exception as email_exc:
+            # If email sending fails, delete the created student to avoid orphan records in DB
+            if student and student.student_id:
+                student.delete()
+
+            return Response({
+                "success": False,
+                "message": f"Student registration failed (Email delivery error): {str(email_exc)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # 7. Success Response
+        return Response({
+            "success": True,
+            "message": "Student registration completed successfully. Account is active and login credentials have been emailed.",
+            "data": {
+                "registration_id": student.registration_id,
+                "first_name": student.first_name,
+                "email": student.email,
+            }
+        }, status=status.HTTP_201_CREATED)
+  
 
 class TrainerStudentMappingAPI(APIView):
 

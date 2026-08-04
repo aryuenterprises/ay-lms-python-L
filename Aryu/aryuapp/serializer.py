@@ -1558,6 +1558,138 @@ class StudentUpdateSerializer(serializers.ModelSerializer):
 
         return instance
 
+class StudentPublicSignupSerializer(serializers.ModelSerializer):
+    status = serializers.BooleanField(default=True)
+    password = serializers.CharField(required=False, write_only=True)  # <-- Added required=False
+    school_student = School_StudentSerializer(required=False, write_only=True)
+    college_student = College_StudentSerializer(required=False, write_only=True)
+    jobseeker = JobSeekerSerializer(required=False, write_only=True)
+    employee = EmployeeSerializer(required=False, write_only=True)
+
+    source_type = serializers.CharField(required=False, allow_blank=True)
+    source_name = serializers.CharField(required=False, allow_blank=True)
+    converter = serializers.CharField(required=False, allow_blank=True, default="Self")
+    profile_pic = serializers.ImageField(required=False, allow_null=True)
+
+    class Meta:
+        model = Student
+        fields = [
+            'student_id', 'registration_id', 'profile_pic', 'username', 'password',
+            'first_name', 'last_name', 'dob', 'email', 'contact_no', 'gender',
+            'current_address', 'city', 'state', 'country',
+            'parent_guardian_name', 'parent_guardian_phone', 'parent_guardian_occupation',
+            'student_type', 'student_sub_type', 'source_type', 'source_name',
+            'converter', 'internship_required', 'internship', 'status',
+            'school_student', 'college_student', 'jobseeker', 'employee',
+            'information', 'batch_timing', 'notes',
+        ]
+        read_only_fields = ['student_id', 'registration_id']
+
+    def validate_contact_no(self, value):
+        value = value.strip()
+        if Student.objects.filter(contact_no=value, is_archived=False).exists():
+            raise serializers.ValidationError("Phone number already registered.")
+        if Trainer.objects.filter(contact_no=value, is_archived=False).exists():
+            raise serializers.ValidationError("Phone number already registered.")
+        return value
+
+    def validate_email(self, value):
+        ALLOWED_EMAIL_DOMAINS = {
+            "gmail.com", "yahoo.com", "hotmail.com",
+            "outlook.com", "rediffmail.com", "icloud.com",
+            "aryutechnologies.com",
+        }
+        value = value.lower().strip()
+        try:
+            validate_email(value)
+        except DjangoValidationError:
+            raise serializers.ValidationError("Enter a valid email address.")
+
+        domain = value.split("@")[-1]
+        if domain not in ALLOWED_EMAIL_DOMAINS:
+            raise serializers.ValidationError(f"Please use an accepted email domain (e.g., gmail.com, yahoo.com).")
+
+        if Student.objects.filter(email__iexact=value, is_archived=False).exists():
+            raise serializers.ValidationError("Email address already registered.")
+
+        return value
+
+    def to_internal_value(self, data):
+        mutable_data = data.copy()
+        stype = mutable_data.get("student_type")
+
+        # Set default active status
+        mutable_data['status'] = True
+
+        # Parse string "true"/"Yes" to actual boolean for information field
+        if "information" in mutable_data:
+            info_val = str(mutable_data.get("information")).lower()
+            mutable_data["information"] = info_val in ["true", "yes", "1"]
+
+        if stype == "school_student" and "school_student" not in mutable_data:
+            mutable_data["school_student"] = {
+                "school_name": mutable_data.get("school_name") or mutable_data.get("institution_name"),
+                "school_class": mutable_data.get("school_class") or mutable_data.get("degree_class"),
+                "company_id": mutable_data.get("company_id")
+            }
+        elif stype == "college_student" and "college_student" not in mutable_data:
+            mutable_data["college_student"] = {
+                "college_name": mutable_data.get("college_name") or mutable_data.get("institution_name"),
+                "degree": mutable_data.get("degree") or mutable_data.get("degree_class"),
+                "year_of_study": mutable_data.get("year_of_study") or 1,
+                "resume": mutable_data.get("resume"),
+                "company_id": mutable_data.get("company_id")
+            }
+        elif stype == "jobseeker" and "jobseeker" not in mutable_data:
+            mutable_data["jobseeker"] = {
+                "passed_out_year": mutable_data.get("passed_out_year") or 2024,
+                "current_qualification": mutable_data.get("current_qualification") or mutable_data.get("degree_class"),
+                "preferred_job_role": mutable_data.get("preferred_job_role") or "Software Engineer",
+                "resume": mutable_data.get("resume"),
+                "company_id": mutable_data.get("company_id")
+            }
+        elif stype == "employee" and "employee" not in mutable_data:
+            mutable_data["employee"] = {
+                "company_name": mutable_data.get("company_name") or "N/A",
+                "designation": mutable_data.get("designation") or "Employee",
+                "experience": str(mutable_data.get("experience") or "0"),
+                "skills": mutable_data.get("skills") or "N/A",
+                "company_id": mutable_data.get("company_id")
+            }
+
+        return super().to_internal_value(mutable_data)
+
+    def create(self, validated_data):
+        plain_password = validated_data.get('password')
+        if plain_password:
+            validated_data['password'] = make_password(plain_password)
+        
+        validated_data['status'] = True
+
+        student_role = Role.objects.filter(name__iexact="Student").first()
+        if student_role:
+            validated_data["role"] = student_role
+
+        school_data = validated_data.pop('school_student', None)
+        college_data = validated_data.pop('college_student', None)
+        jobseeker_data = validated_data.pop('jobseeker', None)
+        employee_data = validated_data.pop('employee', None)
+        student_type = validated_data.get('student_type')
+
+        student = Student.objects.create(**validated_data)
+
+        if student_type == 'school_student' and school_data:
+            School_Student.objects.create(student=student, **school_data)
+        elif student_type == 'college_student' and college_data:
+            College_Student.objects.create(student=student, **college_data)
+        elif student_type == 'jobseeker' and jobseeker_data:
+            JobSeeker.objects.create(student=student, **jobseeker_data)
+        elif student_type == 'employee' and employee_data:
+            Employee.objects.create(student=student, **employee_data)
+
+        return student
+   
+
 class RecordingSerializer(serializers.ModelSerializer):
     created_date = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
     class Meta:
