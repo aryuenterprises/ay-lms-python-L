@@ -66,9 +66,10 @@ def razorpay_webhook(request):
     payload = request.body
     received_signature = request.headers.get("X-Razorpay-Signature")
 
-    if not received_signature:
-        logger.error("Signature missing")
-        return HttpResponse(status=400)
+    logger.info("Request Headers:")
+    logger.info(dict(request.headers))
+
+    logger.info("Payload Length: %s", len(payload))
 
     gateway = PaymentGateway.objects.filter(
         gatway_name__icontains="razorpay"

@@ -47,6 +47,7 @@ urlpatterns = [
    path('student-usertype/<str:student_id>',StudentusertypeViewSet.as_view({'patch':'put','delete':'delete'})),
    path('student-subusertype/',StudentsubusertypeViewset.as_view({'get':'get','post':'post'})),
    path('student-subusertype/<str:student_id>',StudentsubusertypeViewset.as_view({'patch':'put','delete':'delete'})),
+   path('student-signup',StudentPublicSignupView.as_view()),
    path('forgot-password/', ForgotPasswordView.as_view(), name='forgot-password'),
    path('verify-otp/', VerifyOTPView.as_view(), name='verify-otp'),
    path('reset-password/', ResetPasswordView.as_view(), name='reset-password'),
