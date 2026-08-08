@@ -1744,14 +1744,19 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get", "post"], url_path="verify-email")
     def verify_email(self, request):
+        """
+        Endpoint: /api/resume-registration/verify-email/?token=<TOKEN>
+        """
         token = request.GET.get("token") or request.data.get("token")
+        if not token:
+            return Response(
+                {"status": False, "message": "Verification token is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         success, resp_data, status_code, user = process_email_verification(token)
         return Response(resp_data, status=status_code)
 
-    # =====================================================
-    # TURNSTILE VERIFICATION METHOD
-    # =====================================================
-    
     def verify_turnstile_token(self, token: str, client_ip: str = None) -> dict:
         secret_key = getattr(settings, 'TURNSTILE_SECRET_KEY', None)
         if not secret_key:
@@ -1770,125 +1775,58 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
                 timeout=10
             )
             logger.info(
-                f"Cloudflare API call took "
-                f"{time.perf_counter() - verify_start:.4f} seconds"
+                f"Cloudflare API call took {time.perf_counter() - verify_start:.4f} seconds"
             )
-            result = response.json()
-            return result
+            return response.json()
         except requests.exceptions.Timeout:
-            return {
-                "success": False,
-                "error": "Verification timeout"
-            }
+            return {"success": False, "error": "Verification timeout"}
         except Exception as e:
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return {"success": False, "error": str(e)}
 
     @secure_throttle(rate_limit=5, period=60)
     def create(self, request, *args, **kwargs):
-
         start = time.perf_counter()
 
-        # =====================================
         # STEP 1: TURNSTILE VERIFICATION
-        # =====================================
-
         client_ip = self.get_client_ip(request)
 
         if settings.DEBUG or request.data.get("turnstileToken") == "test_pass":
             logger.info("Turnstile verification skipped (DEBUG=True or test_pass token)")
-
-            verification_result = {
-                "success": True,
-                "score": 1.0,
-                "hostname": "localhost"
-            }
-
+            verification_result = {"success": True, "score": 1.0, "hostname": "localhost"}
         else:
             turnstile_token = request.data.get("turnstileToken")
 
             if not turnstile_token:
                 return Response(
-                    {
-                        "status": False,
-                        "message": (
-                            "Security verification required. "
-                            "Please complete the verification check."
-                        )
-                    },
+                    {"status": False, "message": "Security verification required."},
                     status=status.HTTP_403_FORBIDDEN
                 )
 
-            verification_result = self.verify_turnstile_token(
-                turnstile_token,
-                client_ip
-            )
+            verification_result = self.verify_turnstile_token(turnstile_token, client_ip)
 
             if not verification_result.get("success"):
                 return Response(
-                    {
-                        "status": False,
-                        "message": (
-                            "Security check failed. "
-                            "Please refresh the page and try again."
-                        )
-                    },
+                    {"status": False, "message": "Security check failed. Refresh and try again."},
                     status=status.HTTP_403_FORBIDDEN
                 )
 
             score = verification_result.get("score", 0)
-
             if score < 0.7:
                 return Response(
-                    {
-                        "status": False,
-                        "message": (
-                            "Suspicious activity detected. "
-                            "Please try again."
-                        )
-                    },
+                    {"status": False, "message": "Suspicious activity detected."},
                     status=status.HTTP_403_FORBIDDEN
                 )
 
-            expected_hostnames = [
-                "portal.aryuacademy.com",
-                "localhost",
-                "yourdomain.com"
-            ]
-
-            hostname = verification_result.get("hostname")
-
-            if hostname not in expected_hostnames:
+            expected_hostnames = ["portal.aryuacademy.com", "localhost", "yourdomain.com"]
+            if verification_result.get("hostname") not in expected_hostnames:
                 return Response(
-                    {
-                        "status": False,
-                        "message": "Invalid request source."
-                    },
+                    {"status": False, "message": "Invalid request source."},
                     status=status.HTTP_403_FORBIDDEN
                 )
 
-        # =====================================
-        # STEP 2: REGISTRATION
-        # =====================================
-
-        serializer = self.get_serializer(
-            data=request.data
-        )
-
-        validation_start = time.perf_counter()
-
-        serializer.is_valid(
-            raise_exception=True
-        )
-
-        logger.info(
-            f"Validation Time: "
-            f"{time.perf_counter() - validation_start:.4f}s"
-        )
-
-        save_start = time.perf_counter()
+        # STEP 2: REGISTRATION & USER CREATION
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
         verification_token = str(uuid.uuid4())
         token_expiry = timezone.now() + timedelta(hours=24)
@@ -1899,13 +1837,6 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
             email_verification_token_expiry=token_expiry
         )
 
-        logger.info(
-            f"Registration Save Time: "
-            f"{time.perf_counter() - save_start:.4f}s"
-        )
-
-        payment_start = time.perf_counter()
-
         PaymentHistory.objects.create(
             user=registration,
             plan_name="Free",
@@ -1913,16 +1844,18 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
             payment_status="free"
         )
 
-        logger.info(
-            f"Payment History Time: "
-            f"{time.perf_counter() - payment_start:.4f}s"
-        )
-
+        # =========================================================
+        # FIX 1: DYNAMIC/CORRECT VERIFICATION LINK CONSTRUCTION
+        # =========================================================
+        # If your frontend handles verification (recommended):
+        # verification_link = f"https://portal.aryuacademy.com/verify-email?token={verification_token}"
+        
+        # If API direct link is used:
         domain = request.build_absolute_uri('/')[:-1] if request else "https://portal.aryuacademy.com"
-        verification_link = f"{domain}/api/verify-email/?token={verification_token}"
+        verification_link = f"{domain}/api/resume-registration/verify-email/?token={verification_token}"
 
         subject = f"{registration.first_name}, verify your PassATS account"
-        body = f"Please verify your account: {verification_link}"
+        body = f"Please verify your account using this link: {verification_link}"
 
         html_message = f"""
 <!DOCTYPE html>
@@ -1932,59 +1865,42 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
     <h2>Hello {registration.first_name},</h2>
     <p>Please click the button below to verify your email address:</p>
     <a href="{verification_link}" style="background-color: #7120e7; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">Verify Email Address</a>
-    <p>Or copy this link into your browser: <br>{verification_link}</p>
+    <p>Or copy this link into your browser: <br><a href="{verification_link}">{verification_link}</a></p>
 </body>
 </html>
 """
 
-        celery_start = time.perf_counter()
+        # =========================================================
+        # FIX 2: SAFE EMAIL DISPATCH
+        # =========================================================
+        try:
+            if settings.DEBUG:
+                # Call task logic directly in debug mode
+                send_verification_email(
+                    subject, body, html_message, registration.email
+                )
+            else:
+                # Queue through Celery in production
+                send_verification_email.delay(
+                    subject, body, html_message, registration.email
+                )
+        except Exception as e:
+            logger.error(f"Failed to send email: {str(e)}")
 
-        if settings.DEBUG:
-            send_verification_email.run(
-                subject,
-                body,
-                html_message,
-                registration.email
-            )
-        else:
-            send_verification_email.delay(
-                subject,
-                body,
-                html_message,
-                registration.email
-            )
-
-        logger.info(
-            f"Celery Trigger Time: "
-            f"{time.perf_counter() - celery_start:.4f}s"
-        )
-
-        logger.info(
-            f"TOTAL API TIME: "
-            f"{time.perf_counter() - start:.4f}s"
-        )
+        logger.info(f"TOTAL API TIME: {time.perf_counter() - start:.4f}s")
 
         return Response(
             {
                 "status": True,
-                "message": (
-                    "Registration successful. Please check your email to verify your account."
-                ),
+                "message": "Registration successful. Please check your email to verify your account.",
                 "data": serializer.data
             },
             status=status.HTTP_201_CREATED
         )
-    
+
     def get_client_ip(self, request):
-        """Extract client IP address from request"""
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-        if x_forwarded_for:
-            ip = x_forwarded_for.split(',')[0]
-        else:
-            ip = request.META.get('REMOTE_ADDR')
-        return ip
-
-
+        return x_forwarded_for.split(',')[0] if x_forwarded_for else request.META.get('REMOTE_ADDR')
     
     
 class UserDashboardView(APIView):
