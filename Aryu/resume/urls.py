@@ -3,17 +3,23 @@ from rest_framework_simplejwt.views import (TokenRefreshView)
 from .views import *
 
 urlpatterns = [
-    #ResumeRegistrations urls
-    path('registraion',ResumeRegistrationViewset.as_view({'post':'create','get':'list'})),
-    path('registered-user/<int:pk>',ResumeRegistrationViewset.as_view({'patch':'partial_update','delete':'destroy'})),
-    path('payments', ResumeTransactionViewSet.as_view({'get':'list'})),
+    # ResumeRegistration endpoints
+    path('register/', ResumeRegistrationViewset.as_view({'post': 'create'}), name='register'),
+    path('verify-email/', ResumeRegistrationViewset.as_view({'get': 'verify_email', 'post': 'verify_email'}), name='verify_email'),
+    path('resume-registration/', ResumeRegistrationViewset.as_view({'get': 'list'}), name='resume_registration_list'),
+    path('resume-registration/<int:pk>/', ResumeRegistrationViewset.as_view({'get': 'retrieve', 'patch': 'partial_update', 'put': 'update', 'delete': 'destroy'}), name='resume_registration_detail'),
 
-    path("auth/signup/",AuthViewSet.as_view({"post": "signup"}),name="signup"),
-    path("auth/login/",AuthViewSet.as_view({"post": "login"}),name="login"),
-    path("auth/logout/",AuthViewSet.as_view({"post": "logout"}),name="logout"),
-    path("token/refresh/",CustomTokenRefreshView.as_view(),name="token_refresh"),
-    path("auth/verify-email/",AuthViewSet.as_view({"get": "verify_email"}),name="verify_email"),
-    path("auth/resend-verification-email/",AuthViewSet.as_view({"post": "resend_verification_email"}),name="resend_verification_email"),
+    # Legacy/Existing routes
+    path('registraion', ResumeRegistrationViewset.as_view({'post': 'create', 'get': 'list'})),
+    path('registered-user/<int:pk>', ResumeRegistrationViewset.as_view({'get': 'retrieve', 'patch': 'partial_update', 'delete': 'destroy'})),
+    path('payments', ResumeTransactionViewSet.as_view({'get': 'list'})),
+
+    path("auth/signup/", AuthViewSet.as_view({"post": "signup"}), name="signup"),
+    path("auth/login/", AuthViewSet.as_view({"post": "login"}), name="login"),
+    path("auth/logout/", AuthViewSet.as_view({"post": "logout"}), name="logout"),
+    path("token/refresh/", CustomTokenRefreshView.as_view(), name="token_refresh"),
+    path("auth/verify-email/", AuthViewSet.as_view({"get": "verify_email", "post": "verify_email"}), name="auth_verify_email"),
+    path("auth/resend-verification-email/", AuthViewSet.as_view({"post": "resend_verification_email"}), name="resend_verification_email"),
     path("auth/forgot-password/",AuthViewSet.as_view({"post": "forgot_password"}),name="forgot_password"),
     path("auth/verify-reset-otp/",AuthViewSet.as_view({"post": "verify_reset_otp"}),name="verify_reset_otp"),
     path("auth/reset-password/",AuthViewSet.as_view({"post": "reset_password"}),name="reset_password"),

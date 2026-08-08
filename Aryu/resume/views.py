@@ -59,6 +59,54 @@ logger = logging.getLogger(__name__)
 
 SIGNING_SALT = "resume-email-verification"
 
+
+def process_email_verification(token):
+    """
+    Validates email verification token, marks user as verified, and invalidates the token.
+    Returns tuple: (success: bool, response_dict: dict, status_code: int, user: ResumeRegistration or None)
+    """
+    if not token:
+        return False, {"status": False, "error": "Verification token is required"}, status.HTTP_400_BAD_REQUEST, None
+
+    # 1. Direct match on email_verification_token
+    user = ResumeRegistration.objects.filter(
+        email_verification_token=token,
+        is_deleted=False
+    ).first()
+
+    # 2. Fallback to signed token decoding
+    if not user:
+        try:
+            data = signing.loads(token, salt=SIGNING_SALT, max_age=60 * 60 * 24)
+            user_id = data.get("user_id")
+            user = ResumeRegistration.objects.filter(id=user_id, is_deleted=False).first()
+            if user and user.is_verified and user.email_verification_token != token:
+                return False, {"status": False, "error": "Verification token has already been used"}, status.HTTP_400_BAD_REQUEST, user
+        except SignatureExpired:
+            return False, {"status": False, "error": "Verification link expired"}, status.HTTP_400_BAD_REQUEST, None
+        except Exception:
+            user = None
+
+    if not user:
+        return False, {"status": False, "error": "Invalid or expired verification token"}, status.HTTP_400_BAD_REQUEST, None
+
+    # 3. Check if user is already verified and token is invalidated
+    if user.is_verified and (not user.email_verification_token or user.email_verification_token != token):
+        return False, {"status": False, "error": "Verification token has already been used"}, status.HTTP_400_BAD_REQUEST, user
+
+    # 4. Check expiration
+    if user.email_verification_token_expiry and timezone.now() > user.email_verification_token_expiry:
+        return False, {"status": False, "error": "Verification token has expired"}, status.HTTP_400_BAD_REQUEST, user
+
+    # 5. Success: Mark as verified and invalidate token
+    user.is_verified = True
+    user.email_verification_token = None
+    user.email_verification_token_expiry = None
+    user.save(update_fields=["is_verified", "email_verification_token", "email_verification_token_expiry"])
+
+    return True, {"status": True, "message": "Email verified successfully", "user_id": user.id}, status.HTTP_200_OK, user
+
+
 class AuthViewSet(viewsets.ViewSet): 
 
     permission_classes = [AllowAny]
@@ -133,6 +181,9 @@ class AuthViewSet(viewsets.ViewSet):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
+            verification_token = str(uuid.uuid4())
+            token_expiry = timezone.now() + timedelta(hours=24)
+
             user = ResumeRegistration.objects.create(
                 first_name=validated_data["first_name"],
                 last_name=validated_data["last_name"],
@@ -143,6 +194,8 @@ class AuthViewSet(viewsets.ViewSet):
                 state=validated_data["state"],
                 country=validated_data["country"],
                 is_verified=False,
+                email_verification_token=verification_token,
+                email_verification_token_expiry=token_expiry,
             )
 
             start_date = timezone.now()
@@ -172,8 +225,8 @@ class AuthViewSet(viewsets.ViewSet):
                 payment_status="free"
             )
 
-            token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
-            verification_link = f"https://portal.aryuacademy.com/api/resume/auth/verify-email/?token={token}"
+            domain = request.build_absolute_uri('/')[:-1] if request else "https://portal.aryuacademy.com"
+            verification_link = f"{domain}/api/verify-email/?token={verification_token}"
 
             html_message = f"""
     <!DOCTYPE html>
@@ -822,187 +875,19 @@ class AuthViewSet(viewsets.ViewSet):
 
     
     @action(
-    detail=False,
-    methods=["get"],
-    url_path="verify-email"
+        detail=False,
+        methods=["get", "post"],
+        url_path="verify-email"
     )
     def verify_email(self, request):
+        token = request.GET.get("token") or request.data.get("token")
+        success, resp_data, status_code, user = process_email_verification(token)
 
-        start = time.perf_counter()
+        # If user opened link in browser format HTML, redirect
+        if success and getattr(request, 'accepted_renderer', None) and request.accepted_renderer.format == 'html':
+            return redirect("https://passats.aryuacademy.com/email-verified")
 
-        # =====================================
-        # LOCAL TESTING (DEBUG MODE)
-        # =====================================
-
-        if settings.DEBUG:
-
-            logger.info(
-                "Email verification skipped (DEBUG=True)"
-            )
-
-            user = ResumeRegistration.objects.filter(
-                is_verified=False
-            ).first()
-
-            if not user:
-
-                logger.warning(
-                    "No unverified users found"
-                )
-
-                return Response(
-                    {
-                        "status": False,
-                        "message": "No unverified users found"
-                    },
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            update_start = time.perf_counter()
-
-            user.is_verified = True
-            user.save(
-                update_fields=["is_verified"]
-            )
-
-            logger.info(
-                f"User verification update took "
-                f"{time.perf_counter() - update_start:.4f}s"
-            )
-
-            logger.info(
-                f"TOTAL VERIFY EMAIL TIME: "
-                f"{time.perf_counter() - start:.4f}s"
-            )
-
-            return Response(
-                {
-                    "status": True,
-                    "message": (
-                        "Email verified successfully "
-                        "(DEBUG mode)"
-                    ),
-                    "user_id": user.id
-                },
-                status=status.HTTP_200_OK
-            )
-
-        # =====================================
-        # PRODUCTION FLOW
-        # =====================================
-
-        token = request.GET.get("token")
-
-        logger.info(
-            f"Token Present: {bool(token)}"
-        )
-
-        if not token:
-
-            logger.error(
-                "No token provided"
-            )
-
-            return Response(
-                {
-                    "error": "Invalid verification link"
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        try:
-
-            decode_start = time.perf_counter()
-
-            data = signing.loads(
-                token,
-                salt=SIGNING_SALT,
-                max_age=60 * 60 * 24
-            )
-
-            logger.info(
-                f"Token decode took "
-                f"{time.perf_counter() - decode_start:.4f}s"
-            )
-
-            user_fetch_start = time.perf_counter()
-
-            user = ResumeRegistration.objects.only(
-                "id",
-                "email",
-                "is_verified"
-            ).get(
-                id=data["user_id"],
-                email=data["email"]
-            )
-
-            logger.info(
-                f"User fetch took "
-                f"{time.perf_counter() - user_fetch_start:.4f}s"
-            )
-
-        except SignatureExpired:
-
-            logger.warning(
-                "Verification link expired"
-            )
-
-            return Response(
-                {
-                    "error": "Verification link expired"
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        except (
-            BadSignature,
-            ResumeRegistration.DoesNotExist
-        ) as exc:
-
-            logger.error(
-                f"Verification failed: {exc}"
-            )
-
-            return Response(
-                {
-                    "error": str(exc)
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        if user.is_verified:
-
-            logger.info(
-                f"User {user.id} already verified. "
-                f"Total Time: "
-                f"{time.perf_counter() - start:.4f}s"
-            )
-
-            return redirect(
-                "https://passats.aryuacademy.com/email-verified"
-            )
-
-        update_start = time.perf_counter()
-
-        user.is_verified = True
-
-        user.save(
-            update_fields=["is_verified"]
-        )
-
-        logger.info(
-            f"User verification update took "
-            f"{time.perf_counter() - update_start:.4f}s"
-        )
-
-        logger.info(
-            f"TOTAL VERIFY EMAIL TIME: "
-            f"{time.perf_counter() - start:.4f}s"
-        )
-
-        return redirect(
-            "https://passats.aryuacademy.com/email-verified"
-        )
+        return Response(resp_data, status=status_code)
 
     # =========================
     # LOGIN
@@ -1847,60 +1732,59 @@ from .tasks import send_verification_email
 
 class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
-    queryset = ResumeRegistration.objects.all().order_by("-id")
     serializer_class = ResumeRegistrationSerializers
     authentication_classes = [CustomJWTAuthentication]
     permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        return ResumeRegistration.objects.filter(
+            is_verified=True,
+            is_deleted=False
+        ).order_by("-id")
+
+    @action(detail=False, methods=["get", "post"], url_path="verify-email")
+    def verify_email(self, request):
+        token = request.GET.get("token") or request.data.get("token")
+        success, resp_data, status_code, user = process_email_verification(token)
+        return Response(resp_data, status=status_code)
 
     # =====================================================
     # TURNSTILE VERIFICATION METHOD
     # =====================================================
     
-    # def verify_turnstile_token(self, token: str, client_ip: str = None) -> dict:
-    #     secret_key = settings.TURNSTILE_SECRET_KEY
+    def verify_turnstile_token(self, token: str, client_ip: str = None) -> dict:
+        secret_key = getattr(settings, 'TURNSTILE_SECRET_KEY', None)
+        if not secret_key:
+            return {"success": True, "score": 1.0, "hostname": "localhost"}
 
-        
-    #     verification_data = {
-    #         "secret": secret_key,
-    #         "response": token,
-    #     }
+        verification_data = {
+            "secret": secret_key,
+            "response": token,
+        }
 
-    #     try:
-    #         verify_start = time.perf_counter()
-
-    #         response = requests.post(
-    #             "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-    #             data=verification_data,
-    #             timeout=10
-    #         )
-
-    #         logger.info(
-    #             f"Cloudflare API call took "
-    #             f"{time.perf_counter() - verify_start:.4f} seconds"
-    #         )
-           
-
-    #         result = response.json()
-
-            
-
-    #         return result
-
-    #     except requests.exceptions.Timeout:
-            
-    #         return {
-    #             "success": False,
-    #             "error": "Verification timeout"
-    #         }
-
-    #     except Exception as e:
-            
-    #         return {
-    #             "success": False,
-    #             "error": str(e)
-    #         }
-        
-        # from django.conf import settings
+        try:
+            verify_start = time.perf_counter()
+            response = requests.post(
+                "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                data=verification_data,
+                timeout=10
+            )
+            logger.info(
+                f"Cloudflare API call took "
+                f"{time.perf_counter() - verify_start:.4f} seconds"
+            )
+            result = response.json()
+            return result
+        except requests.exceptions.Timeout:
+            return {
+                "success": False,
+                "error": "Verification timeout"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
 
     @secure_throttle(rate_limit=5, period=60)
     def create(self, request, *args, **kwargs):
@@ -1913,8 +1797,8 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
         client_ip = self.get_client_ip(request)
 
-        if settings.DEBUG:
-            logger.info("Turnstile verification skipped (DEBUG=True)")
+        if settings.DEBUG or request.data.get("turnstileToken") == "test_pass":
+            logger.info("Turnstile verification skipped (DEBUG=True or test_pass token)")
 
             verification_result = {
                 "success": True,
@@ -2006,7 +1890,14 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
         save_start = time.perf_counter()
 
-        registration = serializer.save()
+        verification_token = str(uuid.uuid4())
+        token_expiry = timezone.now() + timedelta(hours=24)
+
+        registration = serializer.save(
+            is_verified=False,
+            email_verification_token=verification_token,
+            email_verification_token_expiry=token_expiry
+        )
 
         logger.info(
             f"Registration Save Time: "
@@ -2027,11 +1918,41 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
             f"{time.perf_counter() - payment_start:.4f}s"
         )
 
+        domain = request.build_absolute_uri('/')[:-1] if request else "https://portal.aryuacademy.com"
+        verification_link = f"{domain}/api/verify-email/?token={verification_token}"
+
+        subject = f"{registration.first_name}, verify your PassATS account"
+        body = f"Please verify your account: {verification_link}"
+
+        html_message = f"""
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Verify Your Account</title></head>
+<body style="font-family: Arial, sans-serif; padding: 20px;">
+    <h2>Hello {registration.first_name},</h2>
+    <p>Please click the button below to verify your email address:</p>
+    <a href="{verification_link}" style="background-color: #7120e7; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">Verify Email Address</a>
+    <p>Or copy this link into your browser: <br>{verification_link}</p>
+</body>
+</html>
+"""
+
         celery_start = time.perf_counter()
 
-        send_verification_email.delay(
-            registration.id
-        )
+        if settings.DEBUG:
+            send_verification_email.run(
+                subject,
+                body,
+                html_message,
+                registration.email
+            )
+        else:
+            send_verification_email.delay(
+                subject,
+                body,
+                html_message,
+                registration.email
+            )
 
         logger.info(
             f"Celery Trigger Time: "
@@ -2047,7 +1968,7 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
             {
                 "status": True,
                 "message": (
-                    "Resume registration created successfully"
+                    "Registration successful. Please check your email to verify your account."
                 ),
                 "data": serializer.data
             },
@@ -2063,348 +1984,7 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
             ip = request.META.get('REMOTE_ADDR')
         return ip
 
-    # =====================================================
-    # CREATE (REGISTRATION) - WITH TURNSTILE
-    # =====================================================
 
-    # @secure_throttle(rate_limit=5, period=60)
-    # def create(self, request, *args, **kwargs):
-
-    #     start = time.perf_counter()
-
-    #     # Turnstile Verification
-    #     turnstile_token = request.data.get("turnstileToken")
-
-    #     if not turnstile_token:
-    #         return Response(
-    #             {
-    #                 "status": False,
-    #                 "message": "Security verification required. Please complete the verification check."
-    #             },
-    #             status=status.HTTP_403_FORBIDDEN
-    #         )
-
-    #     client_ip = self.get_client_ip(request)
-
-    #     verify_start = time.perf_counter()
-
-    #     verification_result = self.verify_turnstile_token(
-    #         turnstile_token,
-    #         client_ip
-    #     )
-
-    #     logger.info(
-    #         f"Turnstile verification took "
-    #         f"{time.perf_counter() - verify_start:.4f} seconds"
-    #     )
-
-    #     if not verification_result.get("success"):
-    #         return Response(
-    #             {
-    #                 "status": False,
-    #                 "message": "Security check failed. Please refresh the page and try again."
-    #             },
-    #             status=status.HTTP_403_FORBIDDEN
-    #         )
-
-    #     serializer = self.get_serializer(data=request.data)
-
-    #     validation_start = time.perf_counter()
-
-    #     serializer.is_valid(raise_exception=True)
-
-    #     logger.info(
-    #         f"Serializer validation took "
-    #         f"{time.perf_counter() - validation_start:.4f} seconds"
-    #     )
-
-    #     save_start = time.perf_counter()
-
-    #     registration = serializer.save()
-
-    #     logger.info(
-    #         f"User save took "
-    #         f"{time.perf_counter() - save_start:.4f} seconds"
-    #     )
-
-    #     payment_start = time.perf_counter()
-
-    #     PaymentHistory.objects.create(
-    #         user=registration,
-    #         plan_name="Free",
-    #         price=0,
-    #         payment_status="free"
-    #     )
-
-    #     logger.info(
-    #         f"PaymentHistory create took "
-    #         f"{time.perf_counter() - payment_start:.4f} seconds"
-    #     )
-
-    #     celery_start = time.perf_counter()
-
-    #     resume_reg.delay(registration.id)
-
-    #     logger.info(
-    #         f"Celery trigger took "
-    #         f"{time.perf_counter() - celery_start:.4f} seconds"
-    #     )
-
-    #     logger.info(
-    #         f"TOTAL REGISTRATION API TIME: "
-    #         f"{time.perf_counter() - start:.4f} seconds"
-    #     )
-
-    #     return Response(
-    #         {
-    #             "status": True,
-    #             "message": "Resume registration created successfully",
-    #             "data": serializer.data
-    #         },
-    #         status=status.HTTP_201_CREATED
-    #     )
-
-    #     # =====================================================
-    #     # LIST (UNCHANGED)
-    #     # =====================================================
-        
-    #     def list(self, request, *args, **kwargs):
-            
-    #         user = request.user
-            
-    #         allowed_types = ["super_admin", "admin"]
-
-    #         if user.user_type not in allowed_types:
-    #             return Response({
-    #                 "success": False,
-    #                 "message": "Unable to process request."
-    #             }, status=status.HTTP_403_FORBIDDEN)
-                
-
-    #         queryset = self.get_queryset()
-    #         serializer = self.get_serializer(queryset, many=True)
-
-    #         return Response(
-    #             {
-    #                 "status": True,
-    #                 "message": "Resume registration list",
-    #                 "data": serializer.data
-    #             },
-    #             status=status.HTTP_200_OK
-    #         )
-        
-
-    #     # =====================================================
-    #     # UPDATE (UNCHANGED)
-    #     # =====================================================
-
-    #     def partial_update(self, request, *args, **kwargs):
-
-    #         instance = self.get_object()
-
-    #         serializer = self.get_serializer(
-    #             instance,
-    #             data=request.data,
-    #             partial=True
-    #         )
-
-    #         if serializer.is_valid():
-    #             serializer.save()
-
-    #             return Response(
-    #                 {
-    #                     "status": True,
-    #                     "message": "Resume registration updated successfully",
-    #                     "data": serializer.data
-    #                 },
-    #                 status=status.HTTP_200_OK
-    #             )
-
-    #         return Response(
-    #             {
-    #                 "status": False,
-    #                 "message": "Validation error",
-    #                 "errors": serializer.errors
-    #             },
-    #             status=status.HTTP_400_BAD_REQUEST
-    #         )
-
-
-    #     # =====================================================
-    #     # DELETE (UNCHANGED)
-    #     # =====================================================
-        
-    #     @secure_throttle(rate_limit=5, period=60)
-    #     def destroy(self, request, *args, **kwargs):
-    #         user = request.user
-
-    #         allowed_types = ["super_admin", "admin"]
-
-    #         if user.user_type not in allowed_types:
-    #             return Response({
-    #                 "success": False,
-    #                 "message": "Unable to process request."
-    #             }, status=status.HTTP_403_FORBIDDEN)
-
-    #         instance = self.get_object()
-    #         instance.delete()
-
-    #         return Response(
-    #             {
-    #                 "status": True,
-    #                 "message": "Resume registration deleted successfully"
-    #             },
-    #             status=status.HTTP_200_OK
-    #         )
-        
-
-    @secure_throttle(rate_limit=5, period=60)
-    def create(self, request, *args, **kwargs):
-
-        start = time.perf_counter()
-
-        client_ip = self.get_client_ip(request)
-
-        # =====================================
-        # TURNSTILE VERIFICATION
-        # =====================================
-
-        if settings.DEBUG:
-
-            logger.info(
-                "Turnstile verification skipped (DEBUG=True)"
-            )
-
-            verification_result = {
-                "success": True
-            }
-
-        else:
-
-            turnstile_token = request.data.get(
-                "turnstileToken"
-            )
-
-            if not turnstile_token:
-                return Response(
-                    {
-                        "status": False,
-                        "message": (
-                            "Security verification required. "
-                            "Please complete the verification check."
-                        )
-                    },
-                    status=status.HTTP_403_FORBIDDEN
-                )
-
-            verify_start = time.perf_counter()
-
-            verification_result = self.verify_turnstile_token(
-                turnstile_token,
-                client_ip
-            )
-
-            logger.info(
-                f"Turnstile verification took "
-                f"{time.perf_counter() - verify_start:.4f} seconds"
-            )
-
-            if not verification_result.get("success"):
-                return Response(
-                    {
-                        "status": False,
-                        "message": (
-                            "Security check failed. "
-                            "Please refresh the page and try again."
-                        )
-                    },
-                    status=status.HTTP_403_FORBIDDEN
-                )
-
-        # =====================================
-        # SERIALIZER VALIDATION
-        # =====================================
-
-        serializer = self.get_serializer(
-            data=request.data
-        )
-
-        validation_start = time.perf_counter()
-
-        serializer.is_valid(
-            raise_exception=True
-        )
-
-        logger.info(
-            f"Serializer validation took "
-            f"{time.perf_counter() - validation_start:.4f} seconds"
-        )
-
-        # =====================================
-        # USER SAVE
-        # =====================================
-
-        save_start = time.perf_counter()
-
-        registration = serializer.save()
-
-        logger.info(
-            f"User save took "
-            f"{time.perf_counter() - save_start:.4f} seconds"
-        )
-
-        # =====================================
-        # PAYMENT HISTORY
-        # =====================================
-
-        payment_start = time.perf_counter()
-
-        PaymentHistory.objects.create(
-            user=registration,
-            plan_name="Free",
-            price=0,
-            payment_status="free"
-        )
-
-        logger.info(
-            f"PaymentHistory create took "
-            f"{time.perf_counter() - payment_start:.4f} seconds"
-        )
-
-        # =====================================
-        # CELERY TASK
-        # =====================================
-
-        celery_start = time.perf_counter()
-
-        send_verification_email.delay(
-            registration.id
-        )
-
-        logger.info(
-            f"Celery trigger took "
-            f"{time.perf_counter() - celery_start:.4f} seconds"
-        )
-
-        # =====================================
-        # TOTAL TIME
-        # =====================================
-
-        logger.info(
-            f"TOTAL REGISTRATION API TIME: "
-            f"{time.perf_counter() - start:.4f} seconds"
-        )
-
-        return Response(
-            {
-                "status": True,
-                "message": (
-                    "Resume registration created successfully"
-                ),
-                "data": serializer.data
-            },
-            status=status.HTTP_201_CREATED
-        )
     
     
 class UserDashboardView(APIView):

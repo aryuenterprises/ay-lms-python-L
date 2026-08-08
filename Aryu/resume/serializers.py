@@ -20,6 +20,12 @@ class ResumeRegistrationSerializers(serializers.ModelSerializer):
     class Meta:
         model = ResumeRegistration
         fields = "__all__"
+        extra_kwargs = {
+            'password': {'write_only': True},
+            'email_verification_token': {'read_only': True},
+            'email_verification_token_expiry': {'read_only': True},
+            'reset_otp_hash': {'read_only': True},
+        }
 
 
 class SecureLoginSerializer(serializers.Serializer):

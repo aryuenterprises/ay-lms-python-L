@@ -53,6 +53,7 @@ urlpatterns = [
     path("api/webinar/", include("webinar.urls")),
     path("api/",include("resources.urls")),
     path("api/resume/",include("resume.urls")),
+    path("api/",include("resume.urls")),
     path("api/",include("ebook.urls")),
     path("api/",include("lead.urls")),
     path("api/",include("reports.urls")),
