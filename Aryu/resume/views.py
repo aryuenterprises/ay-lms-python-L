@@ -60,8 +60,11 @@ logger = logging.getLogger(__name__)
 SIGNING_SALT = "resume-email-verification"
 
 
-def process_email_verification(token):
- def build_verification_link(token: str, request=None) -> str:
+# ==============================================================================
+# Helper Functions (Must be defined at the top-level before AuthViewSet)
+# ==============================================================================
+
+def build_verification_link(token: str, request=None) -> str:
     """
     Generates a unified email verification link based on environment configuration.
     """
@@ -146,7 +149,6 @@ def process_email_verification(token):
     if user.email_verification_token_expiry and timezone.now() > user.email_verification_token_expiry:
         return False, {"status": False, "error": "Verification token has expired"}, status.HTTP_400_BAD_REQUEST, user
 
-    # Mark user verified and clear token state
     user.is_verified = True
     user.email_verification_token = None
     user.email_verification_token_expiry = None
@@ -221,10 +223,14 @@ class AuthViewSet(viewsets.ViewSet):
         html_message = get_email_verification_html(user.first_name, verification_link)
 
         def queue_email():
-            if settings.DEBUG:
-                send_verification_email_task(subject, body, html_message, user.email)
-            else:
-                send_verification_email_task.delay(subject, body, html_message, user.email)
+            try:
+                send_verification_email_task.delay(
+                    subject, body, html_message, user.email
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to queue email task for {user.email}: {str(e)}"
+                )
 
         transaction.on_commit(queue_email)
 
@@ -269,10 +275,14 @@ class AuthViewSet(viewsets.ViewSet):
         html_message = get_email_verification_html(user.first_name, verification_link)
 
         def queue_email():
-            if settings.DEBUG:
-                send_verification_email_task(subject, body, html_message, user.email)
-            else:
-                send_verification_email_task.delay(subject, body, html_message, user.email)
+            try:
+                send_verification_email_task.delay(
+                    subject, body, html_message, user.email
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to queue email task for {user.email}: {str(e)}"
+                )
 
         transaction.on_commit(queue_email)
 
