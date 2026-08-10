@@ -27,18 +27,6 @@ class ResumeRegistration(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     is_deleted = models.BooleanField(default=False)
 
-    email_verification_token = models.CharField(
-        max_length=255,
-        null=True,
-        blank=True,
-        db_index=True
-    )
-
-    email_verification_token_expiry = models.DateTimeField(
-        null=True,
-        blank=True
-    )
-
     reset_otp_hash = models.CharField(
         max_length=255,
         null=True,
@@ -62,7 +50,6 @@ class ResumeRegistration(models.Model):
         indexes = [
             models.Index(fields=["email"]),
             models.Index(fields=["is_verified"]),
-            models.Index(fields=["email_verification_token"]),
         ]
 
     def __str__(self):
