@@ -130,32 +130,68 @@ def get_email_verification_html(first_name: str, verification_link: str) -> str:
 
 def process_email_verification(token):
     """
-    Validates verification tokens, marks user as verified, and invalidates token.
+    Validates verification tokens, marks user as verified, and handles consumed tokens gracefully.
     """
     if not token:
-        return False, {"status": False, "error": "Verification token is required"}, status.HTTP_400_BAD_REQUEST, None
+        return (
+            False,
+            {"status": False, "error": "Verification token is required"},
+            status.HTTP_400_BAD_REQUEST,
+            None,
+        )
 
+    # Search for user by active token first
     user = ResumeRegistration.objects.filter(
-        email_verification_token=token,
-        is_deleted=False
+        email_verification_token=token, is_deleted=False
     ).first()
 
     if not user:
-        return False, {"status": False, "error": "Invalid or expired verification token"}, status.HTTP_400_BAD_REQUEST, None
+        # Return a clearer message indicating the token is invalid or already consumed
+        return (
+            False,
+            {
+                "status": False,
+                "error": "Invalid, expired, or already used verification token",
+            },
+            status.HTTP_400_BAD_REQUEST,
+            None,
+        )
 
-    if user.is_verified and not user.email_verification_token:
-        return False, {"status": False, "error": "Verification token has already been used"}, status.HTTP_400_BAD_REQUEST, user
+    # Check expiration time
+    if (
+        user.email_verification_token_expiry
+        and timezone.now() > user.email_verification_token_expiry
+    ):
+        return (
+            False,
+            {"status": False, "error": "Verification token has expired"},
+            status.HTTP_400_BAD_REQUEST,
+            user,
+        )
 
-    if user.email_verification_token_expiry and timezone.now() > user.email_verification_token_expiry:
-        return False, {"status": False, "error": "Verification token has expired"}, status.HTTP_400_BAD_REQUEST, user
-
+    # Successfully verify user and clear token
     user.is_verified = True
     user.email_verification_token = None
     user.email_verification_token_expiry = None
-    user.save(update_fields=["is_verified", "email_verification_token", "email_verification_token_expiry"])
+    user.save(
+        update_fields=[
+            "is_verified",
+            "email_verification_token",
+            "email_verification_token_expiry",
+        ]
+    )
 
-    return True, {"status": True, "message": "Email verified successfully", "user_id": user.id}, status.HTTP_200_OK, user
-
+    return (
+        True,
+        {
+            "status": True,
+            "message": "Email verified successfully",
+            "user_id": user.id,
+        },
+        status.HTTP_200_OK,
+        user,
+    )
+    
 
 class AuthViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
