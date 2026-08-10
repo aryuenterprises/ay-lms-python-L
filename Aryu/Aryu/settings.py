@@ -155,6 +155,8 @@ CELERY_TASK_TIME_LIMIT = 1800
 CELERY_TASK_SOFT_TIME_LIMIT = 1500
 CELERY_TASK_ACKS_LATE = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_TASK_ALWAYS_EAGER = True
+CELERY_TASK_EAGER_PROPAGATES = True
 
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
@@ -451,6 +453,7 @@ CRONJOBS = [
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    "http://localhost:8000",
     "https://workshop.aryuacademy.com",
     "https://webminar.aryuprojects.com",
     "https://airesumebuilder.aryuacademy.com",
@@ -462,6 +465,7 @@ CORS_ALLOWED_ORIGINS = [
 
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",
+    "http://localhost:8000",
     "https://workshop.aryuacademy.com",
     "https://webminar.aryuprojects.com",
     "https://airesumebuilder.aryuacademy.com",
@@ -475,6 +479,7 @@ CSRF_TRUSTED_ORIGINS = [
 ALLOWED_HOSTS = [
     "workshop.aryuacademy.com",
     "localhost",
+    "http://localhost:8000",
     "webminar.aryuprojects.com",
     "airesumebuilder.aryuacademy.com",
     "passats.aryuacademy.com",
@@ -515,14 +520,27 @@ CORS_ALLOW_METHODS = (
     "PUT",
 )
 
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-DEFAULT_FROM_EMAIL = 'support@aryuacademy.com'
+# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+# DEFAULT_FROM_EMAIL = 'support@aryuacademy.com'
+# EMAIL_HOST = "smtp.hostinger.com"
+# EMAIL_PORT = 587
+# EMAIL_USE_TLS = True
+# EMAIL_HOST_USER = "support@aryuacademy.com"
+# EMAIL_HOST_PASSWORD = "A/cMu5nqYs16"
+# DEFAULT_FROM_EMAIL = "Aryu Academy <support@aryuacademy.com>"
+# settings.py
+
+# settings.py
+
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = "smtp.hostinger.com"
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
+EMAIL_PORT = 465
+EMAIL_USE_SSL = True
+EMAIL_USE_TLS = False
 EMAIL_HOST_USER = "support@aryuacademy.com"
 EMAIL_HOST_PASSWORD = "A/cMu5nqYs16"
-# DEFAULT_FROM_EMAIL = "Aryu Academy <support@aryuacademy.com>"
+DEFAULT_FROM_EMAIL = "PassATS <support@aryuacademy.com>"
+SUPPORT_EMAIL = "support@aryuacademy.com"
 
 
 SITE_ID = 1
