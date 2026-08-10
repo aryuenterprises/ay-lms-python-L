@@ -50,7 +50,7 @@ import time
 import os
 import requests
 from django.conf import settings
-from .tasks import send_verification_email_task
+from .tasks import send_verification_email
 from .pdf_generator import PDFGenerationError, PDFGeneratorService, GeneratePDFSerializer
 import traceback
 
@@ -59,280 +59,1731 @@ logger = logging.getLogger(__name__)
 
 SIGNING_SALT = "resume-email-verification"
 
+class AuthViewSet(viewsets.ViewSet): 
 
-# ==============================================================================
-# Helper Functions (Must be defined at the top-level before AuthViewSet)
-# ==============================================================================
+    permission_classes = [AllowAny]
 
-def build_verification_link(token: str, request=None) -> str:
+    # =========================
+    # VALIDATORS
+    # =========================
+
+    def validate_password(self, password):
+
+        if len(password) < 8:
+            return "Password must be minimum 8 characters"
+
+        if not re.search(r"[A-Z]", password):
+            return "Password must contain one uppercase letter"
+
+        if not re.search(r"[a-z]", password):
+            return "Password must contain one lowercase letter"
+
+        if not re.search(r"[0-9]", password):
+            return "Password must contain one number"
+
+        if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
+            return "Password must contain one special character"
+
+        return None
+
+    # =========================
+    # SIGNUP
+    # =========================
+
+    @transaction.atomic
+    @action(detail=False, methods=["post"], url_path="signup")
+    @secure_throttle(rate_limit=5, period=60)
+    def signup(self, request):
+        try:
+        # 1. Run strict type validation
+            serializer = SecureSignupSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            validated_data = serializer.validated_data
+
+            email = validated_data["email"].strip().lower()
+            phone = validated_data["phone"].strip()
+            password = validated_data["password"]
+
+            existing_user = ResumeRegistration.objects.filter(
+                email=email,
+                is_deleted=False
+            ).first()
+
+            if existing_user:
+
+                # Already verified → don't allow signup
+                if existing_user.is_verified:
+                    return Response(
+                        {"error": "Email already registered"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                # Existing but NOT verified → reuse the same record
+                existing_user.delete()
+
+            free_plan = Subscription.objects.filter(
+                name__iexact="Free",
+                is_active=True,
+                is_deleted=False
+            ).first()
+
+            if not free_plan:
+                return Response(
+                    {"success": False, "message": "Free subscription plan not configured."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            user = ResumeRegistration.objects.create(
+                first_name=validated_data["first_name"],
+                last_name=validated_data["last_name"],
+                email=email,
+                phone=phone,
+                password=make_password(password),
+                city=validated_data["city"],
+                state=validated_data["state"],
+                country=validated_data["country"],
+                is_verified=False,
+            )
+
+            start_date = timezone.now()
+            duration = str(free_plan.duration_days).strip()
+
+            if duration.lower() == "lifetime":
+                end_date = None
+            else:
+                days = int(duration.split()[0])
+                end_date = start_date + timedelta(days=days)
+
+            user_subscription = UserSubscription.objects.create(
+                user=user,
+                subscription=free_plan,
+                start_date=start_date,
+                end_date=end_date,
+                status="active"
+            )
+
+            user.current_subscription = user_subscription
+            user.save(update_fields=["current_subscription"])
+            
+            PaymentHistory.objects.create(
+                user=user,
+                plan_name="Free",
+                price=0,
+                payment_status="free"
+            )
+
+            token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
+            verification_link = f"https://portal.aryuacademy.com/api/resume/auth/verify-email/?token={token}"
+
+            html_message = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+
+    <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verify Your PassATS Account</title>
+    </head>
+
+    <body
+        style="
+        margin: 0;
+        padding: 0;
+        background-color: #f5f3ff;
+        font-family: Arial, sans-serif;
+        ">
+        <table
+        width="100%"
+        cellpadding="0"
+        cellspacing="0"
+        border="0"
+        style="background-color: #f5f3ff; padding: 40px 15px">
+        <tr>
+            <td align="center">
+            <table
+                width="620"
+                cellpadding="0"
+                cellspacing="0"
+                border="0"
+                style="
+                background: #ffffff;
+                border-radius: 18px;
+                overflow: hidden;
+                box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+                ">
+                <!-- HEADER -->
+                <tr>
+                <td
+                    align="center"
+                    style="
+                    background: linear-gradient(
+                        135deg,
+                        #090116 0%,
+                        #090116 50%,
+                        #7120e7 100%
+                    );
+                    padding: 45px 5px;
+                    ">
+                    <img
+                    src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+                    alt="Pass ATS"
+                    style="
+                        width: 200px;
+                        max-width: 90%;
+                        height: auto;
+                        display: block;
+                        margin: 0 auto;
+                    " />
+
+                    <p
+                    style="
+                        margin-top: 20px;
+                        color: #996ae3;
+                        font-size: 16px;
+                        line-height: 26px;
+                        font-weight: 600;
+                    ">
+                    Secure Account Verification
+                    </p>
+                </td>
+                </tr>
+
+                <!-- CONTENT -->
+                <tr>
+                <td style="padding: 45px 20px">
+                    <h2
+                    style="
+                        margin: 0 0 20px 0;
+                        font-size: 28px;
+                        color: #1e1b4b;
+                        font-weight: 700;
+                    ">
+                    Hello {user.first_name},
+                    </h2>
+
+                    <p
+                    style="
+                        margin: 0 0 20px 0;
+                        font-size: 16px;
+                        line-height: 30px;
+                        color: #475569;
+                    ">
+                    Thank you for creating your PassATS account. Please verify
+                    your email address to activate your account securely.
+                    </p>
+
+                    <p
+                    style="
+                        margin: 0 0 35px 0;
+                        font-size: 16px;
+                        line-height: 30px;
+                        color: #475569;
+                    ">
+                    This verification link is secure and expires automatically.
+                    </p>
+
+                    <!-- BUTTON -->
+                    <table
+                    cellpadding="0"
+                    cellspacing="0"
+                    border="0"
+                    align="center">
+                    <tr>
+                        <td
+                        align="center"
+                        style="
+                            border-radius: 12px;
+                            background: linear-gradient(135deg, #5c20e7, #7120e7);
+                        ">
+                        <a
+                            href="{verification_link}"
+                            target="_blank"
+                            style="
+                            display: inline-block;
+                            padding: 16px 34px;
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: #ffffff;
+                            text-decoration: none;
+                            border-radius: 12px;
+                            ">
+                            Verify Email Address
+                        </a>
+                        </td>
+                    </tr>
+                    </table>
+
+                    <!-- NOTICE -->
+                    <table
+                    width="100%"
+                    cellpadding="0"
+                    cellspacing="0"
+                    border="0"
+                    style="
+                        margin-top: 40px;
+                        background: #f5f3ff;
+                        border-left: 4px solid #7c3aed;
+                        border-radius: 10px;
+                    ">
+                    <tr>
+                        <td style="padding: 18px 22px">
+                        <p
+                            style="
+                            margin: 0;
+                            font-size: 14px;
+                            line-height: 24px;
+                            color: #5b21b6;
+                            ">
+                            If you did not create this account, you can safely
+                            ignore this email.
+                        </p>
+                        </td>
+                    </tr>
+                    </table>
+                </td>
+                </tr>
+
+                <!-- FOOTER -->
+                <tr>
+                <td
+                    align="center"
+                    style="
+                    background: #fafafa;
+                    padding: 30px;
+                    border-top: 1px solid #e5e7eb;
+                    ">
+                    <p style="margin: 0 0 10px 0; font-size: 14px; color: #475569">
+                    Product of
+                    <a
+                        href="https://aryuacademy.com"
+                        style="
+                        color: #005aef;
+                        text-decoration: none;
+                        font-weight: 600;
+                        ">
+                        Aryu Academy Pvt.
+                    </a>
+                    </p>
+
+                    <p
+                    style="
+                        margin: 0;
+                        font-size: 13px;
+                        color: #64748b;
+                        line-height: 24px;
+                    ">
+                    <a
+                        href="https://passats.aryuacademy.com/privacy-policy"
+                        style="color: #005aef; text-decoration: none">
+                        Privacy Policy
+                    </a>
+
+                    &nbsp; | &nbsp;
+
+                    <a
+                        href="https://passats.aryuacademy.com/terms-conditions"
+                        style="color: #005aef; text-decoration: none">
+                        Terms & Conditions
+                    </a>
+                    </p>
+
+                    <p
+                    style="
+                        margin-top: 18px;
+                        font-size: 12px;
+                        line-height: 22px;
+                        color: #9ca3af;
+                    ">
+                    © 2026 Aryu Academy Private Limited. All rights reserved.
+                    </p>
+
+                    <p
+                    style="
+                        margin-top: 8px;
+                        font-size: 12px;
+                        line-height: 22px;
+                        color: #9ca3af;
+                    ">
+                    This is an automated security email. Please do not reply.
+                    </p>
+                </td>
+                </tr>
+            </table>
+            </td>
+        </tr>
+        </table>
+    </body>
+    </html>
     """
-    Generates a unified email verification link based on environment configuration.
-    """
-    frontend_url = getattr(settings, "FRONTEND_VERIFY_URL", None)
-    if frontend_url:
-        return f"{frontend_url.rstrip('/')}/verify-email?token={token}"
 
-    domain = (
-        request.build_absolute_uri("/")[:-1]
-        if request
-        else "https://portal.aryuacademy.com"
-    )
-    return f"{domain}/api/resume/auth/verify-email/?token={token}"
+            # =========================================
+            # EMAIL SEND
+            # =========================================
 
+            subject = f"{user.first_name}, verify your PassAts account"
+            body = f"Please verify your account: {verification_link}"
 
-def get_email_verification_html(first_name: str, verification_link: str) -> str:
-    """
-    Centralized HTML Email Template for Registration & Resend Email Actions.
-    """
-    return f"""
+            logger = logging.getLogger(__name__)
+
+            def queue_email():
+                print("queue_email called")
+
+                if settings.DEBUG:
+                    print("Calling task directly")
+                    send_verification_email.run(
+                        subject,
+                        body,
+                        html_message,
+                        user.email
+                    )
+                else:
+                    print("Queueing Celery task")
+                    task = send_verification_email.delay(
+                        subject,
+                        body,
+                        html_message,
+                        user.email
+                    )
+                    print("Task ID:", task.id)
+
+            transaction.on_commit(queue_email)
+
+            return Response(
+                {"message": "Registration successful. Verification email sent."},
+                status=status.HTTP_201_CREATED
+            )
+        except Exception:
+            traceback.print_exc()
+            raise
+
+    # =========================================
+    # RESEND VERIFICATION EMAIL
+    # =========================================
+
+    @action(detail=False, methods=["post"], url_path="resend-verification-email")
+    def resend_verification_email(self, request):
+
+        email = str(
+            request.data.get("email", "")
+        ).strip().lower()
+
+        if not email:
+
+            return Response(
+                {
+                    "error": "Email is required"
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+
+            user = ResumeRegistration.objects.only(
+                "id",
+                "email",
+                "first_name",
+                "is_verified"
+            ).get(email=email)
+
+        except ResumeRegistration.DoesNotExist:
+
+            return Response(
+                {
+                    "error": "Account not found"
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # already verified
+        if user.is_verified:
+
+            return Response(
+                {
+                    "message": "Account already verified"
+                },
+                status=status.HTTP_200_OK
+            )
+
+        # =========================================
+        # TOKEN
+        # =========================================
+
+        token = signing.dumps(
+            {
+                "user_id": user.id,
+                "email": user.email
+            },
+            salt=SIGNING_SALT
+        )
+
+        verification_link = (
+            "https://portal.aryuacademy.com"
+            f"/api/resume/auth/verify-email/?token={token}"
+        )
+
+        # =========================================
+        # EMAIL TEMPLATE
+        # =========================================
+
+        html_message = f"""
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8">
-    <title>Verify Your PassATS Account</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verify Your PassATS Account</title>
 </head>
-<body style="margin: 0; padding: 0; background-color: #f5f3ff; font-family: Arial, sans-serif;">
-    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f5f3ff; padding: 40px 15px;">
+
+<body
+    style="
+      margin: 0;
+      padding: 0;
+      background-color: #f5f3ff;
+      font-family: Arial, sans-serif;
+    ">
+    <table
+      width="100%"
+      cellpadding="0"
+      cellspacing="0"
+      border="0"
+      style="background-color: #f5f3ff; padding: 40px 15px">
       <tr>
         <td align="center">
-          <table width="620" cellpadding="0" cellspacing="0" border="0" style="background: #ffffff; border-radius: 18px; overflow: hidden; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);">
+          <table
+            width="620"
+            cellpadding="0"
+            cellspacing="0"
+            border="0"
+            style="
+              background: #ffffff;
+              border-radius: 18px;
+              overflow: hidden;
+              box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+            ">
+            <!-- HEADER -->
             <tr>
-              <td align="center" style="background: linear-gradient(135deg, #090116 0%, #090116 50%, #7120e7 100%); padding: 45px 5px;">
-                <img src="https://portal.aryuacademy.com/api/media/logos/passats.png" alt="Pass ATS" style="width: 200px; max-width: 90%; height: auto; display: block; margin: 0 auto;" />
-                <p style="margin-top: 20px; color: #996ae3; font-size: 16px; font-weight: 600;">Secure Account Verification</p>
+              <td
+                align="center"
+                style="
+                  background: linear-gradient(
+                    135deg,
+                    #090116 0%,
+                    #090116 50%,
+                    #7120e7 100%
+                  );
+                  padding: 45px 5px;
+                ">
+                <img
+                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+                  alt="Pass ATS"
+                  style="
+                    width: 200px;
+                    max-width: 90%;
+                    height: auto;
+                    display: block;
+                    margin: 0 auto;
+                  " />
+
+                <p
+                  style="
+                    margin-top: 20px;
+                    color: #996ae3;
+                    font-size: 16px;
+                    line-height: 26px;
+                    font-weight: 600;
+                  ">
+                  Secure Account Verification
+                </p>
               </td>
             </tr>
+
+            <!-- CONTENT -->
             <tr>
-              <td style="padding: 45px 20px;">
-                <h2 style="margin: 0 0 20px 0; font-size: 28px; color: #1e1b4b;">Hello {first_name},</h2>
-                <p style="margin: 0 0 20px 0; font-size: 16px; line-height: 30px; color: #475569;">
-                  Please verify your email address to activate your PassATS account securely.
+              <td style="padding: 45px 20px">
+                <h2
+                  style="
+                    margin: 0 0 20px 0;
+                    font-size: 28px;
+                    color: #1e1b4b;
+                    font-weight: 700;
+                  ">
+                  Hello {user.first_name},
+                </h2>
+
+                <p
+                  style="
+                    margin: 0 0 20px 0;
+                    font-size: 16px;
+                    line-height: 30px;
+                    color: #475569;
+                  ">
+                  Thank you for creating your PassATS account. Please verify
+                  your email address to activate your account securely.
                 </p>
-                <table cellpadding="0" cellspacing="0" border="0" align="center">
+
+                <p
+                  style="
+                    margin: 0 0 35px 0;
+                    font-size: 16px;
+                    line-height: 30px;
+                    color: #475569;
+                  ">
+                  This verification link is secure and expires automatically.
+                </p>
+
+                <!-- BUTTON -->
+                <table
+                  cellpadding="0"
+                  cellspacing="0"
+                  border="0"
+                  align="center">
                   <tr>
-                    <td align="center" style="border-radius: 12px; background: linear-gradient(135deg, #5c20e7, #7120e7);">
-                      <a href="{verification_link}" target="_blank" style="display: inline-block; padding: 16px 34px; font-size: 16px; font-weight: 700; color: #ffffff; text-decoration: none; border-radius: 12px;">
+                    <td
+                      align="center"
+                      style="
+                        border-radius: 12px;
+                        background: linear-gradient(135deg, #5c20e7, #7120e7);
+                      ">
+                      <a
+                        href="{verification_link}"
+                        target="_blank"
+                        style="
+                          display: inline-block;
+                          padding: 16px 34px;
+                          font-size: 16px;
+                          font-weight: 700;
+                          color: #ffffff;
+                          text-decoration: none;
+                          border-radius: 12px;
+                        ">
                         Verify Email Address
                       </a>
                     </td>
                   </tr>
                 </table>
+
+                <!-- NOTICE -->
+                <table
+                  width="100%"
+                  cellpadding="0"
+                  cellspacing="0"
+                  border="0"
+                  style="
+                    margin-top: 40px;
+                    background: #f5f3ff;
+                    border-left: 4px solid #7c3aed;
+                    border-radius: 10px;
+                  ">
+                  <tr>
+                    <td style="padding: 18px 22px">
+                      <p
+                        style="
+                          margin: 0;
+                          font-size: 14px;
+                          line-height: 24px;
+                          color: #5b21b6;
+                        ">
+                        If you did not create this account, you can safely
+                        ignore this email.
+                      </p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <!-- FOOTER -->
+            <tr>
+              <td
+                align="center"
+                style="
+                  background: #fafafa;
+                  padding: 30px;
+                  border-top: 1px solid #e5e7eb;
+                ">
+                <p style="margin: 0 0 10px 0; font-size: 14px; color: #475569">
+                  Product of
+                  <a
+                    href="https://aryuacademy.com"
+                    style="
+                      color: #005aef;
+                      text-decoration: none;
+                      font-weight: 600;
+                    ">
+                    Aryu Academy Pvt.
+                  </a>
+                </p>
+
+                <p
+                  style="
+                    margin: 0;
+                    font-size: 13px;
+                    color: #64748b;
+                    line-height: 24px;
+                  ">
+                  <a
+                    href="https://passats.aryuacademy.com/privacy-policy"
+                    style="color: #005aef; text-decoration: none">
+                    Privacy Policy
+                  </a>
+
+                  &nbsp; | &nbsp;
+
+                  <a
+                    href="https://passats.aryuacademy.com/terms-conditions"
+                    style="color: #005aef; text-decoration: none">
+                    Terms & Conditions
+                  </a>
+                </p>
+
+                <p
+                  style="
+                    margin-top: 18px;
+                    font-size: 12px;
+                    line-height: 22px;
+                    color: #9ca3af;
+                  ">
+                  © 2026 Aryu Academy Private Limited. All rights reserved.
+                </p>
+
+                <p
+                  style="
+                    margin-top: 8px;
+                    font-size: 12px;
+                    line-height: 22px;
+                    color: #9ca3af;
+                  ">
+                  This is an automated security email. Please do not reply.
+                </p>
               </td>
             </tr>
           </table>
         </td>
       </tr>
     </table>
-</body>
+  </body>
 </html>
 """
 
+        # =========================================
+        # SEND EMAIL
+        # =========================================
 
-def process_email_verification(token):
-    """
-    Validates verification tokens, marks user as verified, and handles consumed tokens gracefully.
-    """
-    if not token:
-        return (
-            False,
-            {"status": False, "error": "Verification token is required"},
-            status.HTTP_400_BAD_REQUEST,
-            None,
+        email_message = EmailMultiAlternatives(
+
+            subject=f"{user.first_name}, complete your Pass ATS registration",
+
+            body=f"""
+    Hello {user.first_name},
+
+    Please verify your PassATS account:
+
+    {verification_link}
+
+    Website:
+    https://aryuacademy.com
+    """,
+
+            from_email=settings.DEFAULT_FROM_EMAIL,
+
+            to=[user.email],
         )
 
-    # Search for user by active token first
-    user = ResumeRegistration.objects.filter(
-        email_verification_token=token, is_deleted=False
-    ).first()
-
-    if not user:
-        # Return a clearer message indicating the token is invalid or already consumed
-        return (
-            False,
-            {
-                "status": False,
-                "error": "Invalid, expired, or already used verification token",
-            },
-            status.HTTP_400_BAD_REQUEST,
-            None,
+        email_message.attach_alternative(
+            html_message,
+            "text/html"
         )
 
-    # Check expiration time
-    if (
-        user.email_verification_token_expiry
-        and timezone.now() > user.email_verification_token_expiry
-    ):
-        return (
-            False,
-            {"status": False, "error": "Verification token has expired"},
-            status.HTTP_400_BAD_REQUEST,
-            user,
-        )
+        email_message.extra_headers = {
+            "Reply-To": "support@aryuacademy.com",
+            "X-Auto-Response-Suppress": "OOF, AutoReply"
+        }
 
-    # Successfully verify user and clear token
-    user.is_verified = True
-    user.email_verification_token = None
-    user.email_verification_token_expiry = None
-    user.save(
-        update_fields=[
-            "is_verified",
-            "email_verification_token",
-            "email_verification_token_expiry",
-        ]
-    )
+        try:
 
-    return (
-        True,
-        {
-            "status": True,
-            "message": "Email verified successfully",
-            "user_id": user.id,
-        },
-        status.HTTP_200_OK,
-        user,
-    )
-    
+            email_message.send(fail_silently=False)
 
-class AuthViewSet(viewsets.ViewSet):
-    permission_classes = [permissions.AllowAny]
+        except Exception:
 
-    @transaction.atomic
-    @action(detail=False, methods=["post"], url_path="signup")
-    @secure_throttle(rate_limit=5, period=60)
-    def signup(self, request):
-        serializer = SecureSignupSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        validated_data = serializer.validated_data
-
-        email = validated_data["email"].strip().lower()
-        phone = validated_data["phone"].strip()
-
-        existing_user = ResumeRegistration.objects.filter(email=email, is_deleted=False).first()
-        if existing_user:
-            if existing_user.is_verified:
-                return Response({"error": "Email already registered"}, status=status.HTTP_400_BAD_REQUEST)
-            existing_user.delete()
-
-        free_plan = Subscription.objects.filter(name__iexact="Free", is_active=True, is_deleted=False).first()
-        if not free_plan:
             return Response(
-                {"success": False, "message": "Free subscription plan not configured."},
+                {
+                    "error": "Unable to send verification email"
+                },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-        verification_token = str(uuid.uuid4())
-        token_expiry = timezone.now() + timedelta(hours=24)
-
-        user = ResumeRegistration.objects.create(
-            first_name=validated_data["first_name"],
-            last_name=validated_data["last_name"],
-            email=email,
-            phone=phone,
-            password=make_password(validated_data["password"]),
-            city=validated_data["city"],
-            state=validated_data["state"],
-            country=validated_data["country"],
-            is_verified=False,
-            email_verification_token=verification_token,
-            email_verification_token_expiry=token_expiry,
-        )
-
-        start_date = timezone.now()
-        duration = str(free_plan.duration_days).strip()
-        end_date = None if duration.lower() == "lifetime" else start_date + timedelta(days=int(duration.split()[0]))
-
-        user_subscription = UserSubscription.objects.create(
-            user=user,
-            subscription=free_plan,
-            start_date=start_date,
-            end_date=end_date,
-            status="active"
-        )
-        user.current_subscription = user_subscription
-        user.save(update_fields=["current_subscription"])
-
-        PaymentHistory.objects.create(user=user, plan_name="Free", price=0, payment_status="free")
-
-        verification_link = build_verification_link(verification_token, request=request)
-        subject = f"{user.first_name}, verify your PassATS account"
-        body = f"Please verify your account: {verification_link}"
-        html_message = get_email_verification_html(user.first_name, verification_link)
-
-        def queue_email():
-            try:
-                send_verification_email_task.delay(
-                    subject, body, html_message, user.email
-                )
-            except Exception as e:
-                logger.error(
-                    f"Failed to queue email task for {user.email}: {str(e)}"
-                )
-
-        transaction.on_commit(queue_email)
-
         return Response(
-            {"message": "Registration successful. Verification email sent."},
-            status=status.HTTP_201_CREATED
-        )
-
-    @action(detail=False, methods=["post"], url_path="resend-verification-email")
-    @secure_throttle(rate_limit=3, period=60)
-    def resend_verification_email(self, request):
-        email = str(request.data.get("email", "")).strip().lower()
-
-        # OWASP Generic Response to prevent user account enumeration
-        generic_response = Response(
-            {"message": "If an account with that email exists, a verification link has been sent."},
+            {
+                "message": "Verification email sent successfully"
+            },
             status=status.HTTP_200_OK
         )
 
-        if not email:
-            return Response({"error": "Email is required"}, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(
+    detail=False,
+    methods=["get"],
+    url_path="verify-email"
+    )
+    def verify_email(self, request):
+
+        start = time.perf_counter()
+
+        # =====================================
+        # LOCAL TESTING (DEBUG MODE)
+        # =====================================
+
+        if settings.DEBUG:
+
+            logger.info(
+                "Email verification skipped (DEBUG=True)"
+            )
+
+            user = ResumeRegistration.objects.filter(
+                is_verified=False
+            ).first()
+
+            if not user:
+
+                logger.warning(
+                    "No unverified users found"
+                )
+
+                return Response(
+                    {
+                        "status": False,
+                        "message": "No unverified users found"
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            update_start = time.perf_counter()
+
+            user.is_verified = True
+            user.save(
+                update_fields=["is_verified"]
+            )
+
+            logger.info(
+                f"User verification update took "
+                f"{time.perf_counter() - update_start:.4f}s"
+            )
+
+            logger.info(
+                f"TOTAL VERIFY EMAIL TIME: "
+                f"{time.perf_counter() - start:.4f}s"
+            )
+
+            return Response(
+                {
+                    "status": True,
+                    "message": (
+                        "Email verified successfully "
+                        "(DEBUG mode)"
+                    ),
+                    "user_id": user.id
+                },
+                status=status.HTTP_200_OK
+            )
+
+        # =====================================
+        # PRODUCTION FLOW
+        # =====================================
+
+        token = request.GET.get("token")
+
+        logger.info(
+            f"Token Present: {bool(token)}"
+        )
+
+        if not token:
+
+            logger.error(
+                "No token provided"
+            )
+
+            return Response(
+                {
+                    "error": "Invalid verification link"
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
-            user = ResumeRegistration.objects.get(email=email, is_deleted=False)
-        except ResumeRegistration.DoesNotExist:
-            return generic_response
+
+            decode_start = time.perf_counter()
+
+            data = signing.loads(
+                token,
+                salt=SIGNING_SALT,
+                max_age=60 * 60 * 24
+            )
+
+            logger.info(
+                f"Token decode took "
+                f"{time.perf_counter() - decode_start:.4f}s"
+            )
+
+            user_fetch_start = time.perf_counter()
+
+            user = ResumeRegistration.objects.only(
+                "id",
+                "email",
+                "is_verified"
+            ).get(
+                id=data["user_id"],
+                email=data["email"]
+            )
+
+            logger.info(
+                f"User fetch took "
+                f"{time.perf_counter() - user_fetch_start:.4f}s"
+            )
+
+        except SignatureExpired:
+
+            logger.warning(
+                "Verification link expired"
+            )
+
+            return Response(
+                {
+                    "error": "Verification link expired"
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        except (
+            BadSignature,
+            ResumeRegistration.DoesNotExist
+        ) as exc:
+
+            logger.error(
+                f"Verification failed: {exc}"
+            )
+
+            return Response(
+                {
+                    "error": str(exc)
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         if user.is_verified:
-            return generic_response
 
-        # Generate fresh token & extended 24h expiration
-        new_token = str(uuid.uuid4())
-        new_expiry = timezone.now() + timedelta(hours=24)
+            logger.info(
+                f"User {user.id} already verified. "
+                f"Total Time: "
+                f"{time.perf_counter() - start:.4f}s"
+            )
 
-        user.email_verification_token = new_token
-        user.email_verification_token_expiry = new_expiry
-        user.save(update_fields=["email_verification_token", "email_verification_token_expiry"])
+            return redirect(
+                "https://passats.aryuacademy.com/email-verified"
+            )
 
-        verification_link = build_verification_link(new_token, request=request)
-        subject = f"{user.first_name}, verify your PassATS account"
-        body = f"Please verify your account: {verification_link}"
-        html_message = get_email_verification_html(user.first_name, verification_link)
+        update_start = time.perf_counter()
 
-        def queue_email():
-            try:
-                send_verification_email_task.delay(
-                    subject, body, html_message, user.email
+        user.is_verified = True
+
+        user.save(
+            update_fields=["is_verified"]
+        )
+
+        logger.info(
+            f"User verification update took "
+            f"{time.perf_counter() - update_start:.4f}s"
+        )
+
+        logger.info(
+            f"TOTAL VERIFY EMAIL TIME: "
+            f"{time.perf_counter() - start:.4f}s"
+        )
+
+        return redirect(
+            "https://passats.aryuacademy.com/email-verified"
+        )
+
+    # =========================
+    # LOGIN
+    # =========================
+
+    def get_client_ip(self, request):
+
+        x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
+
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(",")[0]
+        else:
+            ip = request.META.get("REMOTE_ADDR")
+
+        return ip
+    
+    def verify_turnstile_token(self, token: str, client_ip: str = None) -> dict:
+       
+
+        secret_key = settings.TURNSTILE_SECRET_KEY
+
+        verification_data = {
+            "secret": secret_key,
+            "response": token,
+        }
+
+        response = requests.post(
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+            data=verification_data,
+            timeout=10
+        )
+
+        
+
+        return response.json()
+        
+    @action(detail=False, methods=["post"], url_path="login")
+    @secure_throttle(rate_limit=5, period=60)
+    def login(self, request):
+        # 1. Run strict type validation
+        serializer = SecureLoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True) 
+        # If payload contains dictionaries, DRF safely returns 400 bad request here
+
+        validated_data = serializer.validated_data
+        email = validated_data["email"].strip().lower()
+        password = validated_data["password"]
+
+        try:
+            user = ResumeRegistration.objects.select_related(
+                "current_subscription"
+            ).only(
+                "id", "email", "password", "is_verified", "first_name", "last_name", "current_subscription"
+            ).get(email=email)
+
+        except ResumeRegistration.DoesNotExist:
+            check_password(password, make_password("dummy_password"))
+            return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        if not check_password(password, user.password):
+            return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        if not user.is_verified:
+            return Response({"error": "Please verify your email first"}, status=status.HTTP_403_FORBIDDEN)
+
+        refresh = RefreshToken()
+        refresh["user_id"] = user.id
+        refresh["id"] = user.id
+        refresh["email"] = user.email
+        refresh["user_type"] = "resume_user"
+        refresh["first_name"] = user.first_name
+        refresh["last_name"] = user.last_name
+
+        response = Response(
+            {
+                "message": "Login successful",
+                "access_token": str(refresh.access_token),
+                "user": {
+                    "id": user.id,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                    "email": user.email,
+                    "user": "resume_user",
+                }
+            },
+            status=status.HTTP_200_OK
+        )
+
+        # 1. Dynamically configure cookie settings for Local vs Production environments
+        if settings.DEBUG:
+            cookie_domain = None       # Localhost requires None to bind directly to 'localhost'
+            cookie_samesite = "None"    # Lax works perfectly for local dev environments
+            cookie_secure = True      # Set to False if testing on http://localhost without SSL
+        else:
+            cookie_domain = ".aryuacademy.com"  # Production parent domain rule
+            cookie_samesite = "None"             # Can be "Lax" or "Strict" once the CNAME is live
+            cookie_secure = True                # Enforce HTTPS in production
+
+        # 2. Apply the dynamic settings to the cookie
+        response.set_cookie(
+            key="refresh_token",
+            value=str(refresh),
+            max_age=30 * 24 * 60 * 60,   # 30 Days
+            expires=None,
+            path="/api/resume/token/refresh/",                    
+            domain=cookie_domain,        # <--- Dynamic domain variable
+            secure=cookie_secure,        # <--- Dynamic secure variable
+            httponly=True,               # Always keep True to block XSS script theft
+            samesite=cookie_samesite,    # <--- Dynamic samesite variable
+        )
+
+        return response
+    
+    @secure_throttle(rate_limit=5, period=60)
+    def logout(request):
+
+        origin = request.headers.get("Origin", "")
+
+        LOCAL_ORIGINS = {
+            "http://localhost:3000",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            "http://192.168.0.139:8081",
+        }
+
+        if origin in LOCAL_ORIGINS:
+            cookie_domain = None
+        else:
+            cookie_domain = ".aryuacademy.com"
+
+        response = Response(
+            {"message": "Logged out successfully"},
+            status=status.HTTP_200_OK,
+        )
+
+        response.delete_cookie(
+            key="refresh_token",
+            path="/api/token/refresh/",
+            domain=cookie_domain,
+            samesite="None" if cookie_domain else "Lax",
+        )
+
+        return response
+    
+    @staticmethod
+    def generate_secure_otp(length=6):
+
+        characters = (
+            string.ascii_uppercase +
+            string.ascii_lowercase +
+            string.digits +
+            "!@#$%^&*"
+        )
+
+        while True:
+
+            otp = "".join(
+                secrets.choice(characters)
+                for _ in range(length)
+            )
+
+            if (
+                re.search(r"[A-Z]", otp)
+                and re.search(r"[a-z]", otp)
+                and re.search(r"[0-9]", otp)
+                and re.search(r"[!@#$%^&*]", otp)
+            ):
+                return otp
+            
+    @action(detail=False, methods=["post"], url_path="forgot-password")
+    @secure_throttle(rate_limit=5, period=60)
+    def forgot_password(self, request):
+
+        email = str(
+            request.data.get("email", "")
+        ).strip().lower()
+
+        # generic response
+        generic_response = {
+            "message": (
+                "If the account exists, "
+                "a password reset OTP has been sent."
+            )
+        }
+
+        if not email:
+
+            return Response(
+                generic_response,
+                status=status.HTTP_200_OK
+            )
+
+        try:
+
+            user = ResumeRegistration.objects.get(
+                email=email
+            )
+
+        except ResumeRegistration.DoesNotExist:
+
+            return Response(
+                # generic_response,
+                # status=status.HTTP_200_OK
+                {
+                "success":False,
+                "message":"No account found with this email address."
+                },
+                status=status.HTTP_404_NOT_FOUND
+
+            )
+
+        # generate secure OTP
+        otp = self.generate_secure_otp()
+
+        # store hashed OTP
+        user.reset_otp_hash = make_password(otp)
+
+        # expiry
+        user.reset_otp_expiry = (
+            timezone.now() + timedelta(minutes=5)
+        )
+
+        # reset attempts
+        user.reset_otp_attempts = 0
+
+        # reset verification
+        user.reset_verified = False
+
+        user.save(
+            update_fields=[
+                "reset_otp_hash",
+                "reset_otp_expiry",
+                "reset_otp_attempts",
+                "reset_verified"
+            ]
+        )
+
+        # email template
+        html_message = f"""
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reset Your Pass ATS Password</title>
+</head>
+
+<body
+    style="
+      margin: 0;
+      padding: 0;
+      background-color: #f5f3ff;
+      font-family: Arial, sans-serif;
+    ">
+
+    <table
+      width="100%"
+      cellpadding="0"
+      cellspacing="0"
+      border="0"
+      style="background-color: #f5f3ff; padding: 40px 15px">
+
+      <tr>
+        <td align="center">
+
+          <table
+            width="620"
+            cellpadding="0"
+            cellspacing="0"
+            border="0"
+            style="
+              background: #ffffff;
+              border-radius: 18px;
+              overflow: hidden;
+              box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+            ">
+
+            <!-- HEADER -->
+            <tr>
+              <td
+                align="center"
+                style="
+                  background: linear-gradient(
+                    135deg,
+                    #090116 0%,
+                    #090116 50%,
+                    #7120e7 100%
+                  );
+                  padding: 45px 5px;
+                ">
+
+                <img
+                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+                  alt="Pass ATS"
+                  style="
+                    width: 200px;
+                    max-width: 90%;
+                    height: auto;
+                    display: block;
+                    margin: 0 auto;
+                  " />
+
+                <p
+                  style="
+                    margin-top: 20px;
+                    color: #996ae3;
+                    font-size: 16px;
+                    line-height: 26px;
+                    font-weight: 600;
+                  ">
+                  Secure Password Reset
+                </p>
+
+              </td>
+            </tr>
+
+            <!-- CONTENT -->
+            <tr>
+              <td style="padding: 45px 20px">
+
+                <h2
+                  style="
+                    margin: 0 0 20px 0;
+                    font-size: 28px;
+                    color: #1e1b4b;
+                    font-weight: 700;
+                  ">
+                  Hello {user.first_name},
+                </h2>
+
+                <p
+                  style="
+                    margin: 0 0 20px 0;
+                    font-size: 16px;
+                    line-height: 30px;
+                    color: #475569;
+                  ">
+                  We received a request to reset your Pass ATS account password.
+                </p>
+
+                <p
+                  style="
+                    margin: 0 0 25px 0;
+                    font-size: 16px;
+                    line-height: 30px;
+                    color: #475569;
+                  ">
+                  Use the secure OTP below to continue your password reset process.
+                </p>
+
+                <!-- OTP BOX -->
+                <table
+                  width="100%"
+                  cellpadding="0"
+                  cellspacing="0"
+                  border="0"
+                  style="margin: 30px 0">
+
+                  <tr>
+                    <td align="center">
+
+                      <div
+                        style="
+                          display: inline-block;
+                          background: linear-gradient(
+                            135deg,
+                            #5c20e7,
+                            #7120e7
+                          );
+                          padding: 18px 40px;
+                          border-radius: 14px;
+                          color: #ffffff;
+                          font-size: 34px;
+                          font-weight: 800;
+                          letter-spacing: 8px;
+                          box-shadow: 0 4px 12px rgba(113, 32, 231, 0.35);
+                        ">
+                        {otp}
+                      </div>
+
+                    </td>
+                  </tr>
+
+                </table>
+
+                <p
+                  style="
+                    margin: 25px 0 0 0;
+                    font-size: 15px;
+                    line-height: 28px;
+                    color: #475569;
+                  ">
+                  This OTP is valid for
+                  <strong>5 minutes</strong>.
+                </p>
+
+                <!-- NOTICE -->
+                <table
+                  width="100%"
+                  cellpadding="0"
+                  cellspacing="0"
+                  border="0"
+                  style="
+                    margin-top: 40px;
+                    background: #fef2f2;
+                    border-left: 4px solid #dc2626;
+                    border-radius: 10px;
+                  ">
+
+                  <tr>
+                    <td style="padding: 18px 22px">
+
+                      <p
+                        style="
+                          margin: 0;
+                          font-size: 14px;
+                          line-height: 24px;
+                          color: #991b1b;
+                        ">
+
+                        If you did not request this password reset,
+                        please ignore this email immediately.
+                        Your account remains secure.
+
+                      </p>
+
+                    </td>
+                  </tr>
+
+                </table>
+
+              </td>
+            </tr>
+
+            <!-- FOOTER -->
+            <tr>
+              <td
+                align="center"
+                style="
+                  background: #fafafa;
+                  padding: 30px;
+                  border-top: 1px solid #e5e7eb;
+                ">
+
+                <p
+                  style="
+                    margin: 0 0 10px 0;
+                    font-size: 14px;
+                    color: #475569;
+                  ">
+
+                  Product of
+
+                  <a
+                    href="https://aryuacademy.com"
+                    style="
+                      color: #005aef;
+                      text-decoration: none;
+                      font-weight: 600;
+                    ">
+
+                    Aryu Academy Pvt.
+
+                  </a>
+
+                </p>
+
+                <p
+                  style="
+                    margin: 0;
+                    font-size: 13px;
+                    color: #64748b;
+                    line-height: 24px;
+                  ">
+
+                  <a
+                    href="https://passats.aryuacademy.com/privacy-policy"
+                    style="
+                      color: #005aef;
+                      text-decoration: none;
+                    ">
+
+                    Privacy Policy
+
+                  </a>
+
+                  &nbsp; | &nbsp;
+
+                  <a
+                    href="https://passats.aryuacademy.com/terms-conditions"
+                    style="
+                      color: #005aef;
+                      text-decoration: none;
+                    ">
+
+                    Terms & Conditions
+
+                  </a>
+
+                </p>
+
+                <p
+                  style="
+                    margin-top: 18px;
+                    font-size: 12px;
+                    line-height: 22px;
+                    color: #9ca3af;
+                  ">
+
+                  © 2026 Aryu Academy Private Limited.
+                  All rights reserved.
+
+                </p>
+
+                <p
+                  style="
+                    margin-top: 8px;
+                    font-size: 12px;
+                    line-height: 22px;
+                    color: #9ca3af;
+                  ">
+
+                  This is an automated security email.
+                  Please do not reply.
+
+                </p>
+
+              </td>
+            </tr>
+
+          </table>
+
+        </td>
+      </tr>
+
+    </table>
+
+  </body>
+</html>
+"""
+
+        email_message = EmailMultiAlternatives(
+
+            subject="Secure Password Reset OTP",
+
+            body=f"""
+    Hello {user.first_name},
+
+    Your OTP is:
+
+    {otp}
+
+    This OTP expires in 5 minutes.
+            """,
+
+            from_email=settings.DEFAULT_FROM_EMAIL,
+
+            to=[user.email],
+        )
+
+        email_message.attach_alternative(
+            html_message,
+            "text/html"
+        )
+
+        email_message.send(
+            fail_silently=True
+        )
+
+        return Response(
+            generic_response,
+            status=status.HTTP_200_OK
+        )
+    
+    @action(detail=False, methods=["post"], url_path="verify-reset-otp")
+    def verify_reset_otp(self, request):
+
+        email = str(
+            request.data.get("email", "")
+        ).strip().lower()
+
+        otp = str(
+            request.data.get("otp", "")
+        ).strip()
+
+        if not email or not otp:
+
+            return Response(
+                {
+                    "error": "Email and OTP required"
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+
+            user = ResumeRegistration.objects.get(
+                email=email
+            )
+
+        except ResumeRegistration.DoesNotExist:
+
+            return Response(
+                {
+                    "error": "Invalid OTP"
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # expiry check
+        if (
+            not user.reset_otp_expiry
+            or timezone.now() > user.reset_otp_expiry
+        ):
+
+            return Response(
+                {
+                    "error": "OTP expired"
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # attempt limit
+        if user.reset_otp_attempts >= 5:
+
+            return Response(
+                {
+                    "error": "Too many attempts"
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
+        # increment attempts
+        user.reset_otp_attempts += 1
+        user.save(update_fields=["reset_otp_attempts"])
+
+        # verify OTP
+        if not check_password(
+            otp,
+            user.reset_otp_hash
+        ):
+
+            return Response(
+                {
+                    "error": "Invalid OTP"
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # verified
+        user.reset_verified = True
+
+        user.save(update_fields=["reset_verified"])
+
+        # create reset token
+        reset_token = signing.dumps(
+            {
+                "user_id": user.id,
+                "email": user.email,
+                "purpose": "password_reset"
+            },
+            salt="password-reset"
+        )
+
+        return Response(
+            {
+                "message": "OTP verified",
+                "reset_token": reset_token
+            },
+            status=status.HTTP_200_OK
+        )
+    
+    @action(detail=False, methods=["post"], url_path="reset-password")
+    def reset_password(self, request):
+
+        token = request.data.get("reset_token")
+
+        new_password = request.data.get(
+            "new_password"
+        )
+
+        if not token or not new_password:
+
+            return Response(
+                {
+                    "error": (
+                        "Token and password required"
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # validate password
+        password_error = self.validate_password(
+            new_password
+        )
+
+        if password_error:
+
+            return Response(
+                {
+                    "error": password_error
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+
+            data = signing.loads(
+                token,
+                salt="password-reset",
+                max_age=300
+            )
+
+            user = ResumeRegistration.objects.get(
+                id=data["user_id"],
+                email=data["email"]
+            )
+
+        except SignatureExpired:
+
+            return Response(
+                {
+                    "error": "Reset session expired"
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        except (
+            BadSignature,
+            ResumeRegistration.DoesNotExist
+        ):
+
+            return Response(
+                {
+                    "error": "Invalid reset token"
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ensure OTP verified
+        if not user.reset_verified:
+
+            return Response(
+                {
+                    "error": "OTP verification required"
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # update password
+        user.password = make_password(
+            new_password
+        )
+
+        # clear reset data
+        user.reset_otp_hash = None
+        user.reset_otp_expiry = None
+        user.reset_otp_attempts = 0
+        user.reset_verified = False
+
+        user.save(
+            update_fields=[
+                "password",
+                "reset_otp_hash",
+                "reset_otp_expiry",
+                "reset_otp_attempts",
+                "reset_verified"
+            ]
+        )
+
+        return Response(
+            {
+                "message": (
+                    "Password reset successful"
                 )
-            except Exception as e:
-                logger.error(
-                    f"Failed to queue email task for {user.email}: {str(e)}"
-                )
+            },
+            status=status.HTTP_200_OK
+        )
 
-        transaction.on_commit(queue_email)
-
-        return generic_response
-
-    @action(detail=False, methods=["get", "post"], url_path="verify-email")
-    def verify_email(self, request):
-        token = request.GET.get("token") or request.data.get("token")
-        success, resp_data, status_code, user = process_email_verification(token)
-
-        if success and getattr(request, 'accepted_renderer', None) and request.accepted_renderer.format == 'html':
-            return redirect("https://passats.aryuacademy.com/email-verified")
-
-        return Response(resp_data, status=status_code)
 class CustomTokenRefreshView(APIView):
     permission_classes = [AllowAny]
     serializer_class = CustomTokenRefreshSerializer
@@ -391,114 +1842,178 @@ class CustomTokenRefreshView(APIView):
 
         return response
 
+from .tasks import send_verification_email
 
 
 class ResumeRegistrationViewset(viewsets.ModelViewSet):
 
+    queryset = ResumeRegistration.objects.all().order_by("-id")
     serializer_class = ResumeRegistrationSerializers
     authentication_classes = [CustomJWTAuthentication]
     permission_classes = [AllowAny]
 
-    def get_queryset(self):
-        return ResumeRegistration.objects.filter(
-            is_verified=True,
-            is_deleted=False
-        ).order_by("-id")
+    # =====================================================
+    # TURNSTILE VERIFICATION METHOD
+    # =====================================================
+    
+    # def verify_turnstile_token(self, token: str, client_ip: str = None) -> dict:
+    #     secret_key = settings.TURNSTILE_SECRET_KEY
 
-    @action(detail=False, methods=["get", "post"], url_path="verify-email")
-    def verify_email(self, request):
-        """
-        Endpoint: /api/resume-registration/verify-email/?token=<TOKEN>
-        """
-        token = request.GET.get("token") or request.data.get("token")
-        if not token:
-            return Response(
-                {"status": False, "message": "Verification token is required."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        
+    #     verification_data = {
+    #         "secret": secret_key,
+    #         "response": token,
+    #     }
 
-        success, resp_data, status_code, user = process_email_verification(token)
-        return Response(resp_data, status=status_code)
+    #     try:
+    #         verify_start = time.perf_counter()
 
-    def verify_turnstile_token(self, token: str, client_ip: str = None) -> dict:
-        secret_key = getattr(settings, 'TURNSTILE_SECRET_KEY', None)
-        if not secret_key:
-            return {"success": True, "score": 1.0, "hostname": "localhost"}
+    #         response = requests.post(
+    #             "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+    #             data=verification_data,
+    #             timeout=10
+    #         )
 
-        verification_data = {
-            "secret": secret_key,
-            "response": token,
-        }
+    #         logger.info(
+    #             f"Cloudflare API call took "
+    #             f"{time.perf_counter() - verify_start:.4f} seconds"
+    #         )
+           
 
-        try:
-            verify_start = time.perf_counter()
-            response = requests.post(
-                "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-                data=verification_data,
-                timeout=10
-            )
-            logger.info(
-                f"Cloudflare API call took {time.perf_counter() - verify_start:.4f} seconds"
-            )
-            return response.json()
-        except requests.exceptions.Timeout:
-            return {"success": False, "error": "Verification timeout"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+    #         result = response.json()
+
+            
+
+    #         return result
+
+    #     except requests.exceptions.Timeout:
+            
+    #         return {
+    #             "success": False,
+    #             "error": "Verification timeout"
+    #         }
+
+    #     except Exception as e:
+            
+    #         return {
+    #             "success": False,
+    #             "error": str(e)
+    #         }
+        
+        # from django.conf import settings
 
     @secure_throttle(rate_limit=5, period=60)
     def create(self, request, *args, **kwargs):
+
         start = time.perf_counter()
 
+        # =====================================
         # STEP 1: TURNSTILE VERIFICATION
+        # =====================================
+
         client_ip = self.get_client_ip(request)
 
-        if settings.DEBUG or request.data.get("turnstileToken") == "test_pass":
-            logger.info("Turnstile verification skipped (DEBUG=True or test_pass token)")
-            verification_result = {"success": True, "score": 1.0, "hostname": "localhost"}
+        if settings.DEBUG:
+            logger.info("Turnstile verification skipped (DEBUG=True)")
+
+            verification_result = {
+                "success": True,
+                "score": 1.0,
+                "hostname": "localhost"
+            }
+
         else:
             turnstile_token = request.data.get("turnstileToken")
 
             if not turnstile_token:
                 return Response(
-                    {"status": False, "message": "Security verification required."},
+                    {
+                        "status": False,
+                        "message": (
+                            "Security verification required. "
+                            "Please complete the verification check."
+                        )
+                    },
                     status=status.HTTP_403_FORBIDDEN
                 )
 
-            verification_result = self.verify_turnstile_token(turnstile_token, client_ip)
+            verification_result = self.verify_turnstile_token(
+                turnstile_token,
+                client_ip
+            )
 
             if not verification_result.get("success"):
                 return Response(
-                    {"status": False, "message": "Security check failed. Refresh and try again."},
+                    {
+                        "status": False,
+                        "message": (
+                            "Security check failed. "
+                            "Please refresh the page and try again."
+                        )
+                    },
                     status=status.HTTP_403_FORBIDDEN
                 )
 
             score = verification_result.get("score", 0)
+
             if score < 0.7:
                 return Response(
-                    {"status": False, "message": "Suspicious activity detected."},
+                    {
+                        "status": False,
+                        "message": (
+                            "Suspicious activity detected. "
+                            "Please try again."
+                        )
+                    },
                     status=status.HTTP_403_FORBIDDEN
                 )
 
-            expected_hostnames = ["portal.aryuacademy.com", "localhost", "yourdomain.com"]
-            if verification_result.get("hostname") not in expected_hostnames:
+            expected_hostnames = [
+                "portal.aryuacademy.com",
+                "localhost",
+                "yourdomain.com"
+            ]
+
+            hostname = verification_result.get("hostname")
+
+            if hostname not in expected_hostnames:
                 return Response(
-                    {"status": False, "message": "Invalid request source."},
+                    {
+                        "status": False,
+                        "message": "Invalid request source."
+                    },
                     status=status.HTTP_403_FORBIDDEN
                 )
 
-        # STEP 2: REGISTRATION & USER CREATION
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        # =====================================
+        # STEP 2: REGISTRATION
+        # =====================================
 
-        verification_token = str(uuid.uuid4())
-        token_expiry = timezone.now() + timedelta(hours=24)
-
-        registration = serializer.save(
-            is_verified=False,
-            email_verification_token=verification_token,
-            email_verification_token_expiry=token_expiry
+        serializer = self.get_serializer(
+            data=request.data
         )
+
+        validation_start = time.perf_counter()
+
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        logger.info(
+            f"Validation Time: "
+            f"{time.perf_counter() - validation_start:.4f}s"
+        )
+
+        save_start = time.perf_counter()
+
+        registration = serializer.save()
+
+        logger.info(
+            f"Registration Save Time: "
+            f"{time.perf_counter() - save_start:.4f}s"
+        )
+
+        payment_start = time.perf_counter()
 
         PaymentHistory.objects.create(
             user=registration,
@@ -507,63 +2022,389 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
             payment_status="free"
         )
 
-        # =========================================================
-        # FIX 1: DYNAMIC/CORRECT VERIFICATION LINK CONSTRUCTION
-        # =========================================================
-        # If your frontend handles verification (recommended):
-        # verification_link = f"https://portal.aryuacademy.com/verify-email?token={verification_token}"
-        
-        # If API direct link is used:
-        domain = request.build_absolute_uri('/')[:-1] if request else "https://portal.aryuacademy.com"
-        verification_link = f"{domain}/api/resume-registration/verify-email/?token={verification_token}"
+        logger.info(
+            f"Payment History Time: "
+            f"{time.perf_counter() - payment_start:.4f}s"
+        )
 
-        subject = f"{registration.first_name}, verify your PassATS account"
-        body = f"Please verify your account using this link: {verification_link}"
+        celery_start = time.perf_counter()
 
-        html_message = f"""
-<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Verify Your Account</title></head>
-<body style="font-family: Arial, sans-serif; padding: 20px;">
-    <h2>Hello {registration.first_name},</h2>
-    <p>Please click the button below to verify your email address:</p>
-    <a href="{verification_link}" style="background-color: #7120e7; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">Verify Email Address</a>
-    <p>Or copy this link into your browser: <br><a href="{verification_link}">{verification_link}</a></p>
-</body>
-</html>
-"""
+        send_verification_email.delay(
+            registration.id
+        )
 
-        # =========================================================
-        # FIX 2: SAFE EMAIL DISPATCH
-        # =========================================================
-        try:
-            if settings.DEBUG:
-                # Call task logic directly in debug mode
-                send_verification_email(
-                    subject, body, html_message, registration.email
-                )
-            else:
-                # Queue through Celery in production
-                send_verification_email.delay(
-                    subject, body, html_message, registration.email
-                )
-        except Exception as e:
-            logger.error(f"Failed to send email: {str(e)}")
+        logger.info(
+            f"Celery Trigger Time: "
+            f"{time.perf_counter() - celery_start:.4f}s"
+        )
 
-        logger.info(f"TOTAL API TIME: {time.perf_counter() - start:.4f}s")
+        logger.info(
+            f"TOTAL API TIME: "
+            f"{time.perf_counter() - start:.4f}s"
+        )
 
         return Response(
             {
                 "status": True,
-                "message": "Registration successful. Please check your email to verify your account.",
+                "message": (
+                    "Resume registration created successfully"
+                ),
                 "data": serializer.data
             },
             status=status.HTTP_201_CREATED
         )
-
+    
     def get_client_ip(self, request):
+        """Extract client IP address from request"""
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-        return x_forwarded_for.split(',')[0] if x_forwarded_for else request.META.get('REMOTE_ADDR')
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(',')[0]
+        else:
+            ip = request.META.get('REMOTE_ADDR')
+        return ip
+
+    # =====================================================
+    # CREATE (REGISTRATION) - WITH TURNSTILE
+    # =====================================================
+
+    # @secure_throttle(rate_limit=5, period=60)
+    # def create(self, request, *args, **kwargs):
+
+    #     start = time.perf_counter()
+
+    #     # Turnstile Verification
+    #     turnstile_token = request.data.get("turnstileToken")
+
+    #     if not turnstile_token:
+    #         return Response(
+    #             {
+    #                 "status": False,
+    #                 "message": "Security verification required. Please complete the verification check."
+    #             },
+    #             status=status.HTTP_403_FORBIDDEN
+    #         )
+
+    #     client_ip = self.get_client_ip(request)
+
+    #     verify_start = time.perf_counter()
+
+    #     verification_result = self.verify_turnstile_token(
+    #         turnstile_token,
+    #         client_ip
+    #     )
+
+    #     logger.info(
+    #         f"Turnstile verification took "
+    #         f"{time.perf_counter() - verify_start:.4f} seconds"
+    #     )
+
+    #     if not verification_result.get("success"):
+    #         return Response(
+    #             {
+    #                 "status": False,
+    #                 "message": "Security check failed. Please refresh the page and try again."
+    #             },
+    #             status=status.HTTP_403_FORBIDDEN
+    #         )
+
+    #     serializer = self.get_serializer(data=request.data)
+
+    #     validation_start = time.perf_counter()
+
+    #     serializer.is_valid(raise_exception=True)
+
+    #     logger.info(
+    #         f"Serializer validation took "
+    #         f"{time.perf_counter() - validation_start:.4f} seconds"
+    #     )
+
+    #     save_start = time.perf_counter()
+
+    #     registration = serializer.save()
+
+    #     logger.info(
+    #         f"User save took "
+    #         f"{time.perf_counter() - save_start:.4f} seconds"
+    #     )
+
+    #     payment_start = time.perf_counter()
+
+    #     PaymentHistory.objects.create(
+    #         user=registration,
+    #         plan_name="Free",
+    #         price=0,
+    #         payment_status="free"
+    #     )
+
+    #     logger.info(
+    #         f"PaymentHistory create took "
+    #         f"{time.perf_counter() - payment_start:.4f} seconds"
+    #     )
+
+    #     celery_start = time.perf_counter()
+
+    #     resume_reg.delay(registration.id)
+
+    #     logger.info(
+    #         f"Celery trigger took "
+    #         f"{time.perf_counter() - celery_start:.4f} seconds"
+    #     )
+
+    #     logger.info(
+    #         f"TOTAL REGISTRATION API TIME: "
+    #         f"{time.perf_counter() - start:.4f} seconds"
+    #     )
+
+    #     return Response(
+    #         {
+    #             "status": True,
+    #             "message": "Resume registration created successfully",
+    #             "data": serializer.data
+    #         },
+    #         status=status.HTTP_201_CREATED
+    #     )
+
+    #     # =====================================================
+    #     # LIST (UNCHANGED)
+    #     # =====================================================
+        
+    #     def list(self, request, *args, **kwargs):
+            
+    #         user = request.user
+            
+    #         allowed_types = ["super_admin", "admin"]
+
+    #         if user.user_type not in allowed_types:
+    #             return Response({
+    #                 "success": False,
+    #                 "message": "Unable to process request."
+    #             }, status=status.HTTP_403_FORBIDDEN)
+                
+
+    #         queryset = self.get_queryset()
+    #         serializer = self.get_serializer(queryset, many=True)
+
+    #         return Response(
+    #             {
+    #                 "status": True,
+    #                 "message": "Resume registration list",
+    #                 "data": serializer.data
+    #             },
+    #             status=status.HTTP_200_OK
+    #         )
+        
+
+    #     # =====================================================
+    #     # UPDATE (UNCHANGED)
+    #     # =====================================================
+
+    #     def partial_update(self, request, *args, **kwargs):
+
+    #         instance = self.get_object()
+
+    #         serializer = self.get_serializer(
+    #             instance,
+    #             data=request.data,
+    #             partial=True
+    #         )
+
+    #         if serializer.is_valid():
+    #             serializer.save()
+
+    #             return Response(
+    #                 {
+    #                     "status": True,
+    #                     "message": "Resume registration updated successfully",
+    #                     "data": serializer.data
+    #                 },
+    #                 status=status.HTTP_200_OK
+    #             )
+
+    #         return Response(
+    #             {
+    #                 "status": False,
+    #                 "message": "Validation error",
+    #                 "errors": serializer.errors
+    #             },
+    #             status=status.HTTP_400_BAD_REQUEST
+    #         )
+
+
+    #     # =====================================================
+    #     # DELETE (UNCHANGED)
+    #     # =====================================================
+        
+    #     @secure_throttle(rate_limit=5, period=60)
+    #     def destroy(self, request, *args, **kwargs):
+    #         user = request.user
+
+    #         allowed_types = ["super_admin", "admin"]
+
+    #         if user.user_type not in allowed_types:
+    #             return Response({
+    #                 "success": False,
+    #                 "message": "Unable to process request."
+    #             }, status=status.HTTP_403_FORBIDDEN)
+
+    #         instance = self.get_object()
+    #         instance.delete()
+
+    #         return Response(
+    #             {
+    #                 "status": True,
+    #                 "message": "Resume registration deleted successfully"
+    #             },
+    #             status=status.HTTP_200_OK
+    #         )
+        
+
+    @secure_throttle(rate_limit=5, period=60)
+    def create(self, request, *args, **kwargs):
+
+        start = time.perf_counter()
+
+        client_ip = self.get_client_ip(request)
+
+        # =====================================
+        # TURNSTILE VERIFICATION
+        # =====================================
+
+        if settings.DEBUG:
+
+            logger.info(
+                "Turnstile verification skipped (DEBUG=True)"
+            )
+
+            verification_result = {
+                "success": True
+            }
+
+        else:
+
+            turnstile_token = request.data.get(
+                "turnstileToken"
+            )
+
+            if not turnstile_token:
+                return Response(
+                    {
+                        "status": False,
+                        "message": (
+                            "Security verification required. "
+                            "Please complete the verification check."
+                        )
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            verify_start = time.perf_counter()
+
+            verification_result = self.verify_turnstile_token(
+                turnstile_token,
+                client_ip
+            )
+
+            logger.info(
+                f"Turnstile verification took "
+                f"{time.perf_counter() - verify_start:.4f} seconds"
+            )
+
+            if not verification_result.get("success"):
+                return Response(
+                    {
+                        "status": False,
+                        "message": (
+                            "Security check failed. "
+                            "Please refresh the page and try again."
+                        )
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        # =====================================
+        # SERIALIZER VALIDATION
+        # =====================================
+
+        serializer = self.get_serializer(
+            data=request.data
+        )
+
+        validation_start = time.perf_counter()
+
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        logger.info(
+            f"Serializer validation took "
+            f"{time.perf_counter() - validation_start:.4f} seconds"
+        )
+
+        # =====================================
+        # USER SAVE
+        # =====================================
+
+        save_start = time.perf_counter()
+
+        registration = serializer.save()
+
+        logger.info(
+            f"User save took "
+            f"{time.perf_counter() - save_start:.4f} seconds"
+        )
+
+        # =====================================
+        # PAYMENT HISTORY
+        # =====================================
+
+        payment_start = time.perf_counter()
+
+        PaymentHistory.objects.create(
+            user=registration,
+            plan_name="Free",
+            price=0,
+            payment_status="free"
+        )
+
+        logger.info(
+            f"PaymentHistory create took "
+            f"{time.perf_counter() - payment_start:.4f} seconds"
+        )
+
+        # =====================================
+        # CELERY TASK
+        # =====================================
+
+        celery_start = time.perf_counter()
+
+        send_verification_email.delay(
+            registration.id
+        )
+
+        logger.info(
+            f"Celery trigger took "
+            f"{time.perf_counter() - celery_start:.4f} seconds"
+        )
+
+        # =====================================
+        # TOTAL TIME
+        # =====================================
+
+        logger.info(
+            f"TOTAL REGISTRATION API TIME: "
+            f"{time.perf_counter() - start:.4f} seconds"
+        )
+
+        return Response(
+            {
+                "status": True,
+                "message": (
+                    "Resume registration created successfully"
+                ),
+                "data": serializer.data
+            },
+            status=status.HTTP_201_CREATED
+        )
     
     
 class UserDashboardView(APIView):
