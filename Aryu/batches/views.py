@@ -114,7 +114,7 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                     ),
                     Prefetch(
                         "new_batch__students",
-                        queryset=Student.objects.only("registration_id", "first_name", "last_name"),
+                        queryset=Student.objects.only("registration_id", "first_name"),
                         to_attr="new_students"
                     )
                 )
@@ -168,7 +168,7 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                         "trainer_employee_id": a.trainer.employee_id,
                         "trainer_name": a.trainer.full_name,
                         "registration_id": a.student.registration_id,
-                        "student_name": f"{a.student.first_name} {a.student.last_name}".strip(),
+                        "student_name": f"{a.student.first_name}".strip(),
                         "batch_type": "old",
                     })
 
@@ -184,7 +184,7 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                             "trainer_employee_id": trainer.employee_id if trainer else None,
                             "trainer_name": trainer.full_name if trainer else None,
                             "registration_id": ns.registration_id,
-                            "student_name": f"{ns.first_name} {ns.last_name}".strip(),
+                            "student_name": f"{ns.first_name}".strip(),
                             "batch_type": "new",
                         })
 
@@ -547,7 +547,7 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
             if new_batch_ids:
                 nb_qs = NewBatch.objects.filter(batch_id__in=new_batch_ids).prefetch_related("students")
                 for nb in nb_qs:
-                    newbatch_students_map[nb.batch_id] = list(nb.students.all().values("registration_id", "first_name", "last_name"))
+                    newbatch_students_map[nb.batch_id] = list(nb.students.all().values("registration_id", "first_name"))
 
             # ------------------ BUILD schedule_data (single loop, no DB hits inside) ------------------
             schedule_data = []
@@ -610,7 +610,7 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                             "employee_id": a.trainer.employee_id if a.trainer else None,
                             "trainer_name": a.trainer.full_name if a.trainer else None,
                             "registration_id": student.registration_id if student else None,
-                            "student_name": f"{getattr(student,'first_name','')} {getattr(student,'last_name','')}".strip()
+                            "student_name": f"{getattr(student,'first_name','')}".strip()
                         })
                 elif new_batch:
                     assignments_list = []
@@ -622,7 +622,7 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                             "employee_id": sched.trainer.employee_id if sched.trainer else None,
                             "trainer_name": sched.trainer.full_name if sched.trainer else None,
                             "registration_id": s.get("registration_id"),
-                            "student_name": f"{s.get('first_name','')} {s.get('last_name','')}".strip()
+                            "student_name": f"{s.get('first_name','')}".strip()
                         })
                 else:
                     assignments_list = []
@@ -932,7 +932,7 @@ class BatchViewSet(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 {
                     "registration_id": s.registration_id,
                     "student_id": s.student_id,
-                    "full_name": f"{s.first_name} {s.last_name}"
+                    "full_name": f"{s.first_name}"
                 }
                 for s in student_qs
             ]
@@ -1249,7 +1249,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                         if a.student:
                             students_data.append({
                                 "student_id": a.student.student_id,
-                                "full_name": f"{a.student.first_name} {a.student.last_name}".strip(),
+                                "full_name": f"{a.student.first_name}".strip(),
                                 "registration_id": a.student.registration_id
                             })
 
@@ -1293,7 +1293,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                 students_data = [
                     {
                         "student_id": s.student_id,
-                        "full_name": f"{s.first_name} {s.last_name}".strip(),
+                        "full_name": f"{s.first_name}".strip(),
                         "registration_id": s.registration_id
                     }
                     for s in nb.students.all()
@@ -1364,7 +1364,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                 {
                     "registration_id": s.registration_id,
                     "student_id": s.student_id,
-                    "full_name": f"{s.first_name} {s.last_name}"
+                    "full_name": f"{s.first_name}"
                 }
                 for s in student_qs
             ]
@@ -1437,7 +1437,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                         students_data.append({
                             "student_id": a.student.student_id,
                             "registration_id": a.student.registration_id,
-                            "full_name": f"{a.student.first_name} {a.student.last_name}".strip()
+                            "full_name": f"{a.student.first_name}".strip()
                         })
 
                 # trainer + course
@@ -1520,7 +1520,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     {
                         "student_id": s.student_id,
                         "registration_id": s.registration_id,
-                        "full_name": f"{s.first_name} {s.last_name}".strip()
+                        "full_name": f"{s.first_name}".strip()
                     }
                     for s in nb.students.all()
                 ]
@@ -1628,7 +1628,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     {
                         "student_id": s.student_id,
                         "registration_id": s.registration_id,
-                        "full_name": f"{s.first_name} {s.last_name}".strip()
+                        "full_name": f"{s.first_name}".strip()
                     }
                     for s in nb.students.all()
                 ]
@@ -1667,7 +1667,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                 students_data = [
                     {
                         "student_id": a.student.student_id,
-                        "full_name": f"{a.student.first_name} {a.student.last_name}".strip(),
+                        "full_name": f"{a.student.first_name}".strip(),
                         "trainer_id": a.trainer.trainer_id if a.trainer else None,
                         "trainer_name": a.trainer.full_name if a.trainer else None,
                         "course_id": a.course.course_id if a.course else None
@@ -1734,7 +1734,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     {
                         "student_id": s.student_id,
                         "registration_id": s.registration_id,
-                        "full_name": f"{s.first_name} {s.last_name}".strip()
+                        "full_name": f"{s.first_name}".strip()
                     } for s in nb.students.all()
                 ]
 
