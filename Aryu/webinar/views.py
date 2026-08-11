@@ -31,6 +31,7 @@ from django.views.decorators.csrf import csrf_exempt
 import hmac
 import hashlib
 from django.core.cache import cache
+from core.permissions import IsSuperAdmin, IsAdminOrSuperAdmin
 from django.conf import settings
 from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
@@ -286,12 +287,25 @@ class WebinarViewSet(
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet
 ):
-    permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     serializer_class = WebinarSerializer
     lookup_field = "slug"
     lookup_url_kwarg = "slug"
+
+    def get_permissions(self):
+        """
+        Dynamically assign permissions per viewset action:
+        - Delete / Destroy: Super Admin only
+        - Create / Update: Admin or Super Admin
+        - List / Retrieve: Admin or Super Admin (Authenticated)
+        """
+        if self.action in ["destroy"]:
+            permission_classes = [IsAuthenticated, IsSuperAdmin]
+        else:
+            permission_classes = [IsAuthenticated, IsAdminOrSuperAdmin]
+            
+        return [permission() for permission in permission_classes]
 
     def get_queryset(self):
 
@@ -299,7 +313,7 @@ class WebinarViewSet(
         if self.action == "list":
             return (
                 Webinar.objects
-                .filter(is_deleted=False,type = True)
+                .filter(is_deleted=False, type=True)
                 .annotate(
                     participants_count=Count("registrations", distinct=True),
                     total_amount_received=Sum(
@@ -329,17 +343,14 @@ class WebinarViewSet(
         return (
             Webinar.objects
             .prefetch_related(
-
                 Prefetch(
                     "tools",
                     queryset=WebinarTool.objects.filter(is_deleted=False)
                 ),
-
                 Prefetch(
                     "metadata",
                     queryset=webinar_metadata.objects.filter(is_deleted=False)
                 ),
-
                 Prefetch(
                     "faqs",
                     queryset=Webinar_FAQ.objects.filter(is_deleted=False)
@@ -390,28 +401,22 @@ class WebinarViewSet(
                         .order_by("-submitted_at")
                 ),
             )
-
             .annotate(
                 participants_count=Count("registrations", distinct=True),
-
                 total_amount_received=Sum(
                     "registrations__payment_transaction__amount",
                     filter=Q(
                         registrations__payment_transaction__payment_status="done"
                     )
                 ),
-
                 feedback_count=Count("feedbacks", distinct=True),
                 avg_rating=Avg("feedbacks__overall_rating"),
             )
-
             .filter(is_deleted=False)
         )
 
     # -------- RETRIEVE --------
-
     def retrieve(self, request, slug=None):
-
         webinar = get_object_or_404(
             Webinar.objects.only(
                 "id",
@@ -428,14 +433,13 @@ class WebinarViewSet(
             ),
             slug=slug,
             is_deleted=False,
-            type = True
+            type=True
         )
         MEDIA_PREFIX = "https://portal.aryuacademy.com/api/media/"
         registrations = (
             WebinarRegistration.objects
             .filter(webinar_id=webinar.id)
             .annotate(
-
                 payment_status=Coalesce(
                     F("payment_transaction__payment_status"),
                     Value("free")
@@ -458,8 +462,6 @@ class WebinarViewSet(
                     default=Value(None),
                     output_field=CharField()
                 ),
-
-                # total hours participated
                 total_hours_participated=ExpressionWrapper(
                     Coalesce(
                         F("attendance_summary__total_duration_seconds"),
@@ -467,8 +469,6 @@ class WebinarViewSet(
                     ) / 3600.0,
                     output_field=FloatField()
                 ),
-
-                # full feedback JSON
                 feedback_data=JSONObject(
                     id=F("feedback__uuid"),
                     overall_rating=F("feedback__overall_rating"),
@@ -484,7 +484,6 @@ class WebinarViewSet(
                     interested_in_future_webinars=F("feedback__interested_in_future_webinars"),
                     interested_in_paid_courses=F("feedback__interested_in_paid_courses"),
                     submitted_at=F("feedback__submitted_at"),
-
                     rating_screenshot=Case(
                         When(
                             feedback__rating_screenshot__isnull=False,
@@ -498,7 +497,6 @@ class WebinarViewSet(
                         output_field=CharField()
                     )
                 ),
-
                 logs=JSONBAgg(
                     JSONObject(
                         join_time=F("attendance_logs__join_time"),
@@ -557,8 +555,7 @@ class WebinarViewSet(
         participants = list(registrations)
 
         participants_count = sum(
-                1
-            for participant in participants
+            1 for participant in participants
             if str(participant.get("payment_status", "")).lower() == "done"
         )
 
@@ -589,6 +586,11 @@ class WebinarViewSet(
         })
 
     def list(self, request):
+        user = request.user
+        user_type = getattr(user, 'user_type', None)
+        print("USER:", user)
+        print("USER TYPE:", user_type)
+        print("USER User ID:", getattr(user, "user_id", None))
         cache_key = "webinar_list_v1"
         data = cache.get(cache_key)
 
@@ -647,14 +649,12 @@ class WebinarViewSet(
             "status": True,
             "message": "Webinar created successfully",
             "data": WebinarSerializer(webinar, context={"request": request}).data
-        }, status=201)
+        }, status=status.HTTP_201_CREATED)
 
-
-    def update(self, request, *args,**kwargs):
+    def update(self, request, *args, **kwargs):
         try:
             with transaction.atomic():
                 slug = kwargs.get("slug") 
-
                 webinar = get_object_or_404(Webinar, slug=slug)
 
                 serializer = WebinarSerializer(webinar, data=request.data, partial=True)
@@ -665,34 +665,25 @@ class WebinarViewSet(
                 # TOOLS (PARTIAL PATCH STYLE)
                 # =====================================================
                 i = 0
-
                 while (
                     f"tools[{i}][id]" in request.data or
                     f"tools[{i}][tools_title]" in request.data or
                     f"tools[{i}][is_deleted]" in request.data or
                     f"tools[{i}][tools_image]" in request.FILES
                 ):
-
                     tool_id = request.data.get(f"tools[{i}][id]")
                     title = request.data.get(f"tools[{i}][tools_title]")
                     image = request.FILES.get(f"tools[{i}][tools_image]")
                     is_deleted = request.data.get(f"tools[{i}][is_deleted]")
 
-                    # =================================================
-                    # DELETE
-                    # =================================================
                     if tool_id and str(is_deleted).lower() == "true":
                         WebinarTool.objects.filter(
                             id=tool_id,
                             webinar=webinar
                         ).delete()
-
                         i += 1
                         continue
 
-                    # =================================================
-                    # UPDATE
-                    # =================================================
                     if tool_id:
                         obj = WebinarTool.objects.filter(
                             id=tool_id,
@@ -703,35 +694,26 @@ class WebinarViewSet(
                             return Response({
                                 "status": False,
                                 "message": f"Tool id {tool_id} not found"
-                            }, status=400)
+                            }, status=status.HTTP_400_BAD_REQUEST)
 
-                        # update only provided fields
                         if title is not None:
                             obj.tools_title = title
-
                         if image:
                             obj.tools_image = image
-
                         obj.save()
-
-                    # =================================================
-                    # CREATE
-                    # =================================================
                     else:
                         if not title:
                             return Response({
                                 "status": False,
                                 "message": "tools_title is required for new tool"
-                            }, status=400)
+                            }, status=status.HTTP_400_BAD_REQUEST)
 
                         WebinarTool.objects.create(
                             webinar=webinar,
                             tools_title=title,
                             tools_image=image
                         )
-
                     i += 1
-
 
                 # =====================================================
                 # METADATA
@@ -748,7 +730,10 @@ class WebinarViewSet(
                     if meta_id:
                         obj = webinar_metadata.objects.filter(id=meta_id, webinar=webinar).first()
                         if not obj:
-                            return Response({"status": False, "message": f"Metadata id {meta_id} not found"}, status=400)
+                            return Response({
+                                "status": False, 
+                                "message": f"Metadata id {meta_id} not found"
+                            }, status=status.HTTP_400_BAD_REQUEST)
 
                         obj.meta_title = title
                         obj.meta_description = desc
@@ -758,17 +743,12 @@ class WebinarViewSet(
                         meta_ids.append(obj.id)
 
                     else:
-                        obj = webinar_metadata.objects.filter(
-                            webinar=webinar
-                        ).first()
-
+                        obj = webinar_metadata.objects.filter(webinar=webinar).first()
                         if obj:
                             obj.meta_title = title
                             obj.meta_description = desc
-
                             if image:
                                 obj.meta_image = image
-
                             obj.save()
                         else:
                             obj = webinar_metadata.objects.create(
@@ -778,11 +758,9 @@ class WebinarViewSet(
                                 meta_image=image
                             )
                         meta_ids.append(obj.id)
-
                     j += 1
 
                 webinar_metadata.objects.filter(webinar=webinar).exclude(id__in=meta_ids).delete()
-
 
                 # =====================================================
                 # FAQ
@@ -790,8 +768,6 @@ class WebinarViewSet(
                 faq_payload = request.data.get("faqs", None)
 
                 if faq_payload is not None:
-
-                    # fix: convert string → list
                     if isinstance(faq_payload, str):
                         try:
                             faq_payload = json.loads(faq_payload)
@@ -799,23 +775,21 @@ class WebinarViewSet(
                             return Response({
                                 "status": False,
                                 "message": "Invalid faqs format. Must be valid JSON array."
-                            }, status=400)
+                            }, status=status.HTTP_400_BAD_REQUEST)
 
                     if not isinstance(faq_payload, list):
                         return Response({
                             "status": False,
                             "message": "faqs must be a list"
-                        }, status=400)
+                        }, status=status.HTTP_400_BAD_REQUEST)
 
                     faq_ids = []
 
                     for faq in faq_payload:
-
                         faq_id = faq.get("id")
                         question = faq.get("question")
                         answer = faq.get("answer")
 
-                        # ---------------- DELETE ----------------
                         if faq.get("is_deleted") is True and faq_id:
                             Webinar_FAQ.objects.filter(
                                 id=faq_id,
@@ -823,7 +797,6 @@ class WebinarViewSet(
                             ).delete()
                             continue
 
-                        # ---------------- UPDATE ----------------
                         if faq_id:
                             obj = Webinar_FAQ.objects.filter(
                                 id=faq_id,
@@ -834,7 +807,7 @@ class WebinarViewSet(
                                 return Response({
                                     "status": False,
                                     "message": f"FAQ id {faq_id} not found"
-                                }, status=400)
+                                }, status=status.HTTP_400_BAD_REQUEST)
 
                             if question is not None:
                                 obj.question = question
@@ -843,8 +816,6 @@ class WebinarViewSet(
 
                             obj.save()
                             faq_ids.append(obj.id)
-
-                        # ---------------- CREATE ----------------
                         else:
                             obj = Webinar_FAQ.objects.create(
                                 webinar=webinar,
@@ -853,23 +824,20 @@ class WebinarViewSet(
                             )
                             faq_ids.append(obj.id)
 
-                    # optional: delete removed ones (sync style)
                     Webinar_FAQ.objects.filter(webinar=webinar).exclude(id__in=faq_ids).delete()
-
-                # =====================================================
 
                 return Response({
                     "status": True,
                     "message": "Webinar updated successfully",
                     "data": WebinarSerializer(webinar, context={"request": request}).data
-                }, status=200)
+                }, status=status.HTTP_200_OK)
 
         except Exception as e:
             return Response({
                 "status": False,
                 "message": str(e)
-            }, status=400)
-    
+            }, status=status.HTTP_400_BAD_REQUEST)
+
     def destroy(self, request, *args, **kwargs):
         slug = kwargs.get("slug") or kwargs.get("uuid")
 
@@ -895,7 +863,6 @@ class BootcampViewSet(
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet
 ):
-    permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
     required_module = "BootCamp"
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -903,13 +870,26 @@ class BootcampViewSet(
     lookup_field = "slug"
     lookup_url_kwarg = "slug"
 
+    def get_permissions(self):
+        """
+        Dynamically assign permissions per viewset action:
+        - Destroy (DELETE): Super Admin only
+        - List / Retrieve / Create / Update: Admin or Super Admin only
+        """
+        if self.action == "destroy":
+            permission_classes = [IsAuthenticated, IsSuperAdmin]
+        else:
+            permission_classes = [IsAuthenticated, IsAdminOrSuperAdmin]
+
+        return [permission() for permission in permission_classes]
+
     def get_queryset(self):
 
         # -------- LIST QUERYSET (FAST) --------
         if self.action == "list":
             return (
                 Webinar.objects
-                .filter(is_deleted=False,type = False)
+                .filter(is_deleted=False, type=False)
                 .annotate(
                     participants_count=Count("registrations", distinct=True),
                     total_amount_received=Sum(
@@ -939,17 +919,14 @@ class BootcampViewSet(
         return (
             Webinar.objects
             .prefetch_related(
-
                 Prefetch(
                     "tools",
                     queryset=WebinarTool.objects.filter(is_deleted=False)
                 ),
-
                 Prefetch(
                     "metadata",
                     queryset=webinar_metadata.objects.filter(is_deleted=False)
                 ),
-
                 Prefetch(
                     "faqs",
                     queryset=Webinar_FAQ.objects.filter(is_deleted=False)
@@ -1000,28 +977,22 @@ class BootcampViewSet(
                         .order_by("-submitted_at")
                 ),
             )
-
             .annotate(
                 participants_count=Count("registrations", distinct=True),
-
                 total_amount_received=Sum(
                     "registrations__payment_transaction__amount",
                     filter=Q(
                         registrations__payment_transaction__payment_status="done"
                     )
                 ),
-
                 feedback_count=Count("feedbacks", distinct=True),
                 avg_rating=Avg("feedbacks__overall_rating"),
             )
-
             .filter(is_deleted=False)
         )
 
     # -------- RETRIEVE --------
-
     def retrieve(self, request, slug=None):
-
         webinar = get_object_or_404(
             Webinar.objects.only(
                 "id",
@@ -1038,14 +1009,13 @@ class BootcampViewSet(
             ),
             slug=slug,
             is_deleted=False,
-            type = False
+            type=False
         )
         MEDIA_PREFIX = "https://portal.aryuacademy.com/api/media/"
         registrations = (
             WebinarRegistration.objects
             .filter(webinar_id=webinar.id)
             .annotate(
-
                 payment_status=Coalesce(
                     F("payment_transaction__payment_status"),
                     Value("free")
@@ -1068,8 +1038,6 @@ class BootcampViewSet(
                     default=Value(None),
                     output_field=CharField()
                 ),
-
-                # total hours participated
                 total_hours_participated=ExpressionWrapper(
                     Coalesce(
                         F("attendance_summary__total_duration_seconds"),
@@ -1077,8 +1045,6 @@ class BootcampViewSet(
                     ) / 3600.0,
                     output_field=FloatField()
                 ),
-
-                # full feedback JSON
                 feedback_data=JSONObject(
                     id=F("feedback__uuid"),
                     overall_rating=F("feedback__overall_rating"),
@@ -1094,7 +1060,6 @@ class BootcampViewSet(
                     interested_in_future_webinars=F("feedback__interested_in_future_webinars"),
                     interested_in_paid_courses=F("feedback__interested_in_paid_courses"),
                     submitted_at=F("feedback__submitted_at"),
-
                     rating_screenshot=Case(
                         When(
                             feedback__rating_screenshot__isnull=False,
@@ -1108,7 +1073,6 @@ class BootcampViewSet(
                         output_field=CharField()
                     )
                 ),
-
                 logs=JSONBAgg(
                     JSONObject(
                         join_time=F("attendance_logs__join_time"),
@@ -1167,8 +1131,7 @@ class BootcampViewSet(
         participants = list(registrations)
 
         participants_count = sum(
-                1
-            for participant in participants
+            1 for participant in participants
             if str(participant.get("payment_status", "")).lower() == "done"
         )
 
@@ -1194,7 +1157,7 @@ class BootcampViewSet(
 
         return Response({
             "status": True,
-            "message": "Webinar retrieved successfully",
+            "message": "Bootcamp retrieved successfully",
             "data": data
         })
 
@@ -1256,16 +1219,14 @@ class BootcampViewSet(
 
         return Response({
             "status": True,
-            "message": "Webinar created successfully",
+            "message": "Bootcamp created successfully",
             "data": WebinarSerializer(webinar, context={"request": request}).data
-        }, status=201)
+        }, status=status.HTTP_201_CREATED)
 
-
-    def update(self, request, *args,**kwargs):
+    def update(self, request, *args, **kwargs):
         try:
             with transaction.atomic():
                 slug = kwargs.get("slug") 
-
                 webinar = get_object_or_404(Webinar, slug=slug)
 
                 serializer = WebinarSerializer(webinar, data=request.data, partial=True)
@@ -1276,34 +1237,25 @@ class BootcampViewSet(
                 # TOOLS (PARTIAL PATCH STYLE)
                 # =====================================================
                 i = 0
-
                 while (
                     f"tools[{i}][id]" in request.data or
                     f"tools[{i}][tools_title]" in request.data or
                     f"tools[{i}][is_deleted]" in request.data or
                     f"tools[{i}][tools_image]" in request.FILES
                 ):
-
                     tool_id = request.data.get(f"tools[{i}][id]")
                     title = request.data.get(f"tools[{i}][tools_title]")
                     image = request.FILES.get(f"tools[{i}][tools_image]")
                     is_deleted = request.data.get(f"tools[{i}][is_deleted]")
 
-                    # =================================================
-                    # DELETE
-                    # =================================================
                     if tool_id and str(is_deleted).lower() == "true":
                         WebinarTool.objects.filter(
                             id=tool_id,
                             webinar=webinar
                         ).delete()
-
                         i += 1
                         continue
 
-                    # =================================================
-                    # UPDATE
-                    # =================================================
                     if tool_id:
                         obj = WebinarTool.objects.filter(
                             id=tool_id,
@@ -1314,35 +1266,26 @@ class BootcampViewSet(
                             return Response({
                                 "status": False,
                                 "message": f"Tool id {tool_id} not found"
-                            }, status=400)
+                            }, status=status.HTTP_400_BAD_REQUEST)
 
-                        # update only provided fields
                         if title is not None:
                             obj.tools_title = title
-
                         if image:
                             obj.tools_image = image
-
                         obj.save()
-
-                    # =================================================
-                    # CREATE
-                    # =================================================
                     else:
                         if not title:
                             return Response({
                                 "status": False,
                                 "message": "tools_title is required for new tool"
-                            }, status=400)
+                            }, status=status.HTTP_400_BAD_REQUEST)
 
                         WebinarTool.objects.create(
                             webinar=webinar,
                             tools_title=title,
                             tools_image=image
                         )
-
                     i += 1
-
 
                 # =====================================================
                 # METADATA
@@ -1359,7 +1302,10 @@ class BootcampViewSet(
                     if meta_id:
                         obj = webinar_metadata.objects.filter(id=meta_id, webinar=webinar).first()
                         if not obj:
-                            return Response({"status": False, "message": f"Metadata id {meta_id} not found"}, status=400)
+                            return Response({
+                                "status": False,
+                                "message": f"Metadata id {meta_id} not found"
+                            }, status=status.HTTP_400_BAD_REQUEST)
 
                         obj.meta_title = title
                         obj.meta_description = desc
@@ -1369,17 +1315,12 @@ class BootcampViewSet(
                         meta_ids.append(obj.id)
 
                     else:
-                        obj = webinar_metadata.objects.filter(
-                            webinar=webinar
-                        ).first()
-
+                        obj = webinar_metadata.objects.filter(webinar=webinar).first()
                         if obj:
                             obj.meta_title = title
                             obj.meta_description = desc
-
                             if image:
                                 obj.meta_image = image
-
                             obj.save()
                         else:
                             obj = webinar_metadata.objects.create(
@@ -1389,11 +1330,9 @@ class BootcampViewSet(
                                 meta_image=image
                             )
                         meta_ids.append(obj.id)
-
                     j += 1
 
                 webinar_metadata.objects.filter(webinar=webinar).exclude(id__in=meta_ids).delete()
-
 
                 # =====================================================
                 # FAQ
@@ -1401,8 +1340,6 @@ class BootcampViewSet(
                 faq_payload = request.data.get("faqs", None)
 
                 if faq_payload is not None:
-
-                    # fix: convert string → list
                     if isinstance(faq_payload, str):
                         try:
                             faq_payload = json.loads(faq_payload)
@@ -1410,23 +1347,21 @@ class BootcampViewSet(
                             return Response({
                                 "status": False,
                                 "message": "Invalid faqs format. Must be valid JSON array."
-                            }, status=400)
+                            }, status=status.HTTP_400_BAD_REQUEST)
 
                     if not isinstance(faq_payload, list):
                         return Response({
                             "status": False,
                             "message": "faqs must be a list"
-                        }, status=400)
+                        }, status=status.HTTP_400_BAD_REQUEST)
 
                     faq_ids = []
 
                     for faq in faq_payload:
-
                         faq_id = faq.get("id")
                         question = faq.get("question")
                         answer = faq.get("answer")
 
-                        # ---------------- DELETE ----------------
                         if faq.get("is_deleted") is True and faq_id:
                             Webinar_FAQ.objects.filter(
                                 id=faq_id,
@@ -1434,7 +1369,6 @@ class BootcampViewSet(
                             ).delete()
                             continue
 
-                        # ---------------- UPDATE ----------------
                         if faq_id:
                             obj = Webinar_FAQ.objects.filter(
                                 id=faq_id,
@@ -1445,7 +1379,7 @@ class BootcampViewSet(
                                 return Response({
                                     "status": False,
                                     "message": f"FAQ id {faq_id} not found"
-                                }, status=400)
+                                }, status=status.HTTP_400_BAD_REQUEST)
 
                             if question is not None:
                                 obj.question = question
@@ -1454,8 +1388,6 @@ class BootcampViewSet(
 
                             obj.save()
                             faq_ids.append(obj.id)
-
-                        # ---------------- CREATE ----------------
                         else:
                             obj = Webinar_FAQ.objects.create(
                                 webinar=webinar,
@@ -1464,23 +1396,20 @@ class BootcampViewSet(
                             )
                             faq_ids.append(obj.id)
 
-                    # optional: delete removed ones (sync style)
                     Webinar_FAQ.objects.filter(webinar=webinar).exclude(id__in=faq_ids).delete()
-
-                # =====================================================
 
                 return Response({
                     "status": True,
-                    "message": "Webinar updated successfully",
+                    "message": "Bootcamp updated successfully",
                     "data": WebinarSerializer(webinar, context={"request": request}).data
-                }, status=200)
+                }, status=status.HTTP_200_OK)
 
         except Exception as e:
             return Response({
                 "status": False,
                 "message": str(e)
-            }, status=400)
-    
+            }, status=status.HTTP_400_BAD_REQUEST)
+
     def destroy(self, request, *args, **kwargs):
         slug = kwargs.get("slug") or kwargs.get("uuid")
 
@@ -1496,7 +1425,7 @@ class BootcampViewSet(
         return Response(
             {
                 "status": True,
-                "message": "Webinar deleted successfully"
+                "message": "Bootcamp deleted successfully"
             },
             status=status.HTTP_200_OK
         )

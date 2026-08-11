@@ -803,41 +803,91 @@ class UserViewSet(viewsets.ModelViewSet):
     authentication_classes = [CustomJWTAuthentication]
     lookup_field = "id"
 
+    def is_super_admin(self, user):
+        """Check if the user is a super admin based on user_type."""
+        return bool(
+            user
+            and user.is_authenticated
+            and getattr(user, "user_type", None) == "super_admin"
+        )
+
     def get_queryset(self):
-        qs = super().get_queryset().filter(is_archived=False)  # exclude archived users
+        user = self.request.user
+        qs = super().get_queryset().filter(is_archived=False)
+
+        # Non-super_admin users can ONLY see their own record across all actions
+        if not self.is_super_admin(user):
+            return qs.filter(id=user.id)
+
+        # Super admin can filter by role_id or fetch all
         role_id = self.request.query_params.get("role_id")
         if role_id:
             qs = qs.filter(role_id=role_id)
         return qs
 
     def list(self, request, *args, **kwargs):
+        # Prevent non-super_admin from listing user directory
+        if not self.is_super_admin(request.user):
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to view the user list.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         queryset = self.get_queryset()
         serializer = self.get_serializer(queryset, many=True)
         return Response(
-            {"success": True, "message": "Users fetched successfully", "data": serializer.data},
-            status=status.HTTP_200_OK
+            {
+                "success": True,
+                "message": "Users fetched successfully",
+                "data": serializer.data,
+            },
+            status=status.HTTP_200_OK,
         )
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data, context={"request": request})
+        # Prevent non-super_admin from creating users
+        if not self.is_super_admin(request.user):
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to create users.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = self.get_serializer(
+            data=request.data, context={"request": request}
+        )
         if serializer.is_valid():
             serializer.save()
             return Response(
-                {"success": True, "message": "User created successfully", "data": serializer.data},
-                status=status.HTTP_200_OK
+                {
+                    "success": True,
+                    "message": "User created successfully",
+                    "data": serializer.data,
+                },
+                status=status.HTTP_200_OK,
             )
-        # Direct field errors instead of generic message
+
         first_field, first_error = list(serializer.errors.items())[0]
         return Response(
             {"success": False, "message": f"{first_field} {first_error[0]}"},
-            status=status.HTTP_200_OK
+            status=status.HTTP_200_OK,
         )
 
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop("partial", True)
-        instance = self.get_object()
+        instance = (
+            self.get_object()
+        )  # Returns 404 if non-super_admin tries to edit another user's ID
         serializer = self.get_serializer(
-            instance, data=request.data, partial=partial, context={"request": request}
+            instance,
+            data=request.data,
+            partial=partial,
+            context={"request": request},
         )
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -845,18 +895,28 @@ class UserViewSet(viewsets.ModelViewSet):
             {
                 "success": True,
                 "message": "User updated successfully",
-                "data": serializer.data
+                "data": serializer.data,
             },
-            status=status.HTTP_200_OK
+            status=status.HTTP_200_OK,
         )
 
     def destroy(self, request, *args, **kwargs):
+        # Prevent non-super_admin from deleting/archiving users
+        if not self.is_super_admin(request.user):
+            return Response(
+                {
+                    "success": False,
+                    "message": "You do not have permission to delete users.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         instance = self.get_object()
         instance.is_archived = True
         instance.save()
         return Response(
             {"success": True, "message": "User archived successfully"},
-            status=status.HTTP_200_OK
+            status=status.HTTP_200_OK,
         )
     
 class RoleModulePermissionViewSet(viewsets.ViewSet):
@@ -5349,9 +5409,7 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
                 {"success": False, "message": "You are not allowed to access this resource."},
                 status=403
             )
-
         
-
         try:
             serializer = StudentProfileSerializer(
                 student,
