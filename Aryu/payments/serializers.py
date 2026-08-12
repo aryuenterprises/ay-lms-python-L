@@ -14,6 +14,8 @@ from payments.services.invoice_service import InvoiceService
 from webinar.models import WebinarRegistration
 from aryuapp.models import Employer
 import uuid
+from collections import defaultdict
+from aryuapp.models import Trainer
 class PaymentGatewaySerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentGateway
@@ -551,6 +553,72 @@ class PaymentCourseSerializer(serializers.Serializer):
     balance = serializers.FloatField()
     transactions = PaymentTransactionDetailSerializer(many=True)
 
+class CourseDropdownSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Course
+        fields = ['course_id', 'course_name', 'fee']
+
+# Dropdown Serializer for Active Batches
+class BatchDropdownSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NewBatch
+        fields = ['batch_id', 'title', 'course']
+
+# Serializer to save Tutor Payment
+class TrainerHeaderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Trainer
+        fields = ['trainer_id', 'full_name', 'email', 'contact_no']
+
+
+# 2. Read Serializer (Used for GET - List & Single View)
+class TutorPaymentReadSerializer(serializers.ModelSerializer):
+    course_name = serializers.CharField(source='course.course_name', read_only=True)
+    batch_title = serializers.CharField(source='batch.title', read_only=True)
+    tutor_name = serializers.CharField(source='tutor.full_name', read_only=True, default=None)
+
+    class Meta:
+        model = TutorPayment
+        fields = [
+            'id',
+            'tutor',             # <--- Foreign key field name on TutorPayment model
+            'tutor_name',
+            'course',
+            'course_name',
+            'batch',
+            'batch_title',
+            'course_fee',
+            'payment_type',
+            'tutor_payment',
+            'payment_status',
+            'payment_date',
+            'notes',
+            'created_at',
+            'updated_at',
+        ]
+
+
+# 3. Write Serializer (Used for POST, PUT, PATCH - Add & Edit)
+class TutorPaymentWriteSerializer(serializers.ModelSerializer):
+    tutor = serializers.PrimaryKeyRelatedField(queryset=Trainer.objects.all())
+    course = serializers.PrimaryKeyRelatedField(queryset=Course.objects.all())
+    batch = serializers.PrimaryKeyRelatedField(queryset=NewBatch.objects.all())
+
+    class Meta:
+        model = TutorPayment
+        fields = [
+            'id',
+            'tutor',            # <--- Uses foreign key field 'tutor'
+            'course',
+            'batch',
+            'course_fee',
+            'payment_type',
+            'tutor_payment',
+            'payment_status',
+            'payment_date',
+            'notes',
+        ]
+        
 
 class StudentPaymentSummarySerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()

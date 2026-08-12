@@ -1,5 +1,3 @@
-
-
 from django.urls import path
 from .views import *
 
@@ -8,6 +6,8 @@ urlpatterns = [
    path('payment_gateway/<int:pk>', PaymentGatewayViewSet.as_view({'get': 'retrieve', 'patch': 'update', 'put': 'update'})),
    path('payment_transaction', PaymentTransactionViewSet.as_view({'get': 'list', 'post': 'create'})),
    path('payment_transaction/<int:pk>/', PaymentTransactionViewSet.as_view({'get':'retrieve','put':'update','patch':  'update', 'delete':'destroy',})),
+   path('payment/tutor-payments/',TutorPaymentViewSet.as_view({'get': 'list','post': 'create'}),name='add-tutor-payment'),
+   path('payment/tutor-payments/<int:pk>/',TutorPaymentViewSet.as_view({'get': 'retrieve','put': 'update','patch': 'partial_update','delete': 'destroy'}),name='tutor-payment-detail'),
    path("payment_transaction/generate_invoice/",PaymentTransactionViewSet.as_view({"post": "generate_invoice"})),
    path("payment_transaction/student-payment-history/<int:student_id>/",PaymentTransactionViewSet.as_view({"get": "student_payment_history"})),
    path("payment_transaction/send_invoice_email/",PaymentTransactionViewSet.as_view({"post": "send_invoice_email"})),
@@ -16,6 +16,7 @@ urlpatterns = [
    path('paypal/payment_gateway', PayPalPaymentViewSet.as_view({'post': 'create_payment'})),
    path("razorpay/create", RazorpayPaymentViewSet.as_view({"post": "create"})),
    path("razorpay-report/",RazorpayPaymentViewSet.as_view({"get":"get"})),
+   path('razorpay-report/export-pdf/',RazorpayPaymentViewSet.as_view({'get': 'export_pdf'}), name='razorpay-export-pdf'),
    path("razorpay/verify", RazorpayPaymentViewSet.as_view({"post": "verify_payment"})),
    path("razorpay/settlements/", RazorpaySettlementViewSet.as_view({"get":"list"})),
    path("razorpay/settlements/balance", RazorpaySettlementViewSet.as_view({"get":"balance"})),
