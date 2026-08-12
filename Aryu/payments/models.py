@@ -155,6 +155,57 @@ class PaymentTransaction(models.Model):
         return f"{self.student} - {self.amount} {self.currency} ({self.payment_status})"
 
 
+class TutorPayment(models.Model):
+    PAYMENT_TYPE_CHOICES = [
+        ('batch_payment', 'Batch Payment'),
+        ('percentage_from_course_fee', '% from Course Fee'),
+    ]
+
+    PAYMENT_STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ]
+
+    tutor = models.ForeignKey(
+        "aryuapp.Trainer", 
+        on_delete=models.CASCADE, 
+        related_name="tutor_payments"
+    )
+    course = models.ForeignKey(
+        "courses.Course", 
+        on_delete=models.CASCADE, 
+        related_name="tutor_payments"
+    )
+    batch = models.ForeignKey(
+        "batches.NewBatch", 
+        on_delete=models.CASCADE, 
+        related_name="tutor_payments"
+    )
+    course_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    payment_type = models.CharField(max_length=50, choices=PAYMENT_TYPE_CHOICES)
+    tutor_payment = models.DecimalField(max_digits=10, decimal_places=2)  # Amount/Value entered
+    payment_status = models.CharField(max_length=50, choices=PAYMENT_STATUS_CHOICES, default='pending')
+    payment_date = models.DateField()
+    notes = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'aryuapp_tutorpayment'
+        indexes = [
+            models.Index(fields=["tutor"]),
+            models.Index(fields=["course"]),
+            models.Index(fields=["batch"]),
+            models.Index(fields=["payment_status"]),
+            models.Index(fields=["payment_date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.tutor} - {self.tutor_payment} ({self.payment_status})"
+
+   
 class PaymentLog(models.Model):
     transaction = models.ForeignKey(PaymentTransaction, on_delete=models.CASCADE, related_name="logs")
     event_type = models.CharField(max_length=100)

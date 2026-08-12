@@ -1,3 +1,4 @@
+# from Aryu.payments.serializers import CourseDropdownSerializer
 from .models import *
 from .serializers import *
 from aryuapp.auth import CustomJWTAuthentication
@@ -40,6 +41,12 @@ from datetime import timedelta
 import traceback
 from webinar.models import Webinar
 from django.db.models import Max
+from rest_framework import generics
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+# Create your views here.
 # Create your views here.
 
 
@@ -1530,6 +1537,110 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             status=200
         )
 
+
+class TutorPaymentViewSet(viewsets.ModelViewSet):
+    queryset = TutorPayment.objects.all().select_related('tutor', 'course', 'batch')
+
+    def get_serializer_class(self):
+        if self.action in ['list', 'retrieve']:
+            return TutorPaymentReadSerializer
+        return TutorPaymentWriteSerializer
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+
+        trainer_id = request.query_params.get('trainer_id') or request.query_params.get('tutor_id')
+        from_date = request.query_params.get('from_date')
+        to_date = request.query_params.get('to_date')
+        course_id = request.query_params.get('course')
+        batch_id = request.query_params.get('batch')
+        payment_status = request.query_params.get('payment_status')
+        search_query = request.query_params.get('search')
+
+        # Filters
+        if trainer_id:
+            queryset = queryset.filter(tutor_id=trainer_id)
+
+        if from_date:
+            queryset = queryset.filter(payment_date__gte=from_date)
+        if to_date:
+            queryset = queryset.filter(payment_date__lte=to_date)
+
+        if course_id:
+            queryset = queryset.filter(course_id=course_id)
+        if batch_id:
+            queryset = queryset.filter(batch_id=batch_id)
+        if payment_status and payment_status.lower() != 'all':
+            queryset = queryset.filter(payment_status__iexact=payment_status)
+
+        if search_query:
+            queryset = queryset.filter(
+                Q(course__course_name__icontains=search_query) |
+                Q(batch__title__icontains=search_query) |
+                Q(notes__icontains=search_query) |
+                Q(payment_type__icontains=search_query)
+            )
+
+        queryset = queryset.order_by('-payment_date', '-created_at')
+
+        # Trainer Header Details
+        trainer_details = None
+        if trainer_id:
+            try:
+                trainer_obj = Trainer.objects.get(trainer_id=trainer_id)
+                trainer_details = TrainerHeaderSerializer(trainer_obj).data
+            except Trainer.DoesNotExist:
+                trainer_details = None
+
+        # Fetch Active Courses
+        active_courses = Course.objects.filter(is_archived=False).exclude(status__iexact='inactive')
+        courses_data = CourseDropdownSerializer(active_courses, many=True).data
+
+        # --- NEW: Build Course-Grouped Batches ---
+        # Prefetch active batches to prevent N+1 query overhead
+        active_courses_with_batches = active_courses.prefetch_related(
+            Prefetch(
+                'new_batches',  # Related name from Course to NewBatch (adjust if different e.g., 'newbatch_set')
+                queryset=NewBatch.objects.filter(status=True, is_archived=False),
+                to_attr='active_batches_list'
+            )
+        )
+
+        batches_by_course = [
+            {
+                "course_id": course.course_id,  # Changed from course.id to course.course_id
+                "course_name": course.course_name,
+                "batches": [
+                    {
+                        "batch_id": getattr(batch, 'batch_id', getattr(batch, 'id', None)),
+                        "title": batch.title
+                    }
+                    for batch in getattr(course, 'active_batches_list', [])
+                ]
+            }
+            for course in active_courses_with_batches
+        ]
+
+        # Paginated Response
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+            response.data['trainer_details'] = trainer_details
+            response.data['active_courses'] = courses_data
+            response.data['all_batches'] = batches_by_course
+            return response
+
+        # Non-paginated Response
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'trainer_details': trainer_details,
+            'active_courses': courses_data,
+            'all_batches': batches_by_course,
+            'results': serializer.data
+        }, status=status.HTTP_200_OK)
+        
+
 class StripePaymentViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['post'])
@@ -1722,7 +1833,6 @@ class PayPalPaymentViewSet(viewsets.ViewSet):
 class RazorpayPaymentViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
-    required_module = "Transcation History"
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def _get_client(self):
@@ -1731,6 +1841,362 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             return None, None
         client = razorpay.Client(auth=(gateway.public_key, gateway.secret_key))
         return client, gateway
+
+    # ---------------------------------------------------------
+    # Helper: Fetch, Map & Filter Payments (Shared Logic)
+    # ---------------------------------------------------------
+    def _get_filtered_payments_data(self, request):
+        status_filter = request.GET.get("status", "all")
+        course_filter = request.GET.get("course", "all").strip().lower()
+        search = request.GET.get("search", "").strip().lower()
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+
+        client = razorpay.Client(
+            auth=(
+                "rzp_live_SKfiZYRJEe8WuU",
+                "Du4L7ebKchXQSOMcgzx5wE3h"
+            )
+        )
+
+        params = {}
+        if start_date:
+            params["from"] = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp())
+        if end_date:
+            params["to"] = int(
+                datetime.strptime(end_date, "%Y-%m-%d")
+                .replace(hour=23, minute=59, second=59)
+                .timestamp()
+            )
+
+        has_filter = search or (status_filter.lower() != "all") or (course_filter != "all")
+
+        all_payments = []
+        batch_size = 100
+        skip = 0
+
+        while True:
+            result = client.payment.all({
+                **params,
+                "count": batch_size,
+                "skip": skip
+            })
+
+            if isinstance(result, dict):
+                batch = result.get("items", [])
+            elif isinstance(result, list):
+                batch = result
+            else:
+                batch = []
+
+            if not batch:
+                break
+
+            all_payments.extend(batch)
+            if len(batch) < batch_size:
+                break
+            skip += batch_size
+
+        # 1. Fetch active courses directly from Course model
+        db_courses = (
+            Course.objects.filter(is_archived=False)
+            .exclude(course_name__isnull=True)
+            .exclude(course_name__exact="")
+            .values_list('course_name', flat=True)
+        )
+        courses_set = set(db_courses)
+
+        # 2. Match payment notes to Course IDs / Webinar IDs
+        course_ids = set()
+        for payment in all_payments:
+            if isinstance(payment, dict):
+                notes = payment.get("notes") if isinstance(payment.get("notes"), dict) else {}
+                c_id = notes.get("course_id") or notes.get("webinar_id")
+                if c_id:
+                    course_ids.add(c_id)
+
+        course_map = {}
+        if course_ids:
+            matched_courses = Course.objects.filter(course_id__in=[c for c in course_ids if str(c).isdigit()])
+            course_map.update({str(c.course_id): c.course_name for c in matched_courses})
+
+            try:
+                webinars = Webinar.objects.filter(uuid__in=course_ids)
+                course_map.update({str(w.uuid): w.title for w in webinars})
+            except Exception:
+                pass
+
+        all_rows = []
+        for payment in all_payments:
+            if not isinstance(payment, dict):
+                continue
+
+            notes = payment.get("notes", {})
+            if not isinstance(notes, dict):
+                notes = {}
+
+            webinar_name = notes.get("course_name") or notes.get("webinar_name") or notes.get("title")
+            
+            if not webinar_name:
+                c_id = notes.get("course_id") or notes.get("webinar_id")
+                if c_id:
+                    webinar_name = course_map.get(str(c_id))
+
+            if not webinar_name:
+                webinar_name = payment.get("description")
+
+            desc_str = str(webinar_name or "N/A").strip()
+
+            if desc_str and desc_str.upper() != "N/A" and not desc_str.startswith("#"):
+                courses_set.add(desc_str)
+
+            row = {
+                "payment_id": payment.get("id"),
+                "customer": notes.get("name") or notes.get("customer_name") or "N/A",
+                "email": notes.get("email") or payment.get("email") or "N/A",
+                "phone": notes.get("phone") or notes.get("contact") or payment.get("contact") or "N/A",
+                "description": desc_str,
+                "amount": round(payment.get("amount", 0) / 100, 2),
+                "status": payment.get("status"),
+                "method": payment.get("method"),
+                "upi_id": payment.get("vpa") or "N/A",
+                "razorpay_fee": round((payment.get("fee") or 0) / 100, 2),
+                "created_at": datetime.fromtimestamp(
+                    payment.get("created_at", 0)
+                ).strftime("%d %b %Y %I:%M:%S %p"),
+            }
+            all_rows.append(row)
+
+        courses_list = sorted([c for c in courses_set if c and not str(c).startswith("#")])
+
+        # 3. Apply Filters
+        if has_filter:
+            if course_filter != "all":
+                all_rows = [r for r in all_rows if r["description"].lower() == course_filter]
+
+            if status_filter.lower() != "all":
+                all_rows = [r for r in all_rows if str(r["status"]).lower() == status_filter.lower()]
+
+            if search:
+                filtered = []
+                for r in all_rows:
+                    searchable = (
+                        f"{r['payment_id']} "
+                        f"{r['customer']} "
+                        f"{r['email']} "
+                        f"{r['phone']} "
+                        f"{r['description']}"
+                    ).lower()
+
+                    try:
+                        amount_match = float(search) == float(r["amount"])
+                    except ValueError:
+                        amount_match = False
+
+                    if search in searchable or amount_match:
+                        filtered.append(r)
+
+                all_rows = filtered
+
+        # Add S.No
+        for idx, row in enumerate(all_rows, start=1):
+            row["sno"] = idx
+
+        success_amount = sum(
+            float(row.get("amount", 0))
+            for row in all_rows
+            if str(row.get("status", "")).lower() == "captured"
+        )
+
+        failed_amount = sum(
+            float(row.get("amount", 0))
+            for row in all_rows
+            if str(row.get("status", "")).lower() == "failed"
+        )
+
+        refunded_amount = sum(
+            float(row.get("amount", 0))
+            for row in all_rows
+            if str(row.get("status", "")).lower() == "refunded"
+        )
+
+        return {
+            "all_rows": all_rows,
+            "courses_list": courses_list,
+            "success_amount": success_amount,
+            "failed_amount": failed_amount,
+            "refunded_amount": refunded_amount
+        }
+
+    # -------------------------
+    # Get Payments List API
+    # -------------------------
+    def get(self, request):
+        try:
+            page = int(request.GET.get("page", 1))
+            page_size = int(request.GET.get("page_size", 50))
+
+            data_dict = self._get_filtered_payments_data(request)
+            all_rows = data_dict["all_rows"]
+            total_records = len(all_rows)
+
+            start_index = (page - 1) * page_size
+            end_index = start_index + page_size
+            paginated_data = all_rows[start_index:end_index]
+
+            return Response({
+                "success": True,
+                "page": page,
+                "page_size": page_size,
+                "total_records": total_records,
+                "success_amount": round(data_dict["success_amount"], 2),
+                "failed_amount": round(data_dict["failed_amount"], 2),
+                "refunded_amount": round(data_dict["refunded_amount"], 2),
+                "courses": data_dict["courses_list"],
+                "data": paginated_data
+            })
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response({"success": False, "message": str(e)}, status=500)
+
+    # ---------------------------------------------------------
+    # Export PDF Action Endpoint
+    # GET /api/razorpay-payments/export-pdf/
+    # ---------------------------------------------------------
+    @action(detail=False, methods=['get'], url_path="export-pdf")
+    def export_pdf(self, request):
+        try:
+            data_dict = self._get_filtered_payments_data(request)
+            all_rows = data_dict["all_rows"]
+
+            buffer = io.BytesIO()
+            doc = SimpleDocTemplate(
+                buffer,
+                pagesize=landscape(A4),
+                rightMargin=20,
+                leftMargin=20,
+                topMargin=20,
+                bottomMargin=20
+            )
+
+            elements = []
+            styles = getSampleStyleSheet()
+
+            # Dynamic Styles
+            title_style = ParagraphStyle(
+                'ReportTitle',
+                parent=styles['Heading1'],
+                fontSize=18,
+                leading=22,
+                textColor=colors.HexColor("#1E293B"),
+                spaceAfter=10
+            )
+
+            cell_style = ParagraphStyle(
+                'CellText',
+                parent=styles['Normal'],
+                fontSize=8,
+                leading=10,
+                textColor=colors.HexColor("#334155")
+            )
+
+            header_style = ParagraphStyle(
+                'HeaderText',
+                parent=styles['Normal'],
+                fontSize=9,
+                leading=11,
+                fontName="Helvetica-Bold",
+                textColor=colors.white
+            )
+
+            # Title
+            elements.append(Paragraph("Razorpay Payment Transactions Report", title_style))
+            elements.append(Paragraph(f"Generated on: {datetime.now().strftime('%d %b %Y %I:%M %p')}", cell_style))
+            elements.append(Spacer(1, 12))
+
+            # Summary Table
+            summary_data = [
+                [
+                    Paragraph("<b>Total Transactions</b>", cell_style),
+                    Paragraph("<b>Captured Amount</b>", cell_style),
+                    Paragraph("<b>Failed Amount</b>", cell_style),
+                    Paragraph("<b>Refunded Amount</b>", cell_style),
+                ],
+                [
+                    Paragraph(str(len(all_rows)), cell_style),
+                    Paragraph(f"₹ {data_dict['success_amount']:,.2f}", cell_style),
+                    Paragraph(f"₹ {data_dict['failed_amount']:,.2f}", cell_style),
+                    Paragraph(f"₹ {data_dict['refunded_amount']:,.2f}", cell_style),
+                ]
+            ]
+            summary_table = Table(summary_data, colWidths=[180, 180, 180, 180])
+            summary_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            elements.append(summary_table)
+            elements.append(Spacer(1, 15))
+
+            # Main Data Table Header
+            table_data = [[
+                Paragraph("S.No", header_style),
+                Paragraph("Payment ID", header_style),
+                Paragraph("Customer", header_style),
+                Paragraph("Email / Phone", header_style),
+                Paragraph("Course / Webinar", header_style),
+                Paragraph("Amount", header_style),
+                Paragraph("Method", header_style),
+                Paragraph("Status", header_style),
+                Paragraph("Date", header_style),
+            ]]
+
+            # Rows
+            for r in all_rows:
+                table_data.append([
+                    Paragraph(str(r["sno"]), cell_style),
+                    Paragraph(str(r["payment_id"]), cell_style),
+                    Paragraph(str(r["customer"]), cell_style),
+                    Paragraph(f"{r['email']}<br/>{r['phone']}", cell_style),
+                    Paragraph(str(r["description"]), cell_style),
+                    Paragraph(f"₹ {r['amount']:,.2f}", cell_style),
+                    Paragraph(str(r["method"]).upper(), cell_style),
+                    Paragraph(str(r["status"]).capitalize(), cell_style),
+                    Paragraph(str(r["created_at"]), cell_style),
+                ])
+
+            # Column Widths total = 802pt (Fits Landscape A4 printable width)
+            col_widths = [35, 110, 95, 120, 130, 65, 55, 60, 132]
+            
+            data_table = Table(table_data, colWidths=col_widths, repeatRows=1)
+            data_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#0F172A")),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ]))
+
+            elements.append(data_table)
+
+            doc.build(elements)
+            buffer.seek(0)
+
+            response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="Razorpay_Payments_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf"'
+            return response
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response({"success": False, "message": str(e)}, status=500)
 
     # -------------------------
     # Create Razorpay Payment Link
@@ -1770,7 +2236,6 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                     "email": data.get("email"),
                     "contact": data.get("phone")
                 },
-                # Attach metadata inside notes so Razorpay returns it on payment objects
                 "notes": {
                     "webinar_name": webinar.title,
                     "webinar_id": str(getattr(webinar, "uuid", getattr(webinar, "id", ""))),
@@ -1786,7 +2251,6 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
             payment_link = client.payment_link.create(payment_link_data)
 
-            # Save transaction as pending
             PaymentTransaction.objects.create(
                 student=student,
                 gateway=gateway,
@@ -1807,230 +2271,6 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         except Exception as e:
             return Response({"success": False, "message": str(e)}, status=500)
 
-    def get(self, request):
-        try:
-            status_filter = request.GET.get("status", "all")
-            course_filter = request.GET.get("course", "all").strip().lower()
-            search = request.GET.get("search", "").strip().lower()
-            start_date = request.GET.get("start_date")
-            end_date = request.GET.get("end_date")
-            page = int(request.GET.get("page", 1))
-            page_size = int(request.GET.get("page_size", 50))
-
-            client = razorpay.Client(
-                auth=(
-                    "rzp_live_SKfiZYRJEe8WuU",
-                    "Du4L7ebKchXQSOMcgzx5wE3h"
-                )
-            )
-
-            params = {}
-
-            if start_date:
-                params["from"] = int(
-                    datetime.strptime(start_date, "%Y-%m-%d").timestamp()
-                )
-
-            if end_date:
-                params["to"] = int(
-                    datetime.strptime(end_date, "%Y-%m-%d")
-                    .replace(hour=23, minute=59, second=59)
-                    .timestamp()
-                )
-
-            has_filter = search or (status_filter.lower() != "all") or (course_filter != "all")
-
-            all_payments = []
-            batch_size = 100
-            skip = 0
-
-            while True:
-                result = client.payment.all({
-                    **params,
-                    "count": batch_size,
-                    "skip": skip
-                })
-
-                if isinstance(result, dict):
-                    batch = result.get("items", [])
-                elif isinstance(result, list):
-                    batch = result
-                else:
-                    batch = []
-
-                if not batch:
-                    break
-
-                all_payments.extend(batch)
-
-                if len(batch) < batch_size:
-                    break
-
-                skip += batch_size
-
-            # ── 1. Fetch active courses directly from your Course model ──
-            # Exclude archived/empty names and extract course_name
-            db_courses = (
-                Course.objects.filter(is_archived=False)
-                .exclude(course_name__isnull=True)
-                .exclude(course_name__exact="")
-                .values_list('course_name', flat=True)
-            )
-            courses_set = set(db_courses)
-
-            # ── 2. Match payment notes to Course IDs / Webinar IDs ──
-            course_ids = set()
-            for payment in all_payments:
-                if isinstance(payment, dict):
-                    notes = payment.get("notes") if isinstance(payment.get("notes"), dict) else {}
-                    c_id = notes.get("course_id") or notes.get("webinar_id")
-                    if c_id:
-                        course_ids.add(c_id)
-
-            # Map IDs to course names
-            course_map = {}
-            if course_ids:
-                # Search by course_id in Course model
-                matched_courses = Course.objects.filter(course_id__in=[c for c in course_ids if str(c).isdigit()])
-                course_map.update({str(c.course_id): c.course_name for c in matched_courses})
-
-                # Fallback check for Webinar model if applicable
-                try:
-                    webinars = Webinar.objects.filter(uuid__in=course_ids)
-                    course_map.update({str(w.uuid): w.title for w in webinars})
-                except Exception:
-                    pass
-
-            all_rows = []
-
-            for payment in all_payments:
-                if not isinstance(payment, dict):
-                    continue
-
-                notes = payment.get("notes", {})
-                if not isinstance(notes, dict):
-                    notes = {}
-
-                # Priority order to resolve course name
-                webinar_name = notes.get("course_name") or notes.get("webinar_name") or notes.get("title")
-                
-                if not webinar_name:
-                    c_id = notes.get("course_id") or notes.get("webinar_id")
-                    if c_id:
-                        webinar_name = course_map.get(str(c_id))
-
-                if not webinar_name:
-                    webinar_name = payment.get("description")
-
-                desc_str = str(webinar_name or "N/A").strip()
-
-                # Add to set if valid title
-                if desc_str and desc_str.upper() != "N/A" and not desc_str.startswith("#"):
-                    courses_set.add(desc_str)
-
-                row = {
-                    "payment_id": payment.get("id"),
-                    "customer": notes.get("name") or notes.get("customer_name") or "N/A",
-                    "email": notes.get("email") or payment.get("email"),
-                    "phone": notes.get("phone") or notes.get("contact") or payment.get("contact"),
-                    "description": desc_str,
-                    "amount": round(payment.get("amount", 0) / 100, 2),
-                    "status": payment.get("status"),
-                    "method": payment.get("method"),
-                    "upi_id": payment.get("vpa"),
-                    "razorpay_fee": round((payment.get("fee") or 0) / 100, 2),
-                    "created_at": datetime.fromtimestamp(
-                        payment.get("created_at", 0)
-                    ).strftime("%d %b %Y %I:%M:%S %p"),
-                }
-
-                all_rows.append(row)
-
-            # Sorted list of clean course names
-            courses_list = sorted([c for c in courses_set if c and not str(c).startswith("#")])
-
-            # ── 3. Apply Filters ──
-            if has_filter:
-                if course_filter != "all":
-                    all_rows = [
-                        r for r in all_rows
-                        if r["description"].lower() == course_filter
-                    ]
-
-                if status_filter.lower() != "all":
-                    all_rows = [
-                        r for r in all_rows
-                        if str(r["status"]).lower() == status_filter.lower()
-                    ]
-
-                if search:
-                    filtered = []
-                    for r in all_rows:
-                        searchable = (
-                            f"{r['payment_id']} "
-                            f"{r['customer']} "
-                            f"{r['email']} "
-                            f"{r['phone']} "
-                            f"{r['description']}"
-                        ).lower()
-
-                        try:
-                            amount_match = float(search) == float(r["amount"])
-                        except ValueError:
-                            amount_match = False
-
-                        if search in searchable or amount_match:
-                            filtered.append(r)
-
-                    all_rows = filtered
-
-            total_records = len(all_rows)
-
-            start_index = (page - 1) * page_size
-            end_index = start_index + page_size
-            paginated_data = all_rows[start_index:end_index]
-            
-            for idx, row in enumerate(paginated_data, start=start_index + 1):
-                row["sno"] = idx
-
-            success_amount = sum(
-                float(row.get("amount", 0))
-                for row in all_rows
-                if str(row.get("status", "")).lower() == "captured"
-            )
-
-            failed_amount = sum(
-                float(row.get("amount", 0))
-                for row in all_rows
-                if str(row.get("status", "")).lower() == "failed"
-            )
-
-            refunded_amount = sum(
-                float(row.get("amount", 0))
-                for row in all_rows
-                if str(row.get("status", "")).lower() == "refunded"
-            )
-
-            return Response({
-                "success": True,
-                "page": page,
-                "page_size": page_size,
-                "total_records": total_records,
-                "success_amount": round(success_amount, 2),
-                "failed_amount": round(failed_amount, 2),
-                "refunded_amount": round(refunded_amount, 2),
-                "courses": courses_list,
-                "data": paginated_data
-            })
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return Response(
-                {"success": False, "message": str(e)},
-                status=500
-            )
-         
     # -------------------------
     # Verify Razorpay Payment
     # -------------------------
@@ -2048,7 +2288,6 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         if not client:
             return Response({"success": False, "message": "Razorpay not configured"}, status=400)
 
-        # Verify signature
         try:
             params = {
                 "razorpay_order_id": order_id,
@@ -2063,10 +2302,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 transaction.transaction_id = payment_id
                 transaction.save()
 
-                # Generate invoice
-                InvoiceService.generate_invoice(
-                    transaction.id
-                )
+                InvoiceService.generate_invoice(transaction.id)
 
             return Response({"success": True, "message": "Payment verified successfully"})
         except razorpay.errors.SignatureVerificationError:
