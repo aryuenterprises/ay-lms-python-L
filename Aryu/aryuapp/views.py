@@ -59,7 +59,7 @@ import traceback
 from batches.serializers import BatchRecordingSerializer
 from rest_framework.pagination import CursorPagination
 from core.views import secure_throttle
-
+from django.utils.decorators import method_decorator
 class IsAdminOrSuperAdmin(BasePermission):
     def has_permission(self, request, view):
         return getattr(request.user, "user_type", "") in ["admin", "super_admin"]
@@ -6271,77 +6271,122 @@ def generate_secure_password(length=8):
     return "".join(pwd_list)
 
 
-def send_student_welcome_email(student, plain_password):
-    """Dispatches an HTML email with student login details."""
-    login_url = getattr(settings, "STUDENT_LOGIN_URL", "https://portal.aryuacademy.com/login")
-    subject = "Welcome to ARYU Academy - Registration Credentials"
-    
-    # Hostinger requires from_email to strictly match EMAIL_HOST_USER
-    from_email = getattr(settings, "EMAIL_HOST_USER", "support@aryuacademy.com")
-    to_email = [student.email]
+PORTAL_URL = getattr(settings, "PORTAL_URL", "https://portal.aryuacademy.com/")
 
+def send_student_welcome_email(student, raw_password: str):
+    """
+    Sends a formatted welcome email containing Student ID, Username, Auto-generated Password,
+    and Portal Link. Uses EmailMultiAlternatives to ensure proper HTML rendering.
+    """
+    recipient_email = getattr(student, "email", None) or getattr(student, "username", None)
+    if not recipient_email:
+        logger.warning(f"[Email Skipped] Student ID {getattr(student, 'student_id', 'N/A')} has no email address.")
+        return
+
+    subject = "Welcome to Aryu Academy - Account Credentials"
+    student_name = f"{student.first_name} {getattr(student, 'last_name', '') or ''}".strip()
+    student_id = getattr(student, "registration_id", None) or getattr(student, "student_id", "N/A")
+    portal_link = PORTAL_URL
+
+    # Plain Text Fallback
     text_content = f"""
-Hello {student.first_name},
+Dear {student_name},
 
-Thank you for registering with ARYU Academy.
+Welcome to Aryu Academy! Your registration for our Software Training Program has been successfully completed.
 
-Your Login Credentials:
------------------------
-Student ID: {student.student_id}
-Registration ID: {student.registration_id}
-Username / Email: {student.email}
-Password: {plain_password}
+Here are your account credentials:
+----------------------------------------
+Student ID / Reg ID: {student_id}
+Username: {student.username}
+Password: {raw_password}
+Portal Link: {portal_link}
+----------------------------------------
 
-Login URL: {login_url}
+Please log in to your portal to access your course materials and training schedule.
 
-Regards,
-ARYU Academy
+Best regards,
+Aryu Academy Team
 """
 
+    # HTML Version
     html_content = f"""
 <!DOCTYPE html>
 <html>
 <head>
-    <style>
-        body {{ font-family: Arial, sans-serif; background-color: #f4f6f9; color: #333; padding: 20px; }}
-        .container {{ max-width: 600px; background: #ffffff; padding: 30px; margin: 0 auto; border-radius: 8px; }}
-        .header {{ background-color: #6200ee; color: #ffffff; padding: 15px; text-align: center; border-radius: 6px 6px 0 0; }}
-        .credentials {{ background-color: #f8f9fa; border-left: 4px solid #6200ee; padding: 15px; margin: 20px 0; font-family: monospace; }}
-        .btn {{ display: inline-block; padding: 12px 20px; background-color: #6200ee; color: #ffffff !important; text-decoration: none; border-radius: 4px; font-weight: bold; }}
-    </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to Aryu Academy</title>
 </head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h2>ARYU Academy Registration Successful</h2>
-        </div>
-        <div style="padding: 20px 0;">
-            <p>Hi <strong>{student.first_name} {student.last_name or ''}</strong>,</p>
-            <p>Your registration with ARYU Academy has been processed successfully.</p>
-            
-            <div class="credentials">
-                <p><strong>Student ID:</strong> {student.student_id}</p>
-                <p><strong>Registration ID:</strong> {student.registration_id}</p>
-                <p><strong>Username / Email:</strong> {student.email}</p>
-                <p><strong>Password:</strong> {plain_password}</p>
-            </div>
+<body style="margin:0; padding:0; background-color:#f5f7fb; font-family:Arial, Helvetica, sans-serif;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f5f7fb; padding:30px 15px;">
+        <tr>
+            <td align="center">
+                <table width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px; width:100%; background-color:#ffffff; border-radius:10px; overflow:hidden; border:1px solid #e2e8f0;">
+                    <!-- Header -->
+                    <tr>
+                        <td style="background-color:#1f3c88; padding:25px; text-align:center;">
+                            <h1 style="margin:0; color:#ffffff; font-size:24px;">Aryu Academy</h1>
+                            <p style="margin:6px 0 0; color:#dbe5ff; font-size:14px;">Software Training Program</p>
+                        </td>
+                    </tr>
+                    <!-- Body Content -->
+                    <tr>
+                        <td style="padding:30px;">
+                            <h2 style="margin:0 0 15px; color:#222222; font-size:20px;">Welcome, {student_name}!</h2>
+                            <p style="margin:0 0 15px; color:#555555; font-size:15px; line-height:1.6;">
+                                Your registration for the <strong>Software Training Program</strong> has been completed successfully.
+                            </p>
+                            
+                            <!-- Credentials Box -->
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f8f9fa; border-left:4px solid #1f3c88; border-radius:4px; margin:20px 0;">
+                                <tr>
+                                    <td style="padding:18px 20px;">
+                                        <h3 style="margin:0 0 12px; color:#1f3c88; font-size:16px;">Your Login Credentials</h3>
+                                        <p style="margin:4px 0; color:#333333; font-size:14px;"><strong>Student ID:</strong> {student_id}</p>
+                                        <p style="margin:4px 0; color:#333333; font-size:14px;"><strong>Username:</strong> {student.username}</p>
+                                        <p style="margin:4px 0; color:#333333; font-size:14px;"><strong>Password:</strong> {raw_password}</p>
+                                        <p style="margin:4px 0; color:#333333; font-size:14px;"><strong>Portal Link:</strong> <a href="{portal_link}" style="color:#1f3c88; text-decoration:underline;">{portal_link}</a></p>
+                                    </td>
+                                </tr>
+                            </table>
 
-            <p><a href="{login_url}" class="btn" target="_blank">Access Student Portal</a></p>
-        </div>
-    </div>
+                            <!-- CTA Button -->
+                            <div style="text-align:center; margin:25px 0 15px;">
+                                <a href="{portal_link}" target="_blank" style="background-color:#1f3c88; color:#ffffff; padding:12px 28px; text-decoration:none; border-radius:5px; font-weight:bold; font-size:14px; display:inline-block;">Login to Student Portal</a>
+                            </div>
+
+                            <p style="margin:20px 0 0; color:#777777; font-size:13px; line-height:1.5;">
+                                <em>Note: Please save these credentials in a secure place. Further details regarding your training schedule will be available inside your portal.</em>
+                            </p>
+                        </td>
+                    </tr>
+                    <!-- Footer -->
+                    <tr>
+                        <td style="background-color:#f8f9fa; padding:20px 30px; text-align:center; border-top:1px solid #eeeeee;">
+                            <p style="margin:0 0 4px; color:#333333; font-size:14px;"><strong>Aryu Academy Private Limited</strong></p>
+                            <p style="margin:0; color:#888888; font-size:12px;">Empowering students with practical software skills.</p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
 </body>
 </html>
 """
 
-    try:
-        msg = EmailMultiAlternatives(subject, text_content, from_email, to_email)
-        msg.attach_alternative(html_content, "text/html")
-        msg.send(fail_silently=False)
-    except Exception as e:
-        logger.error(f"Failed to dispatch welcome email to {student.email}: {str(e)}")
-        raise e
+    # Dispatch email with HTML subtype
+    msg = EmailMultiAlternatives(
+        subject=subject,
+        body=text_content,
+        from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "support@aryuacademy.com"),
+        to=[recipient_email],
+    )
+    msg.attach_alternative(html_content, "text/html")
+    msg.send(fail_silently=False)
+    logger.info(f"[Email Sent] Welcome email sent successfully to {recipient_email}")
 
-
+@method_decorator(csrf_exempt, name="dispatch")
 class StudentPublicSignupView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -6407,7 +6452,7 @@ class StudentPublicSignupView(APIView):
                 "email": student.email,
             }
         }, status=status.HTTP_201_CREATED)
-  
+
 
 class TrainerStudentMappingAPI(APIView):
 
