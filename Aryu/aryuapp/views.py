@@ -3723,64 +3723,109 @@ class StudentRegistration(viewsets.ModelViewSet):
             "registration_id": student.registration_id
         }, status=status.HTTP_201_CREATED, headers=headers)
     
-class StudentListAPIView(viewsets.ViewSet):
+class StudentListAPIView(APIView):
+    """
+    Production-grade Student Listing API.
+    Maintains exact original response payload (students, courses, categories, companies)
+    while securely handling public/campaign registrants and avoiding ORM lookup crashes.
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
 
     def get(self, request):
         try:
             user = request.user
-            user_type = user.user_type
+            user_type = getattr(user, "user_type", None)
 
             creator_id = None
             super_admin_id = None
             admin_ids = []
 
+            # -----------------------------------------------------------------
+            # 1. Determine User Role & Safe Native Identifiers
+            # -----------------------------------------------------------------
             if user_type == "super_admin":
-                creator_id = user.user_id
-                admin_ids = list(
-                    Trainer.objects.filter(
-                        created_by=creator_id,
-                        created_by_type="super_admin",
-                        user_type="admin"
-                    ).values_list("trainer_id", flat=True)
-                )
+                creator_id = getattr(user, "user_id", None) or getattr(user, "id", None)
+                if creator_id:
+                    admin_ids = list(
+                        Trainer.objects.filter(
+                            created_by=creator_id,
+                            created_by_type="super_admin",
+                            user_type="admin"
+                        ).values_list("trainer_id", flat=True)
+                    )
 
-            elif user_type == "admin":
-                creator_id = user.trainer_id
-                admin_obj = Trainer.objects.filter(trainer_id=creator_id).only(
-                    "created_by", "created_by_type"
-                ).first()
-                if admin_obj and admin_obj.created_by_type == "super_admin":
-                    super_admin_id = admin_obj.created_by
+            elif user_type in ("admin", "tutor", "trainer"):
+                creator_id = getattr(user, "trainer_id", None) or getattr(user, "id", None)
+                if creator_id:
+                    admin_obj = Trainer.objects.filter(trainer_id=creator_id).only(
+                        "created_by", "created_by_type"
+                    ).first()
+                    if admin_obj and admin_obj.created_by_type == "super_admin":
+                        super_admin_id = admin_obj.created_by
 
             elif user_type == "student":
-                creator_id = user.student_id
+                creator_id = getattr(user, "student_id", None) or getattr(user, "id", None)
 
-            students_qs = Student.objects.filter(is_archived=False)
+            # -----------------------------------------------------------------
+            # 2. Base Queryset for Active/Non-Archived Students
+            # -----------------------------------------------------------------
+            students_qs = Student.objects.filter(is_archived=False, status=True)
 
+            # Role Filter Logic (Inclusively allowing PUBLIC and CAMPAIGN signups)
             if user_type == "super_admin":
-                students_qs = students_qs.filter(
-                    Q(created_by=creator_id, created_by_type="super_admin") |
-                    Q(created_by__in=admin_ids, created_by_type="admin")
-                )
+                query_filter = Q(created_by_type="public") | Q(converter="campaign") | Q(source_type="webinar")
+                if creator_id:
+                    query_filter |= Q(created_by=creator_id, created_by_type="super_admin")
+                if admin_ids:
+                    query_filter |= Q(created_by__in=admin_ids, created_by_type="admin")
+                
+                students_qs = students_qs.filter(query_filter)
 
-            elif user_type == "admin":
-                students_qs = students_qs.filter(
-                    Q(created_by=creator_id, created_by_type="admin") |
-                    Q(created_by=super_admin_id, created_by_type="super_admin")
-                )
+            elif user_type in ("admin", "tutor", "trainer"):
+                query_filter = Q(created_by_type="public") | Q(converter="campaign") | Q(source_type="webinar")
+                if creator_id:
+                    query_filter |= Q(created_by=creator_id, created_by_type="admin")
+                if super_admin_id:
+                    query_filter |= Q(created_by=super_admin_id, created_by_type="super_admin")
+
+                students_qs = students_qs.filter(query_filter)
 
             elif user_type == "student":
-                students_qs = students_qs.filter(student_id=creator_id)
+                if creator_id:
+                    students_qs = students_qs.filter(student_id=creator_id)
+                else:
+                    students_qs = Student.objects.none()
 
             else:
                 students_qs = Student.objects.none()
 
-            students_qs = students_qs.select_related(
-                "school_student",
-                "college_student",
-                "jobseeker",
-                "employee"
-            ).prefetch_related(
+            # -----------------------------------------------------------------
+            # 3. Apply Optional Query Parameter Filters (Search / Source)
+            # -----------------------------------------------------------------
+            source_type = request.query_params.get("source_type")
+            if source_type and source_type.strip() and source_type.strip().lower() != "all":
+                students_qs = students_qs.filter(source_type__iexact=source_type.strip())
+
+            converter = request.query_params.get("converter")
+            if converter and converter.strip() and converter.strip().lower() != "all":
+                students_qs = students_qs.filter(converter__iexact=converter.strip())
+
+            search = request.query_params.get("search")
+            if search and search.strip():
+                search_str = search.strip()
+                students_qs = students_qs.filter(
+                    Q(first_name__icontains=search_str) |
+                    Q(last_name__icontains=search_str) |
+                    Q(email__icontains=search_str) |
+                    Q(contact_no__icontains=search_str) |
+                    Q(registration_id__icontains=search_str)
+                )
+
+            # -----------------------------------------------------------------
+            # 4. Safe Prefetch & Optimization
+            # -----------------------------------------------------------------
+            prefetch_lookups = [
                 Prefetch(
                     "notes",
                     queryset=Note.objects.all().order_by("-created_at"),
@@ -3792,37 +3837,65 @@ class StudentListAPIView(viewsets.ViewSet):
                         "batch", "course__course_category"
                     ),
                     to_attr="old_batches"
-                ),
-                Prefetch(
-                    "new_batches",
-                    queryset=NewBatch.objects.select_related(
-                        "course__course_category"
-                    ),
-                    to_attr="prefetched_new_batches"
                 )
-            )
+            ]
 
+            # Safely check if StudentCourse reverse relationship exists on Student
+            if hasattr(Student, "studentcourse_set"):
+                prefetch_lookups.append(
+                    Prefetch(
+                        "studentcourse_set",
+                        queryset=StudentCourse.objects.select_related("course__course_category", "batch"),
+                        to_attr="prefetched_student_courses"
+                    )
+                )
+
+            # Safely check if courses ManyToMany relation exists on Student
+            if hasattr(Student, "courses"):
+                prefetch_lookups.append(
+                    Prefetch(
+                        "courses",
+                        queryset=Course.objects.select_related("course_category").filter(is_archived=False),
+                        to_attr="prefetched_direct_courses"
+                    )
+                )
+
+            # Dynamically check if new_batches attribute exists on Student model
+            if hasattr(Student, "new_batches"):
+                prefetch_lookups.append(
+                    Prefetch(
+                        "new_batches",
+                        queryset=NewBatch.objects.select_related("course__course_category"),
+                        to_attr="prefetched_new_batches"
+                    )
+                )
+
+            students_qs = students_qs.prefetch_related(*prefetch_lookups).order_by("-created_at").distinct()
+
+            # -----------------------------------------------------------------
+            # 5. Construct Response Payload
+            # -----------------------------------------------------------------
             response_data = []
 
             for s in students_qs:
 
                 notes = [{
                     "note_id": n.id,
-                    "reason": n.reason,
-                    "status": n.status,
-                    "created_by": n.created_by,
-                    "created_at": n.created_at,
+                    "reason": getattr(n, "reason", ""),
+                    "status": getattr(n, "status", ""),
+                    "created_by": getattr(n, "created_by", None),
+                    "created_at": getattr(n, "created_at", None),
                 } for n in getattr(s, "prefetched_notes", [])]
 
                 company_id = None
-                if getattr(s, "employee", None) and s.employee.company_id:
-                    company_id = s.employee.company_id.company_id
-                elif getattr(s, "jobseeker", None) and s.jobseeker.company_id:
-                    company_id = s.jobseeker.company_id.company_id
-                elif getattr(s, "college_student", None) and s.college_student.company_id:
-                    company_id = s.college_student.company_id.company_id
-                elif getattr(s, "school_student", None) and s.school_student.company_id:
-                    company_id = s.school_student.company_id.company_id
+                if getattr(s, "employee", None) and getattr(s.employee, "company_id", None):
+                    company_id = getattr(s.employee.company_id, "company_id", None)
+                elif getattr(s, "jobseeker", None) and getattr(s.jobseeker, "company_id", None):
+                    company_id = getattr(s.jobseeker.company_id, "company_id", None)
+                elif getattr(s, "college_student", None) and getattr(s.college_student, "company_id", None):
+                    company_id = getattr(s.college_student.company_id, "company_id", None)
+                elif getattr(s, "school_student", None) and getattr(s.school_student, "company_id", None):
+                    company_id = getattr(s.school_student.company_id, "company_id", None)
 
                 batch_id_list = []
                 title_list = []
@@ -3831,31 +3904,63 @@ class StudentListAPIView(viewsets.ViewSet):
                 category_id_list = []
                 category_name_list = []
 
+                # A. Collect from StudentCourse (Bootcamp & Direct Course Enrollments)
+                for sc in getattr(s, "prefetched_student_courses", []):
+                    course = getattr(sc, "course", None)
+                    batch = getattr(sc, "batch", None)
+                    category = getattr(course, "course_category", None) if course else None
+
+                    if batch:
+                        batch_id_list.append(getattr(batch, "batch_id", None))
+                        title_list.append(getattr(batch, "title", None) or getattr(batch, "batch_name", None))
+
+                    course_id_list.append(getattr(course, "course_id", None) if course else None)
+                    course_name_list.append(getattr(course, "course_name", None) if course else None)
+                    category_id_list.append(getattr(category, "category_id", None) if category else None)
+                    category_name_list.append(getattr(category, "category_name", None) if category else None)
+
+                # B. Collect from Direct Courses ManyToMany (if defined on model)
+                for direct_course in getattr(s, "prefetched_direct_courses", []):
+                    category = getattr(direct_course, "course_category", None)
+                    course_id_list.append(getattr(direct_course, "course_id", None))
+                    course_name_list.append(getattr(direct_course, "course_name", None))
+                    category_id_list.append(getattr(category, "category_id", None) if category else None)
+                    category_name_list.append(getattr(category, "category_name", None) if category else None)
+
+                # C. Collect from Old Batches
                 for b in getattr(s, "old_batches", []):
-                    batch = b.batch
-                    course = b.course
-                    category = course.course_category if course else None
+                    batch = getattr(b, "batch", None)
+                    course = getattr(b, "course", None)
+                    category = getattr(course, "course_category", None) if course else None
 
-                    batch_id_list.append(batch.batch_id)
-                    title_list.append(batch.title or batch.batch_name)
-                    course_id_list.append(course.course_id if course else None)
-                    course_name_list.append(course.course_name if course else None)
-                    category_id_list.append(category.category_id if category else None)
-                    category_name_list.append(category.category_name if category else None)
+                    batch_id_list.append(getattr(batch, "batch_id", None) if batch else None)
+                    title_list.append(getattr(batch, "title", None) or getattr(batch, "batch_name", None) if batch else None)
+                    course_id_list.append(getattr(course, "course_id", None) if course else None)
+                    course_name_list.append(getattr(course, "course_name", None) if course else None)
+                    category_id_list.append(getattr(category, "category_id", None) if category else None)
+                    category_name_list.append(getattr(category, "category_name", None) if category else None)
 
+                # D. Collect from New Batches
                 for nb in getattr(s, "prefetched_new_batches", []):
-                    course = nb.course
-                    category = course.course_category if course else None
+                    course = getattr(nb, "course", None)
+                    category = getattr(course, "course_category", None) if course else None
 
-                    batch_id_list.append(nb.batch_id)
-                    title_list.append(nb.title)
-                    course_id_list.append(course.course_id if course else None)
-                    course_name_list.append(course.course_name if course else None)
-                    category_id_list.append(category.category_id if category else None)
-                    category_name_list.append(category.category_name if category else None)
+                    batch_id_list.append(getattr(nb, "batch_id", None))
+                    title_list.append(getattr(nb, "title", None))
+                    course_id_list.append(getattr(course, "course_id", None) if course else None)
+                    course_name_list.append(getattr(course, "course_name", None) if course else None)
+                    category_id_list.append(getattr(category, "category_id", None) if category else None)
+                    category_name_list.append(getattr(category, "category_name", None) if category else None)
 
                 def unique(values):
                     return list(dict.fromkeys(v for v in values if v is not None))
+
+                profile_pic_url = None
+                if getattr(s, "profile_pic", None):
+                    try:
+                        profile_pic_url = f"https://aylms.aryuprojects.com/api{s.profile_pic.url}"
+                    except Exception:
+                        profile_pic_url = None
 
                 response_data.append({
                     "registration_id": s.registration_id,
@@ -3865,7 +3970,7 @@ class StudentListAPIView(viewsets.ViewSet):
                     "username": s.username,
                     "dob": s.dob,
                     "email": s.email,
-                    "converter":s.converter,
+                    "converter": s.converter,
                     "contact_no": s.contact_no,
                     "gender": s.gender,
                     "current_address": s.current_address,
@@ -3876,17 +3981,17 @@ class StudentListAPIView(viewsets.ViewSet):
                     "parent_guardian_phone": s.parent_guardian_phone,
                     "parent_guardian_occupation": s.parent_guardian_occupation,
                     "reference_number": s.reference_number,
-                    "reference_name":s.reference_name,
-                    "alternate_mobile_no":s.alternate_mobile_no,
+                    "reference_name": s.reference_name,
+                    "alternate_mobile_no": s.alternate_mobile_no,
                     "state": s.state,
                     "student_type": s.student_type,
-                    "student_sub_type":s.student_sub_type,
+                    "student_sub_type": s.student_sub_type,
                     "country": s.country,
                     "status": s.status,
                     "internship_required": s.internship_required,
                     "internship": s.internship,
                     "source_type": s.source_type,
-                    "source_name":s.source_name,
+                    "source_name": s.source_name,
                     "notes": notes,
                     "joining_date": s.joining_date,
                     "created_by": s.created_by,
@@ -3898,27 +4003,31 @@ class StudentListAPIView(viewsets.ViewSet):
                     "course_name": unique(course_name_list),
                     "category_id": unique(category_id_list),
                     "category_name": unique(category_name_list),
-                    "profile_pic": (
-                        f"https://portal.aryuacademy.com/api{s.profile_pic.url}"
-                        if s.profile_pic else None
-                    ),
-                    "school_student": School_StudentSerializer(s.school_student).data if getattr(s, "school_student", None) else None,
-                    "college_student": College_StudentSerializer(s.college_student).data if getattr(s, "college_student", None) else None,
-                    "jobseeker": JobSeekerSerializer(s.jobseeker).data if getattr(s, "jobseeker", None) else None,
-                    "employee": EmployeeSerializer(s.employee).data if getattr(s, "employee", None) else None,
+                    "profile_pic": profile_pic_url,
+                    "school_student": School_StudentSerializer(getattr(s, "school_student", None)).data if getattr(s, "school_student", None) else None,
+                    "college_student": College_StudentSerializer(getattr(s, "college_student", None)).data if getattr(s, "college_student", None) else None,
+                    "jobseeker": JobSeekerSerializer(getattr(s, "jobseeker", None)).data if getattr(s, "jobseeker", None) else None,
+                    "employee": EmployeeSerializer(getattr(s, "employee", None)).data if getattr(s, "employee", None) else None,
                 })
 
+            # -----------------------------------------------------------------
+            # 6. Role Filters for Auxiliary Data
+            # -----------------------------------------------------------------
             role_filter = Q(created_by=-1)
 
             if user_type == "super_admin":
-                role_filter = Q(created_by=creator_id, created_by_type="super_admin") | Q(
-                    created_by__in=admin_ids, created_by_type="admin"
-                )
+                role_filter = Q(created_by_type="public")
+                if creator_id:
+                    role_filter |= Q(created_by=creator_id, created_by_type="super_admin")
+                if admin_ids:
+                    role_filter |= Q(created_by__in=admin_ids, created_by_type="admin")
 
-            elif user_type == "admin":
-                role_filter = Q(created_by=creator_id, created_by_type="admin") | Q(
-                    created_by=super_admin_id, created_by_type="super_admin"
-                )
+            elif user_type in ("admin", "tutor", "trainer"):
+                role_filter = Q(created_by_type="public")
+                if creator_id:
+                    role_filter |= Q(created_by=creator_id, created_by_type="admin")
+                if super_admin_id:
+                    role_filter |= Q(created_by=super_admin_id, created_by_type="super_admin")
 
             courses = list(
                 Course.objects.filter(is_archived=False)
@@ -3929,6 +4038,22 @@ class StudentListAPIView(viewsets.ViewSet):
                     "fee",
                     category_id=F("course_category_id"),
                     category_name=F("course_category__category_name"),
+                )
+            )
+
+            # Extract active course IDs and fetch associated active batches
+            course_ids = [c["course_id"] for c in courses if c.get("course_id")]
+
+            batches = list(
+                NewBatch.objects.filter(
+                    is_archived=False,
+                    course_id__in=course_ids
+                )
+                .values(
+                    "batch_id",
+                    "title",
+                    "course_id",
+                    course_name=F("course__course_name")
                 )
             )
 
@@ -3949,16 +4074,16 @@ class StudentListAPIView(viewsets.ViewSet):
                 "students": response_data,
                 "courses": courses,
                 "categories": categories,
-                "batches": [],
+                "batches": batches,
                 "companies": companies
-            })
+            }, status=status.HTTP_200_OK)
 
         except Exception as e:
+            logger.error(f"Error in StudentListAPIView: {str(e)}", exc_info=True)
             return Response({
                 "success": False,
-                "message": str(e)
-            })
-
+                "message": f"Failed to fetch student list: {str(e)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class StudentTicketViewSet(APIView):
     permission_classes = [IsAuthenticated]
