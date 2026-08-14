@@ -30,7 +30,7 @@ urlpatterns = [
    path('jarugandi/',ReportsViewSet .as_view({'get': 'get_reports'})),
    path('jarugandi', ReportsViewSet.as_view({'get': 'list'})),
    path('student_registration', StudentRegistration.as_view({'get': 'list', 'post': 'create'})),
-   path('student_list',StudentListAPIView.as_view({'get': 'get'}), name='student_list'),
+   path('student_list', StudentListAPIView.as_view(), name='student_list'),
    path('attendance', AdminLogViewSet.as_view({'get': 'list'})),
    path('attendance/<int:student_id>', AttendanceViewSet.as_view({'get': 'list', 'post': 'create'})),
    path('attendance/<int:student_id>/adumneoie', AttendanceViewSet.as_view({'post': 'admin_mark_attendance'})),
