@@ -41,7 +41,7 @@ from io import BytesIO
 from django.http import FileResponse
 import logging
 from rest_framework.exceptions import ValidationError
-from weasyprint import HTML, CSS
+# from weasyprint import HTML, CSS
 from django.db.models import Q
 from django.utils.timezone import now
 # from celery import shared_task

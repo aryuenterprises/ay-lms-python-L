@@ -7,7 +7,7 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 from django.db.models import Sum
 from num2words import num2words
-from weasyprint import HTML
+# from weasyprint import HTML
 
 from aryuapp.models import Settings
 from payments.models import PaymentTransaction
@@ -658,12 +658,12 @@ class InvoiceService:
         # GENERATE PDF
         # =========================================
 
-        html = HTML(
-            string=html_string,
-            base_url=settings.BASE_DIR
-        )
+        # html = HTML(
+        #     string=html_string,
+        #     base_url=settings.BASE_DIR
+        # )
 
-        pdf_file = html.write_pdf()
+        # pdf_file = html.write_pdf()
 
         # =========================================
         # SAVE PDF
@@ -678,11 +678,11 @@ class InvoiceService:
                 save=False
             )
 
-        transaction.invoice.save(
-            file_name,
-            ContentFile(pdf_file),
-            save=True
-        )
+        # transaction.invoice.save(
+        #     file_name,
+        #     ContentFile(pdf_file),
+        #     save=True
+        # )
 
         return transaction
     
