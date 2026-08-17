@@ -359,8 +359,10 @@ def razorpay_webhook(request):
 
     data = request.data
     event = data.get("event")
+    logger.info("going to condition")
 
     if event == "payment.captured":
+        logger.info("payment captured")
         entity = data["payload"]["payment"]["entity"]
         order_id = entity.get("order_id")
 
@@ -369,6 +371,8 @@ def razorpay_webhook(request):
                 order_id=order_id,
                 payment_status="pending"
             ).first()
+
+            logger.debug(f'tnx: {txn}')
 
             if not txn:
                 return HttpResponse(status=200)
