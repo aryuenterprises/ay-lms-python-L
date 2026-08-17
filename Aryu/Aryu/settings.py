@@ -31,7 +31,7 @@ pip install channels-redis paypalrestsdk reportlab pyclamd pytesseract Pillow dj
 SECRET_KEY = 'django-insecure-e-ar=#hq&(q0ujnwofc!%8#in(2z1osso65+(8i+&elo=cn4$k'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -351,6 +351,7 @@ TELECRM_API = "https://next-api.telecrm.in"
 
 # 
 SERVER_ROOT = Path("/var/www/ay-lms-python-L")
+# SERVER_ROOT = Path(r'E:\Aryu projects\ay-lms-python-L')
 # SERVER_ROOT = Path("/home/tamilselvi/Documents/GitHub/ay-lms-python-L")
 
 # SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L")
