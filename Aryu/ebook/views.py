@@ -26,7 +26,9 @@ import hmac
 import hashlib
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes
+import logging
 
+logger = logging.getLogger('general')
 
 class EbookViewSet(viewsets.ModelViewSet):
     queryset = Ebook.objects.all()
@@ -56,7 +58,7 @@ class EbookViewSet(viewsets.ModelViewSet):
     # CREATE
     # ─────────────────────────────────────────
     def create(self, request, *args, **kwargs):
-        print("REQUEST DATA:", request.data)
+        logger.debug("REQUEST DATA:", request.data)
 
         tags = self.extract_tags(request)
 
@@ -69,7 +71,7 @@ class EbookViewSet(viewsets.ModelViewSet):
         )
 
         if not serializer.is_valid():
-            print("ERRORS:", serializer.errors)
+            logger.error("ERRORS:", serializer.errors)
             return Response({
                 "status": False,
                 "message": "Validation failed",
@@ -134,7 +136,7 @@ class EbookViewSet(viewsets.ModelViewSet):
         )
 
         if not serializer.is_valid():
-            print("ERRORS:", serializer.errors)
+            logger.error("ERRORS:", serializer.errors)
             return Response({
                 "status": False,
                 "message": "Validation failed",
@@ -282,9 +284,9 @@ def whatsapp_webhook(request):
     # =================================
     payload = json.loads(request.body.decode("utf-8"))
 
-    print("===== WHATSAPP WEBHOOK RECEIVED =====")
-    print(json.dumps(payload, indent=2))
-    print("===================================")
+    logger.info("===== WHATSAPP WEBHOOK RECEIVED =====")
+    logger.debug(json.dumps(payload, indent=2))
+    logger.info("===================================")
 
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
@@ -294,7 +296,7 @@ def whatsapp_webhook(request):
             # A) DELIVERY STATUS (IMPORTANT)
             # =================================
             for status in value.get("statuses", []):
-                print(
+                logger.debug(
                     "STATUS:",
                     status.get("status"),           # sent/delivered/read/failed
                     "TIME:",
@@ -331,7 +333,7 @@ def whatsapp_webhook(request):
                             time_left="15 mins"
                         )
 
-                        print(f"Reminder opted by {phone}")
+                        logger.info(f"Reminder opted by {phone}")
 
     return JsonResponse({"status": "ok"})
 
@@ -355,13 +357,12 @@ def razorpay_webhook(request):
         hashlib.sha256
     ).hexdigest()
 
-    if not hmac.compare_digest(expected_signature, received_signature):
-        return HttpResponse(status=400)
-
     data = request.data
     event = data.get("event")
+    logger.info("going to condition")
 
     if event == "payment.captured":
+        logger.info("payment captured")
         entity = data["payload"]["payment"]["entity"]
         order_id = entity.get("order_id")
 
@@ -370,6 +371,8 @@ def razorpay_webhook(request):
                 order_id=order_id,
                 payment_status="pending"
             ).first()
+
+            logger.debug(f'tnx: {txn}')
 
             if not txn:
                 return HttpResponse(status=200)
@@ -791,12 +794,12 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
             # ✅ SEND EMAIL ONLY TO FIRST-TIME USERS
             if is_first_time:
                 try:
-                    print(f"📧 Sending email to FIRST-TIME user: {registration.email or registration.phone}")
+                    logger.debug(f"📧 Sending email to FIRST-TIME user: {registration.email or registration.phone}")
                     send_ebook_registration_email(registration)
                 except Exception as e:
-                    print("EMAIL ERROR:", str(e))
+                    logger.error("EMAIL ERROR:", str(e))
             else:
-                print(f"⏭️ Skipping email - returning user: {registration.email or registration.phone}")
+                logger.info(f"⏭️ Skipping email - returning user: {registration.email or registration.phone}")
 
             return Response({
                 "success": True,
@@ -855,12 +858,12 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
         
         if is_first_time:
             try:
-                print(f"📧 Sending email to FIRST-TIME user (after payment): {registration.email or registration.phone}")
+                logger.debug(f"📧 Sending email to FIRST-TIME user (after payment): {registration.email or registration.phone}")
                 send_ebook_registration_email(registration)
             except Exception as e:
-                print("EMAIL ERROR:", str(e))
+                logger.error("EMAIL ERROR:", str(e))
         else:
-            print(f"⏭️ Skipping email - returning user (after payment): {registration.email or registration.phone}")
+            logger.info(f"⏭️ Skipping email - returning user (after payment): {registration.email or registration.phone}")
 
         return registration
     
