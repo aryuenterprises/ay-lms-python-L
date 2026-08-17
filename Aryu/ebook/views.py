@@ -570,9 +570,19 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
         registration.name = request.data.get("name") or registration.name
         registration.phone = request.data.get("phone") or registration.phone
         registration.save()
+        gateway = PaymentGateway.objects.filter(
+            gatway_name__icontains="razorpay"
+        ).first()
 
+        if not gateway:
+            return Response(
+                {"error": "Razorpay payment gateway configuration not found."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Initialize Razorpay client with DB credentials
         client = razorpay.Client(
-            auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
+            auth=(gateway.public_key, gateway.secret_key)
         )
 
         amount = int(float(ebook.price) * 100)
