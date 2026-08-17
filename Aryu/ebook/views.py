@@ -351,12 +351,6 @@ def razorpay_webhook(request):
         gatway_name__icontains="razorpay"
     ).first()
 
-    expected_signature = hmac.new(
-        gateway.webhook_secret.encode(),
-        payload,
-        hashlib.sha256
-    ).hexdigest()
-
     data = request.data
     event = data.get("event")
     logger.info("going to condition")
@@ -395,7 +389,6 @@ def razorpay_webhook(request):
 
 class RazorpayPaymentViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
-    
 
     def _get_client(self):
         gateway = PaymentGateway.objects.filter(
@@ -434,11 +427,9 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 status=400
             )
 
-        # ✅ Always fetch correct amount
         ebook = get_object_or_404(Ebook, id=ebook_id)
         amount = ebook.price
 
-        # ✅ Fetch registration
         registration = None
         if registration_id:
             registration = EbookRegistration.objects.filter(id=registration_id).first()
@@ -449,14 +440,13 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             "currency": "INR",
             "payment_capture": 1,
             "notes": {
-                "ebook_id": ebook_id,
-                "registration_id": registration_id,
+                "ebook_id": str(ebook_id),
+                "registration_id": str(registration_id) if registration_id else "",
                 "name": name,
                 "email": email,
                 "phone": phone,
             }
         })
-        
 
         txn = PaymentTransaction.objects.create(
             gateway=gateway,
@@ -464,18 +454,17 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             currency="INR",
             payment_status="pending",
             order_id=order["id"],
-            transaction_id = transaction_id,
+            transaction_id=transaction_id,
             phone=phone,
             metadata={
-                "ebook_id": ebook_id,
-                "registration_id": registration_id,
+                "ebook_id": str(ebook_id),
+                "registration_id": str(registration_id) if registration_id else "",
                 "name": name,
                 "email": email,
                 "phone": phone,
             }
         )
 
-        # ✅ Link txn to registration
         if registration:
             registration.payment_transaction = txn
             registration.save()
@@ -495,9 +484,9 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             "registration_id": registration_id,
             "role_id": role_id,
             "role_name": role_name,
-            "created_at":ebook.created_at
+            "created_at": ebook.created_at
         })
-    
+
     @csrf_exempt
     @action(detail=False, methods=['post'], url_path="verify")
     def verify_payment(self, request):
@@ -529,7 +518,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             txn = PaymentTransaction.objects.filter(order_id=order_id).first()
 
             if txn:
-                txn.razorpay_payment_id = payment_id 
+                txn.razorpay_payment_id = payment_id
                 txn.payment_status = "done"
                 txn.save()
 
@@ -541,21 +530,30 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 status=400
             )
 
-        return Response({"success": True}) 
-     
+        return Response({"success": True})
+   
 class EbookRegistrationViewSet(viewsets.ViewSet):
-
     permission_classes = [permissions.AllowAny]
-    
-    
+
+    def _is_first_time_user(self, email, phone, current_registration_id=None):
+        """Check if this is the user's first registration across ALL ebooks."""
+        q_filter = Q()
+        if email:
+            q_filter |= Q(email=email)
+        if phone:
+            q_filter |= Q(phone=phone)
+
+        if not q_filter:
+            return True
+
+        query = EbookRegistration.objects.filter(q_filter)
+        if current_registration_id:
+            query = query.exclude(id=current_registration_id)
+
+        return query.count() == 0
+
     def _create_payment(self, request, ebook, existing_registration=None):
-
-        import razorpay
-        from django.conf import settings
-        import uuid
-
         transaction_id = f"TXN_{uuid.uuid4().hex[:12].upper()}"
-
         registration = existing_registration
 
         if not registration:
@@ -598,139 +596,103 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
                 "registration_id": str(registration.id),
                 "email": registration.email,
                 "name": registration.name,
+                "phone": registration.phone,
             }
         )
+
+        registration.payment_transaction = txn
+        registration.save()
+
         gateway = PaymentGateway.objects.filter(
             gatway_name__icontains="razorpay"
         ).first()
 
         return Response({
-        "success": True,
-        "order_id": order["id"],
-        "transaction_id": transaction_id,
-        "key": gateway.public_key if gateway else settings.RAZORPAY_KEY_ID,
-        "amount": amount,
-        "currency": "INR",
-        "registration_id": registration.id,
-        "transaction_db_id": txn.id,
-        "is_existing": not created,
-        "name": registration.name,
-        "email": registration.email,
-        "phone": registration.phone,
-        "ebook_title": ebook.title,
-        "ebook_slug": ebook.slug,
-        "created_at": ebook.created_at,
-    })
-    def _is_first_time_user(self, email, phone, current_registration_id=None):
-        """
-        Check if this is the user's first registration across ALL ebooks
-        """
-        q_filter = Q()
-        if email:
-            q_filter |= Q(email=email)
-        if phone:
-            q_filter |= Q(phone=phone)
-        
-        # Count previous registrations (excluding current one if provided)
-        query = EbookRegistration.objects.filter(q_filter)
-        if current_registration_id:
-            query = query.exclude(id=current_registration_id)
-        
-        previous_count = query.count()
-        
-        # If no previous registrations, this is a first-time user
-        return previous_count == 0
-         
+            "success": True,
+            "order_id": order["id"],
+            "transaction_id": transaction_id,
+            "key": gateway.public_key if gateway else settings.RAZORPAY_KEY_ID,
+            "amount": amount,
+            "currency": "INR",
+            "registration_id": registration.id,
+            "transaction_db_id": txn.id,
+            "is_existing": not created,
+            "name": registration.name,
+            "email": registration.email,
+            "phone": registration.phone,
+            "ebook_title": ebook.title,
+            "ebook_slug": ebook.slug,
+            "created_at": ebook.created_at,
+        })
+
     def create(self, request, slug=None):
-        transaction_id = f"TXN_{uuid.uuid4().hex[:12].upper()}"
         ebook = get_object_or_404(Ebook, slug=slug)
 
         email = request.data.get("email")
         phone = request.data.get("phone")
 
-        # ✅ Validate input
         if not email and not phone:
             return Response(
                 {"message": "Email or Phone is required"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # ===============================
         # 1. CHECK EXISTING REGISTRATION FOR THIS EBOOK
-        # ===============================
         q_filter = Q()
         if email:
             q_filter |= Q(email=email)
         if phone:
             q_filter |= Q(phone=phone)
-        
-        # Check if user already registered for THIS specific ebook
+
         existing_registration = EbookRegistration.objects.filter(
-            Q(phone=phone) | Q(email=email)
-        ).filter(q_filter).first()
+            Q(ebook=ebook) & q_filter
+        ).first()
 
         if existing_registration:
-            # User already registered for THIS ebook
-
-            # FREE EBOOK
             if not ebook.is_paid:
                 return Response(
                     {"message": "Already registered for this ebook"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
-            # ALREADY PAID
+
             if existing_registration.is_paid:
                 return Response(
                     {"message": "Already paid for this ebook"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # 🔁 RESUME PAYMENT
+            # RESUME PAYMENT
             txn = existing_registration.payment_transaction
 
-            # ✅ Get global user data
             global_user = EbookRegistration.objects.filter(
                 Q(phone=phone) | Q(email=email)
             ).order_by("-id").first()
-                
-            # existing_user = EbookRegistration.objects.filter(
-            #     global_user
-            # ).exclude(id=existing_registration.id).order_by("-id").first()
-            
-            # ✅ Resolve values
+
             resolved_name = (
                 existing_registration.name
                 or (global_user.name if global_user else None)
                 or request.data.get("name")
             )
-
             resolved_email = (
                 existing_registration.email
                 or (global_user.email if global_user else None)
                 or request.data.get("email")
             )
-
             resolved_phone = (
                 existing_registration.phone
                 or (global_user.phone if global_user else None)
                 or request.data.get("phone")
             )
-            
-            # ✅ Update DB if missing
+
             existing_registration.name = resolved_name
             existing_registration.email = resolved_email
             existing_registration.phone = resolved_phone
             existing_registration.save()
 
-                    
-
-            # ✅ FIX: ensure order exists
             if not txn or not txn.order_id:
                 return self._create_payment(request, ebook, existing_registration)
 
             amount = int(float(txn.amount) * 100)
-
             gateway = PaymentGateway.objects.filter(
                 gatway_name__icontains="razorpay"
             ).first()
@@ -738,68 +700,50 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
             return Response({
                 "success": True,
                 "order_id": txn.order_id,
-                "recepit": transaction_id,
+                "recepit": txn.transaction_id,
                 "key": gateway.public_key if gateway else None,
                 "amount": amount,
                 "currency": txn.currency if txn else "INR",
                 "registration_id": existing_registration.id,
                 "is_existing": True,
-
-                # ✅ always filled now
                 "name": resolved_name or "",
                 "email": resolved_email or "",
                 "phone": resolved_phone or "",
-
                 "ebook_title": ebook.title,
                 "ebook_slug": ebook.slug,
                 "created_at": ebook.created_at
             })
 
-        # ===============================
         # 2. CREATE NEW REGISTRATION
-        # ===============================
         serializer = EbookRegistrationSerializer(
             data=request.data,
-            context={
-                "request": request,
-                "ebook": ebook
-            }
+            context={"request": request, "ebook": ebook}
         )
         serializer.is_valid(raise_exception=True)
-
         registration = serializer.save(ebook=ebook)
-        
+
         if request.data.get("name"):
             registration.name = request.data.get("name")
-
         if request.data.get("email"):
             registration.email = request.data.get("email")
-
         if request.data.get("phone"):
             registration.phone = request.data.get("phone")
 
         registration.save()
 
-        # ✅ CHECK IF FIRST-TIME USER (across all ebooks)
         is_first_time = self._is_first_time_user(
             email=registration.email,
             phone=registration.phone,
             current_registration_id=registration.id
         )
 
-        # ===============================
-        # 3. FREE EBOOK
-        # ===============================
+        # 3. FREE EBOOK -> SEND EMAIL ALWAYS
         if not ebook.is_paid:
-            # ✅ SEND EMAIL ONLY TO FIRST-TIME USERS
-            if is_first_time:
-                try:
-                    logger.debug(f"📧 Sending email to FIRST-TIME user: {registration.email or registration.phone}")
-                    send_ebook_registration_email(registration)
-                except Exception as e:
-                    logger.error("EMAIL ERROR:", str(e))
-            else:
-                logger.info(f"⏭️ Skipping email - returning user: {registration.email or registration.phone}")
+            try:
+                logger.info(f"📧 Sending email for registration: {registration.email or registration.phone}")
+                send_ebook_registration_email(registration)
+            except Exception as e:
+                logger.error(f"EMAIL ERROR: {str(e)}")
 
             return Response({
                 "success": True,
@@ -808,71 +752,46 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
                 "is_first_time_user": is_first_time
             })
 
-        # ===============================
-        # 4. CREATE PAYMENT TRANSACTION (PAID EBOOK)
-        # ===============================
-        txn = PaymentTransaction.objects.create(
-            amount=ebook.price,
-            currency="INR",
-            payment_status="pending",
-            phone=registration.phone if registration.phone else registration.email,
-            metadata={
-                "ebook_id": str(ebook.id),
-                "registration_id": str(registration.id),
-                "email": registration.email,
-                "phone": registration.phone,
-                "name":registration.name,
-                "is_first_time_user": is_first_time ,
-                
-            }
-        )
-
-        registration.payment_transaction = txn
-        registration.save()
-
+        # 4. PAID EBOOK -> Proceed to payment
         return self._create_payment(request, ebook, registration)
 
-
-    # ============================================
-    # UPDATE REGISTRATION AFTER SUCCESSFUL PAYMENT
-    # ============================================
     @classmethod
     def update_registration_after_payment(cls, txn):
-        meta = txn.metadata
+        meta = txn.metadata or {}
         registration_id = meta.get("registration_id")
 
-        registration = EbookRegistration.objects.filter(
-            id=int(registration_id)
-        ).first()
-
-        if not registration:
+        if not registration_id:
+            logger.error("No registration_id found in transaction metadata")
             return None
 
-        # ✅ Mark as paid
+        try:
+            registration = EbookRegistration.objects.filter(
+                id=int(registration_id)
+            ).first()
+        except (ValueError, TypeError):
+            logger.error(f"Invalid registration_id: {registration_id}")
+            return None
+
+        if not registration:
+            logger.error(f"EbookRegistration not found for ID: {registration_id}")
+            return None
+
+        # Mark as paid
         registration.is_paid = True
         registration.payment_transaction = txn
         registration.save()
 
-        # ✅ SEND EMAIL ONLY TO FIRST-TIME USERS
-        is_first_time = meta.get("is_first_time_user", False)
-        
-        if is_first_time:
-            try:
-                logger.debug(f"📧 Sending email to FIRST-TIME user (after payment): {registration.email or registration.phone}")
-                send_ebook_registration_email(registration)
-            except Exception as e:
-                logger.error("EMAIL ERROR:", str(e))
-        else:
-            logger.info(f"⏭️ Skipping email - returning user (after payment): {registration.email or registration.phone}")
+        # ✅ ALWAYS SEND EMAIL ON PAYMENT CONFIRMATION
+        try:
+            logger.info(f"📧 Sending email after payment confirmation to: {registration.email or registration.phone}")
+            send_ebook_registration_email(registration)
+        except Exception as e:
+            logger.error(f"EMAIL ERROR: {str(e)}")
 
         return registration
-    
-    # ============================================
-    # LEGACY METHOD (Keep for backward compatibility)
-    # ============================================
+
     @classmethod
     def create_registration_from_transaction(cls, txn):
-        """Legacy method - redirects to update method"""
         return cls.update_registration_after_payment(txn)
 
     # ============================================
