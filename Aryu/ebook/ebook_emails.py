@@ -10,6 +10,9 @@ def send_ebook_registration_email(registration):
 
     subject = f"Ebook Registration Successful - {ebook.title}"
 
+    # Safely handle password if it doesn't exist on the registration model
+    password_text = getattr(registration, "password", "N/A")
+
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -24,7 +27,7 @@ def send_ebook_registration_email(registration):
       <h3>Your Login Details</h3>
       <p>Name: {registration.name}</p>
       <p>Email: {registration.email}</p>
-      <p>Password: {registration.password}</p>
+      <p>Password: {password_text}</p>
 
       <p>
         Portal Link:

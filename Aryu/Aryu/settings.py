@@ -539,7 +539,7 @@ EMAIL_USE_SSL = True
 EMAIL_USE_TLS = False
 EMAIL_HOST_USER = "support@aryuacademy.com"
 EMAIL_HOST_PASSWORD = "A/cMu5nqYs16"
-DEFAULT_FROM_EMAIL = "PassATS <support@aryuacademy.com>"
+DEFAULT_FROM_EMAIL = "support@aryuacademy.com"
 SUPPORT_EMAIL = "support@aryuacademy.com"
 
 
