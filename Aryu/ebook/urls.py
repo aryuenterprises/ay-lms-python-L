@@ -36,6 +36,7 @@ urlpatterns = [
 
     path('reg/<int:pk>/',EbookUserViewSet.as_view({'get':'list','patch':'partial_update'}),name='ebook-reg'),
     path("payments/verify/",RazorpayPaymentViewSet.as_view({"post": "verify_payment"}),name="payment-verify"),
+    path("razorpay/webhook/", razorpay_webhook, name="ebook-razorpay-webhook"),
     
     #Reviews
     path('reviews', ReviewListCreateView.as_view(), name='review-list-create'),

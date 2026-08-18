@@ -50,118 +50,49 @@ from django.db.models import DecimalField
 # from celery import shared_task
 logger = logging.getLogger("razorpay_webhook")
 
+from payments.services.razorpay_service import (
+    get_active_razorpay_gateway,
+    get_webhook_secret,
+    verify_razorpay_signature,
+    process_razorpay_webhook_event
+)
+
 @csrf_exempt
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def razorpay_webhook(request):
-    logger.info("=" * 80)
     logger.info("Webinar Webhook received")
 
-    # 1. Capture Raw Payload and Signature Safely
-    payload_bytes = request.body
+    # 1. Capture Raw Bytes Payload and Signature Header
+    raw_body = request.body
     received_signature = request.headers.get("X-Razorpay-Signature") or request.META.get("HTTP_X_RAZORPAY_SIGNATURE")
-
-    logger.info("Headers: %s", dict(request.headers))
-    logger.info("Raw body: %s", payload_bytes.decode(errors="ignore"))
-    logger.info("Payload Length: %s", len(payload_bytes))
 
     if not received_signature:
         logger.error("Missing X-Razorpay-Signature header")
         return HttpResponse("Missing signature", status=400)
 
-    # 2. Get Gateway and Validate Configuration
-    gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay").first()
-    
-    if not gateway or not getattr(gateway, 'webhook_secret', None):
-        logger.error("Gateway or webhook_secret missing in database")
+    # 2. Get Active Gateway and Secret
+    gateway = get_active_razorpay_gateway()
+    webhook_secret = get_webhook_secret(gateway)
+
+    if not webhook_secret:
+        logger.error("Gateway or webhook_secret missing in configuration")
         return HttpResponse("Gateway config error", status=500)
 
-    webhook_secret = gateway.webhook_secret
-
-    logger.info("Secret length = %d", len(webhook_secret))
-
-    # 3. Compute and Verify HMAC Signature (CRITICAL FIX)
-    expected_signature = hmac.new(
-        key=webhook_secret.encode('utf-8'),
-        msg=payload_bytes,
-        digestmod=hashlib.sha256
-    ).hexdigest()
-
-    logger.info("Expected Signature = %s", expected_signature)
-    logger.info("Received Signature = %s", received_signature)
-
-    if not hmac.compare_digest(expected_signature, received_signature):
-        logger.error("Signature mismatch! Webhook rejected.")
+    # 3. HMAC Signature Verification over raw bytes
+    if not verify_razorpay_signature(raw_body, received_signature, webhook_secret):
+        logger.error("Razorpay Webhook: Signature verification failed.")
         return HttpResponse("Invalid signature", status=400)
 
     # 4. Safe JSON Parsing
     try:
-        data = json.loads(payload_bytes.decode("utf-8"))
-    except json.JSONDecodeError:
-        logger.exception("Invalid JSON payload")
+        data = json.loads(raw_body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        logger.error("Razorpay Webhook: Invalid JSON payload")
         return HttpResponse("Invalid JSON", status=400)
 
-    event = data.get("event")
-    logger.info("Event Received: %s", event)
-
-    # 5. Handle Events
-    if event in ["payment.captured", "payment.authorized"]:
-        entity = data.get("payload", {}).get("payment", {}).get("entity", {})
-        order_id = entity.get("order_id")
-        payment_id = entity.get("id")
-
-        if not order_id:
-            logger.error("No order_id found in payload")
-            return HttpResponse(status=200)
-
-        with db_transaction.atomic():
-            # BUG FIX: Remove payment_status="pending" to avoid race conditions
-            txn = PaymentTransaction.objects.select_for_update().filter(order_id=order_id).first()
-
-            if not txn:
-                logger.warning("Transaction not found for order_id: %s", order_id)
-                return HttpResponse(status=200)
-
-            # Check if already processed
-            if txn.payment_status == "done":
-                logger.info("Transaction %s already marked as done. Skipping.", order_id)
-                return HttpResponse(status=200)
-
-            # Update Transaction
-            txn.payment_status = "done"
-            txn.razorpay_payment_id = payment_id  # BUG FIX: Do not overwrite internal transaction_id
-            txn.save()
-
-            # Safely process metadata
-            metadata = txn.metadata if isinstance(txn.metadata, dict) else {}
-            phone = metadata.get("phone")
-            webinar_id = metadata.get("webinar_id")
-
-            if phone and webinar_id:
-                registration = WebinarRegistration.objects.filter(
-                    phone=phone,
-                    webinar__uuid=webinar_id
-                ).first()
-
-                if registration:
-                    logger.info("Updating WebinarRegistration for phone: %s", phone)
-                    registration.is_paid = True
-                    registration.payment_transaction = txn
-                    registration.save(update_fields=["is_paid", "payment_transaction"])
-            else:
-                logger.warning("Missing phone or webinar_id in transaction metadata")
-
-            # Trigger additional module logic if it exists
-            if hasattr(WebinarRegistrationViewSet, 'create_registration_from_transaction'):
-                WebinarRegistrationViewSet.create_registration_from_transaction(txn)
-
-    elif event == "payment.failed":
-        entity = data.get("payload", {}).get("payment", {}).get("entity", {})
-        order_id = entity.get("order_id")
-
-        if order_id:
-            logger.info("Marking order %s as failed.", order_id)
-            PaymentTransaction.objects.filter(order_id=order_id).update(payment_status="failed")
+    # 5. Process Webhook Event
+    process_razorpay_webhook_event(data)
 
     return HttpResponse(status=200)
 
