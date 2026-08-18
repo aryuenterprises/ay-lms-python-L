@@ -22,25 +22,21 @@ def get_active_razorpay_gateway(gateway_name="razorpay"):
 def get_webhook_secret(gateway=None):
     """
     Get stripped webhook secret from gateway model or settings fallback.
+    MUST NOT fall back to API Key Secret (secret_key).
     """
     if gateway and getattr(gateway, "webhook_secret", None):
-        secret = gateway.webhook_secret.strip()
-        if secret:
-            return secret
-
-    if gateway and getattr(gateway, "secret_key", None):
-        secret = gateway.secret_key.strip()
+        secret = str(gateway.webhook_secret).strip()
         if secret:
             return secret
 
     # Fallback to settings if configured
-    settings_secret = getattr(settings, "RAZORPAY_WEBHOOK_SECRET", None) or getattr(settings, "RAZORPAY_KEY_SECRET", None)
+    settings_secret = getattr(settings, "RAZORPAY_WEBHOOK_SECRET", None)
     if settings_secret:
-        return settings_secret.strip()
+        return str(settings_secret).strip()
 
     return None
 
-def verify_razorpay_signature(raw_body: bytes, received_signature: str, webhook_secret: str) -> bool:
+def verify_razorpay_signature(raw_body: bytes, received_signature: str, webhook_secret: str, event_id: str = None) -> bool:
     """
     Perform Razorpay HMAC-SHA256 signature verification over exact raw request bytes.
     Follows Razorpay's official webhook verification specification:
@@ -48,7 +44,7 @@ def verify_razorpay_signature(raw_body: bytes, received_signature: str, webhook_
     Uses constant-time comparison via hmac.compare_digest().
     """
     if not raw_body or not received_signature or not webhook_secret:
-        logger.error("Razorpay Signature Verification: Missing body, signature, or webhook secret.")
+        logger.error("=== RAZORPAY WEBHOOK DIAGNOSTIC === Signature Verification Failed: Missing body, signature, or webhook secret.")
         return False
 
     if isinstance(raw_body, str):
@@ -56,11 +52,14 @@ def verify_razorpay_signature(raw_body: bytes, received_signature: str, webhook_
     elif isinstance(raw_body, bytes):
         raw_bytes = raw_body
     else:
-        logger.error("Razorpay Signature Verification: Invalid raw_body type %s", type(raw_body))
+        logger.error("=== RAZORPAY WEBHOOK DIAGNOSTIC === Signature Verification Failed: Invalid raw_body type %s", type(raw_body))
         return False
 
     secret_str = str(webhook_secret).strip()
     signature_str = str(received_signature).strip()
+
+    body_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    secret_fingerprint = hashlib.sha256(secret_str.encode("utf-8")).hexdigest()[:12]
 
     expected_signature = hmac.new(
         key=secret_str.encode("utf-8"),
@@ -68,12 +67,18 @@ def verify_razorpay_signature(raw_body: bytes, received_signature: str, webhook_
         digestmod=hashlib.sha256
     ).hexdigest()
 
-    logger.debug(f'expected_signature: {expected_signature}')
-
     is_valid = hmac.compare_digest(expected_signature.lower(), signature_str.lower())
-    if not is_valid:
-        logger.error("Razorpay Signature Verification: Mismatch! Expected len=%d, Received len=%d",
-                     len(expected_signature), len(signature_str))
+
+    if is_valid:
+        logger.info(
+            "=== RAZORPAY WEBHOOK DIAGNOSTIC === MATCH! event_id=%s body_length=%d body_sha256=%s secret_len=%d secret_fp=%s",
+            event_id or "N/A", len(raw_bytes), body_sha256, len(secret_str), secret_fingerprint
+        )
+    else:
+        logger.error(
+            "=== RAZORPAY WEBHOOK DIAGNOSTIC === MISMATCH! event_id=%s body_length=%d body_sha256=%s secret_len=%d secret_fp=%s expected_sig=%s received_sig=%s",
+            event_id or "N/A", len(raw_bytes), body_sha256, len(secret_str), secret_fingerprint, expected_signature, signature_str
+        )
 
     return is_valid
 

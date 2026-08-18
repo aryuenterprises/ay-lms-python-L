@@ -23,8 +23,8 @@ class InputSanitizationMiddleware(MiddlewareMixin):
 
     def process_request(self, request):
 
-        # Skip sanitization for HTML → PDF endpoint
-        if request.path.startswith("/api/resume/candidates/generate-pdf"):
+        # Skip sanitization for HTML → PDF endpoint and Webhooks (preserves exact raw request bytes for HMAC)
+        if request.path.startswith("/api/resume/candidates/generate-pdf") or "webhook" in request.path.lower():
             return None
 
         if request.method in ["POST", "PUT", "PATCH"]:
