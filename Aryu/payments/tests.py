@@ -15,11 +15,11 @@ class RazorpayServiceTestCase(TestCase):
         # Clear existing razorpay payment gateways for test isolation
         PaymentGateway.objects.filter(gatway_name__icontains="razorpay").delete()
 
-        self.secret = "TestWebhookSecret123"
+        self.secret = "Aryu_Academy_wev26"
         self.gateway = PaymentGateway.objects.create(
             gatway_name="razorpay",
-            public_key="rzp_test_public_key",
-            secret_key="rzp_test_secret_key",
+            public_key="rzp_live_SKfiZYRJEe8WuU",
+            secret_key="Du4L7ebKchXQSOMcgzx5wE3h",
             webhook_secret=f"  {self.secret}\n  ",  # Intentionally test trailing/leading whitespace
             is_archived=False
         )
@@ -46,6 +46,33 @@ class RazorpayServiceTestCase(TestCase):
         computed_sig = hmac.new(self.secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
         tampered_body = b'{"event":"payment.captured","hacked":true}'
         self.assertFalse(verify_razorpay_signature(tampered_body, computed_sig, self.secret))
+
+    def test_secret_key_not_used_as_fallback(self):
+        # Ensure secret_key (API key secret) is NEVER returned when webhook_secret is missing
+        gw = PaymentGateway.objects.create(
+            gatway_name="razorpay",
+            public_key="rzp_live_SKfiZYRJEe8WuU",
+            secret_key="Du4L7ebKchXQSOMcgzx5wE3h",
+            webhook_secret="Aryu_Academy_wev26",
+            is_archived=False
+        )
+        self.assertIsNone(get_webhook_secret(gw))
+
+    def test_middleware_preserves_webhook_raw_body(self):
+        from core.middleware.security_sanitizer import InputSanitizationMiddleware
+        middleware = InputSanitizationMiddleware(lambda r: None)
+
+        class DummyRequest:
+            path = "/api/webinar/razorpay/webhook/"
+            method = "POST"
+            content_type = "application/json"
+            body = b'{"event":"payment.captured","test":true}'
+            _body = body
+
+        req = DummyRequest()
+        res = middleware.process_request(req)
+        self.assertIsNone(res)
+        self.assertEqual(req._body, b'{"event":"payment.captured","test":true}')
 
     def test_get_active_razorpay_gateway(self):
         active_gw = get_active_razorpay_gateway()

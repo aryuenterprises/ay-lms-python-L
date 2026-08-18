@@ -66,9 +66,10 @@ def razorpay_webhook(request):
     # 1. Capture Raw Bytes Payload and Signature Header
     raw_body = request.body
     received_signature = request.headers.get("X-Razorpay-Signature") or request.META.get("HTTP_X_RAZORPAY_SIGNATURE")
+    event_id = request.headers.get("X-Razorpay-Event-Id") or request.META.get("HTTP_X_RAZORPAY_EVENT_ID")
 
     if not received_signature:
-        logger.error("Missing X-Razorpay-Signature header")
+        logger.error("=== RAZORPAY WEBHOOK DIAGNOSTIC === Missing X-Razorpay-Signature header")
         return HttpResponse("Missing signature", status=400)
 
     # 2. Get Active Gateway and Secret
@@ -76,12 +77,12 @@ def razorpay_webhook(request):
     webhook_secret = get_webhook_secret(gateway)
 
     if not webhook_secret:
-        logger.error("Gateway or webhook_secret missing in configuration")
+        logger.error("=== RAZORPAY WEBHOOK DIAGNOSTIC === Gateway or webhook_secret missing in configuration")
         return HttpResponse("Gateway config error", status=500)
 
     # 3. HMAC Signature Verification over raw bytes
-    if not verify_razorpay_signature(raw_body, received_signature, webhook_secret):
-        logger.error("Razorpay Webhook: Signature verification failed.")
+    if not verify_razorpay_signature(raw_body, received_signature, webhook_secret, event_id=event_id):
+        logger.error("=== RAZORPAY WEBHOOK DIAGNOSTIC === Razorpay Webhook: Signature verification failed.")
         return HttpResponse("Invalid signature", status=400)
 
     # 4. Safe JSON Parsing
