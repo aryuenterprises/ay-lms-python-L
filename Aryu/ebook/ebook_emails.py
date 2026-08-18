@@ -3,15 +3,33 @@ from django.conf import settings
 from datetime import datetime
 
 
-def send_ebook_registration_email(registration):
+def send_ebook_registration_email(registration, password=None):
     print("email is triggering")
     ebook = registration.ebook
     portal_link = "https://portal.aryuprojects.com/login"
 
     subject = f"Ebook Registration Successful - {ebook.title}"
 
-    # Safely handle password if it doesn't exist on the registration model
-    password_text = getattr(registration, "password", "N/A")
+    if password:
+        details_html = f"""
+      <h3>Your Login Details</h3>
+      <p>Name: {registration.name}</p>
+      <p>Email: {registration.email}</p>
+      <p>Password: {password}</p>
+      <p>
+        Portal Link:
+        <a href="{portal_link}">{portal_link}</a>
+      </p>
+        """
+    else:
+        details_html = f"""
+      <p>Your registration/purchase for <strong>{ebook.title}</strong> is completed!</p>
+      <p>You can check your newly purchased ebook directly in the portal using your existing account credentials.</p>
+      <p>
+        Portal Link:
+        <a href="{portal_link}">{portal_link}</a>
+      </p>
+        """
 
     html_content = f"""
     <!DOCTYPE html>
@@ -24,15 +42,7 @@ def send_ebook_registration_email(registration):
 
       <p><strong>Ebook:</strong> {ebook.title}</p>
 
-      <h3>Your Login Details</h3>
-      <p>Name: {registration.name}</p>
-      <p>Email: {registration.email}</p>
-      <p>Password: {password_text}</p>
-
-      <p>
-        Portal Link:
-        <a href="{portal_link}">{portal_link}</a>
-      </p>
+      {details_html}
 
       <p>Regards,<br>Aryu Academy</p>
 
@@ -42,7 +52,7 @@ def send_ebook_registration_email(registration):
 
     email_msg = EmailMultiAlternatives(
         subject=subject,
-        body="Your ebook registration is successful.",
+        body=f"Your ebook registration for {ebook.title} is successful.",
         from_email=settings.DEFAULT_FROM_EMAIL,
         to=[registration.email],
     )

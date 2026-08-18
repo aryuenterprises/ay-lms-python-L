@@ -27,8 +27,22 @@ import hashlib
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes
 import logging
+import secrets
+import string
+from django.core.cache import cache
+from django.contrib.auth.hashers import make_password, check_password
 
 logger = logging.getLogger('razorpay_webhook')
+
+def generate_secure_password(length=10):
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    while True:
+        pwd = ''.join(secrets.choice(alphabet) for _ in range(length))
+        if (any(c.islower() for c in pwd)
+                and any(c.isupper() for c in pwd)
+                and any(c.isdigit() for c in pwd)
+                and any(c in "!@#$%^&*" for c in pwd)):
+            return pwd
 
 class EbookViewSet(viewsets.ModelViewSet):
     queryset = Ebook.objects.all()
@@ -536,7 +550,7 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
         """Check if this is the user's first registration across ALL ebooks."""
         q_filter = Q()
         if email:
-            q_filter |= Q(email=email)
+            q_filter |= Q(email__iexact=email)
         if phone:
             q_filter |= Q(phone=phone)
 
@@ -549,16 +563,38 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
 
         return query.count() == 0
 
-    def _create_payment(self, request, ebook, existing_registration=None):
+    def _create_payment(self, request, ebook, existing_registration=None, is_new_user=False):
         transaction_id = f"TXN_{uuid.uuid4().hex[:12].upper()}"
         registration = existing_registration
 
         if not registration:
+            email = request.data.get("email")
+            phone = request.data.get("phone")
+            name = request.data.get("name")
+            q_user = Q()
+            if email:
+                q_user |= Q(email__iexact=email)
+            if phone:
+                q_user |= Q(phone=phone)
+
+            existing_user_reg = EbookRegistration.objects.filter(q_user).exclude(
+                password__isnull=True
+            ).exclude(password="").order_by("-id").first()
+
+            if existing_user_reg:
+                user_password = existing_user_reg.password
+                name = name or existing_user_reg.name
+            else:
+                raw_pwd = generate_secure_password(10)
+                user_password = make_password(raw_pwd)
+
             registration = EbookRegistration.objects.create(
                 ebook=ebook,
-                name=request.data.get("name"),
-                email=request.data.get("email"),
-                phone=request.data.get("phone"),
+                name=name,
+                email=email,
+                phone=phone,
+                password=user_password,
+                is_paid=False
             )
             created = True
         else:
@@ -567,6 +603,7 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
         registration.name = request.data.get("name") or registration.name
         registration.phone = request.data.get("phone") or registration.phone
         registration.save()
+
         gateway = PaymentGateway.objects.filter(
             gatway_name__icontains="razorpay"
         ).first()
@@ -610,10 +647,6 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
         registration.payment_transaction = txn
         registration.save()
 
-        gateway = PaymentGateway.objects.filter(
-            gatway_name__icontains="razorpay"
-        ).first()
-
         return Response({
             "success": True,
             "order_id": order["id"],
@@ -637,6 +670,7 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
 
         email = request.data.get("email")
         phone = request.data.get("phone")
+        name = request.data.get("name")
 
         if not email and not phone:
             return Response(
@@ -644,15 +678,15 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 1. CHECK EXISTING REGISTRATION FOR THIS EBOOK
-        q_filter = Q()
+        # 1. CHECK EXISTING REGISTRATION FOR THIS SPECIFIC EBOOK
+        q_this_ebook = Q()
         if email:
-            q_filter |= Q(email=email)
+            q_this_ebook |= Q(email__iexact=email)
         if phone:
-            q_filter |= Q(phone=phone)
+            q_this_ebook |= Q(phone=phone)
 
         existing_registration = EbookRegistration.objects.filter(
-            Q(ebook=ebook) & q_filter
+            Q(ebook=ebook) & q_this_ebook
         ).first()
 
         if existing_registration:
@@ -668,27 +702,27 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # RESUME PAYMENT
+            # RESUME PAYMENT FOR THIS EBOOK
             txn = existing_registration.payment_transaction
 
             global_user = EbookRegistration.objects.filter(
-                Q(phone=phone) | Q(email=email)
+                Q(phone=phone) | Q(email__iexact=email)
             ).order_by("-id").first()
 
             resolved_name = (
                 existing_registration.name
                 or (global_user.name if global_user else None)
-                or request.data.get("name")
+                or name
             )
             resolved_email = (
                 existing_registration.email
                 or (global_user.email if global_user else None)
-                or request.data.get("email")
+                or email
             )
             resolved_phone = (
                 existing_registration.phone
                 or (global_user.phone if global_user else None)
-                or request.data.get("phone")
+                or phone
             )
 
             existing_registration.name = resolved_name
@@ -721,37 +755,57 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
                 "created_at": ebook.created_at
             })
 
-        # 2. CREATE NEW REGISTRATION
-        serializer = EbookRegistrationSerializer(
-            data=request.data,
-            context={"request": request, "ebook": ebook}
+        # 2. CHECK IF USER EXISTS ACROSS ANY OTHER EBOOK (REUSE USER ACCOUNT)
+        q_user = Q()
+        if email:
+            q_user |= Q(email__iexact=email)
+        if phone:
+            q_user |= Q(phone=phone)
+
+        existing_user_reg = EbookRegistration.objects.filter(q_user).exclude(
+            password__isnull=True
+        ).exclude(password="").order_by("-id").first()
+
+        if not existing_user_reg:
+            existing_user_reg = EbookRegistration.objects.filter(q_user).order_by("-id").first()
+
+        raw_password_for_email = None
+
+        if existing_user_reg:
+            # Existing user -> reuse existing password and profile details
+            user_password = existing_user_reg.password
+            name = name or existing_user_reg.name
+            email = email or existing_user_reg.email
+            phone = phone or existing_user_reg.phone
+            is_first_time = False
+        else:
+            # Brand NEW user -> generate secure password & hash it
+            raw_password_for_email = generate_secure_password(10)
+            user_password = make_password(raw_password_for_email)
+            is_first_time = True
+
+        # 3. CREATE NEW REGISTRATION FOR THIS EBOOK
+        registration = EbookRegistration.objects.create(
+            ebook=ebook,
+            name=name,
+            email=email,
+            phone=phone,
+            password=user_password,
+            is_paid=False
         )
-        serializer.is_valid(raise_exception=True)
-        registration = serializer.save(ebook=ebook)
 
-        if request.data.get("name"):
-            registration.name = request.data.get("name")
-        if request.data.get("email"):
-            registration.email = request.data.get("email")
-        if request.data.get("phone"):
-            registration.phone = request.data.get("phone")
+        if raw_password_for_email:
+            cache.set(f"ebook_raw_pwd_{registration.id}", raw_password_for_email, timeout=3600)
 
-        registration.save()
-
-        is_first_time = self._is_first_time_user(
-            email=registration.email,
-            phone=registration.phone,
-            current_registration_id=registration.id
-        )
-
-        # 3. FREE EBOOK -> SEND EMAIL ALWAYS
+        # 4. FREE EBOOK -> SEND EMAIL IMMEDIATELY
         if not ebook.is_paid:
             try:
                 logger.info(f"📧 Sending email for registration: {registration.email or registration.phone}")
-                send_ebook_registration_email(registration)
+                send_ebook_registration_email(registration, password=raw_password_for_email)
             except Exception as e:
                 logger.error(f"EMAIL ERROR: {str(e)}")
 
+            serializer = EbookRegistrationSerializer(registration, context={"request": request, "ebook": ebook})
             return Response({
                 "success": True,
                 "message": "Registered successfully",
@@ -759,8 +813,8 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
                 "is_first_time_user": is_first_time
             })
 
-        # 4. PAID EBOOK -> Proceed to payment
-        return self._create_payment(request, ebook, registration)
+        # 5. PAID EBOOK -> PROCEED TO PAYMENT
+        return self._create_payment(request, ebook, registration, is_new_user=is_first_time)
 
     @classmethod
     def update_registration_after_payment(cls, txn):
@@ -788,10 +842,14 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
         registration.payment_transaction = txn
         registration.save()
 
+        raw_password = cache.get(f"ebook_raw_pwd_{registration.id}")
+        if raw_password:
+            cache.delete(f"ebook_raw_pwd_{registration.id}")
+
         # ✅ ALWAYS SEND EMAIL ON PAYMENT CONFIRMATION
         try:
             logger.info(f"📧 Sending email after payment confirmation to: {registration.email or registration.phone}")
-            send_ebook_registration_email(registration)
+            send_ebook_registration_email(registration, password=raw_password)
         except Exception as e:
             logger.error(f"EMAIL ERROR: {str(e)}")
 

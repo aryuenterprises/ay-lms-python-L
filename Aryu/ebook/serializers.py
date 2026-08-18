@@ -389,18 +389,41 @@ class EbookRegistrationSerializer(serializers.ModelSerializer):
         }
 
     def create(self, validated_data):
-        ebook = self.context.get("ebook")
-        request = self.context.get("request")
+        from django.db.models import Q
+        from django.contrib.auth.hashers import make_password
 
-        name = validated_data.get("name") or request.data.get("name") or ""
-        email = validated_data.get("email") or request.data.get("email") or ""
-        phone = validated_data.get("phone") or request.data.get("phone") or ""
+        ebook = self.context.get("ebook")
+        request = self.context.get("request") if self.context else None
+
+        name = validated_data.get("name") or (request.data.get("name") if request else "") or ""
+        email = validated_data.get("email") or (request.data.get("email") if request else "") or ""
+        phone = validated_data.get("phone") or (request.data.get("phone") if request else "") or ""
+
+        q_user = Q()
+        if email:
+            q_user |= Q(email__iexact=email)
+        if phone:
+            q_user |= Q(phone=phone)
+
+        existing_user_reg = EbookRegistration.objects.filter(q_user).exclude(
+            password__isnull=True
+        ).exclude(password="").order_by("-id").first()
+
+        if existing_user_reg:
+            user_password = existing_user_reg.password
+            name = name or existing_user_reg.name
+        else:
+            import secrets, string
+            alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+            raw_pwd = ''.join(secrets.choice(alphabet) for _ in range(10))
+            user_password = make_password(raw_pwd)
 
         return EbookRegistration.objects.create(
             ebook=ebook,
             name=name,
             email=email,
             phone=phone,
+            password=user_password,
             is_paid=False
         )
 
