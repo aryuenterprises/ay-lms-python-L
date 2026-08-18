@@ -337,86 +337,50 @@ def whatsapp_webhook(request):
 
     return JsonResponse({"status": "ok"})
 
+from payments.services.razorpay_service import (
+    get_active_razorpay_gateway,
+    get_webhook_secret,
+    verify_razorpay_signature,
+    process_razorpay_webhook_event
+)
+
 @csrf_exempt
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def razorpay_webhook(request):
-    # 1. Capture RAW payload BEFORE accessing request.data
-    # Razorpay requires the exact raw string for signature matching.
-    raw_body = request.body.decode('utf-8')
-    received_signature = request.headers.get("X-Razorpay-Signature")
+    logger.info("Ebook Webhook received")
+
+    # 1. Capture Raw Bytes Payload and Signature Header
+    raw_body = request.body
+    received_signature = request.headers.get("X-Razorpay-Signature") or request.META.get("HTTP_X_RAZORPAY_SIGNATURE")
 
     if not received_signature:
-        logger.error("Razorpay Webhook: Missing Signature Header")
-        return HttpResponse(status=400)
+        logger.error("Razorpay Webhook: Missing signature header")
+        return HttpResponse("Missing signature", status=400)
 
-    # 2. Get Gateway Configuration
-    gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay").first()
-    if not gateway:
-        logger.error("Razorpay Webhook: Gateway config not found")
-        return HttpResponse(status=500)
+    # 2. Get Active Gateway and Secret
+    gateway = get_active_razorpay_gateway()
+    webhook_secret = get_webhook_secret(gateway)
 
-    # Note: Ensure you define webhook_secret in your model or settings. 
-    # Fallback to API secret_key ONLY IF you set them to be identical in Razorpay dashboard.
-    webhook_secret = getattr(gateway, 'webhook_secret', gateway.secret_key)
-    client = razorpay.Client(auth=(gateway.public_key, gateway.secret_key))
+    if not webhook_secret:
+        logger.error("Razorpay Webhook: Gateway config or webhook_secret missing")
+        return HttpResponse("Gateway config error", status=500)
 
-    # 3. Verify Signature using Razorpay SDK Utility
+    # 3. HMAC Signature Verification over raw bytes
+    if not verify_razorpay_signature(raw_body, received_signature, webhook_secret):
+        logger.error("Razorpay Webhook: Signature verification failed")
+        return HttpResponse("Invalid signature", status=400)
+
+    # 4. Safe JSON Parsing
     try:
-        client.utility.verify_webhook_signature(raw_body, received_signature, webhook_secret)
-    except razorpay.errors.SignatureVerificationError:
-        logger.error("Razorpay Webhook: Signature Verification Failed")
-        return HttpResponse(status=400)
+        data = json.loads(raw_body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        logger.error("Razorpay Webhook: Invalid JSON payload")
+        return HttpResponse("Invalid JSON", status=400)
 
-    # 4. Safe JSON Parsing AFTER signature verification
-    try:
-        data = json.loads(raw_body)
-    except json.JSONDecodeError:
-        return HttpResponse(status=400)
+    # 5. Process Webhook Event
+    process_razorpay_webhook_event(data)
 
-    event = data.get("event")
-    logger.info(f"Razorpay Webhook Event Received: {event}")
-
-    # 5. Handle Payment Events
-    if event in ["payment.captured", "payment.authorized"]:
-        entity = data.get("payload", {}).get("payment", {}).get("entity", {})
-        order_id = entity.get("order_id")
-        payment_id = entity.get("id")  # This is the pay_XYZ ID
-
-        if not order_id:
-            logger.error("Razorpay Webhook: Missing order_id in payload")
-            return HttpResponse(status=200)
-
-        with db_transaction.atomic():
-            # Get the transaction without filtering by 'pending' to handle race conditions
-            txn = PaymentTransaction.objects.select_for_update().filter(order_id=order_id).first()
-
-            if not txn:
-                logger.warning(f"Razorpay Webhook: Transaction not found for order {order_id}")
-                return HttpResponse(status=200)
-
-            # If verify_payment API already handled this, gracefully acknowledge Razorpay
-            if txn.payment_status == "done":
-                logger.info(f"Razorpay Webhook: Transaction {order_id} already marked as done. Skipping.")
-                return HttpResponse(status=200)
-
-            # Update Transaction Safely
-            txn.payment_status = "done"
-            txn.razorpay_payment_id = payment_id  # BUG FIX: Do not overwrite txn.transaction_id
-            txn.save()
-
-            # Trigger Ebook Registration
-            EbookRegistrationViewSet.create_registration_from_transaction(txn)
-
-    elif event == "payment.failed":
-        entity = data.get("payload", {}).get("payment", {}).get("entity", {})
-        order_id = entity.get("order_id")
-
-        if order_id:
-            PaymentTransaction.objects.filter(order_id=order_id).update(payment_status="failed")
-            logger.info(f"Razorpay Webhook: Marked transaction {order_id} as failed.")
-
-    # Always return a quick 200 to Razorpay to prevent webhook retry spam
     return HttpResponse(status=200)
 
 class RazorpayPaymentViewSet(viewsets.ViewSet):
