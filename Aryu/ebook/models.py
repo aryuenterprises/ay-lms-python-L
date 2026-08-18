@@ -93,6 +93,16 @@ class EbookRegistration(models.Model):
 
     def __str__(self):
         return f"{self.phone} - {self.ebook.title}"
+
+    def set_password(self, raw_password):
+        from django.contrib.auth.hashers import make_password
+        self.password = make_password(raw_password)
+
+    def check_password(self, raw_password):
+        from django.contrib.auth.hashers import check_password
+        if not self.password:
+            return False
+        return check_password(raw_password, self.password)
     
 class Reviews(models.Model):
     registration = models.OneToOneField(   #  One review per registration
