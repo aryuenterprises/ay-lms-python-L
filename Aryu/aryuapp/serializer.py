@@ -2040,13 +2040,12 @@ class PublicTrainerRegisterSerializer(serializers.ModelSerializer):
         return trainer
 
 class TrainerSerializer(serializers.ModelSerializer):
- 
     profile_pic_url = serializers.SerializerMethodField()
     employee_id = serializers.CharField(read_only=True)
-    attendance      = serializers.SerializerMethodField()
-    role_name       = serializers.CharField(source="role.name", read_only=True)
-    batch           = serializers.SerializerMethodField()
-    notes           = serializers.SerializerMethodField()
+    attendance = serializers.SerializerMethodField()
+    role_name = serializers.CharField(source="role.name", read_only=True)
+    batch = serializers.SerializerMethodField()
+    notes = serializers.SerializerMethodField()
     joining_date = serializers.DateField(
         input_formats=["%Y-%m-%d"],
         required=False,
@@ -2063,21 +2062,30 @@ class TrainerSerializer(serializers.ModelSerializer):
         write_only=True,
         required=False
     )
- 
+
+    # ── Explicitly declare custom dynamic fields ─────────────────────────
+    course_details = serializers.ReadOnlyField()
+    batch_id = serializers.ReadOnlyField()
+    category_id = serializers.ReadOnlyField()
+    category_name = serializers.ReadOnlyField()
+    course_id = serializers.ReadOnlyField()
+    course_name = serializers.ReadOnlyField()
+    title = serializers.ReadOnlyField()
+
     class Meta:
-        model  = Trainer
+        model = Trainer
         read_only_fields = ["employee_id"]
         fields = [
             # ── Identity ──────────────────────────────────────────────────
             "trainer_id", "employee_id", "role", "role_name",
             "username", "password",
-            "full_name", "user_type", "tutor_type", 'dob',
- 
+            "full_name", "user_type", "tutor_type", "dob",
+
             # ── Contact / Profile ─────────────────────────────────────────
             "profile_pic", "profile_pic_url",
             "email", "contact_no", "gender",
             "address", "city", "state", "country", "pincode",
- 
+
             # ── Professional ──────────────────────────────────────────────
             "specialization", "working_hours", "experience",
             "last_company", "joining_date",
@@ -2086,27 +2094,29 @@ class TrainerSerializer(serializers.ModelSerializer):
             "courses",
             "course_ids",
             "batch_ids",
- 
+
             # ── Financial ─────────────────────────────────────────────────
             "salary", "salary_type",
             "account_no", "account_holder_name",
             "bank_name", "ifsc_code",
             "upi_id", "gpay_no",
- 
+
             # ── Documents ─────────────────────────────────────────────────
             "aadhar_card", "pan_card", "resume", "certificate", "photo",
- 
+
             # ── Status / Meta ─────────────────────────────────────────────
             "status", "is_archived",
-            "created_at", "created_by",
- 
+            "created_at", "created_by", "created_by_type",
+
             # ── Nested / Computed ─────────────────────────────────────────
             "batch", "attendance", "notes",
+            "course_details", "batch_id", "category_id", "category_name",
+            "course_id", "course_name", "title"
         ]
         extra_kwargs = {
             "password": {
                 "write_only": True,
-                "required":   False,
+                "required": False,
                 "allow_blank": True,
             },
             "full_name": {
@@ -2125,41 +2135,77 @@ class TrainerSerializer(serializers.ModelSerializer):
                 }
             },
         }
- 
-    # ── __init__ ─────────────────────────────────────────────────────────
- 
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Password is never required on PATCH / PUT
         if self.instance:
             self.fields["password"].required = False
- 
+
+    # ── Helper for parsing array inputs ──────────────────────────────────
+
+    def _parse_id_list(self, raw_value, field_name):
+        if raw_value is None:
+            return None
+
+        if isinstance(raw_value, list):
+            items = raw_value
+        elif isinstance(raw_value, int):
+            items = [raw_value]
+        elif isinstance(raw_value, str):
+            raw_value = raw_value.strip()
+            if not raw_value:
+                return []
+            if raw_value.startswith("["):
+                try:
+                    items = json.loads(raw_value)
+                except Exception:
+                    raise serializers.ValidationError({
+                        field_name: "Invalid format. Expected JSON array like [1, 2]"
+                    })
+            else:
+                items = [raw_value]
+        else:
+            items = [raw_value]
+
+        try:
+            return [int(i) for i in items if str(i).strip() != ""]
+        except (ValueError, TypeError):
+            raise serializers.ValidationError({
+                field_name: "All items in list must be integers."
+            })
+
     # ── SerializerMethodFields ────────────────────────────────────────────
- 
+
     def get_profile_pic_url(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, "url"):
-            return "https://portal.aryuacademy.com/api" + obj.profile_pic.url
+            return "https://aylms.aryuprojects.com/api" + obj.profile_pic.url
         return None
-    def get_photo_url(self,obj):
-        if obj.photo and hasattr(obj.photo,"url"):
-            return "https://portal.aryuacademy.com/api" + obj.photo.url
+
+    def get_photo_url(self, obj):
+        if obj.photo and hasattr(obj.photo, "url"):
+            return "https://aylms.aryuprojects.com/api" + obj.photo.url
         return None
-    def get_pan_card_url(self,obj):
-        if obj.pan_card and hasattr(obj.pan_card,"url"):
-            return "https://portal.aryuacademy.com/api" + obj.pan_card.url
+
+    def get_pan_card_url(self, obj):
+        if obj.pan_card and hasattr(obj.pan_card, "url"):
+            return "https://aylms.aryuprojects.com/api" + obj.pan_card.url
         return None
-    def get_aadhar_card_url(self,obj):
-        if obj.aadhar_card and hasattr(obj.aadhar_card,"url"):
-            return "https://portal.aryuacademy.com/api" + obj.aadhar_card.url
+
+    def get_aadhar_card_url(self, obj):
+        if obj.aadhar_card and hasattr(obj.aadhar_card, "url"):
+            return "https://aylms.aryuprojects.com/api" + obj.aadhar_card.url
         return None
-    def get_resume_url(self,obj):
-        if obj.resume and hasattr(obj.resume,"url"):
-            return "https://portal.aryuacademy.com/api" + obj.resume.url
+
+    def get_resume_url(self, obj):
+        if obj.resume and hasattr(obj.resume, "url"):
+            return "https://aylms.aryuprojects.com/api" + obj.resume.url
         return None
-    def get_certificate_url(self,obj):
-        if obj.certificate and hasattr(obj.certificate,"url"):
-            return "https://portal.aryuacademy.com/api" + obj.certificate.url
+
+    def get_certificate_url(self, obj):
+        if obj.certificate and hasattr(obj.certificate, "url"):
+            return "https://aylms.aryuprojects.com/api" + obj.certificate.url
         return None
+
     def get_courses(self, obj):
         return [
             {
@@ -2168,40 +2214,31 @@ class TrainerSerializer(serializers.ModelSerializer):
             }
             for course in obj.courses.all()
         ]
-    
- 
+
     def get_notes(self, obj):
-        """
-        Uses prefetched_notes when available (zero extra query).
-        Falls back to a direct queryset otherwise.
-        """
         notes_qs = getattr(obj, "prefetched_notes", None)
         if notes_qs is None:
             notes_qs = obj.notes.order_by("-created_at")
- 
+
         return [
             {
-                "note_id":    note.id,
-                "reason":     note.reason,
+                "note_id": note.id,
+                "reason": note.reason,
                 "created_by": note.created_by,
-                "status":     note.status,
+                "status": note.status,
                 "created_at": note.created_at.strftime("%Y-%m-%d %H:%M"),
             }
             for note in notes_qs
         ]
- 
+
     def get_attendance(self, obj):
-        """
-        Uses prefetched_attendance when available (zero extra query).
-        """
         qs = getattr(obj, "prefetched_attendance", None)
         if qs is None:
             qs = obj.trainerattendance_set.order_by("-date")
         return TrainerAttendanceSerializer(qs, many=True).data if qs else []
- 
+
     def get_batch(self, obj):
         batches = getattr(obj, "prefetched_batches", None)
-
         if batches is None:
             batches = NewBatch.objects.filter(
                 trainers=obj,
@@ -2215,147 +2252,100 @@ class TrainerSerializer(serializers.ModelSerializer):
             }
             for batch in batches
         ]
- 
-    # ── Validation ────────────────────────────────────────────────────────
- 
-    def run_validation(self, data=serializers.empty):
-        try:
-            return super().run_validation(data)
-        except serializers.ValidationError as exc:
-            new_errors = {}
-            for field, messages in exc.detail.items():
-                new_messages = []
-                for msg in messages:
-                    if "Ensure this field has no more than" in str(msg):
-                        max_len = getattr(self.fields.get(field), "max_length", None)
-                        if max_len:
-                            new_messages.append(
-                                f"Ensure this {field} has no more than {max_len} characters."
-                            )
-                            continue
-                    new_messages.append(str(msg))
-                new_errors[field] = new_messages
-            raise serializers.ValidationError(new_errors)
- 
-    # def validate_email(self, value):
-    #     value = value.lower()
-    #     try:
-    #         validate_email(value)
-    #     except DjangoValidationError:
-    #         raise serializers.ValidationError("Enter a valid email address.")
- 
-    #     allowed_domains = {
-    #         "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
-    #         "rediffmail.com", "icloud.com",
-    #         "aryutechnologies.com", "aryuenterprise.com", "aryuacademy.com",
-    #     }
-    #     domain = value.split("@")[-1]
-    #     if domain not in allowed_domains:
-    #         raise serializers.ValidationError(
-    #             "Please enter a valid email domain (e.g., gmail.com, yahoo.com)."
-    #         )
- 
-    #     instance = getattr(self, "instance", None)
-    #     if instance and instance.email.lower() == value:
-    #         return value  # unchanged — skip duplicate check
- 
-    #     if Trainer.objects.filter(email__iexact=value, is_archived=False).exists():
-    #         raise serializers.ValidationError("Email already exists.")
- 
-    #     return value
- 
-    def validate_full_name(self, value):
-        if not re.match(r"^[A-Za-z ]+$", value):
-            raise serializers.ValidationError("Name must contain only letters and spaces.")
-        return value
- 
-    # ── Create / Update ───────────────────────────────────────────────────
-    def to_internal_value(self, data):
 
-        # Convert QueryDict safely WITHOUT deepcopy
+    # ── Custom Response Output Formatting ────────────────────────────────
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+
+        batches = NewBatch.objects.filter(
+            trainers=instance,
+            is_archived=False
+        ).select_related("course", "course__course_category")
+
+        course_details = []
+        batch_ids = []
+        titles = []
+        course_ids = set()
+        course_names = set()
+        category_ids = set()
+        category_names = set()
+
+        for b in batches:
+            batch_ids.append(b.batch_id)
+            if b.title:
+                titles.append(b.title)
+
+            c = getattr(b, "course", None)
+            if c:
+                course_ids.add(c.course_id)
+                course_names.add(c.course_name)
+
+                course_details.append({
+                    "course_id": c.course_id,
+                    "course_name": c.course_name,
+                    "batch_id": b.batch_id,
+                    "batch_title": b.title,
+                })
+
+                cat = getattr(c, "course_category", None)
+                if cat:
+                    category_ids.add(cat.category_id)
+                    category_names.add(cat.category_name)
+
+        for c in instance.courses.all():
+            course_ids.add(c.course_id)
+            course_names.add(c.course_name)
+
+        ret["course_details"] = course_details
+        ret["batch_id"] = batch_ids
+        ret["title"] = titles
+        ret["course_id"] = list(course_ids)
+        ret["course_name"] = list(course_names)
+        ret["category_id"] = list(category_ids)
+        ret["category_name"] = list(category_names)
+
+        return ret
+
+    # ── Input Pre-processing ──────────────────────────────────────────────
+
+    def to_internal_value(self, data):
         if isinstance(data, QueryDict):
             mutable_data = {}
             for key in data.keys():
                 values = data.getlist(key)
-
-                # strip only strings
                 cleaned = [v.strip() if isinstance(v, str) else v for v in values]
-
-                # keep single value or list
                 mutable_data[key] = cleaned[0] if len(cleaned) == 1 else cleaned
         else:
             mutable_data = dict(data)
 
-        # ----------- HANDLE courses ----------
-        courses = mutable_data.get("courses")
+        raw_courses = mutable_data.pop("courses", None)
+        if raw_courses is None:
+            raw_courses = mutable_data.get("course_ids")
 
-        if courses is not None:
-            if isinstance(courses, list):
-                mutable_data["courses"] = [int(i) for i in courses]
+        if raw_courses is not None:
+            mutable_data["course_ids"] = self._parse_id_list(raw_courses, "course_ids")
 
-            elif isinstance(courses, str):
-                courses = courses.strip()
+        raw_batches = mutable_data.pop("batch", None)
+        if raw_batches is None:
+            raw_batches = mutable_data.get("batch_ids")
 
-                if courses.startswith("["):
-                    mutable_data["courses"] = json.loads(courses)
-                else:
-                    mutable_data["courses"] = [int(courses)]
+        if raw_batches is not None:
+            mutable_data["batch_ids"] = self._parse_id_list(raw_batches, "batch_ids")
 
-                try:
-                    if courses.startswith("["):
-                        mutable_data["courses"] = json.loads(courses)
-                    else:
-                        mutable_data["courses"] = [int(courses)]
-
-                except Exception:
-                    raise serializers.ValidationError({
-                        "courses": "Invalid format. Expected [1,2,3]"
-                    })
-
-        # ----------- HANDLE batch_ids ----------
-        batch_ids = mutable_data.get("batch_ids")
-
-        if batch_ids is not None:
-
-            # Already a Python list
-            if isinstance(batch_ids, list):
-                mutable_data["batch_ids"] = [
-                    int(i) for i in batch_ids
-                ]
-
-            # Single integer
-            elif isinstance(batch_ids, int):
-                mutable_data["batch_ids"] = [batch_ids]
-
-            # String value
-            elif isinstance(batch_ids, str):
-
-                batch_ids = batch_ids.strip()
-
-                try:
-                    # JSON list: "[1,2,3]"
-                    if batch_ids.startswith("["):
-                        mutable_data["batch_ids"] = json.loads(batch_ids)
-
-                    # Single value: "122"
-                    else:
-                        mutable_data["batch_ids"] = [int(batch_ids)]
-
-                except Exception:
-                    raise serializers.ValidationError({
-                        "batch_ids": "Invalid format. Expected [1,2,3]"
-                    })
         return super().to_internal_value(mutable_data)
-                
+
+    # ── Create / Update ───────────────────────────────────────────────────
+
     def create(self, validated_data):
         batch_ids = validated_data.pop("batch_ids", [])
-        courses = validated_data.pop("courses", [])  # extract M2M
+        course_ids = validated_data.pop("course_ids", [])
         password = validated_data.get("password")
+
         if not password:
             raise serializers.ValidationError({"password": "Password is required."})
 
         request = self.context.get("request")
-
         if request and request.user:
             role = getattr(request.user, "user_type", None)
             role_map = {
@@ -2365,27 +2355,23 @@ class TrainerSerializer(serializers.ModelSerializer):
                 "student": ("student_id", role),
             }
             id_attr, role_label = role_map.get(role, ("user_id", role))
-
             validated_data["created_by"] = getattr(request.user, id_attr, None)
             validated_data["created_by_type"] = role_label
 
         validated_data["password"] = make_password(password)
-
         trainer = Trainer.objects.create(**validated_data)
 
-        # SET COURSES
-        if courses:
-            trainer.courses.set(courses)
+        if course_ids:
+            trainer.courses.set(Course.objects.filter(course_id__in=course_ids))
 
-        # ASSIGN BATCHES
         if batch_ids:
-            for batch in NewBatch.objects.filter(batch_id__in=batch_ids):
-                batch.trainers.add(trainer)
+            batches = NewBatch.objects.filter(batch_id__in=batch_ids)
+            for b in batches:
+                b.trainers.add(trainer)
 
         return trainer
- 
-    def update(self, instance, validated_data):
 
+    def update(self, instance, validated_data):
         course_ids = validated_data.pop("course_ids", None)
         batch_ids = validated_data.pop("batch_ids", None)
         password = validated_data.pop("password", None)
@@ -2393,35 +2379,24 @@ class TrainerSerializer(serializers.ModelSerializer):
         if password:
             instance.password = make_password(password)
 
-        # Update normal fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
         instance.save()
 
-        # Update courses
         if course_ids is not None:
-            instance.courses.set(
-                Course.objects.filter(course_id__in=course_ids)
-            )
+            instance.courses.set(Course.objects.filter(course_id__in=course_ids))
 
-        # Update batches
         if batch_ids is not None:
             batches = NewBatch.objects.filter(batch_id__in=batch_ids)
-
-            print("Batch IDs:", batch_ids)
-            print("Batches found:", list(batches.values("batch_id", "title")))
-
             instance.new_batches.set(batches)
 
-            print(
-                "Trainer batches:",
-                list(instance.new_batches.values("batch_id", "title"))
-            )
+        if hasattr(instance, "prefetched_batches"):
+            delattr(instance, "prefetched_batches")
 
         instance.refresh_from_db()
-        return instance 
-    
+        return instance
+   
 class TrainerPreviewSerializer(serializers.ModelSerializer):
     trainer_name = serializers.CharField(source="full_name")
 
