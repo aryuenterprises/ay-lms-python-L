@@ -14,7 +14,7 @@ BACKUP_DIR = "/home/tamilselvi/Documents/backup/14-08-26"
 
 # Specific dump files to process (leave empty [] to process all .sql files in directory)
 TARGET_FILES = [
-    "14-08-26_public_attendance.sql"
+    "14-08-26_public_aryuapp_classschedule.sql"
     # "14-08-26_public_resume_usersubscription.sql",
 ]
 
