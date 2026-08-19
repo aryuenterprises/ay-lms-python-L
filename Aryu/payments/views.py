@@ -1594,13 +1594,13 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
 
         # Fetch Active Courses
         active_courses = Course.objects.filter(is_archived=False).exclude(status__iexact='inactive')
-        courses_data = CourseDropdownSerializer(active_courses, many=True).data
+        courses_data = CourseOptionSerializer(active_courses, many=True).data
 
         # --- NEW: Build Course-Grouped Batches ---
         # Prefetch active batches to prevent N+1 query overhead
         active_courses_with_batches = active_courses.prefetch_related(
             Prefetch(
-                'new_batches',  # Related name from Course to NewBatch (adjust if different e.g., 'newbatch_set')
+                'batches',  # Related name from Course to NewBatch (adjust if different e.g., 'newbatch_set')
                 queryset=NewBatch.objects.filter(status=True, is_archived=False),
                 to_attr='active_batches_list'
             )
@@ -1640,6 +1640,8 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
             'results': serializer.data
         }, status=status.HTTP_200_OK)
         
+
+
 
 class StripePaymentViewSet(viewsets.ViewSet):
 

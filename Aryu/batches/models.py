@@ -149,6 +149,11 @@ class Batch(models.Model):
     created_by = models.CharField(max_length=100, null=True, blank=True)
     created_by_type = models.CharField(max_length=50, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    course = models.ForeignKey(
+        Course,
+        on_delete=models.CASCADE,
+        related_name="batches"
+    )
 
     class Meta:
         db_table = 'batch'
