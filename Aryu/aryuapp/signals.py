@@ -1,7 +1,7 @@
 # /home/aryu_user/Arun/academystaging-python/Aryu/aryuapp/signals.py
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from .models import Student, Submission, Trainer, SubAdmin, SubmissionReply, User, StudentTicket, TicketReply
+from .models import *
 from chats.models import Notification
 from chats.serializers import NotificationSerializer
 from tests.models import StudentAnswers, TestResult
@@ -54,83 +54,76 @@ def push_realtime_notification(sender, instance, created, **kwargs):
 #     if created:
 #         send_welcome_email(instance)
 
-@receiver(post_save, sender=StudentAnswers)
-def notify_trainer_on_test_submission(sender, instance, created, **kwargs):
-    if not created or not instance.student_id or not instance.test_id:
+@receiver(post_save, sender=Submission)
+def notify_trainer_on_submission(sender, instance, created, **kwargs):
+    if not created or not instance.student or not instance.assignment:
         return
 
-    student = instance.student_id
-    test = instance.test_id
-    course = test.course
+    student = instance.student
+    assignment = instance.assignment
+    course = assignment.course
 
-    # ----------------------------------
-    # 1. Get batches (NEW LOGIC)
-    # ----------------------------------
-    batches = NewBatch.objects.filter(
+    assigned_batches = NewBatch.objects.filter(
         students=student,
         course=course,
         is_archived=False,
         status=True
-    ).select_related("trainer")
+    ).prefetch_related("trainers")
 
-    if not batches.exists():
+    if not assigned_batches.exists():
         return
 
-    # ----------------------------------
-    # 2. Notify trainer (avoid duplicates)
-    # ----------------------------------
     notified_trainers = set()
 
-    for batch in batches:
-        trainer = batch.trainer
+    for batch in assigned_batches:
+        for trainer in batch.trainers.all():
 
-        if trainer and trainer.id not in notified_trainers:
-            notified_trainers.add(trainer.id)
+            if trainer.trainer_id in notified_trainers:
+                continue
+
+            notified_trainers.add(trainer.trainer_id)
 
             Notification.objects.create(
                 trainer=trainer,
                 student=student,
-                test=test,
+                assignment=assignment,
                 course=course,
                 message=(
-                    f"test_submission: Student {student.first_name} {student.last_name} "
-                    f"submitted answers for Test '{test.test_name}' in Course '{course.course_name}'."
-                ),
+                    f"submission: Student {student.first_name} "
+                    f"{student.last_name} submitted assignment "
+                    f"'{assignment.title}' in course "
+                    f"'{course.course_name}'."
+                )
             )
 
-    # ----------------------------------
-    # 3. SAFE COMPANY LOOKUP
-    # ----------------------------------
     company_ids = {
         getattr(student.employee, "company_id", None) if hasattr(student, "employee") else None,
         getattr(student.school_student, "company_id", None) if hasattr(student, "school_student") else None,
         getattr(student.college_student, "company_id", None) if hasattr(student, "college_student") else None,
         getattr(student.jobseeker, "company_id", None) if hasattr(student, "jobseeker") else None,
     }
+
     company_ids.discard(None)
 
-    # ----------------------------------
-    # 4. Notify sub-admins
-    # ----------------------------------
     for company_id in company_ids:
         sub_admins = SubAdmin.objects.filter(
             company_id=company_id,
             status=True,
             is_archived=False
-        ).only("id")
+        )
 
         for sub_admin in sub_admins:
             Notification.objects.create(
                 student=student,
-                test=test,
-                course=course,
                 sub_admin=sub_admin,
+                assignment=assignment,
+                course=course,
                 message=(
-                    f"test_submission: Student {student.first_name} {student.last_name} "
-                    f"submitted answers for Test '{test.test_name}'."
-                ),
+                    f"submission: Student {student.first_name} "
+                    f"{student.last_name} submitted assignment "
+                    f"'{assignment.title}'."
+                )
             )
-
 @receiver(post_save, sender=SubmissionReply)
 def notify_student_on_reply(sender, instance, created, **kwargs):
     if not created:
@@ -279,28 +272,26 @@ def notify_on_topic_status(sender, instance, created, **kwargs):
     topic = instance.topic
     course = topic.course
 
-    # ----------------------------------
-    # 1. Get assigned batches (NEW LOGIC)
-    # ----------------------------------
+    # Get assigned batches
     assigned_batches = NewBatch.objects.filter(
         students=student,
         course=course,
         is_archived=False,
         status=True
-    ).select_related("trainer")
+    ).prefetch_related("trainers")
 
     if not assigned_batches.exists():
         return
 
-    # ----------------------------------
-    # 2. Notify trainers (avoid duplicates)
-    # ----------------------------------
+    # Notify trainers (avoid duplicates)
     notified_trainers = set()
 
     for batch in assigned_batches:
-        trainer = batch.trainer
+        for trainer in batch.trainers.all():
 
-        if trainer and trainer.trainer_id not in notified_trainers:
+            if trainer.trainer_id in notified_trainers:
+                continue
+
             notified_trainers.add(trainer.trainer_id)
 
             Notification.objects.create(
@@ -309,14 +300,12 @@ def notify_on_topic_status(sender, instance, created, **kwargs):
                 course=course,
                 is_read=False,
                 message=(
-                    f"Student {student.first_name} {student.last_name} updated topic '{topic.title}' "
-                    f"in course '{course.course_name}'."
+                    f"Student {student.first_name} {student.last_name} updated "
+                    f"topic '{topic.title}' in course '{course.course_name}'."
                 )
             )
 
-    # ----------------------------------
-    # 3. Collect company IDs (optimized)
-    # ----------------------------------
+    # Collect company IDs
     company_ids = {
         getattr(student.employee, "company_id", None) if hasattr(student, "employee") else None,
         getattr(student.school_student, "company_id", None) if hasattr(student, "school_student") else None,
@@ -325,15 +314,13 @@ def notify_on_topic_status(sender, instance, created, **kwargs):
     }
     company_ids.discard(None)
 
-    # ----------------------------------
-    # 4. Notify sub-admins
-    # ----------------------------------
+    # Notify sub-admins
     for company_id in company_ids:
         sub_admins = SubAdmin.objects.filter(
             company_id=company_id,
             status=True,
             is_archived=False
-        ).only("id")
+        )
 
         for sub_admin in sub_admins:
             Notification.objects.create(
@@ -341,11 +328,11 @@ def notify_on_topic_status(sender, instance, created, **kwargs):
                 sub_admin=sub_admin,
                 course=course,
                 message=(
-                    f"Student {student.first_name} {student.last_name} updated topic '{topic.title}' "
-                    f"in course '{course.course_name}'."
+                    f"Student {student.first_name} {student.last_name} updated "
+                    f"topic '{topic.title}' in course '{course.course_name}'."
                 )
             )
-
+            
 @receiver(post_save, sender=StudentAnswers)
 def notify_trainer_on_test_submission(sender, instance, created, **kwargs):
     if not created or not instance.student_id or not instance.test_id:
