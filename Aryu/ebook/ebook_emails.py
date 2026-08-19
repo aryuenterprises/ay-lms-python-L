@@ -6,7 +6,7 @@ from datetime import datetime
 def send_ebook_registration_email(registration, password=None):
     print("email is triggering")
     ebook = registration.ebook
-    portal_link = "https://portal.aryuprojects.com/login"
+    portal_link = "https://portal.aryuprojects.com"
 
     subject = f"Ebook Registration Successful - {ebook.title}"
 
