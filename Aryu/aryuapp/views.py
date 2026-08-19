@@ -7545,7 +7545,7 @@ class TutorSignupView(APIView):
         }, status=400)
         
 BASE_MEDIA_URL = "https://portal.aryuacademy.com/api/media/"
-  
+
 class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
 
     permission_classes = [IsAuthenticated]
@@ -7593,7 +7593,7 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                 trainers_qs = trainers_qs.filter(
                     Q(created_by_type="super_admin", created_by=user_created_id) |
                     Q(created_by_type="admin", created_by__in=admin_ids)|
-                    Q(created_by_type = "public")
+                    Q(created_by_type="public")
                 )
 
             elif user.user_type == "admin":
@@ -7606,6 +7606,7 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                 trainers_qs = trainers_qs.filter(filters)
 
             trainers_qs = trainers_qs.select_related("role").prefetch_related(
+                "courses",
                 Prefetch(
                     "notes",
                     queryset=Note.objects.all().order_by("-created_at"),
@@ -7630,7 +7631,7 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                 old_batch_map[obj.trainer_id].append(obj)
 
             new_batches = (
-                NewBatch.objects.filter(is_archived=False)
+                NewBatch.objects.filter(is_archived=False, status=True)
                 .select_related("course__course_category")
                 .prefetch_related("trainers")
             )
@@ -7695,15 +7696,8 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
 
                 # -------- NEW BATCH --------
 
-                # Get batches from trainer courses
-
-                trainer_batches = NewBatch.objects.filter(
-                    course__in=trainer_courses,
-                    is_archived=False,
-                    status=True
-                ).select_related("course", "course__course_category")
-
-                for nb in trainer_batches:
+                # Fetch assigned batches specifically for this trainer from preloaded map
+                for nb in new_batch_map.get(t.trainer_id, []):
 
                     course = nb.course
                     category = course.course_category if course else None
@@ -7711,13 +7705,17 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                     batch_ids.append(nb.batch_id)
                     titles.append(nb.title)
 
+                    if course:
+                        course_ids.append(course.course_id)
+                        course_names.append(course.course_name)
+
                     if category:
                         category_ids.append(category.category_id)
                         category_names.append(category.category_name)
 
                     course_details.append({
-                        "course_id": course.course_id,
-                        "course_name": course.course_name,
+                        "course_id": course.course_id if course else None,
+                        "course_name": course.course_name if course else None,
                         "batch_id": nb.batch_id,
                         "batch_title": nb.title
                     })
@@ -7785,7 +7783,6 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
             for c in courses:
                 c["category_id"] = c.pop("course_category")
 
-
             batches = []
 
             course_queryset = Course.objects.filter(
@@ -7820,31 +7817,6 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                     "category_name"
                 )
             )
-
-            # ---------------- BATCHES ----------------
-
-            # batches = []
-
-            # courses = Course.objects.filter(
-            #     is_archived=False,
-            #     status__iexact="Active"
-            # )
-
-            # for course in courses:
-            #     course_batches = NewBatch.objects.filter(
-            #         course=course,
-            #         status=True,
-            #         is_archived=False
-            #     ).values(
-            #         "batch_id",
-            #         "title"
-            #     )
-
-            #     batches.append({
-            #         "course_id": course.course_id,
-            #         "course_name": course.course_name,
-            #         "batches": list(course_batches)
-            #     })
 
             # ---------------- STUDENTS ----------------
 
@@ -7900,6 +7872,7 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
 
             })
 
+   
 
 class TrainerTravelExpenseViewSet(viewsets.ModelViewSet):
     queryset = TrainerTravelExpense.objects.all().order_by('-created_at')
