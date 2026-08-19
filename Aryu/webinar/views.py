@@ -1427,24 +1427,35 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
     # -----------------------------
     # PAYMENT CREATION
     # -----------------------------
-    def _create_payment(self, request, webinar, txn):
-        data = request.data.copy()
+    def _create_payment(self, request, webinar, txn, order=None, gateway=None):
+        if order is None or gateway is None:
+            data = request.data.copy()
 
-        data["amount"] = float(webinar.price)
-        data["webinar_id"] = str(webinar.uuid)
-        data["transaction_id"] = str(txn.id)
+            data["amount"] = float(webinar.price)
+            data["webinar_id"] = str(webinar.uuid)
+            data["transaction_id"] = str(txn.id)
 
-        data["success_url"] = request.data.get(
-            "success_url",
-            "https://portal.aryuacademy.com/payment-success"
-        )
-        data["failure_url"] = request.data.get(
-            "failure_url",
-            "https://portal.aryuacademy.com/payment-failed"
-        )
+            data["success_url"] = request.data.get(
+                "success_url",
+                "https://portal.aryuacademy.com/payment-success"
+            )
+            data["failure_url"] = request.data.get(
+                "failure_url",
+                "https://portal.aryuacademy.com/payment-failed"
+            )
 
-        request._full_data = data
-        return RazorpayPaymentViewSet().create(request)
+            request._full_data = data
+            return RazorpayPaymentViewSet().create(request)
+
+        return Response({
+            "success": True,
+            "order_id": order["id"],
+            "key": gateway.public_key,
+            "amount": int(float(webinar.price) * 100),
+            "currency": "INR",
+            "webinar_title": webinar.title,
+            "waba_link": webinar.waba_link
+        })
 
     # -----------------------------
     # REGISTRATION CREATION (SINGLE SOURCE)
@@ -1607,7 +1618,7 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
                 payment_transaction=txn
             )
 
-        return self._create_payment(request, webinar, txn)
+        return self._create_payment(request, webinar, txn, order, gateway)
 
     def get_queryset(self):
         return (
