@@ -881,6 +881,8 @@ class StudentTopicStatusViewSet(LoggingMixin, viewsets.ModelViewSet):
             "data": serializer.data
         }, status=status.HTTP_201_CREATED)
 
+
+
 class CourseSyllabusViewSet(viewsets.ViewSet):
     """
     Routes (add to urls.py):

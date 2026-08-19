@@ -46,7 +46,29 @@ class ResourcesViewSet(viewsets.ModelViewSet):
     serializer_class = ResourcesSerializer
     permission_classes = [AllowAny]
     authentication_classes = []
-    lookup_field = "slug"
+
+    def get_object(self):
+        """
+        Custom lookup to support fetching/updating records by either integer ID (pk) or string slug.
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        # Extract lookup value from URL kwargs ('pk', 'id', or 'slug')
+        lookup_value = (
+            self.kwargs.get("pk") 
+            or self.kwargs.get("id") 
+            or self.kwargs.get("slug")
+        )
+
+        filter_kwargs = {}
+        if str(lookup_value).isdigit():
+            filter_kwargs["pk"] = lookup_value
+        else:
+            filter_kwargs["slug"] = lookup_value
+
+        obj = get_object_or_404(queryset, **filter_kwargs)
+        self.check_object_permissions(self.request, obj)
+        return obj
 
     def get_throttles(self):
         if self.action == "download":
@@ -56,8 +78,8 @@ class ResourcesViewSet(viewsets.ModelViewSet):
     def get_serializer_context(self):
         return {"request": self.request}
 
-    def retrieve(self, request, slug=None):
-        resource = get_object_or_404(Resources, slug=slug)
+    def retrieve(self, request, *args, **kwargs):
+        resource = self.get_object()
         serializer = self.get_serializer(resource)
         return Response(
             {
@@ -68,9 +90,9 @@ class ResourcesViewSet(viewsets.ModelViewSet):
         )
 
     @action(detail=True, methods=["post"], url_path="download")
-    def download(self, request, slug=None):
+    def download(self, request, *args, **kwargs):
         try:
-            resource = get_object_or_404(Resources, slug=slug)
+            resource = self.get_object()
 
             # 1. Process Lead Form if enabled on resource
             if resource.form:
@@ -107,12 +129,10 @@ class ResourcesViewSet(viewsets.ModelViewSet):
                     existing_lead = Lead.objects.filter(phone=phone).order_by("-id").first()
 
                     if existing_lead:
-                        # Update fields
                         for key, value in lead_defaults.items():
                             if value is not None:
                                 setattr(existing_lead, key, value)
 
-                        # Append download history to message log
                         download_note = f"Downloaded: {resource.title}"
                         if existing_lead.message:
                             if download_note not in existing_lead.message:
@@ -140,7 +160,7 @@ class ResourcesViewSet(viewsets.ModelViewSet):
             )
 
         except Exception as e:
-            logger.error(f"Error processing resource download for slug '{slug}': {str(e)}", exc_info=True)
+            logger.error(f"Error processing resource download: {str(e)}", exc_info=True)
             return Response(
                 {
                     "success": False,
@@ -149,7 +169,7 @@ class ResourcesViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-
+            
 # =====================================================
 # FORM VIEWSET
 # =====================================================
