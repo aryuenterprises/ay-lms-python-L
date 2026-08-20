@@ -15,6 +15,7 @@ from aryuapp.views import has_permission,flatten_errors
 from django.shortcuts import get_object_or_404
 import traceback
 from batches.serializers import NewBatchSerializer
+from django.db import transaction
 # Create your views here.
 
 
@@ -212,6 +213,11 @@ class CourseCategoryViewSet(LoggingMixin, viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
 
 class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
+    """
+    Production-grade ViewSet for managing Courses.
+    Handles standard CRUD operations, custom role-based scoping, 
+    auto-created bootcamp courses, and syllabus details.
+    """
     queryset = Course.objects.filter(is_archived=False)
     serializer_class = CourseSerializer
     permission_classes = [IsAuthenticated]
@@ -219,26 +225,38 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
     lookup_field = "course_id"
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
+    # ------------------------------------------------------------------
+    # ROLE-BASED FILTERS (SUPPORTING AUTO-CREATED BOOTCAMP COURSES)
+    # ------------------------------------------------------------------
     def _get_role_filters(self, user):
+        """
+        Builds role-based access queries.
+        Includes courses auto-created via Bootcamps/Webinars.
+        """
+        user_type = getattr(user, "user_type", None)
         filters = Q()
 
-        if user.user_type == "super_admin":
+        if user_type == "super_admin":
             super_admin_id = str(getattr(user, "user_id", ""))
 
-            admin_ids = Trainer.objects.filter(
-                created_by=super_admin_id,
-                created_by_type="super_admin",
-                is_archived=False
-            ).values_list("trainer_id", flat=True)
-
+            admin_ids = list(
+                Trainer.objects.filter(
+                    created_by=super_admin_id,
+                    created_by_type="super_admin",
+                    is_archived=False
+                ).values_list("trainer_id", flat=True)
+            )
             admin_ids = [str(i) for i in admin_ids]
 
             filters = (
                 Q(created_by_type="super_admin", created_by=super_admin_id) |
-                Q(created_by_type="admin", created_by__in=admin_ids)
+                Q(created_by_type="admin", created_by__in=admin_ids) |
+                # Support Bootcamp auto-created courses
+                Q(notes__icontains="Auto-created") |
+                Q(created_by__isnull=True)
             )
 
-        elif user.user_type == "admin":
+        elif user_type == "admin":
             admin_id = str(getattr(user, "trainer_id", ""))
 
             super_admin_id = Trainer.objects.filter(
@@ -251,11 +269,13 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
 
             filters = (
                 Q(created_by_type="admin", created_by=admin_id) |
-                Q(created_by_type="super_admin", created_by=super_admin_id)
+                Q(created_by_type="super_admin", created_by=super_admin_id) |
+                # Support Bootcamp auto-created courses
+                Q(notes__icontains="Auto-created") |
+                Q(created_by__isnull=True)
             )
 
         return filters
-
 
     def get_queryset(self):
         category_id = self.request.query_params.get("course_category")
@@ -266,20 +286,20 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
             .select_related("course_category")
         )
 
-        filters = self._get_role_filters(self.request.user)
-
-        queryset = queryset.filter(filters)
+        role_filters = self._get_role_filters(self.request.user)
+        queryset = queryset.filter(role_filters)
 
         if category_id:
             queryset = queryset.filter(course_category_id=category_id)
 
         return queryset.order_by("-course_id")
 
-
+    # ------------------------------------------------------------------
+    # LIST
+    # ------------------------------------------------------------------
     def list(self, request, *args, **kwargs):
         try:
             queryset = self.get_queryset()
-
             filters = self._get_role_filters(request.user)
 
             category_qs = (
@@ -289,16 +309,16 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
             )
 
             category_data = CourseCategorySerializer(category_qs, many=True).data
-
             serializer = CourseListSerializer(queryset, many=True)
 
             if not serializer.data:
                 return Response({
                     "success": False,
-                    "message": "No courses found for the selected category.",
+                    "message": "No courses found for the selected filter.",
                     "categories": category_data,
-                    "currencies": CURRENCIES
-                }, status=200)
+                    "currencies": CURRENCIES,
+                    "data": []
+                }, status=status.HTTP_200_OK)
 
             return Response({
                 "success": True,
@@ -306,75 +326,74 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
                 "data": serializer.data,
                 "categories": category_data,
                 "currencies": CURRENCIES
-            }, status=200)
+            }, status=status.HTTP_200_OK)
 
         except Exception as e:
+            logger.error(f"[CourseViewSet] List Error: {str(e)}", exc_info=True)
             return Response({
                 "success": False,
-                "message": str(e)
-            }, status=200)
-        
-    
+                "message": f"An error occurred while fetching courses: {str(e)}"
+            }, status=status.HTTP_200_OK)
 
-
+    # ------------------------------------------------------------------
+    # CREATE
+    # ------------------------------------------------------------------
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        
         user = request.user
-        
-        # Ensure module_id points to Courses
+
+        # Module Permission Check
         courses_module = ModulePermission.objects.filter(module__iexact="Course").first()
         if not courses_module:
-            return Response({"success": False, "message": "Courses module not found"}, status=200)
+            return Response({"success": False, "message": "Courses module configuration not found"}, status=status.HTTP_200_OK)
 
         if not has_permission(user, module_id=courses_module.module_id, actions=["create"]):
-            return Response({"success": False, "message": "You do not have permission"}, status=200)
-        
+            return Response({"success": False, "message": "You do not have permission to create courses"}, status=status.HTTP_200_OK)
+
+        serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():
-            # Extract the first error message
             error_messages = flatten_errors(serializer.errors)
             error_message = ". ".join(error_messages) + "."
-
             return Response({
                 "message": error_message,
                 "success": False
             }, status=status.HTTP_200_OK)
-        self.perform_create(serializer)
-        instance = serializer.instance
 
-        # 🔥 HANDLE duration_list → map to fields
-        duration = request.data.get("duration_list[0][duration]")
-        duration_type = request.data.get("duration_list[0][duration_type]")
+        with transaction.atomic():
+            self.perform_create(serializer)
+            instance = serializer.instance
 
-        if duration and duration_type:
-            instance.duration = duration
-            instance.duration_type = duration_type
-            instance.save()
+            # Process duration payload array if present
+            duration = request.data.get("duration_list[0][duration]")
+            duration_type = request.data.get("duration_list[0][duration_type]")
 
-        # 🔥 re-serialize
+            if duration and duration_type:
+                instance.duration = duration
+                instance.duration_type = duration_type
+                instance.save(update_fields=["duration", "duration_type"])
+
         response_serializer = self.get_serializer(instance)
 
         return Response({
             "message": "Course added successfully",
             "success": True,
-            "data": response_serializer.data   # ✅ FIXED
+            "data": response_serializer.data
         }, status=status.HTTP_201_CREATED)
-    
+
+    # ------------------------------------------------------------------
+    # UPDATE / PARTIAL UPDATE
+    # ------------------------------------------------------------------
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop('partial', False)
         user = request.user
 
-        # Ensure module_id points to Courses
         courses_module = ModulePermission.objects.filter(module__iexact="Course").first()
         if not courses_module:
-            return Response({"success": False, "message": "Courses module not found"}, status=200)
+            return Response({"success": False, "message": "Courses module not found"}, status=status.HTTP_200_OK)
 
         if not has_permission(user, module_id=courses_module.module_id, actions=["update"]):
-            return Response({"success": False, "message": "You do not have permission"}, status=200)
+            return Response({"success": False, "message": "You do not have permission to update courses"}, status=status.HTTP_200_OK)
 
         instance = self.get_object()
-        
-        
         serializer = self.get_serializer(instance, data=request.data, partial=partial, context={'request': request})
 
         if not serializer.is_valid():
@@ -389,59 +408,63 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
         new_status = validated_data.get("status", instance.status)
         new_category = validated_data.get("course_category", instance.course_category)
 
-        # Check if category is deleted or inactive before saving
+        # Validate category state prior to activation
         if new_status == "Active":
             if not new_category or getattr(new_category, "is_archived", False):
                 return Response({
                     "success": False,
-                    "message": "The category for this course has been deleted. Please choose another category before activating the course."
-                }, status=200)
+                    "message": "The category for this course has been archived/deleted. Please assign a valid category before activating."
+                }, status=status.HTTP_200_OK)
 
             if not getattr(new_category, "status", False):
                 return Response({
                     "success": False,
-                    "message": f"Cannot activate this course because its category '{new_category.category_name}' is inactive."
-                }, status=200)
-        
-        # Save notes if provided in request
-        notes_text = request.data.get("notes")
-        if notes_text:
-            mixin = NotesMixin()
-            mixin.save_notes(instance, notes_text, request=request)
+                    "message": f"Cannot activate this course because its category '{getattr(new_category, 'category_name', '')}' is inactive."
+                }, status=status.HTTP_200_OK)
 
-        # If validation passed, save changes
-        self.perform_update(serializer)
+        with transaction.atomic():
+            # Save notes if present
+            notes_text = request.data.get("notes")
+            if notes_text:
+                mixin = NotesMixin()
+                mixin.save_notes(instance, notes_text, request=request)
 
-        instance = serializer.instance
+            self.perform_update(serializer)
+            instance = serializer.instance
 
-        # 🔥 HANDLE duration_list → map to fields
-        duration = request.data.get("duration_list[0][duration]")
-        duration_type = request.data.get("duration_list[0][duration_type]")
+            # Process duration payload array if present
+            duration = request.data.get("duration_list[0][duration]")
+            duration_type = request.data.get("duration_list[0][duration_type]")
 
-        if duration and duration_type:
-            instance.duration = duration
-            instance.duration_type = duration_type
-            instance.save()
+            if duration and duration_type:
+                instance.duration = duration
+                instance.duration_type = duration_type
+                instance.save(update_fields=["duration", "duration_type"])
 
-        # 🔥 re-serialize
         response_serializer = self.get_serializer(instance)
 
         return Response({
-            "message": "Course Updated Successfully",
+            "message": "Course updated successfully",
             "success": True,
             "data": response_serializer.data
         }, status=status.HTTP_200_OK)
 
+    # ------------------------------------------------------------------
+    # CUSTOM ACTIONS
+    # ------------------------------------------------------------------
     @action(detail=True, methods=['get'], url_path='batches')
     def get_batches(self, request, *args, **kwargs):
-        course = self.get_object()  # this is a Course instance
-        # Get distinct active batches
-        batches = NewBatch.objects.filter(course=course, is_archived=False, status=True).distinct()
+        course = self.get_object()
+        batches = NewBatch.objects.filter(
+            course=course,
+            is_archived=False,
+            status=True
+        ).distinct()
 
         serializer = NewBatchSerializer(batches, many=True)
         return Response({
             "success": True,
-            "message": f"Batches for course {course.course_name} fetched successfully.",
+            "message": f"Batches for course '{course.course_name}' fetched successfully.",
             "data": serializer.data
         }, status=status.HTTP_200_OK)
 
@@ -449,41 +472,13 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
     def archive_course(self, request, *args, **kwargs):
         course = self.get_object()
         course.is_archived = True
-        course.save()
- 
+        course.save(update_fields=["is_archived"])
+
         return Response({
             "success": True,
-            "message": f"Course {course.course_name} deleted successfully."
+            "message": f"Course '{course.course_name}' archived successfully."
         }, status=status.HTTP_200_OK)
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
 
-        request = self.request
-        student = None
-
-        # Student login
-        if request.user.user_type == "student":
-            student = Student.objects.filter(
-                student_id=request.user.student_id,
-                is_archived=False
-            ).first()
-
-        # Admin/Super Admin/Trainer viewing a student's profile
-        else:
-            student_id = request.query_params.get("student_id")
-
-            if student_id:
-                student = Student.objects.filter(
-                    student_id=student_id,
-                    is_archived=False,
-                    new_batches__course__course_id=self.kwargs.get("course_id"),
-                    new_batches__is_archived=False,
-                    new_batches__status=True,
-                ).distinct().first()
-
-        context["student"] = student
-        return context
-    
     @action(detail=True, methods=["get"], url_path="syllabus")
     def syllabus(self, request, *args, **kwargs):
         course = self.get_object()
@@ -515,14 +510,41 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
             context={"request": request}
         )
 
-        return Response(
-            {
-                "success": True,
-                "message": "Syllabus fetched successfully.",
-                "data": serializer.data,
-            },
-            status=status.HTTP_200_OK,
-        )
+        return Response({
+            "success": True,
+            "message": "Syllabus fetched successfully.",
+            "data": serializer.data,
+        }, status=status.HTTP_200_OK)
+
+    # ------------------------------------------------------------------
+    # CONTEXT OVERRIDE
+    # ------------------------------------------------------------------
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        request = self.request
+        student = None
+
+        if hasattr(request, "user") and request.user.is_authenticated:
+            if getattr(request.user, "user_type", "") == "student":
+                student = Student.objects.filter(
+                    student_id=getattr(request.user, "student_id", None),
+                    is_archived=False
+                ).first()
+            else:
+                student_id = request.query_params.get("student_id")
+                course_id = self.kwargs.get("course_id")
+
+                if student_id and course_id:
+                    student = Student.objects.filter(
+                        student_id=student_id,
+                        is_archived=False,
+                        new_batches__course__course_id=course_id,
+                        new_batches__is_archived=False,
+                        new_batches__status=True,
+                    ).distinct().first()
+
+        context["student"] = student
+        return context
     
 class CourseVideoViewSet(viewsets.ModelViewSet):
     serializer_class = CourseVideoSerializer
@@ -880,8 +902,6 @@ class StudentTopicStatusViewSet(LoggingMixin, viewsets.ModelViewSet):
             "message": "Topic created successfully.",
             "data": serializer.data
         }, status=status.HTTP_201_CREATED)
-
-
 
 class CourseSyllabusViewSet(viewsets.ViewSet):
     """

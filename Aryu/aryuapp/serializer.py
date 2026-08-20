@@ -30,7 +30,6 @@ from django.utils.timezone import make_aware
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
 from rest_framework_simplejwt.exceptions import TokenError
-from django.core.exceptions import ObjectDoesNotExist
 
 class CustomTokenRefreshSerializer(TokenRefreshSerializer):
     def validate(self, attrs):
@@ -69,12 +68,12 @@ class SettingsPicsSerializer(serializers.ModelSerializer):
 
     def get_general_logo_url(self, obj):
         if obj.general_logo and hasattr(obj.general_logo, "url"):
-            return "https://portal.aryuacademy.com/api" + obj.general_logo.url
+            return "https://aylms.aryuprojects.com/api" + obj.general_logo.url
         return None
 
     def get_secondary_logo_url(self, obj):
         if obj.secondary_logo and hasattr(obj.secondary_logo, "url"):
-            return "https://portal.aryuacademy.com/api" + obj.secondary_logo.url
+            return "https://aylms.aryuprojects.com/api" + obj.secondary_logo.url
         return None
 
 class SettingsSerializer(serializers.ModelSerializer):
@@ -88,17 +87,17 @@ class SettingsSerializer(serializers.ModelSerializer):
 
     def get_general_logo_url(self, obj):
         if obj.general_logo and hasattr(obj.general_logo, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.general_logo.url
+            return 'https://aylms.aryuprojects.com/api' + obj.general_logo.url
         return None
 
     def get_secondary_logo_url(self, obj):
         if obj.secondary_logo and hasattr(obj.secondary_logo, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.secondary_logo.url
+            return 'https://aylms.aryuprojects.com/api' + obj.secondary_logo.url
         return None
 
     def get_signature_url(self, obj):
         if obj.signature and hasattr(obj.signature, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.signature.url
+            return 'https://aylms.aryuprojects.com/api' + obj.signature.url
         return None
 
     def create(self, validated_data):
@@ -316,7 +315,7 @@ class College_StudentSerializer(serializers.ModelSerializer):
 
     def get_resume_url(self, obj):
         if obj.resume and hasattr(obj.resume, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.resume.url
+            return 'https://aylms.aryuprojects.com/api' + obj.resume.url
         return None
 
 class JobSeekerSerializer(serializers.ModelSerializer):
@@ -331,7 +330,7 @@ class JobSeekerSerializer(serializers.ModelSerializer):
     
     def get_resume_url(self, obj):
         if obj.resume and hasattr(obj.resume, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.resume.url
+            return 'https://aylms.aryuprojects.com/api' + obj.resume.url
         return None
     
 class EmployeeSerializer(serializers.ModelSerializer):
@@ -1031,6 +1030,7 @@ class StudentSerializer(serializers.ModelSerializer):
 
 class StudentPublicSignupSerializer(serializers.ModelSerializer):
     status = serializers.BooleanField(default=True)
+    password = serializers.CharField(required=False, write_only=True)  # <-- Added required=False
     school_student = School_StudentSerializer(required=False, write_only=True)
     college_student = College_StudentSerializer(required=False, write_only=True)
     jobseeker = JobSeekerSerializer(required=False, write_only=True)
@@ -1039,7 +1039,7 @@ class StudentPublicSignupSerializer(serializers.ModelSerializer):
     source_type = serializers.CharField(required=False, allow_blank=True)
     source_name = serializers.CharField(required=False, allow_blank=True)
     converter = serializers.CharField(required=False, allow_blank=True, default="Self")
-    profile_pic = serializers.ImageField(required=False,allow_null=True)
+    profile_pic = serializers.ImageField(required=False, allow_null=True)
 
     class Meta:
         model = Student
@@ -1051,13 +1051,9 @@ class StudentPublicSignupSerializer(serializers.ModelSerializer):
             'student_type', 'student_sub_type', 'source_type', 'source_name',
             'converter', 'internship_required', 'internship', 'status',
             'school_student', 'college_student', 'jobseeker', 'employee',
-            'information','batch_timing','notes',
+            'information', 'batch_timing', 'notes',
         ]
         read_only_fields = ['student_id', 'registration_id']
-    def get_profile_pic(self, obj):
-                    if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-                        return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
-                    return None
 
     def validate_contact_no(self, value):
         value = value.strip()
@@ -1071,7 +1067,7 @@ class StudentPublicSignupSerializer(serializers.ModelSerializer):
         ALLOWED_EMAIL_DOMAINS = {
             "gmail.com", "yahoo.com", "hotmail.com",
             "outlook.com", "rediffmail.com", "icloud.com",
-            "aryutechnologies.com", "farida.co.in",
+            "aryutechnologies.com",
         }
         value = value.lower().strip()
         try:
@@ -1081,7 +1077,7 @@ class StudentPublicSignupSerializer(serializers.ModelSerializer):
 
         domain = value.split("@")[-1]
         if domain not in ALLOWED_EMAIL_DOMAINS:
-            raise serializers.ValidationError("Please use an accepted email domain.")
+            raise serializers.ValidationError(f"Please use an accepted email domain (e.g., gmail.com, yahoo.com).")
 
         if Student.objects.filter(email__iexact=value, is_archived=False).exists():
             raise serializers.ValidationError("Email address already registered.")
@@ -1094,6 +1090,11 @@ class StudentPublicSignupSerializer(serializers.ModelSerializer):
 
         # Set default active status
         mutable_data['status'] = True
+
+        # Parse string "true"/"Yes" to actual boolean for information field
+        if "information" in mutable_data:
+            info_val = str(mutable_data.get("information")).lower()
+            mutable_data["information"] = info_val in ["true", "yes", "1"]
 
         if stype == "school_student" and "school_student" not in mutable_data:
             mutable_data["school_student"] = {
@@ -1130,9 +1131,9 @@ class StudentPublicSignupSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         plain_password = validated_data.get('password')
-        validated_data['password'] = make_password(plain_password)
+        if plain_password:
+            validated_data['password'] = make_password(plain_password)
         
-        # Enforce status = True
         validated_data['status'] = True
 
         student_role = Role.objects.filter(name__iexact="Student").first()
@@ -1147,7 +1148,6 @@ class StudentPublicSignupSerializer(serializers.ModelSerializer):
 
         student = Student.objects.create(**validated_data)
 
-        # Create subtype object
         if student_type == 'school_student' and school_data:
             School_Student.objects.create(student=student, **school_data)
         elif student_type == 'college_student' and college_data:
@@ -1401,10 +1401,6 @@ class StudentProfileSerializer(serializers.ModelSerializer):
             final_batches.append({
                 "batch_id": nb.batch_id,
                 "batch_name": nb.title,
-                "batch_start_time":nb.start_time,
-                "batch_end_time":nb.end_time,
-                "batch_start_date":nb.start_date,
-                "batch_end_date":nb.end_date,
                 "title": nb.title,
                 "course_id": nb.course.course_id if nb.course else None,
                 "course_name": nb.course.course_name if nb.course else None,
@@ -1710,137 +1706,6 @@ class StudentUpdateSerializer(serializers.ModelSerializer):
 
         return instance
 
-class StudentPublicSignupSerializer(serializers.ModelSerializer):
-    status = serializers.BooleanField(default=True)
-    password = serializers.CharField(required=False, write_only=True)  # <-- Added required=False
-    school_student = School_StudentSerializer(required=False, write_only=True)
-    college_student = College_StudentSerializer(required=False, write_only=True)
-    jobseeker = JobSeekerSerializer(required=False, write_only=True)
-    employee = EmployeeSerializer(required=False, write_only=True)
-
-    source_type = serializers.CharField(required=False, allow_blank=True)
-    source_name = serializers.CharField(required=False, allow_blank=True)
-    converter = serializers.CharField(required=False, allow_blank=True, default="Self")
-    profile_pic = serializers.ImageField(required=False, allow_null=True)
-
-    class Meta:
-        model = Student
-        fields = [
-            'student_id', 'registration_id', 'profile_pic', 'username', 'password',
-            'first_name', 'last_name', 'dob', 'email', 'contact_no', 'gender',
-            'current_address', 'city', 'state', 'country',
-            'parent_guardian_name', 'parent_guardian_phone', 'parent_guardian_occupation',
-            'student_type', 'student_sub_type', 'source_type', 'source_name',
-            'converter', 'internship_required', 'internship', 'status',
-            'school_student', 'college_student', 'jobseeker', 'employee',
-            'information', 'batch_timing', 'notes',
-        ]
-        read_only_fields = ['student_id', 'registration_id']
-
-    def validate_contact_no(self, value):
-        value = value.strip()
-        if Student.objects.filter(contact_no=value, is_archived=False).exists():
-            raise serializers.ValidationError("Phone number already registered.")
-        if Trainer.objects.filter(contact_no=value, is_archived=False).exists():
-            raise serializers.ValidationError("Phone number already registered.")
-        return value
-
-    def validate_email(self, value):
-        ALLOWED_EMAIL_DOMAINS = {
-            "gmail.com", "yahoo.com", "hotmail.com",
-            "outlook.com", "rediffmail.com", "icloud.com",
-            "aryutechnologies.com",
-        }
-        value = value.lower().strip()
-        try:
-            validate_email(value)
-        except DjangoValidationError:
-            raise serializers.ValidationError("Enter a valid email address.")
-
-        domain = value.split("@")[-1]
-        if domain not in ALLOWED_EMAIL_DOMAINS:
-            raise serializers.ValidationError(f"Please use an accepted email domain (e.g., gmail.com, yahoo.com).")
-
-        if Student.objects.filter(email__iexact=value, is_archived=False).exists():
-            raise serializers.ValidationError("Email address already registered.")
-
-        return value
-
-    def to_internal_value(self, data):
-        mutable_data = data.copy()
-        stype = mutable_data.get("student_type")
-
-        # Set default active status
-        mutable_data['status'] = True
-
-        # Parse string "true"/"Yes" to actual boolean for information field
-        if "information" in mutable_data:
-            info_val = str(mutable_data.get("information")).lower()
-            mutable_data["information"] = info_val in ["true", "yes", "1"]
-
-        if stype == "school_student" and "school_student" not in mutable_data:
-            mutable_data["school_student"] = {
-                "school_name": mutable_data.get("school_name") or mutable_data.get("institution_name"),
-                "school_class": mutable_data.get("school_class") or mutable_data.get("degree_class"),
-                "company_id": mutable_data.get("company_id")
-            }
-        elif stype == "college_student" and "college_student" not in mutable_data:
-            mutable_data["college_student"] = {
-                "college_name": mutable_data.get("college_name") or mutable_data.get("institution_name"),
-                "degree": mutable_data.get("degree") or mutable_data.get("degree_class"),
-                "year_of_study": mutable_data.get("year_of_study") or 1,
-                "resume": mutable_data.get("resume"),
-                "company_id": mutable_data.get("company_id")
-            }
-        elif stype == "jobseeker" and "jobseeker" not in mutable_data:
-            mutable_data["jobseeker"] = {
-                "passed_out_year": mutable_data.get("passed_out_year") or 2024,
-                "current_qualification": mutable_data.get("current_qualification") or mutable_data.get("degree_class"),
-                "preferred_job_role": mutable_data.get("preferred_job_role") or "Software Engineer",
-                "resume": mutable_data.get("resume"),
-                "company_id": mutable_data.get("company_id")
-            }
-        elif stype == "employee" and "employee" not in mutable_data:
-            mutable_data["employee"] = {
-                "company_name": mutable_data.get("company_name") or "N/A",
-                "designation": mutable_data.get("designation") or "Employee",
-                "experience": str(mutable_data.get("experience") or "0"),
-                "skills": mutable_data.get("skills") or "N/A",
-                "company_id": mutable_data.get("company_id")
-            }
-
-        return super().to_internal_value(mutable_data)
-
-    def create(self, validated_data):
-        plain_password = validated_data.get('password')
-        if plain_password:
-            validated_data['password'] = make_password(plain_password)
-        
-        validated_data['status'] = True
-
-        student_role = Role.objects.filter(name__iexact="Student").first()
-        if student_role:
-            validated_data["role"] = student_role
-
-        school_data = validated_data.pop('school_student', None)
-        college_data = validated_data.pop('college_student', None)
-        jobseeker_data = validated_data.pop('jobseeker', None)
-        employee_data = validated_data.pop('employee', None)
-        student_type = validated_data.get('student_type')
-
-        student = Student.objects.create(**validated_data)
-
-        if student_type == 'school_student' and school_data:
-            School_Student.objects.create(student=student, **school_data)
-        elif student_type == 'college_student' and college_data:
-            College_Student.objects.create(student=student, **college_data)
-        elif student_type == 'jobseeker' and jobseeker_data:
-            JobSeeker.objects.create(student=student, **jobseeker_data)
-        elif student_type == 'employee' and employee_data:
-            Employee.objects.create(student=student, **employee_data)
-
-        return student
-   
 
 class RecordingSerializer(serializers.ModelSerializer):
     created_date = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
@@ -1930,7 +1795,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
     def get_pdf_url(self, obj):
         if obj.pdf_file and hasattr(obj.pdf_file, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.pdf_file.url
+            return 'https://aylms.aryuprojects.com/api' + obj.pdf_file.url
         return None
      
 class CertificateSerializer(serializers.ModelSerializer):
@@ -2115,6 +1980,10 @@ class TrainerSerializer(serializers.ModelSerializer):
             "course_id", "course_name", "title"
         ]
         extra_kwargs = {
+            "salary": {
+                "required": False,
+                "allow_null": True,
+            },
             "password": {
                 "write_only": True,
                 "required": False,
@@ -2320,6 +2189,10 @@ class TrainerSerializer(serializers.ModelSerializer):
         else:
             mutable_data = dict(data)
 
+        # ── Clean empty string salary inputs ─────────────────────────────
+        if mutable_data.get("salary") in ["", None, "null"]:
+            mutable_data["salary"] = None
+
         raw_courses = mutable_data.pop("courses", None)
         if raw_courses is None:
             raw_courses = mutable_data.get("course_ids")
@@ -2397,7 +2270,8 @@ class TrainerSerializer(serializers.ModelSerializer):
 
         instance.refresh_from_db()
         return instance
-   
+        
+               
 class TrainerPreviewSerializer(serializers.ModelSerializer):
     trainer_name = serializers.CharField(source="full_name")
 
@@ -2418,7 +2292,7 @@ class TrainerTravelExpenseImageSerializer(serializers.ModelSerializer):
 
     def get_image(self, obj):
         if obj.image and hasattr(obj.image, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.image.url
+            return 'https://aylms.aryuprojects.com/api' + obj.image.url
         return None
 
 
@@ -2597,7 +2471,7 @@ class StudentDetailSerializer(serializers.ModelSerializer):
     
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
         return None
 
 class TrainerForStudentSerializer(serializers.ModelSerializer):
@@ -2622,7 +2496,7 @@ class TrainerForStudentSerializer(serializers.ModelSerializer):
     
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
         return None
 
 class TrainerSimpleSerializer(serializers.ModelSerializer):
@@ -2633,7 +2507,7 @@ class TrainerSimpleSerializer(serializers.ModelSerializer):
         
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
         return None
 
 class SubmissionStudentSerializer(serializers.ModelSerializer):
@@ -2645,7 +2519,7 @@ class SubmissionStudentSerializer(serializers.ModelSerializer):
         
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
+            return 'https://aylms.aryuprojects.com/api' + obj.profile_pic.url
         return None
     
     def get_student_name(self, obj):
@@ -2673,7 +2547,7 @@ class SubmissionSerializer(serializers.ModelSerializer):
 
     def get_file_url(self, obj):
         if obj.file and hasattr(obj.file, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.file.url
+            return 'https://aylms.aryuprojects.com/api' + obj.file.url
         return None
     
     def validate(self, data):
@@ -2927,7 +2801,7 @@ class TicketAttachmentSerializer(serializers.ModelSerializer):
 
     def get_file(self, obj):
         if obj.file and hasattr(obj.file, 'url'):
-            return'https://portal.aryuacademy.com/api' +obj.file.url
+            return'https://aylms.aryuprojects.com/api' +obj.file.url
         return None
 
 
@@ -2968,9 +2842,13 @@ class StudentTicketSerializer(serializers.ModelSerializer):
     class Meta:
         model = StudentTicket
         fields = [
-            "ticket_id", "name", "phone", "subject", "message", "ticket_type", "status", "priority", "student_id",
+            "ticket_id", "name", "phone", "subject", "message", "ticket_type","status", "priority", "student_id",
             "student_name", 'contact_no', "email", "created_at", "updated_at",
             "updated_by_name", "updated_by_type", "attachments", "replies"
+        ]
+        indexes = [
+            models.Index(fields=['updated_at']),
+            models.Index(fields=['status']),
         ]
 
     def get_student_id(self, obj):
@@ -2997,53 +2875,41 @@ class StudentTicketSerializer(serializers.ModelSerializer):
         return None
     
     def get_updated_by_name(self, obj):
-        try:
-            updated_by_user = obj.updated_by
-            if not updated_by_user:
-                return "System"
-
-            if hasattr(updated_by_user, 'student_id'):
-                first_name = getattr(updated_by_user, 'first_name', '') or ''
-                last_name = getattr(updated_by_user, 'last_name', '') or ''
-                return f"{first_name} {last_name}".strip()
-
-            if hasattr(updated_by_user, 'trainer_id'):
-                return getattr(updated_by_user, 'full_name', getattr(updated_by_user, 'username', 'Admin'))
-
-            if getattr(updated_by_user, 'user_type', None) == 'super_admin':
-                return "Super Admin"
-
-            return getattr(updated_by_user, 'username', 'Unknown')
-            
-        except (ContentType.DoesNotExist, ObjectDoesNotExist, AttributeError):
+        if not obj.updated_by:
             return "System"
 
+        if hasattr(obj.updated_by, 'student_id'):
+            return f"{obj.updated_by.first_name} {obj.updated_by.last_name}".strip()
+
+        if hasattr(obj.updated_by, 'trainer_id'):
+            return getattr(obj.updated_by, 'full_name', obj.updated_by.username)
+
+        if getattr(obj.updated_by, 'user_type', None) == 'super_admin':
+            return "Super Admin"
+
+        return getattr(obj.updated_by, 'username', 'Unknown')
+
     def get_updated_by_type(self, obj):
-        try:
-            updated_by_user = obj.updated_by
-            if not updated_by_user:
-                return "system"
-
-            if hasattr(updated_by_user, 'student_id'):
-                return "student"
-
-            if hasattr(updated_by_user, 'trainer_id'):
-                return "admin"
-
-            if getattr(updated_by_user, 'user_type', None) == 'super_admin':
-                return "super_admin"
-
-            return "unknown"
-            
-        except (ContentType.DoesNotExist, ObjectDoesNotExist, AttributeError):
+        if not obj.updated_by:
             return "system"
+
+        if hasattr(obj.updated_by, 'student_id'):
+            return "student"
+
+        if hasattr(obj.updated_by, 'trainer_id'):
+            return "admin"
+
+        if getattr(obj.updated_by, 'user_type', None) == 'super_admin':
+            return "super_admin"
+
+        return "unknown"
 
     def get_student_name(self, obj):
         if obj.student:
             return f"{obj.student.first_name}".strip()
 
         if obj.webinar_participant:
-            return obj.webinar_participant.name
+            return obj.webinar_participant.name  # webinar uses name field
 
         return "Unknown"
     
@@ -3060,7 +2926,6 @@ class StudentTicketSerializer(serializers.ModelSerializer):
             many=True,
             context=self.context
         ).data
-
 
 class TicketDetailSerializer(serializers.ModelSerializer):
     replies = TicketReplySerializer(many=True)

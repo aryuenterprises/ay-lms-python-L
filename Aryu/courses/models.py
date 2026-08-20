@@ -77,7 +77,9 @@ class Course(models.Model):
     course_category = models.ForeignKey(
         CourseCategory,
         on_delete=models.CASCADE,
-        related_name="courses"
+        related_name="courses",
+        null = True,
+        blank = True
     )
     course_name = models.CharField(max_length=255, null=True, blank=True)
     course_pic = models.ImageField(upload_to="courses/", null=True, blank=True)

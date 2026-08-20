@@ -12,6 +12,7 @@ from lead.models import Lead
 from django.utils.text import slugify
 import requests
 import logging
+from courses.models import Course
 logger = logging.getLogger("general")
 
 
@@ -104,7 +105,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
         certificate = getattr(obj, "certificate", None)
 
         if certificate and certificate.certificate_file:
-            return 'https://portal.aryuacademy.com/api' + certificate.certificate_file.url
+            return 'https://aylms.aryuprojects.com/api' + certificate.certificate_file.url
 
         return None
 
@@ -193,7 +194,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
                 timeout=10
             )
 
-            logger.debug(f"TeleCRM Response: {response.json()}")
+            logger.debug("TeleCRM Response:", response.json())
 
         except Exception as e:
             logger.exception("TeleCRM Error:", str(e))
@@ -237,7 +238,7 @@ class WebinarlistFeedbackSerializer(serializers.ModelSerializer):
 
     def get_rating_screenshot_url(self, obj):
         if obj.rating_screenshot:
-            return f"https://portal.aryuacademy.com/api{obj.rating_screenshot.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.rating_screenshot.url}"
         return None
 
 class WebinarToolSerializer(serializers.ModelSerializer):
@@ -260,10 +261,12 @@ class WebinarMetadataSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
     def get_image_url(self, obj):
-        if obj.meta_image:
-            return f"{settings.MEDIA_BASE_URL}{obj.meta_image.url}"
+        # 1. Access the actual FileField/ImageField attribute on the model (e.g., obj.image)
+        # 2. Safely verify that the file exists and has a .url property
+        if hasattr(obj, 'image') and obj.image and hasattr(obj.image, 'url'):
+            return 'https://aylms.aryuprojects.com/api' + obj.image.url
         return None
-
+        
 class WebinarFAQSerializer(serializers.ModelSerializer):
     class Meta:
         model = Webinar_FAQ
@@ -291,11 +294,10 @@ class WebinarSerializer(serializers.ModelSerializer):
 
     def get_webinar_image_url(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
+            return 'https://aylms.aryuprojects.com/api' + obj.webinar_image.url
         return None
     
     def get_total_amount_received(self, obj):
-        # reads an already-computed annotation — no extra query
         return float(getattr(obj, "_total_amount_received", None) or 0)
         
     def get_participants(self, obj):
@@ -318,7 +320,7 @@ class WebinarSerializer(serializers.ModelSerializer):
                 "profession": r.profession,
                 "payment_status": txn.payment_status if txn else "free",
                 "certificate_url": (
-                    "https://portal.aryuacademy.com/api" + certificate.certificate_file.url
+                    "https://aylms.aryuprojects.com/api" + certificate.certificate_file.url
                     if certificate and certificate.certificate_file else None
                 ),
                 "feedback": WebinarFeedbackSerializer(r.feedback).data if getattr(r, "feedback", None) else None,
@@ -351,7 +353,6 @@ class WebinarSerializer(serializers.ModelSerializer):
 
     def get_is_full(self, obj):
         return getattr(obj, "participants_count", 0) >= obj.seats_available
-    
 
     def create(self, validated_data):
         price = validated_data.get("price")
@@ -385,10 +386,28 @@ class WebinarSerializer(serializers.ModelSerializer):
                 Decimal("0.01"), rounding=ROUND_HALF_UP
             )
 
-        # 1) Create webinar in DB
+        # 1) Save webinar instance in DB
         webinar = super().create(validated_data)
+
+        # 2) CREATE COURSE ONLY IF TYPE IS FALSE (BOOTCAMP)
+        if not webinar.type:
+            from django.apps import apps
+
+            course = Course.objects.create(
+                course_name=webinar.title,
+                fee=webinar.price,
+                status="active",
+                created_by=webinar.created_by,
+                created_by_type=webinar.created_by_type,
+            )
+
+            # Link course back to the webinar if the foreign key exists on the model
+            if hasattr(webinar, "course"):
+                webinar.course = course
+                webinar.save(update_fields=["course"])
+
+        # 3) Create Zoom meeting
         from .services.zoom_service import create_zoom_meeting
-        # 2) Create Zoom meeting
         try:
             zoom_data = create_zoom_meeting(
                 topic=webinar.title,
@@ -397,14 +416,8 @@ class WebinarSerializer(serializers.ModelSerializer):
             )
         except Exception as e:
             webinar.delete()
-
-            # LOG full error for server logs
             logger.exception("Zoom meeting creation failed")
-
-            # RETURN real error to API caller
-            raise serializers.ValidationError(
-                {"zoom": str(e)}
-            )
+            raise serializers.ValidationError({"zoom": str(e)})
 
         webinar.zoom_meeting_id = zoom_data["meeting_id"]
         webinar.zoom_join_url = zoom_data["join_url"]
@@ -419,7 +432,6 @@ class WebinarSerializer(serializers.ModelSerializer):
         ])
 
         return webinar
-    
     def update(self, instance, validated_data):
 
         if "price" in validated_data and validated_data["price"] is not None:
@@ -433,6 +445,7 @@ class WebinarSerializer(serializers.ModelSerializer):
             )
 
         return super().update(instance, validated_data)
+
 
 class WebinarListSerializer(serializers.ModelSerializer):
     scheduled_start = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
@@ -442,8 +455,8 @@ class WebinarListSerializer(serializers.ModelSerializer):
     faqs = WebinarFAQSerializer(many=True, read_only=True)
     pending_seats = serializers.SerializerMethodField()
     is_full = serializers.SerializerMethodField() 
-    participants_count=serializers.SerializerMethodField()
-    total_amount_received=serializers.SerializerMethodField()
+    participants_count = serializers.SerializerMethodField()
+    total_amount_received = serializers.SerializerMethodField()
     feedback = WebinarlistFeedbackSerializer(source="webinarfeedback_set", many=True, read_only=True)
 
     class Meta:
@@ -452,30 +465,43 @@ class WebinarListSerializer(serializers.ModelSerializer):
         read_only_fields = ("created_by", "created_by_type")
 
     def get_webinar_image_url(self, obj):
-        if obj.webinar_image:
-            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
+        if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
+            return 'https://aylms.aryuprojects.com/api' + obj.webinar_image.url
         return None
 
     def get_participants_count(self, obj):
-            return obj.registrations.filter(
-                payment_transaction__payment_status="done"
-            ).count()
-    
+        # 1. First check if ViewSet annotated `participants_count`
+        if hasattr(obj, "participants_count"):
+            return obj.participants_count
+        # 2. Fallback DB count if serializer used in isolation
+        return obj.registrations.filter(
+            payment_transaction__payment_status="done"
+        ).count()
+
     def get_pending_seats(self, obj):
-        return max(obj.seats_available - obj.participants_count, 0)
+        count = self.get_participants_count(obj)
+        seats = obj.seats_available or 0
+        return max(seats - count, 0)
 
     def get_is_full(self, obj):
-        return obj.participants_count >= obj.seats_available
+        count = self.get_participants_count(obj)
+        seats = obj.seats_available or 0
+        return count >= seats
 
     def get_total_amount_received(self, obj):
-        return float(obj.total_amount_received or 0)
+        # Checks if ViewSet annotated total_amount_received
+        total = getattr(obj, "total_amount_received", 0)
+        return float(total or 0)
 
     def create(self, validated_data):
         price = validated_data.get("price")
         regular_price = validated_data.get("regular_price")
         request = self.context.get("request")
-        user = request.user
+        
+        if not request or not request.user:
+            raise serializers.ValidationError("Authentication context missing.")
 
+        user = request.user
         role = getattr(user, "user_type", None)
 
         if role in ("tutor", "admin"):
@@ -492,6 +518,7 @@ class WebinarListSerializer(serializers.ModelSerializer):
 
         validated_data["created_by"] = str(creator_id)
         validated_data["created_by_type"] = role
+
         if price is not None:
             validated_data["price"] = Decimal(str(price)).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -502,10 +529,11 @@ class WebinarListSerializer(serializers.ModelSerializer):
                 Decimal("0.01"), rounding=ROUND_HALF_UP
             )
 
-        # 1) Create webinar in DB
+        # 1. Save Webinar to DB
         webinar = super().create(validated_data)
+
+        # 2. Create Zoom Meeting
         from .services.zoom_service import create_zoom_meeting
-        # 2) Create Zoom meeting
         try:
             zoom_data = create_zoom_meeting(
                 topic=webinar.title,
@@ -513,16 +541,13 @@ class WebinarListSerializer(serializers.ModelSerializer):
                 duration_minutes=60
             )
         except Exception as e:
-            webinar.delete()
+            webinar.delete()  # Rollback DB object if Zoom API fails
+            raise serializers.ValidationError({"zoom": str(e)})
 
-            # RETURN real error to API caller
-            raise serializers.ValidationError(
-                {"zoom": str(e)}
-            )
-
-        webinar.zoom_meeting_id = zoom_data["meeting_id"]
-        webinar.zoom_join_url = zoom_data["join_url"]
-        webinar.zoom_link = zoom_data["join_url"]
+        # 3. Update Zoom Details
+        webinar.zoom_meeting_id = zoom_data.get("meeting_id") or zoom_data.get("id")
+        webinar.zoom_join_url = zoom_data.get("join_url")
+        webinar.zoom_link = zoom_data.get("join_url")
         webinar.status = "SCHEDULED"
 
         webinar.save(update_fields=[
@@ -533,9 +558,8 @@ class WebinarListSerializer(serializers.ModelSerializer):
         ])
 
         return webinar
-    
-    def update(self, instance, validated_data):
 
+    def update(self, instance, validated_data):
         if "price" in validated_data and validated_data["price"] is not None:
             validated_data["price"] = Decimal(str(validated_data["price"])).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -547,7 +571,7 @@ class WebinarListSerializer(serializers.ModelSerializer):
             )
 
         return super().update(instance, validated_data)
-
+        
 class TicketReplySerializer(serializers.ModelSerializer):
     sender_type = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
@@ -713,7 +737,7 @@ class PublicWebinarListSerializer(serializers.ModelSerializer):
 
     def get_webinar_image(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
+            return 'https://aylms.aryuprojects.com/api' + obj.webinar_image.url
         return None
     
     def get_registered_count(self, obj):
@@ -966,7 +990,7 @@ class FormWithAnswersSerializer(serializers.ModelSerializer):
 
     def get_form_image_url(self, obj):
         if obj.form_image:
-            return f"https://portal.aryuacademy.com/api{obj.form_image.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.form_image.url}"
         return None
 
     def get_submissions_count(self, obj):
@@ -1013,7 +1037,7 @@ class FormCreateSerializer(serializers.Serializer):
 
     def get_form_image_url(self, obj):
         if obj.form_image:
-            return f"https://portal.aryuacademy.com/api{obj.form_image.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.form_image.url}"
         return None
 
     def create(self, validated_data):
@@ -1111,7 +1135,7 @@ class FormReadSerializer(serializers.ModelSerializer):
 
     def get_form_image_url(self, obj):
         if obj.form_image:
-            return f"https://portal.aryuacademy.com/api{obj.form_image.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.form_image.url}"
         return None
 
 class FormUpdateSerializer(serializers.Serializer):
@@ -1206,6 +1230,6 @@ class PublicFormSerializer(serializers.ModelSerializer):
 
     def get_form_image_url(self, obj):
         if obj.form_image:
-            return f"https://portal.aryuacademy.com/api{obj.form_image.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.form_image.url}"
         return None
 

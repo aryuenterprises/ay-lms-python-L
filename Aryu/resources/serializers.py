@@ -69,6 +69,7 @@ class ResourcesSerializer(serializers.ModelSerializer):
             return 'https://portal.aryuacademy.com/api' + obj.file.url
         return None
 
+
 # =====================================================
 # FORM SERIALIZER
 # =====================================================

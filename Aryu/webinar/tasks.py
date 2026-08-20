@@ -1,14 +1,16 @@
 from celery import shared_task
-from django.db import close_old_connections
+from django.db import transaction
 from .services.certificate_generation import generate_and_send_certificate_pdf
-from webinar.models import Webinar, WebinarRegistration
+from .models import Webinar, WebinarRegistration, WebinarAttendanceSummary, WebinarAttendanceLog
+from django.db.models import Sum, Count
+from django.utils.dateparse import parse_datetime
 from datetime import timedelta
 from aryuapp.models import Certificate
 from .services.whatsapp import send_webinar_live_whatsapp, send_webinar_reminder, send_webinar_joining_whatsapp, send_webinar_welcome_whatsapp
 from django.utils.timezone import now
-from webinar.services.webinar_emails import send_webinar_certificate_email
 from pathlib import Path
 from django.conf import settings
+
 
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=30)
@@ -127,3 +129,5 @@ def send_webinar_live_task(self, registration_id):
 @shared_task
 def celery_health_check():
     return "Celery is running fine!"
+
+
