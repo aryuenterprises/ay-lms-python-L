@@ -1,6 +1,5 @@
 from django.db import models
 from django.contrib.contenttypes.fields import GenericRelation
-from django.db import transaction, IntegrityError
 from django.db.models import Max
 from datetime import datetime
 # Create your models here.
@@ -23,7 +22,7 @@ class PaymentGateway(models.Model):
 
     def __str__(self):
         return f"{self.gatway_name} ({'Enabled' if not self.is_archived else 'Disabled'})"
-    
+
 class PaymentTransaction(models.Model):
 
     student = models.ForeignKey("aryuapp.Student", on_delete=models.CASCADE, related_name="transactions", null=True, blank=True)
@@ -153,8 +152,7 @@ class PaymentTransaction(models.Model):
 
     def __str__(self):
         return f"{self.student} - {self.amount} {self.currency} ({self.payment_status})"
-
-
+        
 class TutorPayment(models.Model):
     PAYMENT_TYPE_CHOICES = [
         ('batch_payment', 'Batch Payment'),
@@ -204,8 +202,6 @@ class TutorPayment(models.Model):
 
     def __str__(self):
         return f"{self.tutor} - {self.tutor_payment} ({self.payment_status})"
-
-   
 class PaymentLog(models.Model):
     transaction = models.ForeignKey(PaymentTransaction, on_delete=models.CASCADE, related_name="logs")
     event_type = models.CharField(max_length=100)

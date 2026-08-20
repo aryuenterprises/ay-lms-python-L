@@ -743,7 +743,7 @@ STATICFILES_DIRS = [
     BASE_DIR / "aryuapp/static",
 ]
 
-MEDIA_URL = "/media/"
+MEDIA_URL = "/api/media/"
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 
 # Default primary key field type

@@ -14,10 +14,10 @@ urlpatterns = [
     
     # Webinar Registration
     path('<slug:slug>/register/',WebinarRegistrationViewSet.as_view({'post': 'create'}),name='webinar-register'),
+    path('<slug:slug>/campaign/', WebinarRegistrationViewSet.as_view({'post': 'campaign'}), name='webinar-bootcamp-campaign'),
     path('<slug:slug>/registrations/',WebinarRegistrationViewSet.as_view({'get': 'list'}),name='webinar-registrations'),
     path('<slug:slug>/registrations/<int:pk>',WebinarRegistrationViewSet.as_view({'delete':'destroy'}),name='webinar-registrations'),
-    # path('bootcamp/<slug:slug>/registrations/<int:pk>',BootcampViewSet.as_view({'delete':'destroy'}),name='webinar-registrations'),
-
+    path('bootcamp/<slug:slug>/registrations/<int:pk>',BootcampViewSet.as_view({'delete':'destroy'}),name='webinar-registrations'),
 
     # Webinar Lifecycle
     path('<str:uuid>/cancel/',WebinarLifecycleViewSet.as_view({'post': 'cancel'}),name='webinar-cancel'),
@@ -30,9 +30,9 @@ urlpatterns = [
     path('public/webinars/<slug:slug>', PublicWebinarViewSet.as_view({"get": "retrieve"}), name='public-webinar-detail'),
 
     # Webinar Feedback
-    path("feedback/",WebinarFeedbackViewSet.as_view({"get": "list","post": "create",}),name="webinar-feedback-list"),
-    path("feedback/<uuid:pk>/",WebinarFeedbackViewSet.as_view({"get": "retrieve",}),name="webinar-feedback-detail"),
-    path("certificates/send/",WebinarCertificateViewSet.as_view({"post": "send"}),name="webinar-certificate-send"),
+    path("feedback/",WebinarFeedbackViewSet.as_view({"get": "list","post": "create",}),name='webinar-feedback-list'),
+    path("feedback/<uuid:pk>/",WebinarFeedbackViewSet.as_view({"get": "retrieve",}),name='webinar-feedback-detail'),
+    path("certificates/send/",WebinarCertificateViewSet.as_view({"post": "send"}),name='webinar-certificate-send'),
     path("tickets/", PublicTicketViewSet.as_view({"get": "retrieve", "post": "create"}), name="webinar-ticket-list"),
     path("tickets/<int:pk>/reply/",PublicTicketViewSet.as_view({"post": "reply"}),name="webinar-ticket-reply"),
 
