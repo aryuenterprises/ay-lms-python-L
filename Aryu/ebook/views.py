@@ -1,9 +1,9 @@
-from rest_framework import viewsets, status,permissions
+from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.http import HttpResponse, JsonResponse
-from payments.models import PaymentTransaction,PaymentGateway
-from django.db.models import  Prefetch
+from payments.models import PaymentTransaction, PaymentGateway
+from django.db.models import Prefetch
 from django.db.models import Q
 import razorpay
 from rest_framework.views import APIView
@@ -21,7 +21,6 @@ import json
 import uuid
 from django.db import transaction as db_transaction
 from rest_framework.decorators import action
-from django.views.decorators.csrf import csrf_exempt
 import hmac
 import hashlib
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -31,6 +30,7 @@ import secrets
 import string
 from django.core.cache import cache
 from django.contrib.auth.hashers import make_password, check_password
+from django.utils.decorators import method_decorator
 
 logger = logging.getLogger('razorpay_webhook')
 
@@ -44,6 +44,7 @@ def generate_secure_password(length=10):
                 and any(c in "!@#$%^&*" for c in pwd)):
             return pwd
 
+@method_decorator(csrf_exempt, name='dispatch')
 class EbookViewSet(viewsets.ModelViewSet):
     queryset = Ebook.objects.all()
     serializer_class = EbookSerializer
@@ -246,16 +247,19 @@ class EbookViewSet(viewsets.ModelViewSet):
             "status": True,
             "message": "Ebook deleted successfully"
         }, status=status.HTTP_200_OK)
+
+@method_decorator(csrf_exempt, name='dispatch')
 class EbookPublicListAPIView(viewsets.ModelViewSet):
     queryset = Ebook.objects.filter(is_deleted=False)
     serializer_class = EbookDetailSerializer 
-    
+
+@method_decorator(csrf_exempt, name='dispatch')
 class PublicEbookViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet
 ):
-    queryset = Ebook.objects.filter(is_deleted=False, )
+    queryset = Ebook.objects.filter(is_deleted=False)
     serializer_class = PublicEbookListSerializer
 
     permission_classes = []
@@ -276,7 +280,10 @@ class PublicEbookViewSet(
             "success": True,
             "data": response.data
         })
+
 VERIFY_TOKEN = "akzworld" 
+
+@csrf_exempt
 def whatsapp_webhook(request):
 
     # =================================
@@ -398,6 +405,7 @@ def razorpay_webhook(request):
 
     return HttpResponse(status=200)
 
+@method_decorator(csrf_exempt, name='dispatch')
 class RazorpayPaymentViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
 
@@ -542,7 +550,8 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             )
 
         return Response({"success": True})
-   
+
+@method_decorator(csrf_exempt, name='dispatch')  
 class EbookRegistrationViewSet(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
 
@@ -1025,7 +1034,8 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
             "count": len(data),
             "data": data
         })
-    
+
+@method_decorator(csrf_exempt, name='dispatch')
 class EbookUserViewSet(viewsets.ViewSet):
     # ============================================
     # LIST REGISTRATIONS for each user
@@ -1087,7 +1097,8 @@ class EbookUserViewSet(viewsets.ViewSet):
                 "data":serializer.data,
                 "message": "Password updated"
             })
-    
+
+@method_decorator(csrf_exempt, name='dispatch')
 class ReviewListCreateView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -1126,7 +1137,8 @@ class ReviewListCreateView(APIView):
             "status": False,
             "errors": serializer.errors
         }, status=status.HTTP_400_BAD_REQUEST)
-    
+
+@method_decorator(csrf_exempt, name='dispatch')
 class ReviewDetailView(APIView):
 
     def get_object(self, pk):
@@ -1162,7 +1174,8 @@ class ReviewDetailView(APIView):
 
         review.delete()
         return Response({"status": True, "message": "Deleted successfully"})
-    
+
+@method_decorator(csrf_exempt, name='dispatch')
 class EbookReviewBySlugView(APIView):
 
     def get(self, request, slug):
@@ -1180,4 +1193,3 @@ class EbookReviewBySlugView(APIView):
             "reviews_count": reviews.count(),
             "data": serializer.data
         })
-    

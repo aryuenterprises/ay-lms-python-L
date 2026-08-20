@@ -66,6 +66,9 @@ class EbookSerializer(serializers.ModelSerializer):
     required=False
     )
     created_by = serializers.SerializerMethodField()
+    rating= serializers.SerializerMethodField()
+    short_description=serializers.SerializerMethodField()
+    status=serializers.SerializerMethodField()
 
     
     def get_created_by(self, obj):
@@ -137,8 +140,19 @@ class EbookSerializer(serializers.ModelSerializer):
     
     def get_reviews_count(self, obj):
         return Reviews.objects.filter(registration__ebook=obj).count()
+    
+    def get_rating(self, obj):
+        # Return the rating attribute from the model or compute it dynamically
+        return getattr(obj, 'rating', 0.0)
+    def get_short_description(self, obj):
+        # Truncate the main description or return the field safely
+        description = getattr(obj, 'description', '') or ''
+        return description[:150] if len(description) > 150 else description
 
-
+    def get_status(self, obj):
+        # Calculate status dynamically
+        return "active" if getattr(obj, 'is_active', True) else "inactive"
+        
     def get_average_rating(self, obj):
         reviews = Reviews.objects.filter(registration__ebook=obj)
 

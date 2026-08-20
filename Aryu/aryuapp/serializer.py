@@ -2842,13 +2842,9 @@ class StudentTicketSerializer(serializers.ModelSerializer):
     class Meta:
         model = StudentTicket
         fields = [
-            "ticket_id", "name", "phone", "subject", "message", "ticket_type","status", "priority", "student_id",
-            "student_name", 'contact_no', "email", "created_at", "updated_at",
+            "ticket_id", "name", "phone", "subject", "message", "ticket_type", "status", "priority", "student_id",
+            "student_name", "contact_no", "email", "created_at", "updated_at",
             "updated_by_name", "updated_by_type", "attachments", "replies"
-        ]
-        indexes = [
-            models.Index(fields=['updated_at']),
-            models.Index(fields=['status']),
         ]
 
     def get_student_id(self, obj):
@@ -2875,41 +2871,60 @@ class StudentTicketSerializer(serializers.ModelSerializer):
         return None
     
     def get_updated_by_name(self, obj):
-        if not obj.updated_by:
+        try:
+            # Check direct DB fields first without evaluating GenericForeignKey
+            if not getattr(obj, "updated_by_type_id", None) or not getattr(obj, "updated_by_id", None):
+                return "System"
+
+            user = obj.updated_by
+            if not user:
+                return "System"
+
+            if hasattr(user, 'student_id'):
+                full_name = f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
+                return full_name if full_name else "Student"
+
+            if hasattr(user, 'trainer_id'):
+                return getattr(user, 'full_name', getattr(user, 'username', 'Trainer'))
+
+            if getattr(user, 'user_type', None) == 'super_admin':
+                return "Super Admin"
+
+            return getattr(user, 'username', 'Unknown')
+
+        except (ContentType.DoesNotExist, ObjectDoesNotExist, Exception):
             return "System"
 
-        if hasattr(obj.updated_by, 'student_id'):
-            return f"{obj.updated_by.first_name} {obj.updated_by.last_name}".strip()
-
-        if hasattr(obj.updated_by, 'trainer_id'):
-            return getattr(obj.updated_by, 'full_name', obj.updated_by.username)
-
-        if getattr(obj.updated_by, 'user_type', None) == 'super_admin':
-            return "Super Admin"
-
-        return getattr(obj.updated_by, 'username', 'Unknown')
-
     def get_updated_by_type(self, obj):
-        if not obj.updated_by:
+        try:
+            # Check direct DB fields first without evaluating GenericForeignKey
+            if not getattr(obj, "updated_by_type_id", None) or not getattr(obj, "updated_by_id", None):
+                return "system"
+
+            user = obj.updated_by
+            if not user:
+                return "system"
+
+            if hasattr(user, 'student_id'):
+                return "student"
+
+            if hasattr(user, 'trainer_id'):
+                return "admin"
+
+            if getattr(user, 'user_type', None) == 'super_admin':
+                return "super_admin"
+
+            return "unknown"
+
+        except (ContentType.DoesNotExist, ObjectDoesNotExist, Exception):
             return "system"
-
-        if hasattr(obj.updated_by, 'student_id'):
-            return "student"
-
-        if hasattr(obj.updated_by, 'trainer_id'):
-            return "admin"
-
-        if getattr(obj.updated_by, 'user_type', None) == 'super_admin':
-            return "super_admin"
-
-        return "unknown"
 
     def get_student_name(self, obj):
         if obj.student:
             return f"{obj.student.first_name}".strip()
 
         if obj.webinar_participant:
-            return obj.webinar_participant.name  # webinar uses name field
+            return obj.webinar_participant.name
 
         return "Unknown"
     
