@@ -1089,6 +1089,9 @@ class EbookUserViewSet(viewsets.ViewSet):
             })
     
 class ReviewListCreateView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    parser_classes = [MultiPartParser, JSONParser]
 
     def get(self, request):
         slug = request.query_params.get("slug",None)
