@@ -22,7 +22,7 @@ from email.mime.image import MIMEImage
 logger = logging.getLogger(__name__)
 
 # Fallback Portal URL using your domain
-PORTAL_URL = getattr(settings, "PORTAL_URL", "https://aylms.aryuprojects.com/")
+PORTAL_URL = getattr(settings, "PORTAL_URL", "https://portal.aryuacademy.com/")
 
 # Valid payment statuses that confirm a paid transaction
 SUCCESSFUL_PAYMENT_STATUSES = {"success", "done", "paid", "complete"}
