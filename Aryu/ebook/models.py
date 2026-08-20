@@ -30,6 +30,9 @@ class Ebook(models.Model):
         help_text="YouTube/Vimeo embed URL"
     )
     popular = models.BooleanField(default=False)
+    rating = models.PositiveIntegerField()
+    short_description = models.CharField(null = True,blank = True)
+    status = models.BooleanField(default=True)
 class EbookSEO(models.Model):
     ebook = models.ForeignKey(
         Ebook,
