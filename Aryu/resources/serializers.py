@@ -39,23 +39,35 @@ class LeadCaptureSerializer(serializers.ModelSerializer):
 
 
 class ResourcesSerializer(serializers.ModelSerializer):
+    # Declare input fields as write_only so DRF processes the uploaded binary data
+    image = serializers.ImageField(write_only=True, required=False)
+    file = serializers.FileField(write_only=True, required=False)
+    
     image_url = serializers.SerializerMethodField()
     file_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Resources
-        fields = ["id", "title", "slug", "image_url", "file_url", "status", "form", "created_at"]
+        fields = [
+            "id", "title", "slug", "image", "file", 
+            "image_url", "file_url", "status", "form", "created_at"
+        ]
         
     def get_image_url(self, obj):
+        request = self.context.get('request')
         if obj.image and hasattr(obj.image, 'url'):
+            if request is not None:
+                return request.build_absolute_uri(obj.image.url)
             return 'https://portal.aryuacademy.com/api' + obj.image.url
         return None
 
     def get_file_url(self, obj):
+        request = self.context.get('request')
         if obj.file and hasattr(obj.file, 'url'):
+            if request is not None:
+                return request.build_absolute_uri(obj.file.url)
             return 'https://portal.aryuacademy.com/api' + obj.file.url
         return None
-
 
 # =====================================================
 # FORM SERIALIZER
