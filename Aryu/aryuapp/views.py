@@ -369,92 +369,224 @@ def verify_recaptcha_v3(token, action="login"):
     score = result.get("score", 0)
     return score >= settings.RECAPTCHA_REQUIRED_SCORE
 
+def set_refresh_cookie(response, request, refresh_token):
+    """
+    Sets a secure HttpOnly refresh token cookie compatible with cross-site and production setups.
+    """
+    max_age = int(timedelta(days=30).total_seconds())
+    is_production = not settings.DEBUG
+
+    response.set_cookie(
+        key="refresh_token",
+        value=str(refresh_token),
+        max_age=max_age,
+        httponly=True,
+        secure=is_production,
+        samesite="None" if is_production else "Lax",
+        path="/",
+    )
+    return response
+
+
 class CustomRefreshToken(RefreshToken):
-
     @classmethod
-    def for_user(cls, user, role_permissions=None, system_settings=None):
-        token = super().for_user(user)
+    def for_user_object(
+        cls,
+        user_obj,
+        user_type="user",
+        role_permissions=None,
+        system_settings=None,
+        extra_claims=None,
+    ):
+        token = cls()
 
-        role = getattr(user, "role", None)
+        user_id = getattr(user_obj, "id", getattr(user_obj, "pk", None))
+        if user_id:
+            token["user_id"] = user_id
 
-        token["user_id"] = user.id
-        token["username"] = user.username
-        token["name"] = user.full_name
-        token["user_type"] = user.user_type
+        token["user_type"] = user_type
+
+        if extra_claims:
+            for k, v in extra_claims.items():
+                token[k] = v
+
+        role = getattr(user_obj, "role", None)
         token["attendance_type"] = (
-            system_settings.attendance_options
-            if system_settings else None
+            system_settings.attendance_options if system_settings else None
         )
-
-        token["role_id"] = role.role_id if role else None
-        token["role_name"] = role.name if role else None
+        token["role_id"] = (
+            role.role_id if (role and hasattr(role, "role_id")) else None
+        )
+        token["role_name"] = role.name if (role and hasattr(role, "name")) else None
         token["permissions"] = role_permissions or []
 
-        token["created_at"] = (
-            user.created_at.isoformat()
-            if getattr(user, "created_at", None)
-            else None
+        return token
+
+
+class CustomTokenRefreshSerializer(TokenRefreshSerializer):
+    def validate(self, attrs):
+        try:
+            refresh = RefreshToken(attrs["refresh"])
+        except TokenError as e:
+            raise serializers.ValidationError({"detail": str(e)})
+
+        data = {"access": str(refresh.access_token)}
+        old_refresh_payload = refresh.payload
+        new_access = AccessToken(data["access"])
+
+        default_claims = {"exp", "jti", "token_type", "user_id", "iat"}
+
+        for claim, value in old_refresh_payload.items():
+            if claim not in default_claims:
+                new_access.payload[claim] = value
+
+        refresh_token_obj = None
+        if settings.SIMPLE_JWT.get("ROTATE_REFRESH_TOKENS", False):
+            if settings.SIMPLE_JWT.get("BLACKLIST_AFTER_ROTATION", False):
+                try:
+                    refresh.blacklist()
+                except AttributeError:
+                    pass
+            refresh.set_jti()
+            refresh.set_exp()
+            refresh_token_obj = refresh
+
+        return {
+            "access_token": str(new_access),
+            "refresh_token_obj": refresh_token_obj,
+        }
+
+
+class CustomTokenRefreshView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        refresh_token = request.COOKIES.get("refresh_token") or request.data.get(
+            "refresh"
         )
 
-        return token
-    
-class Login(LoggingMixin, APIView):
-    permission_classes = [AllowAny] 
+        if not refresh_token:
+            return Response(
+                {"success": False, "message": "Refresh token not provided"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        try:
+            serializer = CustomTokenRefreshSerializer(
+                data={"refresh": refresh_token}
+            )
+            serializer.is_valid(raise_exception=True)
+            validated_data = serializer.validated_data
+
+            response_payload = {
+                "success": True,
+                "access_token": validated_data["access_token"],
+                "token": validated_data["access_token"],
+            }
+
+            if validated_data.get("refresh_token_obj"):
+                new_refresh_str = str(validated_data["refresh_token_obj"])
+                response_payload["refresh_token"] = new_refresh_str
+
+            response = Response(response_payload, status=status.HTTP_200_OK)
+
+            if validated_data.get("refresh_token_obj"):
+                set_refresh_cookie(
+                    response, request, str(validated_data["refresh_token_obj"])
+                )
+
+            return response
+        except Exception:
+            return Response(
+                {"success": False, "message": "Token expired or invalid"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+
+
+class Login(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
 
     def post(self, request):
         try:
-            username_or_email = request.data.get('username', '').rstrip()
-            password = request.data.get('password', '').rstrip()
-
-            # recaptcha_token = request.data.get("recaptcha_token")
-            # if not recaptcha_token:
-            #     return Response(
-            #         {"success": False, "message": "reCAPTCHA token missing"},
-            #         status=400,
-            #     )
-
-            # if not verify_recaptcha_v3(recaptcha_token, action="login"):
-            #     return Response(
-            #         {"success": False, "message": "reCAPTCHA verification failed"},
-            #         status=400,
-            #     )
+            username_or_email = request.data.get("username", "").rstrip()
+            password = request.data.get("password", "").rstrip()
 
             if not username_or_email or not password:
-                return Response({'message': 'Username and password are required'}, status=status.HTTP_200_OK)
-            
-            if username_or_email != username_or_email.strip() or password != password.strip():
-                return Response({'success': False, 'message': 'Invalid username or password'}, status=200)
+                return Response(
+                    {"success": False, "message": "Username and password are required"},
+                    status=status.HTTP_200_OK,
+                )
 
+            if (
+                username_or_email != username_or_email.strip()
+                or password != password.strip()
+            ):
+                return Response(
+                    {"success": False, "message": "Invalid username or password"},
+                    status=status.HTTP_200_OK,
+                )
 
-            user = User.objects.filter(
-                Q(username=username_or_email) | Q(email__iexact=username_or_email),
-                is_active=True
-            ).first()
-            
-            system_settings  = Settings.objects.first()
+            system_settings = Settings.objects.first()
 
-            if user and check_password(password, user.password):
-                # fetch roles and permissions
-                role = getattr(user, "role", None)
+            def get_role_permissions(user_instance):
+                role = getattr(user_instance, "role", None)
+
+                # OWASP / Defensive Fallback: If no FK 'role' on user_instance (e.g. Trainer/Tutor), match Role by user_type
+                if not role:
+                    user_type = getattr(user_instance, "user_type", None)
+                    if user_type:
+                        role = Role.objects.filter(
+                            name__iexact=user_type, is_archived=False
+                        ).first()
+
                 role_permissions = []
-
                 if role:
-                    # Prefetch related module permissions
-                    role_modules = RoleModulePermission.objects.filter(
-                        role=role
-                    ).exclude(allowed_actions=[]).select_related("module_permission")
+                    role_modules = (
+                        RoleModulePermission.objects.filter(role=role)
+                        .exclude(allowed_actions=[])
+                        .select_related("module_permission")
+                    )
 
                     for rm in role_modules:
-                        role_permissions.append({
-                            "module_id": rm.module_permission.module_id,
-                            "module_name": rm.module_permission.module,
-                            "allowed_actions": rm.allowed_actions
-                        })
+                        if rm.allowed_actions:
+                            role_permissions.append(
+                                {
+                                    "module_id": rm.module_permission.module_id,
+                                    "module_name": rm.module_permission.module,
+                                    "allowed_actions": rm.allowed_actions,
+                                }
+                            )
+                return role, role_permissions
 
-                refresh = CustomRefreshToken.for_user(
-                    user,
+            # 1. Standard Admin/User Login
+            user = User.objects.filter(
+                Q(username=username_or_email)
+                | Q(email__iexact=username_or_email),
+                is_active=True,
+            ).first()
+
+            if user and check_password(password, user.password):
+                role, role_permissions = get_role_permissions(user)
+                extra_claims = {
+                    "user_id": user.id,
+                    "username": user.username,
+                    "name": getattr(user, "full_name", user.username),
+                    "created_at": (
+                        user.created_at.isoformat()
+                        if getattr(user, "created_at", None)
+                        else None
+                    ),
+                }
+
+                refresh = CustomRefreshToken.for_user_object(
+                    user_obj=user,
+                    user_type=getattr(user, "user_type", "admin"),
                     role_permissions=role_permissions,
-                    system_settings=system_settings
+                    system_settings=system_settings,
+                    extra_claims=extra_claims,
                 )
 
                 access_token = str(refresh.access_token)
@@ -465,337 +597,338 @@ class Login(LoggingMixin, APIView):
                         "success": True,
                         "message": "Login successful",
                         "token": access_token,
-                        "refresh_token":refresh_token,
+                        "refresh_token": refresh_token,
                         "user": {
                             "user_id": user.id,
                             "username": user.username,
-                            "created_at": user.created_at,
-                            "name": user.full_name,
-                            "user_type": user.user_type,
-                            "attendance_type": system_settings.attendance_options if system_settings else None,
+                            "created_at": getattr(user, "created_at", None),
+                            "name": getattr(user, "full_name", user.username),
+                            "user_type": getattr(user, "user_type", "admin"),
+                            "attendance_type": (
+                                system_settings.attendance_options
+                                if system_settings
+                                else None
+                            ),
                             "role_id": role.role_id if role else None,
                             "role_name": role.name if role else None,
                             "permissions": role_permissions,
-                        }
+                        },
                     },
-                    status=status.HTTP_200_OK
+                    status=status.HTTP_200_OK,
                 )
 
-                origin = request.headers.get("Origin", "")
-
-                LOCAL_ORIGINS = {
-                    "http://localhost:3000",
-                    "http://localhost:8000",
-                    "http://127.0.0.1:8000",
-                }
-
-                if origin in LOCAL_ORIGINS:
-                    cookie_domain = None
-                    cookie_secure = False
-                    cookie_samesite = "Lax"
-                else:
-                    cookie_domain = ".aryuprojects.com"
-                    cookie_secure = True
-                    cookie_samesite = "Lax"
-
-                
-                response.set_cookie(
-                    key="refresh_token",
-                    value=refresh_token,
-                    httponly=True,
-                    secure=cookie_secure,
-                    samesite=cookie_samesite,
-                    domain=cookie_domain,
-                    path="/",
-                    max_age=30 * 24 * 60 * 60,
-                )
-
+                set_refresh_cookie(response, request, refresh_token)
                 return response
-            
-            # For Student
+
+            # 2. Student Login
             student = Student.objects.filter(
-                Q(username=username_or_email) | Q(email__iexact=username_or_email),
-                is_archived=False
+                Q(username=username_or_email)
+                | Q(email__iexact=username_or_email),
+                is_archived=False,
             ).first()
 
             if student:
-                if student.status == False:
-                    return Response({'success': False, 'message': 'Your account is inactive. Please contact admin.'}, status=200)
-
-            if student and check_password(password, student.password):
-                role = getattr(student, "role", None)
-                role_permissions = []
-
-                if role:
-                    role_modules = (
-                        RoleModulePermission.objects
-                        .filter(role=role)
-                        .exclude(allowed_actions=[])
-                        .select_related("module_permission")
+                if not student.status:
+                    return Response(
+                        {
+                            "success": False,
+                            "message": "Your account is inactive. Please contact admin.",
+                        },
+                        status=status.HTTP_200_OK,
                     )
 
-                    for rm in role_modules:
-                        role_permissions.append({
-                            "module_id": rm.module_permission.module_id,
-                            "module_name": rm.module_permission.module,
-                            "allowed_actions": rm.allowed_actions
-                        })
-
-                payload = {
-                    'registration_id': student.registration_id,
-                    'student_id': student.student_id,
-                    'username': student.username,
-                    "name": student.first_name,
-                    'user_type': 'student',
-                    "attendance_type": system_settings .attendance_options if system_settings  else None,
-                    'student_type': student.student_type,
-                    "role_id": role.role_id if role else None,
-                    "role_name": role.name if role else None,
-                    "permissions": role_permissions,
-                    "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
-                }
-                token = jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')
-                return Response({
-                    'success': True,
-                    'message': 'Login successful',
-                    'token': token,
-                    'user': {
-                        'registration_id': student.registration_id,
-                        'student_id': student.student_id,
-                        'username': student.username,
+                if check_password(password, student.password):
+                    role, role_permissions = get_role_permissions(student)
+                    extra_claims = {
+                        "registration_id": student.registration_id,
+                        "student_id": student.student_id,
+                        "username": student.username,
                         "name": student.first_name,
-                        'user_type': 'student',
-                        "attendance_type": system_settings .attendance_options if system_settings  else None,
-                        'student_type': student.student_type,
-                        "role_id": role.role_id if role else None,
-                        "role_name": role.name if role else None,
-                        "permissions": role_permissions,
-                    },
-                    "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
-                }, status=200)
+                        "student_type": student.student_type,
+                    }
 
-            # For EbookRegistration login
+                    refresh = CustomRefreshToken.for_user_object(
+                        user_obj=student,
+                        user_type="student",
+                        role_permissions=role_permissions,
+                        system_settings=system_settings,
+                        extra_claims=extra_claims,
+                    )
+
+                    access_token = str(refresh.access_token)
+                    refresh_token = str(refresh)
+
+                    response = Response(
+                        {
+                            "success": True,
+                            "message": "Login successful",
+                            "token": access_token,
+                            "refresh_token": refresh_token,
+                            "user": {
+                                "registration_id": student.registration_id,
+                                "student_id": student.student_id,
+                                "username": student.username,
+                                "name": student.first_name,
+                                "user_type": "student",
+                                "attendance_type": (
+                                    system_settings.attendance_options
+                                    if system_settings
+                                    else None
+                                ),
+                                "student_type": student.student_type,
+                                "role_id": role.role_id if role else None,
+                                "role_name": role.name if role else None,
+                                "permissions": role_permissions,
+                            },
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+
+                    set_refresh_cookie(response, request, refresh_token)
+                    return response
+
+            # 3. Ebook User Login
             ebook_user = EbookRegistration.objects.filter(
                 email__iexact=username_or_email
             ).first()
 
             if ebook_user:
-
                 if not ebook_user.is_paid:
-                    return Response({
-                        "success": False,
-                        "message": "Please complete payment to login"
-                    }, status=200)
+                    return Response(
+                        {
+                            "success": False,
+                            "message": "Please complete payment to login",
+                        },
+                        status=status.HTTP_200_OK,
+                    )
 
-                if check_password(password, ebook_user.password) or password == ebook_user.password:
-
-                    # 🔥 convert old password to hashed
+                if check_password(password, ebook_user.password) or (
+                    password == ebook_user.password
+                ):
                     if password == ebook_user.password:
-                        
                         ebook_user.password = make_password(password)
                         ebook_user.save()
 
-                    payload = {
+                    extra_claims = {
                         "registration_id": ebook_user.id,
                         "name": ebook_user.name,
                         "email": ebook_user.email,
-                        "user_type": "ebookuser",
-                        "role_id": 50,
-                        "role_name": "ebook user",
-                        "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
-                        "phone":ebook_user.phone,
+                        "phone": ebook_user.phone,
                     }
 
-                    token = jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+                    refresh = CustomRefreshToken.for_user_object(
+                        user_obj=ebook_user,
+                        user_type="ebookuser",
+                        role_permissions=[],
+                        system_settings=system_settings,
+                        extra_claims=extra_claims,
+                    )
 
-                    return Response({
-                        "success": True,
-                        "message": "Login successful",
-                        "token": token,
-                        "user": {
-                            "registration_id": ebook_user.id,
-                            "name": ebook_user.name,
-                            "email": ebook_user.email,
-                            "user_type": "ebookuser",
-                            "role_id": 50,
-                            "role_name": "ebook user",
-                            "phone":ebook_user.phone
+                    access_token = str(refresh.access_token)
+                    refresh_token = str(refresh)
+
+                    response = Response(
+                        {
+                            "success": True,
+                            "message": "Login successful",
+                            "token": access_token,
+                            "refresh_token": refresh_token,
+                            "user": {
+                                "registration_id": ebook_user.id,
+                                "name": ebook_user.name,
+                                "email": ebook_user.email,
+                                "user_type": "ebookuser",
+                                "role_id": 50,
+                                "role_name": "ebook user",
+                                "phone": ebook_user.phone,
+                            },
                         },
-                        "exp": payload["exp"]
-                    }, status=200)
+                        status=status.HTTP_200_OK,
+                    )
 
-            # For Trainer/Admin login
+                    set_refresh_cookie(response, request, refresh_token)
+                    return response
+
+            # 4. Trainer / Admin Login
             trainer = Trainer.objects.filter(
-                Q(username=username_or_email) | Q(email__iexact=username_or_email),
-                is_archived=False
+                Q(username=username_or_email)
+                | Q(email__iexact=username_or_email),
+                is_archived=False,
             ).first()
-            
-            if username_or_email != username_or_email.strip() or password != password.strip():
-                return Response({'success': False, 'message': 'Invalid username or password'}, status=200)
 
             if trainer:
                 if trainer.status and trainer.status.lower() == "inactive":
-                    return Response({'success': False, 'message': 'Your account is inactive. Please contact admin.'}, status=200)
-            
-            if trainer:
-                if check_password(password, trainer.password):
-                    
-                    # Fetch roles and permissions
-                    role = getattr(trainer, "role", None)
-                    role_permissions = []
-
-                    if role:
-                        role_modules = RoleModulePermission.objects.filter(
-                            role=role
-                        ).exclude(allowed_actions=[]).select_related("module_permission")
-
-                        for rm in role_modules:
-                            if rm.allowed_actions:
-                                role_permissions.append({
-                                    "module_id": rm.module_permission.module_id,
-                                    "module_name": rm.module_permission.module,
-                                    "allowed_actions": rm.allowed_actions
-                                })
-                            
-                    # Prepare token
-                    payload = {
-                        'employee_id': trainer.employee_id,
-                        'username': trainer.username,
-                        'trainer_id': trainer.trainer_id,
-                        'name': trainer.full_name,
-                        "attendance_type": system_settings .attendance_options if system_settings  else None,
-                        'role_id': role.role_id if role else None,
-                        'role_name': role.name if role else None,
-                        'permissions': role_permissions,
-                        'user_type': trainer.user_type,
-                        "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
-                    }
-                    token = jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')
-
-                    
-
-                    return Response({
-                        'success': True,
-                        'message': 'Login successful',
-                        'token': token,
-                        'user': {
-                            'employee_id': trainer.employee_id,
-                            'trainer_id': trainer.trainer_id,
-                            'username': trainer.username,
-                            'name': trainer.full_name,
-                            'user_type': trainer.user_type,
-                            "attendance_type": system_settings .attendance_options if system_settings  else None,
-                            'role_id': role.role_id if role else None,
-                            'role_name': role.name if role else None,
-                            'permissions': role_permissions
+                    return Response(
+                        {
+                            "success": False,
+                            "message": "Your account is inactive. Please contact admin.",
                         },
-                        "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
-                    }, status=200)
+                        status=status.HTTP_200_OK,
+                    )
 
-            #for employer login
-            employer = SubAdmin.objects.filter(
-                Q(username=username_or_email) | Q(email__iexact=username_or_email),
-                is_archived=False
-            ).first()
-            
-            if username_or_email != username_or_email.strip() or password != password.strip():
-                return Response({'success': False, 'message': 'Invalid username or password'}, status=200)
-            
-            if employer:
-                if employer.status == False:
-                    return Response({'success': False, 'message': 'Your account is inactive. Please contact admin.'}, status=200)
-                
-
-            if employer:
-                if check_password(password, employer.password):
-                    payload = {
-                        'employer_id': employer.employer_id,
-                        'name': employer.full_name,
-                        'company_name': employer.company.company_name,
-                        'company_id': employer.company.company_id,
-                        'username': employer.username,
-                        'user_type': 'employer',
-                        "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
+                if check_password(password, trainer.password):
+                    role, role_permissions = get_role_permissions(trainer)
+                    extra_claims = {
+                        "employee_id": trainer.employee_id,
+                        "username": trainer.username,
+                        "trainer_id": trainer.trainer_id,
+                        "name": trainer.full_name,
                     }
-                    token = jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')
-                    return Response({
-                        'success': True,
-                        'message': 'Login successful',
-                        'token': token,
-                        'user': {
-                            'employer_id': employer.employer_id,
-                            'name': employer.full_name,
-                            'company_name': employer.company.company_name,
-                            'company_id': employer.company.company_id,
-                            'username': employer.username,
-                            'user_type': 'employer',
-                            "exp": int((timezone.now() + timedelta(minutes=30)).timestamp()),
-                        }
-                    }, status=200)
-                    
-            return Response({'success': False, 'message': 'Invalid username or password'}, status=200)
+
+                    refresh = CustomRefreshToken.for_user_object(
+                        user_obj=trainer,
+                        user_type=trainer.user_type,
+                        role_permissions=role_permissions,
+                        system_settings=system_settings,
+                        extra_claims=extra_claims,
+                    )
+
+                    access_token = str(refresh.access_token)
+                    refresh_token = str(refresh)
+
+                    response = Response(
+                        {
+                            "success": True,
+                            "message": "Login successful",
+                            "token": access_token,
+                            "refresh_token": refresh_token,
+                            "user": {
+                                "employee_id": trainer.employee_id,
+                                "trainer_id": trainer.trainer_id,
+                                "username": trainer.username,
+                                "name": trainer.full_name,
+                                "user_type": trainer.user_type,
+                                "attendance_type": (
+                                    system_settings.attendance_options
+                                    if system_settings
+                                    else None
+                                ),
+                                "role_id": role.role_id if role else None,
+                                "role_name": role.name if role else None,
+                                "permissions": role_permissions,
+                            },
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+
+                    set_refresh_cookie(response, request, refresh_token)
+                    return response
+
+            # 5. Employer Login
+            employer = SubAdmin.objects.filter(
+                Q(username=username_or_email)
+                | Q(email__iexact=username_or_email),
+                is_archived=False,
+            ).first()
+
+            if employer:
+                if not employer.status:
+                    return Response(
+                        {
+                            "success": False,
+                            "message": "Your account is inactive. Please contact admin.",
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+
+                if check_password(password, employer.password):
+                    extra_claims = {
+                        "employer_id": employer.employer_id,
+                        "name": employer.full_name,
+                        "company_name": (
+                            employer.company.company_name
+                            if employer.company
+                            else None
+                        ),
+                        "company_id": (
+                            employer.company.company_id
+                            if employer.company
+                            else None
+                        ),
+                        "username": employer.username,
+                    }
+
+                    refresh = CustomRefreshToken.for_user_object(
+                        user_obj=employer,
+                        user_type="employer",
+                        role_permissions=[],
+                        system_settings=system_settings,
+                        extra_claims=extra_claims,
+                    )
+
+                    access_token = str(refresh.access_token)
+                    refresh_token = str(refresh)
+
+                    response = Response(
+                        {
+                            "success": True,
+                            "message": "Login successful",
+                            "token": access_token,
+                            "refresh_token": refresh_token,
+                            "user": {
+                                "employer_id": employer.employer_id,
+                                "name": employer.full_name,
+                                "company_name": (
+                                    employer.company.company_name
+                                    if employer.company
+                                    else None
+                                ),
+                                "company_id": (
+                                    employer.company.company_id
+                                    if employer.company
+                                    else None
+                                ),
+                                "username": employer.username,
+                                "user_type": "employer",
+                            },
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+
+                    set_refresh_cookie(response, request, refresh_token)
+                    return response
+
+            return Response(
+                {"success": False, "message": "Invalid username or password"},
+                status=status.HTTP_200_OK,
+            )
+
         except Exception as e:
-            return Response({'success': False, 'message': str(e)}, status=200)
-
-    def get(self, request):
-        return Response({'message': 'Send POST request to login.'})
-
+            logger.error(f"Error in Login view: {str(e)}", exc_info=True)
+            return Response({"success": False, "message": str(e)}, status=status.HTTP_200_OK)
 
 class CustomTokenRefreshView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []  # Bypass Session/CSRF authentication to resolve 403 error
     serializer_class = CustomTokenRefreshSerializer
 
     def post(self, request):
-        refresh_token = request.COOKIES.get("refresh_token")
+        # Try getting token from Cookie first, then fallback to request body
+        refresh_token = request.COOKIES.get("refresh_token") or request.data.get("refresh")
 
-        serializer = self.serializer_class(
-            data={"refresh": refresh_token}
-        )
+        if not refresh_token:
+            return Response({"success": False, "message": "Refresh token not provided"}, status=400)
 
-        serializer.is_valid(raise_exception=True)
+        try:
+            serializer = self.serializer_class(data={"refresh": refresh_token})
+            serializer.is_valid(raise_exception=True)
+            validated_data = serializer.validated_data
 
-        validated_data = serializer.validated_data
+            response = Response({
+                "success": True,
+                "access_token": validated_data["access_token"],
+                "token": validated_data["access_token"]
+            }, status=200)
 
-        response = Response(
-            {
-                "access_token": validated_data["access_token"]
-            },
-            status=200
-        )
+            # If token rotation is enabled, update the cookie
+            if validated_data.get("refresh_token_obj"):
+                set_refresh_cookie(response, request, str(validated_data["refresh_token_obj"]))
 
-        # Save NEW rotated refresh token - USE SAME SETTINGS AS LOGIN
-        if validated_data.get("refresh_token_obj"):
-            # Determine cookie settings based on origin (same as login)
-            origin = request.headers.get("Origin", "")
-            
-            LOCAL_ORIGINS = {
-                "http://localhost:3000",
-                "http://localhost:8000",
-                "http://127.0.0.1:8000",
-            }
+            return response
+        except Exception as e:
+            return Response({"success": False, "message": "Token expired or invalid"}, status=401)
 
-            if origin in LOCAL_ORIGINS:
-                cookie_domain = None
-                cookie_secure = False
-                cookie_samesite = "Lax"
-            else:
-                cookie_domain = ".aryuprojects.com"
-                cookie_secure = True
-                cookie_samesite = "Lax"  # ✅ Changed from "None" to "Lax"
 
-            response.set_cookie(
-                key="refresh_token",
-                value=validated_data["refresh_token_obj"],
-                httponly=True,
-                secure=cookie_secure,
-                samesite=cookie_samesite,  # ✅ Match login
-                domain=cookie_domain,       # ✅ Match login
-                max_age=30 * 24 * 60 * 60,
-                path="/",                   # ✅ Changed from "api/refresh/token/" to "/"
-                expires=None
-            )
-        return response
-    
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all().select_related("role")
     serializer_class = UserSerializer
