@@ -143,7 +143,7 @@ class CourseListSerializer(serializers.ModelSerializer):
 
     def get_course_pic_url(self, obj):
         if obj.course_pic:
-            return f"https://aylms.aryuprojects.com/api{obj.course_pic.url}"
+            return f"https://portal.aryuacademy.com/api{obj.course_pic.url}"
         return None
 
     def get_duration_list(self, obj):
@@ -243,7 +243,7 @@ class CourseSerializer(serializers.ModelSerializer):
         ]
     def get_video_url(self, obj):
         if obj.video_url and hasattr(obj.video_url, 'url'):
-            return 'https://aylms.aryuprojects.com/api/' + obj.video_url.url
+            return 'https://portal.aryuacademy.com/api/' + obj.video_url.url
         return None
 
         
@@ -329,12 +329,12 @@ class CourseSerializer(serializers.ModelSerializer):
     
     def get_course_pic_url(self, obj):
         if obj.course_pic and hasattr(obj.course_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.course_pic.url
+            return 'https://portal.aryuacademy.com/api' + obj.course_pic.url
         return None
     
     def get_syllabus_url(self, obj):
         if obj.syllabus and hasattr(obj.syllabus, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.syllabus.url
+            return 'https://portal.aryuacademy.com/api' + obj.syllabus.url
         return None
     def get_syllabus_info(self, obj):
         request = self.context.get("request")
@@ -426,7 +426,7 @@ class CourseSerializer(serializers.ModelSerializer):
                     if student_obj.profile_pic:
                         try:
                             profile_pic = (
-                                "https://aylms.aryuprojects.com/api"
+                                "https://portal.aryuacademy.com/api"
                                 + student_obj.profile_pic.url
                             )
                         except Exception:
@@ -444,7 +444,7 @@ class CourseSerializer(serializers.ModelSerializer):
                     "text": submission.text,
                     "file": submission.file.url if submission.file else None,
                     "file_url": (
-                        "https://aylms.aryuprojects.com/api" + submission.file.url
+                        "https://portal.aryuacademy.com/api" + submission.file.url
                         if submission.file else None
                     ),
                     "date": submission.date.strftime("%Y-%m-%d %H:%M:%S"),
@@ -787,12 +787,12 @@ class SyllabusSerializer(serializers.ModelSerializer):
                 "name": obj.file_name,
                 "type": obj.file_type,
                 "size": obj.file_size,
-                "url": "https://aylms.aryuprojects.com/api" + obj.file.url
+                "url": "https://portal.aryuacademy.com/api" + obj.file.url
             }
         return None
     def get_syllabus_url(self, obj):
         if obj.file:
-            return "https://aylms.aryuprojects.com/api" + obj.file.url
+            return "https://portal.aryuacademy.com/api" + obj.file.url
         return None
 class SyllabusCreateSerializer(serializers.ModelSerializer):
     syllabus = serializers.FileField(source='file', required=True)
