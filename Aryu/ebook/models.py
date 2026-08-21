@@ -33,6 +33,8 @@ class Ebook(models.Model):
     rating = models.PositiveIntegerField()
     short_description = models.CharField(null = True,blank = True)
     status = models.BooleanField(default=True)
+
+    
 class EbookSEO(models.Model):
     ebook = models.ForeignKey(
         Ebook,
