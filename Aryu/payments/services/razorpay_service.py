@@ -147,7 +147,7 @@ def process_razorpay_webhook_event(data: dict) -> dict:
                         web_reg.save(update_fields=["is_paid", "payment_transaction"])
 
                     # Create Student profile and send credentials + invoice email
-                    from services.student_registration_service import get_or_create_student_from_bootcamp
+                    from aryuapp.services.dashboard.student_registration_service import get_or_create_student_from_bootcamp
                     student, created = get_or_create_student_from_bootcamp(
                         name=metadata.get("name", ""),
                         email=metadata.get("email", ""),

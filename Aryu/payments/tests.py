@@ -53,7 +53,7 @@ class RazorpayServiceTestCase(TestCase):
             gatway_name="razorpay",
             public_key="rzp_live_SKfiZYRJEe8WuU",
             secret_key="Du4L7ebKchXQSOMcgzx5wE3h",
-            webhook_secret="Aryu_Academy_wev26",
+            webhook_secret="",
             is_archived=False
         )
         self.assertIsNone(get_webhook_secret(gw))
@@ -149,3 +149,80 @@ class RazorpayServiceTestCase(TestCase):
         self.assertTrue(res["processed"])
         txn.refresh_from_db()
         self.assertEqual(txn.payment_status, "failed")
+
+    def test_student_auto_created_on_payment_done(self):
+        from aryuapp.models import Student
+        email = "tamilselvi@aryuacademy.com"
+        name = "Tamil selvi"
+        phone = "916303411390"
+
+        txn = PaymentTransaction.objects.create(
+            gateway=self.gateway,
+            order_id="order_student_001",
+            transaction_id="TXN_STU_001",
+            amount=1.00,
+            currency="INR",
+            payment_status="pending",
+            metadata={
+                "email": email,
+                "name": name,
+                "phone": phone
+            }
+        )
+
+        # Mark payment_status as done to fire the post_save signal
+        txn.payment_status = "done"
+        txn.save()
+
+        # Check if Student instance was automatically created
+        student = Student.objects.filter(email=email).first()
+        self.assertIsNotNone(student)
+        self.assertEqual(student.first_name, "Tamil")
+        self.assertEqual(student.last_name, "selvi")
+        self.assertEqual(student.contact_no, phone)
+        self.assertTrue(student.status)
+
+        txn.refresh_from_db()
+        self.assertEqual(txn.student_id, student.student_id)
+
+    def test_student_auto_creation_idempotency(self):
+        from aryuapp.models import Student
+        email = "tamilselvi@aryuacademy.com"
+
+        # Pre-create student
+        existing_student = Student.objects.create(
+            username="tamilselvi",
+            password="hashedpassword123",
+            first_name="Tamil",
+            last_name="selvi",
+            email=email,
+            contact_no="916303411390",
+            status=True,
+            current_address="N/A",
+            permanent_address="N/A",
+            city="N/A",
+            state="N/A",
+            country="India",
+            converter="bootcamp"
+        )
+
+        txn = PaymentTransaction.objects.create(
+            gateway=self.gateway,
+            order_id="order_student_002",
+            transaction_id="TXN_STU_002",
+            amount=1.00,
+            currency="INR",
+            payment_status="done",
+            metadata={
+                "email": email.upper(),  # Test uppercase email matching
+                "name": "Tamil selvi",
+                "phone": "916303411390"
+            }
+        )
+
+        # Ensure no duplicate Student was created
+        student_count = Student.objects.filter(email=email).count()
+        self.assertEqual(student_count, 1)
+        
+        txn.refresh_from_db()
+        self.assertEqual(txn.student_id, existing_student.student_id)
