@@ -797,6 +797,12 @@ class StudentSerializer(serializers.ModelSerializer):
                 if course and course.status == "Active" and not course.is_archived:
                     courses.append(course)
 
+        # STUDENT COURSE RELATIONSHIP
+        sc_qs = StudentCourse.objects.filter(student=obj).select_related("course")
+        for sc in sc_qs:
+            if sc.course and sc.course.status == "Active" and not sc.course.is_archived:
+                courses.append(sc.course)
+
         unique_courses = {c.course_id: c for c in courses}.values()
 
         return CourseSerializer(unique_courses, many=True).data
@@ -886,6 +892,11 @@ class StudentSerializer(serializers.ModelSerializer):
         for nb in new_batches:
             if nb.course and nb.course.status == "Active" and not nb.course.is_archived:
                 courses_list.append(nb.course)
+
+        sc_qs = StudentCourse.objects.filter(student=obj).select_related("course")
+        for sc in sc_qs:
+            if sc.course and sc.course.status == "Active" and not sc.course.is_archived:
+                courses_list.append(sc.course)
 
         unique_courses = {c.course_id: c for c in courses_list}.values()
 

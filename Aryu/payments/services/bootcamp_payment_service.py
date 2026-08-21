@@ -15,17 +15,15 @@ logger = logging.getLogger(__name__)
 
 def process_successful_bootcamp_payment(participant_instance):
     """
-    Production-grade, OWASP-compliant post-payment handler for Bootcamp Participants.
-    Executes atomically: Student Creation -> Course Mapping -> Payment Reporting -> Email Notification
+    Production-grade, OWASP-compliant post-payment & registration handler for Bootcamp Participants.
+    Executes atomically: Student Provisioning -> Course Mapping -> Payment Reporting -> Async Email Notification
     """
     status_val = str(getattr(participant_instance, 'payment_status', '')).strip().lower()
     is_paid = getattr(participant_instance, 'is_paid', False)
-    
-    if status_val != "done" and not is_paid:
-        txn = getattr(participant_instance, 'payment_transaction', None)
-        txn_status = str(getattr(txn, 'payment_status', '')).strip().lower() if txn else ""
-        if txn_status != "done":
-            return
+    txn = participant_instance if isinstance(participant_instance, PaymentTransaction) else getattr(participant_instance, 'payment_transaction', None)
+    txn_status = str(getattr(txn, 'payment_status', '')).strip().lower() if txn else ""
+
+    is_payment_done = (status_val == "done" or is_paid or txn_status == "done")
 
     try:
         with transaction.atomic():
@@ -33,22 +31,22 @@ def process_successful_bootcamp_payment(participant_instance):
             if not email_raw and hasattr(participant_instance, 'metadata') and isinstance(participant_instance.metadata, dict):
                 email_raw = participant_instance.metadata.get('email', '')
 
+            if not email_raw and txn:
+                email_raw = getattr(txn, 'email', '') or (txn.metadata.get('email', '') if isinstance(txn.metadata, dict) else '')
+
             if not email_raw:
                 logger.warning("Participant instance %s has no email provided.", getattr(participant_instance, 'id', 'N/A'))
                 return
 
             email = email_raw.lower().strip()
 
-            # 1. Handle Secure Student Creation
+            # 1. Handle Secure Student Creation (Generates unique registration_id automatically)
             raw_password = None
             student = Student.objects.filter(email__iexact=email).first()
 
             if not student:
-                # Generate strong temporary password meeting OWASP complexity
-                raw_password = get_random_string(
-                    16,
-                    allowed_chars='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*'
-                )
+                # Generate strong temporary password meeting OWASP complexity using get_random_string(12)
+                raw_password = get_random_string(12)
 
                 # Derive secure username
                 base_username = email.split("@")[0][:30]
@@ -94,7 +92,7 @@ def process_successful_bootcamp_payment(participant_instance):
                     converter="bootcamp",
                 )
                 masked_email = f"{email[:2]}***@{email.split('@')[-1]}" if "@" in email else "***"
-                logger.info("Student account successfully provisioned for ID: %s (Email: %s)", student.student_id, masked_email)
+                logger.info("Student account successfully provisioned for ID: %s, Reg ID: %s (Email: %s)", student.student_id, student.registration_id, masked_email)
             else:
                 if not student.status:
                     student.status = True
@@ -106,9 +104,9 @@ def process_successful_bootcamp_payment(participant_instance):
             if course:
                 if hasattr(student, 'courses'):
                     student.courses.add(course)
-                elif hasattr(student, 'enrolled_courses'):
+                if hasattr(student, 'enrolled_courses'):
                     student.enrolled_courses.add(course)
-                elif hasattr(StudentCourse, 'objects'):
+                if hasattr(StudentCourse, 'objects'):
                     from batches.models import NewBatch
                     from datetime import date, time, timedelta
                     batch = NewBatch.objects.filter(course=course, is_archived=False).first()
@@ -128,48 +126,43 @@ def process_successful_bootcamp_payment(participant_instance):
                     StudentCourse.objects.get_or_create(student=student, course=course, batch=batch, defaults={'discount': 0})
                 logger.info("Enrolled student %s into course %s", student.student_id, getattr(course, 'course_id', getattr(course, 'id', 'N/A')))
 
-            # 3. Financial Record Creation (PaymentReport)
-            amount = getattr(participant_instance, 'amount', None)
-            if amount is None:
-                txn = getattr(participant_instance, 'payment_transaction', None)
-                amount = txn.amount if txn else 0.0
-
-            txn_uuid = str(getattr(participant_instance, 'uuid', getattr(participant_instance, 'id', 'TXN_N/A')))
-            payment_report, created_report = PaymentReport.objects.get_or_create(
-                transaction_id=txn_uuid,
-                defaults={
-                    "student": student,
-                    "amount": amount,
-                    "payment_status": "COMPLETED",
-                    "payment_method": "GATEWAY",
-                    "bootcamp": bootcamp if hasattr(bootcamp, 'title') else None,
-                    "course": course,
-                }
-            )
-
             # Link student back to payment transaction if unlinked
-            if isinstance(participant_instance, PaymentTransaction):
-                txn = participant_instance
-            else:
-                txn = getattr(participant_instance, 'payment_transaction', None)
-
             if txn and txn.student_id != student.student_id:
                 PaymentTransaction.objects.filter(pk=txn.pk).update(student=student)
                 txn.student = student
 
-            # 4. Asynchronous Email Notification with Credentials & Invoice
-            bootcamp_title = getattr(bootcamp, 'title', 'Bootcamp') if bootcamp else 'Bootcamp'
-            transaction.on_commit(
-                lambda: send_welcome_and_invoice_email(
-                    student=student,
-                    raw_password=raw_password,
-                    amount=amount,
-                    bootcamp_title=bootcamp_title
+            # 3. Financial Record Creation & Email Dispatch (Only when payment is DONE)
+            if is_payment_done:
+                amount = getattr(participant_instance, 'amount', None)
+                if amount is None:
+                    amount = txn.amount if txn else 0.0
+
+                txn_uuid = str(getattr(participant_instance, 'uuid', getattr(participant_instance, 'id', 'TXN_N/A')))
+                PaymentReport.objects.get_or_create(
+                    transaction_id=txn_uuid,
+                    defaults={
+                        "student": student,
+                        "amount": amount,
+                        "payment_status": "COMPLETED",
+                        "payment_method": "GATEWAY",
+                        "bootcamp": bootcamp if hasattr(bootcamp, 'title') else None,
+                        "course": course,
+                    }
                 )
-            )
+
+                # 4. Asynchronous Email Notification with Credentials & Invoice
+                bootcamp_title = getattr(bootcamp, 'title', 'Bootcamp') if bootcamp else 'Bootcamp'
+                transaction.on_commit(
+                    lambda: send_welcome_and_invoice_email(
+                        student=student,
+                        raw_password=raw_password,
+                        amount=amount,
+                        bootcamp_title=bootcamp_title
+                    )
+                )
 
     except Exception as e:
-        logger.error("Failed to process bootcamp payment processing for %s: %s", getattr(participant_instance, 'id', 'N/A'), str(e), exc_info=True)
+        logger.error("Failed to process bootcamp payment/registration for %s: %s", getattr(participant_instance, 'id', 'N/A'), str(e), exc_info=True)
         raise
 
 

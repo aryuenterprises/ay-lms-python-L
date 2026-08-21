@@ -268,10 +268,8 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 Q(created_by_type="admin", created_by__in=admin_ids)
             )
 
-        # Prefetch transactions with invoices & gateways
-        students_qs = all_students.filter(
-            transactions__is_archived=False
-        ).distinct().prefetch_related(
+        # Prefetch transactions with invoices & gateways for ALL active students
+        students_qs = all_students.distinct().prefetch_related(
             "new_batches__course",
             Prefetch(
                 "transactions",
@@ -2313,4 +2311,17 @@ def stripe_success(request):
 @api_view(['GET'])
 def stripe_cancel(request):
     return Response({"success": False, "message": "Payment canceled!"})
+
+
+class PaymentStudentDropdownView(generics.ListAPIView):
+    """
+    Dropdown API for Payment Report Student Search.
+    Queries and returns ALL active, non-archived students from the primary Student model table.
+    """
+    serializer_class = StudentMinimalSerializer
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+
+    def get_queryset(self):
+        return Student.objects.filter(status=True, is_archived=False).order_by('first_name')
 
