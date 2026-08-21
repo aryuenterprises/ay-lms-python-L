@@ -226,3 +226,53 @@ class RazorpayServiceTestCase(TestCase):
         
         txn.refresh_from_db()
         self.assertEqual(txn.student_id, existing_student.student_id)
+
+    def test_process_successful_bootcamp_payment_owasp_workflow(self):
+        from aryuapp.models import Student
+        from payments.models import PaymentReport
+        from courses.models import Course
+        from webinar.models import Webinar, WebinarRegistration
+
+        # 1. Create test Course and Webinar/Bootcamp
+        course = Course.objects.create(
+            course_name="Python & AI Bootcamp",
+            duration="30",
+            duration_type="Days",
+            mode_of_delivery="Online",
+            status="Active",
+            created_by="admin"
+        )
+        webinar = Webinar.objects.create(
+            title="Fullstack AI Bootcamp",
+            slug="fullstack-ai-bootcamp",
+            description="Complete bootcamp",
+            mentor="Trainer",
+            created_by="admin",
+            created_by_type="staff",
+            scheduled_start="2026-09-01 10:00:00+05:30",
+            price=499.00,
+            course=course
+        )
+        reg = WebinarRegistration.objects.create(
+            webinar=webinar,
+            name="Aravind Kumar",
+            email="aravind@example.com",
+            phone="9876543210",
+            is_paid=True
+        )
+
+        # 2. Verify Student created
+        student = Student.objects.filter(email="aravind@example.com").first()
+        self.assertIsNotNone(student)
+        self.assertEqual(student.first_name, "Aravind")
+        self.assertEqual(student.last_name, "Kumar")
+
+        # 3. Verify PaymentReport created
+        report = PaymentReport.objects.filter(student=student).first()
+        self.assertIsNotNone(report)
+        self.assertEqual(report.payment_status, "COMPLETED")
+        self.assertEqual(report.payment_method, "GATEWAY")
+
+        # 4. Verify password security (hashed, never raw in DB)
+        self.assertTrue(student.password.startswith("pbkdf2_") or student.password.startswith("argon2"))
+        self.assertNotIn("Aravind", student.password)
