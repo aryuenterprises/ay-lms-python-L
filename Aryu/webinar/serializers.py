@@ -459,7 +459,7 @@ class WebinarListSerializer(serializers.ModelSerializer):
     def get_participants_count(self, obj):
             return obj.registrations.filter(
                 payment_transaction__payment_status="done"
-            ).count()
+            ).distinct().count()
     
     def get_pending_seats(self, obj):
         return max(obj.seats_available - obj.participants_count, 0)
