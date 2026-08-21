@@ -489,6 +489,7 @@ ALLOWED_HOSTS = [
     "127.0.0.1",
     "portal.aryuacademy.com",
     "ayanew.aryuprojects.com",
+    "aylms.aryuprojects.com",
 ]  # Allow all hosts for development; change in production
 
 
