@@ -1459,37 +1459,64 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
     # -----------------------------
     @classmethod
     def create_registration_from_transaction(cls, txn):
-        meta = txn.metadata
+        meta = txn.metadata or {}
+        phone = meta.get("phone", "")
+        email = meta.get("email", "")
+        name = meta.get("name", "")
+        profession = meta.get("profession", "")
+        source = meta.get("source", "webinar")
 
         webinar = Webinar.objects.get(uuid=meta["webinar_id"])
 
+        # 1. Fetch or create WebinarRegistration record
         registration, created = WebinarRegistration.objects.get_or_create(
             webinar=webinar,
-            phone=meta["phone"],
+            phone=phone,
             defaults={
-                "name": meta.get("name"),
-                "email": meta.get("email"),
-                "profession": meta.get("profession"),
+                "name": name,
+                "email": email,
+                "profession": profession,
                 "is_paid": True,
                 "payment_transaction": txn
             }
         )
 
+        if not created and not registration.is_paid:
+            registration.is_paid = True
+            registration.payment_transaction = txn
+            registration.save(update_fields=["is_paid", "payment_transaction"])
+
+        # 2. Synchronize to Student Model and Send Email Credentials
+        payment_status = getattr(txn, "payment_status", "")
+        if is_payment_successful(payment_status) or source in ["bootcamp", "campaign"]:
+            student, student_created = get_or_create_student_from_bootcamp(
+                name=name,
+                email=email,
+                phone=phone,
+                profession=profession,
+                extra_data={
+                    "course_name": webinar.title,
+                    "transaction_id": str(txn.id) if txn else None
+                }
+            )
+            if hasattr(registration, "student") and student:
+                registration.student = student
+                registration.save(update_fields=["student"])
+
+        # 3. Schedule ancillary notifications
         if created:
             try:
                 send_webinar_welcome_whatsapp(registration)
             except Exception as e:
-                logger.error("Error sending welcome task:", str(e))
+                logger.error(f"Error sending welcome WhatsApp: {e}")
             try:
                 send_webinar_registration_email(registration)
             except Exception as e:
-                logger.error("Error sending registration email:", str(e))
+                logger.error(f"Error sending registration email: {e}")
             try:
-
                 schedule_webinar_messages(registration)
             except Exception as e:
-                logger.error("Error scheduling webinar messages:", str(e))
-            
+                logger.error(f"Error scheduling webinar messages: {e}")
 
         return registration
 

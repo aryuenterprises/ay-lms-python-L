@@ -123,7 +123,7 @@ def process_razorpay_webhook_event(data: dict) -> dict:
                 txn.metadata["razorpay_payment_id"] = payment_id
             txn.save()
 
-            # 1. Handle Webinar Registration Payment Flow
+            # 1. Handle Webinar Registration Payment Flow & Student Creation
             metadata = txn.metadata if isinstance(txn.metadata, dict) else {}
             phone = metadata.get("phone")
             webinar_id = metadata.get("webinar_id")
@@ -145,8 +145,25 @@ def process_razorpay_webhook_event(data: dict) -> dict:
                         web_reg.is_paid = True
                         web_reg.payment_transaction = txn
                         web_reg.save(update_fields=["is_paid", "payment_transaction"])
+
+                    # Create Student profile and send credentials + invoice email
+                    from services.student_registration_service import get_or_create_student_from_bootcamp
+                    student, created = get_or_create_student_from_bootcamp(
+                        name=metadata.get("name", ""),
+                        email=metadata.get("email", ""),
+                        phone=phone or "",
+                        profession=metadata.get("profession", ""),
+                        extra_data={
+                            "transaction_id": str(txn.id) if txn else None
+                        }
+                    )
+                    
+                    if web_reg and hasattr(web_reg, "student") and student:
+                        web_reg.student = student
+                        web_reg.save(update_fields=["student"])
+
                 except Exception as e:
-                    logger.exception("Error updating WebinarRegistration for transaction %s: %s", txn.id, e)
+                    logger.exception("Error updating WebinarRegistration/Student for transaction %s: %s", txn.id, e)
 
             # 2. Handle Ebook Registration Payment Flow
             if metadata.get("ebook_id") or metadata.get("registration_id") or getattr(txn, "ebookregistration", None):
