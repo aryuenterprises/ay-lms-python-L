@@ -470,14 +470,10 @@ class WebinarListSerializer(serializers.ModelSerializer):
         return None
 
     def get_participants_count(self, obj):
-        # 1. First check if ViewSet annotated `participants_count`
-        if hasattr(obj, "participants_count"):
-            return obj.participants_count
-        # 2. Fallback DB count if serializer used in isolation
-        return obj.registrations.filter(
-            payment_transaction__payment_status="done"
-        ).count()
-
+            return obj.registrations.filter(
+                payment_transaction__payment_status="done"
+            ).distinct().count()
+    
     def get_pending_seats(self, obj):
         count = self.get_participants_count(obj)
         seats = obj.seats_available or 0

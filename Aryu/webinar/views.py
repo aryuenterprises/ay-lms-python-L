@@ -544,9 +544,6 @@ class WebinarViewSet(
     def list(self, request):
         user = request.user
         user_type = getattr(user, 'user_type', None)
-        print("USER:", user)
-        print("USER TYPE:", user_type)
-        print("USER User ID:", getattr(user, "user_id", None))
         cache_key = "webinar_list_v1"
         data = cache.get(cache_key)
 
@@ -1482,16 +1479,16 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
             try:
                 send_webinar_welcome_whatsapp(registration)
             except Exception as e:
-                print("Error sending welcome task:", str(e))
+                logger.error("Error sending welcome task:", str(e))
             try:
                 send_webinar_registration_email(registration)
             except Exception as e:
-                print("Error sending registration email:", str(e))
+                logger.error("Error sending registration email:", str(e))
             try:
 
                 schedule_webinar_messages(registration)
             except Exception as e:
-                print("Error scheduling webinar messages:", str(e))
+                logger.error("Error scheduling webinar messages:", str(e))
             
 
         return registration
@@ -1537,17 +1534,17 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
             try:
                 send_webinar_welcome_whatsapp(registration)
             except Exception as e:
-                print("Error sending welcome task:", str(e))
+                logger.error("Error sending welcome task:", str(e))
                 
             try:
                 send_webinar_registration_email(registration)
             except Exception as e:
-                print("Error sending registration email:", str(e))
+                logger.error("Error sending registration email:", str(e))
             try:
 
                 schedule_webinar_messages(registration)
             except Exception as e:
-                print("Error scheduling webinar messages:", str(e))
+                logger.error("Error scheduling webinar messages:", str(e))
             
 
             return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -1684,7 +1681,6 @@ def fetch_zoom_participants(meeting_id):
 
         resp = requests.get(url, headers=headers, params=params, timeout=10)
 
-        print("ZOOM DEBUG:", meeting_id, resp.status_code, resp.text)
 
         resp.raise_for_status()
 
@@ -1739,7 +1735,6 @@ class WebinarAttendanceViewSet(viewsets.ViewSet):
             return Response({"message": "Session not ended"}, status=400)
 
         participants = fetch_zoom_participants(session.zoom_meeting_id)
-        print("zoom meeting  id",session.zoom_meeting_id)
 
         registrations = list(webinar.registrations.all())
 
@@ -1938,9 +1933,9 @@ def whatsapp_webhook(request):
     # =================================
     payload = json.loads(request.body.decode("utf-8"))
 
-    print("===== WHATSAPP WEBHOOK RECEIVED =====")
-    print(json.dumps(payload, indent=2))
-    print("===================================")
+    logger.info("===== WHATSAPP WEBHOOK RECEIVED =====")
+    logger.debug(json.dumps(payload, indent=2))
+    logger.info("===================================")
 
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
@@ -1950,7 +1945,7 @@ def whatsapp_webhook(request):
             # A) DELIVERY STATUS (IMPORTANT)
             # =================================
             for status in value.get("statuses", []):
-                print(
+                logger.info(
                     "STATUS:",
                     status.get("status"),           # sent/delivered/read/failed
                     "TIME:",
@@ -1987,7 +1982,6 @@ def whatsapp_webhook(request):
                             time_left="15 mins"
                         )
 
-                        print(f"Reminder opted by {phone}")
 
     return JsonResponse({"status": "ok"})
 
@@ -2398,7 +2392,7 @@ class FormViewSet(viewsets.ViewSet):
         # Re-attach the file from original request (dict() doesn't carry files)
         if "form_image" not in data and "form_image" in request.data:
             data["form_image"] = request.data["form_image"]
-        print("FINAL DATA FOR SERIALIZER:", data)
+
         serializer = FormCreateSerializer(
             data=data,  # pass the FIXED data, not request.data
             context={"request": request}
@@ -2632,7 +2626,6 @@ class SubmissionViewSet(viewsets.ViewSet):
 
     def create(self, request):
         raw_answers = request.data.get("answers")
-        print("RAW ANSWERS:", raw_answers)
 
         # multipart → JSON string → Python list
         if isinstance(raw_answers, str):
