@@ -262,7 +262,7 @@ class PublicEbookViewSet(
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet
 ):
-    queryset = Ebook.objects.filter(is_deleted=False)
+    queryset = Ebook.objects.filter(is_deleted=False, status=True)
     serializer_class = PublicEbookListSerializer
     permission_classes = [AllowAny]
     authentication_classes = []
