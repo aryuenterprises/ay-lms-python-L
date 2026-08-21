@@ -22,4 +22,5 @@ urlpatterns = [
    path("razorpay/settlements/balance", RazorpaySettlementViewSet.as_view({"get":"balance"})),
    path('stripe/success/', stripe_success),
    path('stripe/cancel/', stripe_cancel),
+   path('payments/students/', PaymentStudentDropdownView.as_view(), name='payment-student-dropdown'),
 ]
