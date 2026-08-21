@@ -1,40 +1,51 @@
-from rest_framework import viewsets, status,permissions
-from rest_framework.response import Response
-from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from django.http import HttpResponse, JsonResponse
-from payments.models import PaymentTransaction,PaymentGateway
-from django.db.models import  Prefetch
-from django.db.models import Q
-import razorpay
-from rest_framework.views import APIView
-from django.shortcuts import get_object_or_404
-from .ebook_emails import send_ebook_registration_email
-from rest_framework.decorators import action
-from django.views.decorators.csrf import csrf_exempt
-from rest_framework.permissions import IsAuthenticated
-from aryuapp.auth import CustomJWTAuthentication
-# from django.db.models import Avg
-from .models import *
-from .serializers import *
-from .whatsapp import *
 import json
-import uuid
-from django.db import transaction as db_transaction
-from rest_framework.decorators import action
-from django.views.decorators.csrf import csrf_exempt
-import hmac
-import hashlib
-from rest_framework.permissions import IsAuthenticated, AllowAny
-from rest_framework.decorators import api_view, permission_classes
 import logging
 import secrets
 import string
-from django.core.cache import cache
+import uuid
+import razorpay
+import hashlib
+import hmac
+
+from django.conf import settings
 from django.contrib.auth.hashers import make_password, check_password
+from django.core.cache import cache
+from django.db import transaction as db_transaction
+from django.db.models import Prefetch, Q
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import get_object_or_404
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+
+from rest_framework import mixins, permissions, status, viewsets
+from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from aryuapp.auth import CustomJWTAuthentication
+from payments.models import PaymentGateway, PaymentTransaction
+from payments.services.razorpay_service import (
+    get_active_razorpay_gateway,
+    get_webhook_secret,
+    process_razorpay_webhook_event,
+    verify_razorpay_signature,
+)
+
+from .ebook_emails import send_ebook_registration_email
+from .models import *
+from .serializers import *
+from .whatsapp import *
 
 logger = logging.getLogger('razorpay_webhook')
 
-def generate_secure_password(length=10):
+
+def generate_secure_password(length=12):
+    """
+    OWASP Aligned: Cryptographically secure random password generator using system CSPRNG.
+    Ensures minimum complexity constraints (uppercase, lowercase, digits, symbols).
+    """
     alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
     while True:
         pwd = ''.join(secrets.choice(alphabet) for _ in range(length))
@@ -44,48 +55,50 @@ def generate_secure_password(length=10):
                 and any(c in "!@#$%^&*" for c in pwd)):
             return pwd
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. EbookViewSet (Authenticated Admin Management)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@method_decorator(csrf_exempt, name='dispatch')
 class EbookViewSet(viewsets.ModelViewSet):
     queryset = Ebook.objects.all()
     serializer_class = EbookSerializer
     authentication_classes = [CustomJWTAuthentication]
+    permission_classes = [IsAuthenticated]
     parser_classes = (MultiPartParser, FormParser, JSONParser)
     lookup_field = "slug"
 
-    # ─────────────────────────────────────────
-    # HELPER: extract tags from request
-    # ─────────────────────────────────────────
     def extract_tags(self, request):
-        tags = request.data.getlist("tags")
+    # Check if request.data has the 'getlist' method (e.g., QueryDict from form-data)
+        if hasattr(request.data, 'getlist'):
+            tags = request.data.getlist("tags")
+            # If passed as a single comma-separated string inside form-data
+            if len(tags) == 1 and isinstance(tags[0], str) and "," in tags[0]:
+                return [tag.strip() for tag in tags[0].split(",") if tag.strip()]
+            return tags
 
-        # If sent as a single JSON string e.g. '["python","django"]'
-        if len(tags) == 1:
-            try:
-                parsed = json.loads(tags[0])
-                if isinstance(parsed, list):
-                    tags = parsed
-            except (json.JSONDecodeError, TypeError):
-                pass
+        # Fallback for standard dict (JSON payloads)
+        tags = request.data.get("tags", [])
 
-        return tags
+        # Handle string input if sent as a comma-separated string in JSON
+        if isinstance(tags, str):
+            return [tag.strip() for tag in tags.split(",") if tag.strip()]
 
-    # ─────────────────────────────────────────
-    # CREATE
-    # ─────────────────────────────────────────
+        # Return as list if already a list, or empty list if None/invalid
+        return tags if isinstance(tags, list) else []
+
+    @db_transaction.atomic
     def create(self, request, *args, **kwargs):
-        logger.debug("REQUEST DATA:", request.data)
-
+        logger.debug(f"CREATE EBOOK REQUEST DATA: {request.data}")
         tags = self.extract_tags(request)
 
         data = request.data.dict() if hasattr(request.data, 'dict') else dict(request.data)
         data["tags"] = tags
 
-        serializer = self.get_serializer(
-            data=data,
-            context={'request': request}
-        )
-
+        serializer = self.get_serializer(data=data, context={'request': request})
         if not serializer.is_valid():
-            logger.error("ERRORS:", serializer.errors)
+            logger.error(f"EBOOK CREATE ERRORS: {serializer.errors}")
             return Response({
                 "status": False,
                 "message": "Validation failed",
@@ -131,12 +144,9 @@ class EbookViewSet(viewsets.ModelViewSet):
             "data": EbookSerializer(ebook, context={'request': request}).data
         }, status=status.HTTP_201_CREATED)
 
-    # ─────────────────────────────────────────
-    # UPDATE
-    # ─────────────────────────────────────────
+    @db_transaction.atomic
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-
         tags = self.extract_tags(request)
 
         data = request.data.dict() if hasattr(request.data, 'dict') else dict(request.data)
@@ -150,7 +160,7 @@ class EbookViewSet(viewsets.ModelViewSet):
         )
 
         if not serializer.is_valid():
-            logger.error("ERRORS:", serializer.errors)
+            logger.error(f"EBOOK UPDATE ERRORS: {serializer.errors}")
             return Response({
                 "status": False,
                 "message": "Validation failed",
@@ -201,9 +211,6 @@ class EbookViewSet(viewsets.ModelViewSet):
             "data": EbookSerializer(ebook, context={'request': request}).data
         }, status=status.HTTP_200_OK)
 
-    # ─────────────────────────────────────────
-    # RETRIEVE (single ebook by slug)
-    # ─────────────────────────────────────────
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         serializer = self.get_serializer(instance, context={'request': request})
@@ -213,9 +220,6 @@ class EbookViewSet(viewsets.ModelViewSet):
             "data": serializer.data
         }, status=status.HTTP_200_OK)
 
-    # ─────────────────────────────────────────
-    # LIST (all ebooks)
-    # ─────────────────────────────────────────
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         serializer = self.get_serializer(
@@ -229,39 +233,40 @@ class EbookViewSet(viewsets.ModelViewSet):
             "data": serializer.data
         }, status=status.HTTP_200_OK)
 
-    # ─────────────────────────────────────────
-    # DESTROY (delete ebook)
-    # ─────────────────────────────────────────
+    @db_transaction.atomic
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-
-        # Also clean up nested related objects before deleting
         instance.seo.all().delete()
         instance.tools.all().delete()
         instance.faqs.all().delete()
-
         instance.delete()
 
         return Response({
             "status": True,
             "message": "Ebook deleted successfully"
         }, status=status.HTTP_200_OK)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Public Ebook Views
+# ─────────────────────────────────────────────────────────────────────────────
 class EbookPublicListAPIView(viewsets.ModelViewSet):
     queryset = Ebook.objects.filter(is_deleted=False)
-    serializer_class = EbookDetailSerializer 
-    
+    serializer_class = EbookDetailSerializer
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+
 class PublicEbookViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet
 ):
-    queryset = Ebook.objects.filter(is_deleted=False, )
+    queryset = Ebook.objects.filter(is_deleted=False)
     serializer_class = PublicEbookListSerializer
-
-    permission_classes = []
+    permission_classes = [AllowAny]
     authentication_classes = []
-
-    lookup_field = "slug"   # or "slug" or "id"
+    lookup_field = "slug"
 
     def list(self, request, *args, **kwargs):
         response = super().list(request, *args, **kwargs)
@@ -276,64 +281,53 @@ class PublicEbookViewSet(
             "success": True,
             "data": response.data
         })
-VERIFY_TOKEN = "akzworld" 
-def whatsapp_webhook(request):
 
-    # =================================
-    # META VERIFICATION (GET)
-    # =================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. WhatsApp Webhook
+# ─────────────────────────────────────────────────────────────────────────────
+@csrf_exempt
+@api_view(["GET", "POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def whatsapp_webhook(request):
+    verify_token = getattr(settings, "WHATSAPP_VERIFY_TOKEN", "akzworld")
+
     if request.method == "GET":
         mode = request.GET.get("hub.mode")
         token = request.GET.get("hub.verify_token")
         challenge = request.GET.get("hub.challenge")
 
-        if mode == "subscribe" and token == VERIFY_TOKEN:
+        if mode == "subscribe" and token == verify_token:
             return HttpResponse(challenge)
-
         return HttpResponse("Invalid token", status=403)
 
-
-    # =================================
-    # EVENTS (POST)
-    # =================================
-    payload = json.loads(request.body.decode("utf-8"))
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({"error": "Invalid payload"}, status=400)
 
     logger.info("===== WHATSAPP WEBHOOK RECEIVED =====")
     logger.debug(json.dumps(payload, indent=2))
-    logger.info("===================================")
 
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
 
-            # =================================
-            # A) DELIVERY STATUS (IMPORTANT)
-            # =================================
-            for status in value.get("statuses", []):
+            for status_item in value.get("statuses", []):
                 logger.debug(
-                    "STATUS:",
-                    status.get("status"),           # sent/delivered/read/failed
-                    "TIME:",
-                    status.get("timestamp"),
-                    "PHONE:",
-                    status.get("recipient_id"),
-                    "MESSAGE_ID:",
-                    status.get("id")
+                    f"STATUS: {status_item.get('status')} | "
+                    f"TIME: {status_item.get('timestamp')} | "
+                    f"PHONE: {status_item.get('recipient_id')} | "
+                    f"MESSAGE_ID: {status_item.get('id')}"
                 )
 
-            # =================================
-            # B) USER MESSAGES (buttons etc.)
-            # =================================
             for message in value.get("messages", []):
+                phone = message.get("from", "")
 
-                phone = message["from"]
-
-                if message["type"] == "button":
-                    button_text = message["button"]["text"].strip().lower()
-
-                    registration = EbookRegistration.objects.filter(
-                        phone=phone[-10:]
-                    ).last()
+                if message.get("type") == "button":
+                    button_text = message.get("button", {}).get("text", "").strip().lower()
+                    registration = EbookRegistration.objects.filter(phone=phone[-10:]).last()
 
                     if not registration:
                         continue
@@ -341,77 +335,64 @@ def whatsapp_webhook(request):
                     if button_text in ["remaind me", "remind me"]:
                         registration.wants_reminder = True
                         registration.save()
-
-                        send_ebook_reminder.delay(
-                            registration.id,
-                            time_left="15 mins"
-                        )
-
+                        send_ebook_reminder.delay(registration.id, time_left="15 mins")
                         logger.info(f"Reminder opted by {phone}")
 
     return JsonResponse({"status": "ok"})
 
-from payments.services.razorpay_service import (
-    get_active_razorpay_gateway,
-    get_webhook_secret,
-    verify_razorpay_signature,
-    process_razorpay_webhook_event
-)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Razorpay Webhook
+# ─────────────────────────────────────────────────────────────────────────────
 @csrf_exempt
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def razorpay_webhook(request):
     logger.info("Ebook Webhook received")
 
-    # 1. Capture Raw Bytes Payload and Signature Header
     raw_body = request.body
     received_signature = request.headers.get("X-Razorpay-Signature") or request.META.get("HTTP_X_RAZORPAY_SIGNATURE")
     event_id = request.headers.get("X-Razorpay-Event-Id") or request.META.get("HTTP_X_RAZORPAY_EVENT_ID")
 
     if not received_signature:
-        logger.error("=== RAZORPAY WEBHOOK DIAGNOSTIC === Razorpay Webhook: Missing signature header")
+        logger.error("Razorpay Webhook: Missing signature header")
         return HttpResponse("Missing signature", status=400)
 
-    # 2. Get Active Gateway and Secret
     gateway = get_active_razorpay_gateway()
     webhook_secret = get_webhook_secret(gateway)
 
     if not webhook_secret:
-        logger.error("=== RAZORPAY WEBHOOK DIAGNOSTIC === Razorpay Webhook: Gateway config or webhook_secret missing")
+        logger.error("Razorpay Webhook: Gateway config or webhook_secret missing")
         return HttpResponse("Gateway config error", status=500)
 
-    # 3. HMAC Signature Verification over raw bytes
     if not verify_razorpay_signature(raw_body, received_signature, webhook_secret, event_id=event_id):
-        logger.error("=== RAZORPAY WEBHOOK DIAGNOSTIC === Razorpay Webhook: Signature verification failed")
+        logger.error("Razorpay Webhook: Signature verification failed")
         return HttpResponse("Invalid signature", status=400)
 
-    # 4. Safe JSON Parsing
     try:
         data = json.loads(raw_body.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         logger.error("Razorpay Webhook: Invalid JSON payload")
         return HttpResponse("Invalid JSON", status=400)
 
-    # 5. Process Webhook Event
     process_razorpay_webhook_event(data)
-
     return HttpResponse(status=200)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Razorpay Payment ViewSet
+# ─────────────────────────────────────────────────────────────────────────────
+@method_decorator(csrf_exempt, name='dispatch')
 class RazorpayPaymentViewSet(viewsets.ViewSet):
-    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    permission_classes = [AllowAny]
 
     def _get_client(self):
-        gateway = PaymentGateway.objects.filter(
-            gatway_name__icontains="razorpay"
-        ).first()
-
+        gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay").first()
         if not gateway:
             return None, None
-
-        client = razorpay.Client(
-            auth=(gateway.public_key, gateway.secret_key)
-        )
+        client = razorpay.Client(auth=(gateway.public_key, gateway.secret_key))
         return client, gateway
 
     @action(detail=False, methods=["post"])
@@ -428,14 +409,14 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         if not all([ebook_id, phone]):
             return Response(
                 {"success": False, "message": "Missing required fields"},
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         client, gateway = self._get_client()
         if not client:
             return Response(
                 {"success": False, "message": "Razorpay not configured"},
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         ebook = get_object_or_404(Ebook, id=ebook_id)
@@ -498,7 +479,6 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             "created_at": ebook.created_at
         })
 
-    @csrf_exempt
     @action(detail=False, methods=['post'], url_path="verify")
     def verify_payment(self, request):
         payment_id = request.data.get("razorpay_payment_id")
@@ -508,18 +488,18 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         if not all([payment_id, order_id, signature]):
             return Response(
                 {"success": False, "message": "Missing fields"},
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
 
-        gateway = PaymentGateway.objects.filter(
-            gatway_name__icontains="razorpay"
-        ).first()
+        gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay").first()
+        if not gateway:
+            return Response(
+                {"success": False, "message": "Gateway not configured"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
-            razorpay_client = razorpay.Client(
-                auth=(gateway.public_key, gateway.secret_key)
-            )
-
+            razorpay_client = razorpay.Client(auth=(gateway.public_key, gateway.secret_key))
             razorpay_client.utility.verify_payment_signature({
                 "razorpay_payment_id": payment_id,
                 "razorpay_order_id": order_id,
@@ -527,7 +507,6 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             })
 
             txn = PaymentTransaction.objects.filter(order_id=order_id).first()
-
             if txn:
                 txn.razorpay_payment_id = payment_id
                 txn.payment_status = "done"
@@ -538,16 +517,21 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         except razorpay.errors.SignatureVerificationError:
             return Response(
                 {"success": False, "message": "Invalid signature"},
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         return Response({"success": True})
-   
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Ebook Registration ViewSet
+# ─────────────────────────────────────────────────────────────────────────────
+@method_decorator(csrf_exempt, name='dispatch')
 class EbookRegistrationViewSet(viewsets.ViewSet):
-    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    permission_classes = [AllowAny]
 
     def _is_first_time_user(self, email, phone, current_registration_id=None):
-        """Check if this is the user's first registration across ALL ebooks."""
         q_filter = Q()
         if email:
             q_filter |= Q(email__iexact=email)
@@ -585,7 +569,7 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
                 user_password = existing_user_reg.password
                 name = name or existing_user_reg.name
             else:
-                raw_pwd = generate_secure_password(10)
+                raw_pwd = generate_secure_password(12)
                 user_password = make_password(raw_pwd)
 
             registration = EbookRegistration.objects.create(
@@ -604,21 +588,14 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
         registration.phone = request.data.get("phone") or registration.phone
         registration.save()
 
-        gateway = PaymentGateway.objects.filter(
-            gatway_name__icontains="razorpay"
-        ).first()
-
+        gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay").first()
         if not gateway:
             return Response(
                 {"error": "Razorpay payment gateway configuration not found."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Initialize Razorpay client with DB credentials
-        client = razorpay.Client(
-            auth=(gateway.public_key, gateway.secret_key)
-        )
-
+        client = razorpay.Client(auth=(gateway.public_key, gateway.secret_key))
         amount = int(float(ebook.price) * 100)
 
         order = client.order.create({
@@ -651,7 +628,7 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
             "success": True,
             "order_id": order["id"],
             "transaction_id": transaction_id,
-            "key": gateway.public_key if gateway else settings.RAZORPAY_KEY_ID,
+            "key": gateway.public_key if gateway else getattr(settings, "RAZORPAY_KEY_ID", None),
             "amount": amount,
             "currency": "INR",
             "registration_id": registration.id,
@@ -678,7 +655,6 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 1. CHECK EXISTING REGISTRATION FOR THIS SPECIFIC EBOOK
         q_this_ebook = Q()
         if email:
             q_this_ebook |= Q(email__iexact=email)
@@ -702,7 +678,6 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # RESUME PAYMENT FOR THIS EBOOK
             txn = existing_registration.payment_transaction
 
             global_user = EbookRegistration.objects.filter(
@@ -734,9 +709,7 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
                 return self._create_payment(request, ebook, existing_registration)
 
             amount = int(float(txn.amount) * 100)
-            gateway = PaymentGateway.objects.filter(
-                gatway_name__icontains="razorpay"
-            ).first()
+            gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay").first()
 
             return Response({
                 "success": True,
@@ -755,7 +728,6 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
                 "created_at": ebook.created_at
             })
 
-        # 2. CHECK IF USER EXISTS ACROSS ANY OTHER EBOOK (REUSE USER ACCOUNT)
         q_user = Q()
         if email:
             q_user |= Q(email__iexact=email)
@@ -772,19 +744,16 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
         raw_password_for_email = None
 
         if existing_user_reg:
-            # Existing user -> reuse existing password and profile details
             user_password = existing_user_reg.password
             name = name or existing_user_reg.name
             email = email or existing_user_reg.email
             phone = phone or existing_user_reg.phone
             is_first_time = False
         else:
-            # Brand NEW user -> generate secure password & hash it
-            raw_password_for_email = generate_secure_password(10)
+            raw_password_for_email = generate_secure_password(12)
             user_password = make_password(raw_password_for_email)
             is_first_time = True
 
-        # 3. CREATE NEW REGISTRATION FOR THIS EBOOK
         registration = EbookRegistration.objects.create(
             ebook=ebook,
             name=name,
@@ -797,7 +766,6 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
         if raw_password_for_email:
             cache.set(f"ebook_raw_pwd_{registration.id}", raw_password_for_email, timeout=3600)
 
-        # 4. FREE EBOOK -> SEND EMAIL IMMEDIATELY
         if not ebook.is_paid:
             try:
                 logger.info(f"📧 Sending email for registration: {registration.email or registration.phone}")
@@ -813,7 +781,6 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
                 "is_first_time_user": is_first_time
             })
 
-        # 5. PAID EBOOK -> PROCEED TO PAYMENT
         return self._create_payment(request, ebook, registration, is_new_user=is_first_time)
 
     @classmethod
@@ -826,9 +793,7 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
             return None
 
         try:
-            registration = EbookRegistration.objects.filter(
-                id=int(registration_id)
-            ).first()
+            registration = EbookRegistration.objects.filter(id=int(registration_id)).first()
         except (ValueError, TypeError):
             logger.error(f"Invalid registration_id: {registration_id}")
             return None
@@ -837,7 +802,6 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
             logger.error(f"EbookRegistration not found for ID: {registration_id}")
             return None
 
-        # Mark as paid
         registration.is_paid = True
         registration.payment_transaction = txn
         registration.save()
@@ -846,7 +810,6 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
         if raw_password:
             cache.delete(f"ebook_raw_pwd_{registration.id}")
 
-        # ✅ ALWAYS SEND EMAIL ON PAYMENT CONFIRMATION
         try:
             logger.info(f"📧 Sending email after payment confirmation to: {registration.email or registration.phone}")
             send_ebook_registration_email(registration, password=raw_password)
@@ -859,9 +822,6 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
     def create_registration_from_transaction(cls, txn):
         return cls.update_registration_after_payment(txn)
 
-    # ============================================
-    # LIST REGISTRATIONS
-    # ============================================
     def list(self, request, slug=None):
         if not request.user.is_authenticated:
             return Response(
@@ -880,98 +840,32 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
         return Response({
             "success": True,
             "data": serializer.data
-        }) 
-    # @action(detail=False, methods=["get"], url_path="history")
-    # def transaction_history(self, request):
-    #     queryset = PaymentTransaction.objects.filter(
-    #         metadata__isnull=False
-    #     ).order_by("-id")
-
-    #     serializer = PaymentTransactionListSerializer(queryset, many=True)
-
-    #     return Response({
-    #         "success": True,
-    #         "data": serializer.data
-    #     })    
+        })
 
     @action(detail=False, methods=["get"], url_path="all-transactions")
     def all_transactions(self, request):
-
         queryset = PaymentTransaction.objects.select_related(
             "ebookregistration", "ebookregistration__ebook"
         ).order_by("-id")
 
         serializer = PaymentTransactionListSerializer(queryset, many=True)
-
         return Response({
             "success": True,
             "count": queryset.count(),
             "data": serializer.data
         })
-    
-    # @action(detail=True, methods=["get"], url_path="transaction-history")
-    # def transaction_history(self, request, pk=None):
 
-    #     # ✅ Step 1: get registration
-    #     try:
-    #         registration = EbookRegistration.objects.get(pk=pk)
-    #     except EbookRegistration.DoesNotExist:
-    #         return Response(
-    #             {"success": False, "message": "Registration not found"},
-    #             status=404
-    #         )
-
-    #     email = registration.email
-    #     phone = registration.phone
-
-    #     # ✅ Step 2: validate
-    #     if not email and not phone:
-    #         return Response(
-    #             {"success": False, "message": "No email or phone found for this user"},
-    #             status=400
-    #         )
-
-    #     # ✅ Step 3: find all registrations of this user
-    #     user_registrations = EbookRegistration.objects.filter(
-    #         Q(email__iexact=email) | Q(phone=phone)
-    #     )
-
-    #     # ✅ Step 4: get all transactions
-    #     transactions = PaymentTransaction.objects.filter(
-    #         Q(ebookregistration__in=user_registrations) |
-    #         Q(email__iexact=email) |
-    #         Q(phone=phone)
-    #     ).order_by("-id").distinct()
-
-    #     # ✅ Step 5: serialize
-    #     serializer = PaymentTransactionListSerializer(
-    #         transactions,
-    #         many=True,
-    #         context={"request": request}
-    #     )
-
-    #     return Response({
-    #         "success": True,
-    #         "registration_id": registration.id,
-    #         "user_email": email,
-    #         "user_phone": phone,
-    #         "count": transactions.count(),
-    #         "data": serializer.data
-    #     })   
-    
     @action(detail=False, methods=["get"], url_path="user-history")
     def user_transaction_history(self, request):
-
         email = request.query_params.get("email")
         phone = request.query_params.get("phone")
 
         if not email and not phone:
             return Response(
                 {"success": False, "message": "Email or phone required"},
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
 
-       
         reg_filter = Q()
         if email:
             reg_filter |= Q(email__iexact=email)
@@ -979,15 +873,11 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
             reg_filter |= Q(phone=phone)
 
         registrations = EbookRegistration.objects.filter(reg_filter)
-
-       
         txn_filter = Q()
 
-        # 🔹 1. linked transactions
         if registrations.exists():
             txn_filter |= Q(ebookregistration__in=registrations)
 
-        # 🔹 2. fallback (OLD DATA)
         if phone:
             txn_filter |= Q(phone=phone)
             txn_filter |= Q(metadata__phone=phone)
@@ -1000,13 +890,9 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
             .order_by("-id")\
             .distinct()
 
-        
         data = []
         for txn in transactions:
-            ebook = None
-
-            if txn.ebookregistration:
-                ebook = txn.ebookregistration.ebook
+            ebook = txn.ebookregistration.ebook if txn.ebookregistration else None
 
             data.append({
                 "id": txn.id,
@@ -1015,7 +901,6 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
                 "phone": txn.metadata.get("phone") if txn.metadata else None,
                 "email": txn.metadata.get("email") if txn.metadata else None,
                 "created_at": txn.created_at,
-
                 "ebook_title": ebook.title if ebook else None,
                 "ebook_slug": ebook.slug if ebook else None,
             })
@@ -1025,19 +910,16 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
             "count": len(data),
             "data": data
         })
-    
-class EbookUserViewSet(viewsets.ViewSet):
-    # ============================================
-    # LIST REGISTRATIONS for each user
-    # ============================================
-    def list(self, request, slug=None, pk=None):
-        if not request.user.is_authenticated:
-            return Response(
-                {"success": False, "message": "Authentication required"},
-                status=status.HTTP_403_FORBIDDEN
-            )
 
-        # ❗ prevent crash if pk is undefined
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. Ebook User ViewSet
+# ─────────────────────────────────────────────────────────────────────────────
+class EbookUserViewSet(viewsets.ViewSet):
+    authentication_classes = [CustomJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request, slug=None, pk=None):
         if not pk or str(pk) == "undefined":
             return Response(
                 {"success": False, "message": "Invalid student id"},
@@ -1051,29 +933,23 @@ class EbookUserViewSet(viewsets.ViewSet):
             .order_by('-registered_at')
         )
 
-        # ✅ filter by student id
-        # qs = qs.filter(id=pk)
-
         serializer = EbookRegistrationSerializer(qs, many=True)
-
         return Response({
             "success": True,
             "data": serializer.data
         })
-    def partial_update(self, request, slug=None, pk=None):
-        registration = EbookRegistration.objects.filter(
-            id=pk,
-            
-        ).first()
 
+    def partial_update(self, request, slug=None, pk=None):
+        registration = EbookRegistration.objects.filter(id=pk).first()
         if not registration:
-            return Response({"message": "Not found"}, status=404)
+            return Response({"message": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
         password = request.data.get("password")
-
         if password:
-            registration.password = password  # ⚠️ hash if needed
+            # OWASP A02: Cryptographic Failures - Hash password before saving
+            registration.password = make_password(password)
             registration.save()
+
         qs = (
             EbookRegistration.objects
             .filter(id=pk)
@@ -1083,37 +959,35 @@ class EbookUserViewSet(viewsets.ViewSet):
         serializer = EbookRegistrationSerializer(qs, many=True)
 
         return Response({
-                "success": True,
-                "data":serializer.data,
-                "message": "Password updated"
-            })
-    
+            "success": True,
+            "data": serializer.data,
+            "message": "Password updated successfully"
+        })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. Reviews Views
+# ─────────────────────────────────────────────────────────────────────────────
 class ReviewListCreateView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
     parser_classes = [MultiPartParser, JSONParser]
 
     def get(self, request):
-        slug = request.query_params.get("slug",None)
-
+        slug = request.query_params.get("slug", None)
         reviews = Reviews.objects.filter(is_approved=True)
 
         if slug:
             reviews = reviews.filter(registration__ebook__slug=slug)
 
-        # avg_rating = reviews.aggregate(avg=Avg('rating'))['avg']
-
         serializer = ReviewSerializer(reviews, many=True)
-
         return Response({
             "status": True,
-            # "average_rating": avg_rating,
             "data": serializer.data
         })
 
     def post(self, request):
         serializer = ReviewSerializer(data=request.data)
-
         if serializer.is_valid():
             serializer.save()
             return Response({
@@ -1126,8 +1000,11 @@ class ReviewListCreateView(APIView):
             "status": False,
             "errors": serializer.errors
         }, status=status.HTTP_400_BAD_REQUEST)
-    
+
+
 class ReviewDetailView(APIView):
+    authentication_classes = [CustomJWTAuthentication]
+    permission_classes = [IsAuthenticated]
 
     def get_object(self, pk):
         try:
@@ -1138,7 +1015,7 @@ class ReviewDetailView(APIView):
     def get(self, request, pk):
         review = self.get_object(pk)
         if not review:
-            return Response({"status": False, "message": "Not found"}, status=404)
+            return Response({"status": False, "message": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
         serializer = ReviewSerializer(review)
         return Response({"status": True, "data": serializer.data})
@@ -1146,32 +1023,31 @@ class ReviewDetailView(APIView):
     def put(self, request, pk):
         review = self.get_object(pk)
         if not review:
-            return Response({"status": False, "message": "Not found"}, status=404)
+            return Response({"status": False, "message": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
         serializer = ReviewSerializer(review, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response({"status": True, "data": serializer.data})
 
-        return Response({"status": False, "errors": serializer.errors}, status=400)
+        return Response({"status": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, pk):
         review = self.get_object(pk)
         if not review:
-            return Response({"status": False, "message": "Not found"}, status=404)
+            return Response({"status": False, "message": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
         review.delete()
         return Response({"status": True, "message": "Deleted successfully"})
-    
+
+
 class EbookReviewBySlugView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
 
     def get(self, request, slug):
         ebook = get_object_or_404(Ebook, slug=slug)
-
-        reviews = Reviews.objects.filter(
-            registration__ebook=ebook
-        ).order_by('-created_at')
-
+        reviews = Reviews.objects.filter(registration__ebook=ebook).order_by('-created_at')
         serializer = ReviewSerializer(reviews, many=True)
 
         return Response({
@@ -1180,4 +1056,3 @@ class EbookReviewBySlugView(APIView):
             "reviews_count": reviews.count(),
             "data": serializer.data
         })
-    

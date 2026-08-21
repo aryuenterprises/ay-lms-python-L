@@ -21,7 +21,7 @@ class EbookSEOSerializer(serializers.ModelSerializer):
 
     def get_seo_image_url(self, obj):
         if obj.seo_image and hasattr(obj.seo_image, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.seo_image.url
+            return 'https://portal.aryuacademy.com' + obj.seo_image.url
         return None
 
 
@@ -33,7 +33,7 @@ class EbookToolSerializer(serializers.ModelSerializer):
         fields = ['id', 'tool_title', 'tool_image','tool_image_url']
     def get_tool_image_url(self, obj):
         if obj.tool_image and hasattr(obj.tool_image, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.tool_image.url
+            return 'https://portal.aryuacademy.com' + obj.tool_image.url
         return None
 
 
@@ -54,84 +54,57 @@ class EbookSerializer(serializers.ModelSerializer):
     reviews_count = serializers.SerializerMethodField()
     average_rating = serializers.SerializerMethodField()
 
-    ebook_image_url = serializers.SerializerMethodField(read_only = True)
-    pdf_url = serializers.SerializerMethodField(read_only = True)
+    ebook_image_url = serializers.SerializerMethodField(read_only=True)
+    pdf_url = serializers.SerializerMethodField(read_only=True)
     
     role_id = serializers.SerializerMethodField()
     role_name = serializers.SerializerMethodField()
     user_type = serializers.SerializerMethodField()
     is_paid = serializers.BooleanField(required=False)
     tags = serializers.ListField(
-    child=serializers.CharField(),
-    required=False
+        child=serializers.CharField(),
+        required=False
     )
     created_by = serializers.SerializerMethodField()
-    rating= serializers.SerializerMethodField()
-    short_description=serializers.SerializerMethodField()
-    status=serializers.SerializerMethodField()
 
-    
+    # ❌ REMOVED:
+    # rating = serializers.SerializerMethodField()
+    # short_description = serializers.SerializerMethodField()
+    # status = serializers.SerializerMethodField()
+
+    # ✅ ADDED FOR DIRECT PAYLOAD ACCESS:
+    rating = serializers.IntegerField(required=False)
+    short_description = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    status = serializers.BooleanField(required=False)
+
     def get_created_by(self, obj):
         print(type(obj.created_by), obj.created_by)
         return None
 
     class Meta:
         model = Ebook
-        # fields = [
-        #     'id',
-        #     'title',
-        #     'slug',
-        #     'sub_title',
-        #     'key',
-        #     'price',
-        #     'regular_price',
-        #     'ebook_image',
-        #     'description',
-        #     'pdf',
-        #     'is_paid',
-        #     'is_deleted',
-        #     'seats_available',
-        #     'seo',
-        #     'tools',
-        #     'faqs',
-        #     'ebook_image_url',
-        #     'pdf_url',
-        #     'participants_count',
-        #     'reviews',
-        #     'reviews_count',
-        #     'average_rating',
-        #     "role_id",
-        #     "role_name",
-        #     "user_type",
-        #     "language",
-        #     "order",
-        #     "tags",
-        #     "youtube",
-        #     "testimonial"
-        # ]
-        fields="__all__"
+        fields = "__all__"
 
     def get_role_id(self, obj):
-        return 50   # ✅ fixed value
+        return 50
 
     def get_role_name(self, obj):
-        return "ebook user"   # ✅ fixed value
+        return "ebook user"
 
     def get_user_type(self, obj):
         return "ebookuser"
 
     def get_ebook_image_url(self, obj):
         if obj.ebook_image and hasattr(obj.ebook_image, 'url'):
-            return 'https://portal.aryuacademy.com/api/' + obj.ebook_image.url
+            return 'https://portal.aryuacademy.com' + obj.ebook_image.url
         return None
     
     def get_pdf_url(self, obj):
         if obj.pdf and hasattr(obj.pdf, 'url'):
-            return 'https://portal.aryuacademy.com/api/' + obj.pdf.url
+            return 'https://portal.aryuacademy.com' + obj.pdf.url
         return None
     
     def get_participants_count(self, obj):
-        # Count total registrations
         return obj.registrations.count()
     
     def get_reviews(self, obj):
@@ -140,77 +113,45 @@ class EbookSerializer(serializers.ModelSerializer):
     
     def get_reviews_count(self, obj):
         return Reviews.objects.filter(registration__ebook=obj).count()
-    
-    def get_rating(self, obj):
-        # Return the rating attribute from the model or compute it dynamically
-        return getattr(obj, 'rating', 0.0)
-    def get_short_description(self, obj):
-        # Truncate the main description or return the field safely
-        description = getattr(obj, 'description', '') or ''
-        return description[:150] if len(description) > 150 else description
 
-    def get_status(self, obj):
-        # Calculate status dynamically
-        return "active" if getattr(obj, 'is_active', True) else "inactive"
-        
+    # ❌ REMOVED get_rating(), get_short_description(), get_status() helper methods
+
     def get_average_rating(self, obj):
         reviews = Reviews.objects.filter(registration__ebook=obj)
-
         if not reviews.exists():
             return 0
-
         total = sum([r.rating for r in reviews])
         return round(total / reviews.count(), 1)
     
     def extract_nested_data(self, data, field_name):
-        """
-        Convert form-data like:
-        seo[0][seo_title], seo[0][seo_description]
-        into:
-        [
-            {'seo_title': '...', 'seo_description': '...'}
-        ]
-        """
         result = {}
-
         for key, value in data.items():
             if key.startswith(field_name):
                 parts = key.replace(']', '').split('[')
-                # ['seo', '0', 'seo_title']
-
                 if len(parts) >= 3:
                     index = int(parts[1])
                     sub_key = parts[2]
-
                     if index not in result:
                         result[index] = {}
-
                     result[index][sub_key] = value
-
         return list(result.values())
 
     def create(self, validated_data):
         title = validated_data.get("title", "")
         input_slug = validated_data.get("slug")
-
-        # use given slug or generate from title
         base_slug = slugify(input_slug or title)
-
         slug = base_slug
         counter = 1
 
-        # 🔥 ensure unique slug
         while Ebook.objects.filter(slug=slug).exists():
             slug = f"{base_slug}-{counter}"
             counter += 1
 
         validated_data["slug"] = slug
-
         return super().create(validated_data)
-    # ---------------- UPDATE ----------------
+
     def update(self, instance, validated_data):
         input_slug = validated_data.get("slug", instance.slug)
-
         base_slug = slugify(input_slug)
         slug = base_slug
         counter = 1
@@ -220,9 +161,9 @@ class EbookSerializer(serializers.ModelSerializer):
             counter += 1
 
         validated_data["slug"] = slug
-
         return super().update(instance, validated_data)
-    
+
+
 class PublicEbookListSerializer(serializers.ModelSerializer):
     # registered_count = serializers.SerializerMethodField()
     # pending_seats = serializers.SerializerMethodField()
@@ -264,16 +205,16 @@ class PublicEbookListSerializer(serializers.ModelSerializer):
 
     def get_image(self, obj):
         if obj.ebook_image and hasattr(obj.ebook_image, 'url'):
-            return 'https://portal.aryuacademy.com/api/' + obj.ebook_image.url
+            return 'https://portal.aryuacademy.com' + obj.ebook_image.url
         return None
     def get_youtube_url(self, obj):
         if obj.youtube and hasattr(obj.youtube, 'url'):
-            return 'https://portal.aryuacademy.com/api/' + obj.youtube.url
+            return 'https://portal.aryuacademy.com' + obj.youtube.url
         return None
 
     def get_testimonial_url(self, obj):
         if obj.testimonial and hasattr(obj.testimonial, 'url'):
-            return 'https://portal.aryuacademy.com/api/' + obj.testimonial.url
+            return 'https://portal.aryuacademy.com' + obj.testimonial.url
         return None
     
     def get_language(self, obj):
@@ -456,7 +397,7 @@ class EbookRegistrationSerializer(serializers.ModelSerializer):
         return "ebookuser"
     def get_profile_pic(self, obj):
         if obj.profile_pic and hasattr(obj.profile_pic, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.profile_pic.url
+            return 'https://portal.aryuacademy.com' + obj.profile_pic.url
         return None
 
 class PaymentTransactionListSerializer(serializers.ModelSerializer):
