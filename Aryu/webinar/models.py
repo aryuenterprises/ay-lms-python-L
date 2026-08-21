@@ -8,7 +8,7 @@ User = settings.AUTH_USER_MODEL
 
 class Webinar(models.Model):
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
-    slug = models.SlugField(max_length=255,unique=True)
+    slug = models.SlugField(max_length=255,unique = True)
     webinar_image = models.ImageField(upload_to='webinar_images/', null=True, blank=True)
 
     title = models.CharField(max_length=255)

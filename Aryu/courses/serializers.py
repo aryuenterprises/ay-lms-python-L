@@ -7,13 +7,14 @@ import os
 import re
 from aryuapp.models import Assignment,Submission
 from batches.models import NewBatch
+from batches.serializers import NewBatchSerializer
 # from django.utils.html import escape
 # import request
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 import json
-
+import html
 # from aryuapp.models import Student
 
 
@@ -102,7 +103,6 @@ class Student(models.Model):
     )
 
 class CourseListSerializer(serializers.ModelSerializer):
-
     course_category = serializers.SlugRelatedField(
         slug_field="category_name",
         read_only=True
@@ -114,15 +114,12 @@ class CourseListSerializer(serializers.ModelSerializer):
     )
 
     course_pic_url = serializers.SerializerMethodField()
-
     duration_list = serializers.SerializerMethodField()
-
     student_list = serializers.SerializerMethodField()
-
+    batches = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
-
         fields = [
             "course_id",
             "course_name",
@@ -140,67 +137,72 @@ class CourseListSerializer(serializers.ModelSerializer):
             "is_archived",
             "is_featured",
             "student_list",
+            "batches",  # ✅ ADDED: Provides batch start_date, end_date, etc.
             "video_url"
         ]
 
-
     def get_course_pic_url(self, obj):
-
         if obj.course_pic:
             return f"https://portal.aryuacademy.com/api{obj.course_pic.url}"
-
         return None
 
-
     def get_duration_list(self, obj):
-
+        """
+        Populates duration_list so the frontend UI can display "Duration: X Months".
+        """
         if obj.duration:
-
-            duration_value = obj.duration
-
-            duration_type = getattr(
-                obj,
-                "duration_type"
-            )
-
             return [
                 {
-                    "duration": duration_value,
-                    "duration_type": duration_type
+                    "duration": obj.duration,
+                    "duration_type": getattr(obj, "duration_type", None)
                 }
             ]
-
         return []
 
-
-    def get_student_list(self, obj):
+    def get_batches(self, obj):
+        """
+        Returns ONLY the batch assigned to the student if viewing in a student context.
+        Otherwise returns all active non-archived batches.
+        """
+        student = self.context.get("student")
 
         batches = NewBatch.objects.filter(
-            course=obj
+            course=obj,
+            is_archived=False,
+            status=True
+        )
+
+        # Filter specifically for the context student if available
+        if student:
+            batches = batches.filter(students=student)
+
+        return NewBatchSerializer(batches.distinct(), many=True, context=self.context).data
+
+    def get_student_list(self, obj):
+        """
+        Optimized query using select_related/prefetch_related to extract enrolled students.
+        """
+        batches = NewBatch.objects.filter(
+            course=obj,
+            is_archived=False
         ).prefetch_related("students")
 
         student_data = []
-
         added_students = set()
 
         for batch in batches:
-
             for student in batch.students.all():
-
                 if student.student_id not in added_students:
-
                     added_students.add(student.student_id)
-
                     student_data.append({
                         "student_id": student.student_id,
-                        "student_name": f"{student.first_name} {student.last_name}",
+                        "student_name": f"{student.first_name or ''} {student.last_name or ''}".strip(),
                         "email": student.email,
-                        "phone": student.contact_no,
+                        "phone": getattr(student, "contact_no", None),
                         "batch_name": batch.title
                     })
 
         return student_data
-    
 class CaseInsensitiveSlugRelatedField(serializers.SlugRelatedField):
     def to_internal_value(self, data):
         try:
@@ -276,16 +278,36 @@ class CourseSerializer(serializers.ModelSerializer):
 
 
     def get_duration_list(self, obj):
-        if obj.duration and obj.duration_type:
+        if obj.duration:
             return [
                 {
                     "duration": obj.duration,
-                    "duration_type": obj.duration_type
+                    "duration_type": getattr(obj, "duration_type", "month") or "month"
                 }
             ]
         return []
     def get_batches(self, obj):
+        request = self.context.get("request")
+        student = self.context.get("student")
+
+        # 1. Fallback to query params if student wasn't directly passed in context
+        if not student and request:
+            student_id = request.query_params.get("student_id")
+            if student_id:
+                student = Student.objects.filter(
+                    student_id=student_id,
+                    is_archived=False
+                ).first()
+
+        # 2. Get active non-archived batches for this course
         batches_qs = obj.new_batches.filter(is_archived=False, status=True)
+
+        # 3. Filter specifically for the student if student context exists
+        if student:
+            batches_qs = batches_qs.filter(students=student)
+
+        batches_qs = batches_qs.distinct()
+
         return [
             {
                 "batch_id": b.batch_id,
@@ -294,10 +316,10 @@ class CourseSerializer(serializers.ModelSerializer):
                 "end_date": b.end_date,
                 "start_time": b.start_time,
                 "end_time": b.end_time,
-               "trainers": [
+                "trainers": [
                     {
                         "trainer_id": t.trainer_id,
-                        "trainer_name": t.full_name,
+                        "trainer_name": getattr(t, "full_name", f"{getattr(t, 'first_name', '')} {getattr(t, 'last_name', '')}".strip()),
                         "employee_id": t.employee_id,
                     }
                     for t in b.trainers.all()
@@ -714,6 +736,11 @@ class TopicSerializer(serializers.ModelSerializer):
                 validated_data["created_by_type"] = role
 
         return super().create(validated_data)
+    def validate_title(self, value):
+        if value:
+            # Converts &amp; back to &, &lt; back to <, etc.
+            return html.unescape(value).strip()
+        return value
         
 class StudentTopicStatusSerializer(serializers.ModelSerializer):
     topic_title = serializers.CharField(source='topic.title', read_only=True)

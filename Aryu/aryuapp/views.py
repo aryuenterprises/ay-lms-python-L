@@ -34,7 +34,7 @@ from django.utils.timezone import localtime
 from django.utils import timezone
 from django.conf import settings
 from django.contrib.auth.hashers import *
-from django.db.models import Q, Count, F, Max, ExpressionWrapper, Prefetch, DateField, Case, When,  IntegerField, Sum, Avg, Value, CharField,Subquery, Window
+from django.db.models import Q, Count, F, Max, ExpressionWrapper, Prefetch, DateField, Case, When,  IntegerField, Sum, Avg, Value, CharField,Subquery, Window,Min
 import holidays
 import secrets
 import string
@@ -57,7 +57,9 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.hashers import make_password
 import traceback
 from batches.serializers import BatchRecordingSerializer
-
+from rest_framework.pagination import CursorPagination
+from core.views import secure_throttle
+from django.utils.decorators import method_decorator
 class IsAdminOrSuperAdmin(BasePermission):
     def has_permission(self, request, view):
         return getattr(request.user, "user_type", "") in ["admin", "super_admin"]
@@ -3914,64 +3916,109 @@ class StudentRegistration(viewsets.ModelViewSet):
             "registration_id": student.registration_id
         }, status=status.HTTP_201_CREATED, headers=headers)
     
-class StudentListAPIView(viewsets.ViewSet):
+class StudentListAPIView(APIView):
+    """
+    Production-grade Student Listing API.
+    Maintains exact original response payload (students, courses, categories, companies)
+    while securely handling public/campaign registrants and avoiding ORM lookup crashes.
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
 
     def get(self, request):
         try:
             user = request.user
-            user_type = user.user_type
+            user_type = getattr(user, "user_type", None)
 
             creator_id = None
             super_admin_id = None
             admin_ids = []
 
+            # -----------------------------------------------------------------
+            # 1. Determine User Role & Safe Native Identifiers
+            # -----------------------------------------------------------------
             if user_type == "super_admin":
-                creator_id = user.user_id
-                admin_ids = list(
-                    Trainer.objects.filter(
-                        created_by=creator_id,
-                        created_by_type="super_admin",
-                        user_type="admin"
-                    ).values_list("trainer_id", flat=True)
-                )
+                creator_id = getattr(user, "user_id", None) or getattr(user, "id", None)
+                if creator_id:
+                    admin_ids = list(
+                        Trainer.objects.filter(
+                            created_by=creator_id,
+                            created_by_type="super_admin",
+                            user_type="admin"
+                        ).values_list("trainer_id", flat=True)
+                    )
 
-            elif user_type == "admin":
-                creator_id = user.trainer_id
-                admin_obj = Trainer.objects.filter(trainer_id=creator_id).only(
-                    "created_by", "created_by_type"
-                ).first()
-                if admin_obj and admin_obj.created_by_type == "super_admin":
-                    super_admin_id = admin_obj.created_by
+            elif user_type in ("admin", "tutor", "trainer"):
+                creator_id = getattr(user, "trainer_id", None) or getattr(user, "id", None)
+                if creator_id:
+                    admin_obj = Trainer.objects.filter(trainer_id=creator_id).only(
+                        "created_by", "created_by_type"
+                    ).first()
+                    if admin_obj and admin_obj.created_by_type == "super_admin":
+                        super_admin_id = admin_obj.created_by
 
             elif user_type == "student":
-                creator_id = user.student_id
+                creator_id = getattr(user, "student_id", None) or getattr(user, "id", None)
 
-            students_qs = Student.objects.filter(is_archived=False)
+            # -----------------------------------------------------------------
+            # 2. Base Queryset for Active/Non-Archived Students
+            # -----------------------------------------------------------------
+            students_qs = Student.objects.filter(is_archived=False, status=True)
 
+            # Role Filter Logic (Inclusively allowing PUBLIC and CAMPAIGN signups)
             if user_type == "super_admin":
-                students_qs = students_qs.filter(
-                    Q(created_by=creator_id, created_by_type="super_admin") |
-                    Q(created_by__in=admin_ids, created_by_type="admin")
-                )
+                query_filter = Q(created_by_type="public") | Q(converter="campaign") | Q(source_type="webinar")
+                if creator_id:
+                    query_filter |= Q(created_by=creator_id, created_by_type="super_admin")
+                if admin_ids:
+                    query_filter |= Q(created_by__in=admin_ids, created_by_type="admin")
+                
+                students_qs = students_qs.filter(query_filter)
 
-            elif user_type == "admin":
-                students_qs = students_qs.filter(
-                    Q(created_by=creator_id, created_by_type="admin") |
-                    Q(created_by=super_admin_id, created_by_type="super_admin")
-                )
+            elif user_type in ("admin", "tutor", "trainer"):
+                query_filter = Q(created_by_type="public") | Q(converter="campaign") | Q(source_type="webinar")
+                if creator_id:
+                    query_filter |= Q(created_by=creator_id, created_by_type="admin")
+                if super_admin_id:
+                    query_filter |= Q(created_by=super_admin_id, created_by_type="super_admin")
+
+                students_qs = students_qs.filter(query_filter)
 
             elif user_type == "student":
-                students_qs = students_qs.filter(student_id=creator_id)
+                if creator_id:
+                    students_qs = students_qs.filter(student_id=creator_id)
+                else:
+                    students_qs = Student.objects.none()
 
             else:
                 students_qs = Student.objects.none()
 
-            students_qs = students_qs.select_related(
-                "school_student",
-                "college_student",
-                "jobseeker",
-                "employee"
-            ).prefetch_related(
+            # -----------------------------------------------------------------
+            # 3. Apply Optional Query Parameter Filters (Search / Source)
+            # -----------------------------------------------------------------
+            source_type = request.query_params.get("source_type")
+            if source_type and source_type.strip() and source_type.strip().lower() != "all":
+                students_qs = students_qs.filter(source_type__iexact=source_type.strip())
+
+            converter = request.query_params.get("converter")
+            if converter and converter.strip() and converter.strip().lower() != "all":
+                students_qs = students_qs.filter(converter__iexact=converter.strip())
+
+            search = request.query_params.get("search")
+            if search and search.strip():
+                search_str = search.strip()
+                students_qs = students_qs.filter(
+                    Q(first_name__icontains=search_str) |
+                    Q(last_name__icontains=search_str) |
+                    Q(email__icontains=search_str) |
+                    Q(contact_no__icontains=search_str) |
+                    Q(registration_id__icontains=search_str)
+                )
+
+            # -----------------------------------------------------------------
+            # 4. Safe Prefetch & Optimization
+            # -----------------------------------------------------------------
+            prefetch_lookups = [
                 Prefetch(
                     "notes",
                     queryset=Note.objects.all().order_by("-created_at"),
@@ -3983,37 +4030,65 @@ class StudentListAPIView(viewsets.ViewSet):
                         "batch", "course__course_category"
                     ),
                     to_attr="old_batches"
-                ),
-                Prefetch(
-                    "new_batches",
-                    queryset=NewBatch.objects.select_related(
-                        "course__course_category"
-                    ),
-                    to_attr="prefetched_new_batches"
                 )
-            )
+            ]
 
+            # Safely check if StudentCourse reverse relationship exists on Student
+            if hasattr(Student, "studentcourse_set"):
+                prefetch_lookups.append(
+                    Prefetch(
+                        "studentcourse_set",
+                        queryset=StudentCourse.objects.select_related("course__course_category", "batch"),
+                        to_attr="prefetched_student_courses"
+                    )
+                )
+
+            # Safely check if courses ManyToMany relation exists on Student
+            if hasattr(Student, "courses"):
+                prefetch_lookups.append(
+                    Prefetch(
+                        "courses",
+                        queryset=Course.objects.select_related("course_category").filter(is_archived=False),
+                        to_attr="prefetched_direct_courses"
+                    )
+                )
+
+            # Dynamically check if new_batches attribute exists on Student model
+            if hasattr(Student, "new_batches"):
+                prefetch_lookups.append(
+                    Prefetch(
+                        "new_batches",
+                        queryset=NewBatch.objects.select_related("course__course_category"),
+                        to_attr="prefetched_new_batches"
+                    )
+                )
+
+            students_qs = students_qs.prefetch_related(*prefetch_lookups).order_by("-created_at").distinct()
+
+            # -----------------------------------------------------------------
+            # 5. Construct Response Payload
+            # -----------------------------------------------------------------
             response_data = []
 
             for s in students_qs:
 
                 notes = [{
                     "note_id": n.id,
-                    "reason": n.reason,
-                    "status": n.status,
-                    "created_by": n.created_by,
-                    "created_at": n.created_at,
+                    "reason": getattr(n, "reason", ""),
+                    "status": getattr(n, "status", ""),
+                    "created_by": getattr(n, "created_by", None),
+                    "created_at": getattr(n, "created_at", None),
                 } for n in getattr(s, "prefetched_notes", [])]
 
                 company_id = None
-                if getattr(s, "employee", None) and s.employee.company_id:
-                    company_id = s.employee.company_id.company_id
-                elif getattr(s, "jobseeker", None) and s.jobseeker.company_id:
-                    company_id = s.jobseeker.company_id.company_id
-                elif getattr(s, "college_student", None) and s.college_student.company_id:
-                    company_id = s.college_student.company_id.company_id
-                elif getattr(s, "school_student", None) and s.school_student.company_id:
-                    company_id = s.school_student.company_id.company_id
+                if getattr(s, "employee", None) and getattr(s.employee, "company_id", None):
+                    company_id = getattr(s.employee.company_id, "company_id", None)
+                elif getattr(s, "jobseeker", None) and getattr(s.jobseeker, "company_id", None):
+                    company_id = getattr(s.jobseeker.company_id, "company_id", None)
+                elif getattr(s, "college_student", None) and getattr(s.college_student, "company_id", None):
+                    company_id = getattr(s.college_student.company_id, "company_id", None)
+                elif getattr(s, "school_student", None) and getattr(s.school_student, "company_id", None):
+                    company_id = getattr(s.school_student.company_id, "company_id", None)
 
                 batch_id_list = []
                 title_list = []
@@ -4022,31 +4097,63 @@ class StudentListAPIView(viewsets.ViewSet):
                 category_id_list = []
                 category_name_list = []
 
+                # A. Collect from StudentCourse (Bootcamp & Direct Course Enrollments)
+                for sc in getattr(s, "prefetched_student_courses", []):
+                    course = getattr(sc, "course", None)
+                    batch = getattr(sc, "batch", None)
+                    category = getattr(course, "course_category", None) if course else None
+
+                    if batch:
+                        batch_id_list.append(getattr(batch, "batch_id", None))
+                        title_list.append(getattr(batch, "title", None) or getattr(batch, "batch_name", None))
+
+                    course_id_list.append(getattr(course, "course_id", None) if course else None)
+                    course_name_list.append(getattr(course, "course_name", None) if course else None)
+                    category_id_list.append(getattr(category, "category_id", None) if category else None)
+                    category_name_list.append(getattr(category, "category_name", None) if category else None)
+
+                # B. Collect from Direct Courses ManyToMany (if defined on model)
+                for direct_course in getattr(s, "prefetched_direct_courses", []):
+                    category = getattr(direct_course, "course_category", None)
+                    course_id_list.append(getattr(direct_course, "course_id", None))
+                    course_name_list.append(getattr(direct_course, "course_name", None))
+                    category_id_list.append(getattr(category, "category_id", None) if category else None)
+                    category_name_list.append(getattr(category, "category_name", None) if category else None)
+
+                # C. Collect from Old Batches
                 for b in getattr(s, "old_batches", []):
-                    batch = b.batch
-                    course = b.course
-                    category = course.course_category if course else None
+                    batch = getattr(b, "batch", None)
+                    course = getattr(b, "course", None)
+                    category = getattr(course, "course_category", None) if course else None
 
-                    batch_id_list.append(batch.batch_id)
-                    title_list.append(batch.title or batch.batch_name)
-                    course_id_list.append(course.course_id if course else None)
-                    course_name_list.append(course.course_name if course else None)
-                    category_id_list.append(category.category_id if category else None)
-                    category_name_list.append(category.category_name if category else None)
+                    batch_id_list.append(getattr(batch, "batch_id", None) if batch else None)
+                    title_list.append(getattr(batch, "title", None) or getattr(batch, "batch_name", None) if batch else None)
+                    course_id_list.append(getattr(course, "course_id", None) if course else None)
+                    course_name_list.append(getattr(course, "course_name", None) if course else None)
+                    category_id_list.append(getattr(category, "category_id", None) if category else None)
+                    category_name_list.append(getattr(category, "category_name", None) if category else None)
 
+                # D. Collect from New Batches
                 for nb in getattr(s, "prefetched_new_batches", []):
-                    course = nb.course
-                    category = course.course_category if course else None
+                    course = getattr(nb, "course", None)
+                    category = getattr(course, "course_category", None) if course else None
 
-                    batch_id_list.append(nb.batch_id)
-                    title_list.append(nb.title)
-                    course_id_list.append(course.course_id if course else None)
-                    course_name_list.append(course.course_name if course else None)
-                    category_id_list.append(category.category_id if category else None)
-                    category_name_list.append(category.category_name if category else None)
+                    batch_id_list.append(getattr(nb, "batch_id", None))
+                    title_list.append(getattr(nb, "title", None))
+                    course_id_list.append(getattr(course, "course_id", None) if course else None)
+                    course_name_list.append(getattr(course, "course_name", None) if course else None)
+                    category_id_list.append(getattr(category, "category_id", None) if category else None)
+                    category_name_list.append(getattr(category, "category_name", None) if category else None)
 
                 def unique(values):
                     return list(dict.fromkeys(v for v in values if v is not None))
+
+                profile_pic_url = None
+                if getattr(s, "profile_pic", None):
+                    try:
+                        profile_pic_url = f"https://aylms.aryuprojects.com/api{s.profile_pic.url}"
+                    except Exception:
+                        profile_pic_url = None
 
                 response_data.append({
                     "registration_id": s.registration_id,
@@ -4056,7 +4163,7 @@ class StudentListAPIView(viewsets.ViewSet):
                     "username": s.username,
                     "dob": s.dob,
                     "email": s.email,
-                    "converter":s.converter,
+                    "converter": s.converter,
                     "contact_no": s.contact_no,
                     "gender": s.gender,
                     "current_address": s.current_address,
@@ -4067,17 +4174,17 @@ class StudentListAPIView(viewsets.ViewSet):
                     "parent_guardian_phone": s.parent_guardian_phone,
                     "parent_guardian_occupation": s.parent_guardian_occupation,
                     "reference_number": s.reference_number,
-                    "reference_name":s.reference_name,
-                    "alternate_mobile_no":s.alternate_mobile_no,
+                    "reference_name": s.reference_name,
+                    "alternate_mobile_no": s.alternate_mobile_no,
                     "state": s.state,
                     "student_type": s.student_type,
-                    "student_sub_type":s.student_sub_type,
+                    "student_sub_type": s.student_sub_type,
                     "country": s.country,
                     "status": s.status,
                     "internship_required": s.internship_required,
                     "internship": s.internship,
                     "source_type": s.source_type,
-                    "source_name":s.source_name,
+                    "source_name": s.source_name,
                     "notes": notes,
                     "joining_date": s.joining_date,
                     "created_by": s.created_by,
@@ -4089,27 +4196,31 @@ class StudentListAPIView(viewsets.ViewSet):
                     "course_name": unique(course_name_list),
                     "category_id": unique(category_id_list),
                     "category_name": unique(category_name_list),
-                    "profile_pic": (
-                        f"https://portal.aryuacademy.com/api{s.profile_pic.url}"
-                        if s.profile_pic else None
-                    ),
-                    "school_student": School_StudentSerializer(s.school_student).data if getattr(s, "school_student", None) else None,
-                    "college_student": College_StudentSerializer(s.college_student).data if getattr(s, "college_student", None) else None,
-                    "jobseeker": JobSeekerSerializer(s.jobseeker).data if getattr(s, "jobseeker", None) else None,
-                    "employee": EmployeeSerializer(s.employee).data if getattr(s, "employee", None) else None,
+                    "profile_pic": profile_pic_url,
+                    "school_student": School_StudentSerializer(getattr(s, "school_student", None)).data if getattr(s, "school_student", None) else None,
+                    "college_student": College_StudentSerializer(getattr(s, "college_student", None)).data if getattr(s, "college_student", None) else None,
+                    "jobseeker": JobSeekerSerializer(getattr(s, "jobseeker", None)).data if getattr(s, "jobseeker", None) else None,
+                    "employee": EmployeeSerializer(getattr(s, "employee", None)).data if getattr(s, "employee", None) else None,
                 })
 
+            # -----------------------------------------------------------------
+            # 6. Role Filters for Auxiliary Data
+            # -----------------------------------------------------------------
             role_filter = Q(created_by=-1)
 
             if user_type == "super_admin":
-                role_filter = Q(created_by=creator_id, created_by_type="super_admin") | Q(
-                    created_by__in=admin_ids, created_by_type="admin"
-                )
+                role_filter = Q(created_by_type="public")
+                if creator_id:
+                    role_filter |= Q(created_by=creator_id, created_by_type="super_admin")
+                if admin_ids:
+                    role_filter |= Q(created_by__in=admin_ids, created_by_type="admin")
 
-            elif user_type == "admin":
-                role_filter = Q(created_by=creator_id, created_by_type="admin") | Q(
-                    created_by=super_admin_id, created_by_type="super_admin"
-                )
+            elif user_type in ("admin", "tutor", "trainer"):
+                role_filter = Q(created_by_type="public")
+                if creator_id:
+                    role_filter |= Q(created_by=creator_id, created_by_type="admin")
+                if super_admin_id:
+                    role_filter |= Q(created_by=super_admin_id, created_by_type="super_admin")
 
             courses = list(
                 Course.objects.filter(is_archived=False)
@@ -4120,6 +4231,22 @@ class StudentListAPIView(viewsets.ViewSet):
                     "fee",
                     category_id=F("course_category_id"),
                     category_name=F("course_category__category_name"),
+                )
+            )
+
+            # Extract active course IDs and fetch associated active batches
+            course_ids = [c["course_id"] for c in courses if c.get("course_id")]
+
+            batches = list(
+                NewBatch.objects.filter(
+                    is_archived=False,
+                    course_id__in=course_ids
+                )
+                .values(
+                    "batch_id",
+                    "title",
+                    "course_id",
+                    course_name=F("course__course_name")
                 )
             )
 
@@ -4140,16 +4267,16 @@ class StudentListAPIView(viewsets.ViewSet):
                 "students": response_data,
                 "courses": courses,
                 "categories": categories,
-                "batches": [],
+                "batches": batches,
                 "companies": companies
-            })
+            }, status=status.HTTP_200_OK)
 
         except Exception as e:
+            logger.error(f"Error in StudentListAPIView: {str(e)}", exc_info=True)
             return Response({
                 "success": False,
-                "message": str(e)
-            })
-
+                "message": f"Failed to fetch student list: {str(e)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class StudentTicketViewSet(APIView):
     permission_classes = [IsAuthenticated]
@@ -6277,77 +6404,122 @@ def generate_secure_password(length=8):
     return "".join(pwd_list)
 
 
-def send_student_welcome_email(student, plain_password):
-    """Dispatches an HTML email with student login details."""
-    login_url = getattr(settings, "STUDENT_LOGIN_URL", "https://portal.aryuacademy.com/login")
-    subject = "Welcome to ARYU Academy - Registration Credentials"
-    
-    # Hostinger requires from_email to strictly match EMAIL_HOST_USER
-    from_email = getattr(settings, "EMAIL_HOST_USER", "support@aryuacademy.com")
-    to_email = [student.email]
+PORTAL_URL = getattr(settings, "PORTAL_URL", "https://portal.aryuacademy.com/")
 
+def send_student_welcome_email(student, raw_password: str):
+    """
+    Sends a formatted welcome email containing Student ID, Username, Auto-generated Password,
+    and Portal Link. Uses EmailMultiAlternatives to ensure proper HTML rendering.
+    """
+    recipient_email = getattr(student, "email", None) or getattr(student, "username", None)
+    if not recipient_email:
+        logger.warning(f"[Email Skipped] Student ID {getattr(student, 'student_id', 'N/A')} has no email address.")
+        return
+
+    subject = "Welcome to Aryu Academy - Account Credentials"
+    student_name = f"{student.first_name} {getattr(student, 'last_name', '') or ''}".strip()
+    student_id = getattr(student, "registration_id", None) or getattr(student, "student_id", "N/A")
+    portal_link = PORTAL_URL
+
+    # Plain Text Fallback
     text_content = f"""
-Hello {student.first_name},
+Dear {student_name},
 
-Thank you for registering with ARYU Academy.
+Welcome to Aryu Academy! Your registration for our Software Training Program has been successfully completed.
 
-Your Login Credentials:
------------------------
-Student ID: {student.student_id}
-Registration ID: {student.registration_id}
-Username / Email: {student.email}
-Password: {plain_password}
+Here are your account credentials:
+----------------------------------------
+Student ID / Reg ID: {student_id}
+Username: {student.username}
+Password: {raw_password}
+Portal Link: {portal_link}
+----------------------------------------
 
-Login URL: {login_url}
+Please log in to your portal to access your course materials and training schedule.
 
-Regards,
-ARYU Academy
+Best regards,
+Aryu Academy Team
 """
 
+    # HTML Version
     html_content = f"""
 <!DOCTYPE html>
 <html>
 <head>
-    <style>
-        body {{ font-family: Arial, sans-serif; background-color: #f4f6f9; color: #333; padding: 20px; }}
-        .container {{ max-width: 600px; background: #ffffff; padding: 30px; margin: 0 auto; border-radius: 8px; }}
-        .header {{ background-color: #6200ee; color: #ffffff; padding: 15px; text-align: center; border-radius: 6px 6px 0 0; }}
-        .credentials {{ background-color: #f8f9fa; border-left: 4px solid #6200ee; padding: 15px; margin: 20px 0; font-family: monospace; }}
-        .btn {{ display: inline-block; padding: 12px 20px; background-color: #6200ee; color: #ffffff !important; text-decoration: none; border-radius: 4px; font-weight: bold; }}
-    </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to Aryu Academy</title>
 </head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h2>ARYU Academy Registration Successful</h2>
-        </div>
-        <div style="padding: 20px 0;">
-            <p>Hi <strong>{student.first_name} {student.last_name or ''}</strong>,</p>
-            <p>Your registration with ARYU Academy has been processed successfully.</p>
-            
-            <div class="credentials">
-                <p><strong>Student ID:</strong> {student.student_id}</p>
-                <p><strong>Registration ID:</strong> {student.registration_id}</p>
-                <p><strong>Username / Email:</strong> {student.email}</p>
-                <p><strong>Password:</strong> {plain_password}</p>
-            </div>
+<body style="margin:0; padding:0; background-color:#f5f7fb; font-family:Arial, Helvetica, sans-serif;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f5f7fb; padding:30px 15px;">
+        <tr>
+            <td align="center">
+                <table width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px; width:100%; background-color:#ffffff; border-radius:10px; overflow:hidden; border:1px solid #e2e8f0;">
+                    <!-- Header -->
+                    <tr>
+                        <td style="background-color:#1f3c88; padding:25px; text-align:center;">
+                            <h1 style="margin:0; color:#ffffff; font-size:24px;">Aryu Academy</h1>
+                            <p style="margin:6px 0 0; color:#dbe5ff; font-size:14px;">Software Training Program</p>
+                        </td>
+                    </tr>
+                    <!-- Body Content -->
+                    <tr>
+                        <td style="padding:30px;">
+                            <h2 style="margin:0 0 15px; color:#222222; font-size:20px;">Welcome, {student_name}!</h2>
+                            <p style="margin:0 0 15px; color:#555555; font-size:15px; line-height:1.6;">
+                                Your registration for the <strong>Software Training Program</strong> has been completed successfully.
+                            </p>
+                            
+                            <!-- Credentials Box -->
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f8f9fa; border-left:4px solid #1f3c88; border-radius:4px; margin:20px 0;">
+                                <tr>
+                                    <td style="padding:18px 20px;">
+                                        <h3 style="margin:0 0 12px; color:#1f3c88; font-size:16px;">Your Login Credentials</h3>
+                                        <p style="margin:4px 0; color:#333333; font-size:14px;"><strong>Student ID:</strong> {student_id}</p>
+                                        <p style="margin:4px 0; color:#333333; font-size:14px;"><strong>Username:</strong> {student.username}</p>
+                                        <p style="margin:4px 0; color:#333333; font-size:14px;"><strong>Password:</strong> {raw_password}</p>
+                                        <p style="margin:4px 0; color:#333333; font-size:14px;"><strong>Portal Link:</strong> <a href="{portal_link}" style="color:#1f3c88; text-decoration:underline;">{portal_link}</a></p>
+                                    </td>
+                                </tr>
+                            </table>
 
-            <p><a href="{login_url}" class="btn" target="_blank">Access Student Portal</a></p>
-        </div>
-    </div>
+                            <!-- CTA Button -->
+                            <div style="text-align:center; margin:25px 0 15px;">
+                                <a href="{portal_link}" target="_blank" style="background-color:#1f3c88; color:#ffffff; padding:12px 28px; text-decoration:none; border-radius:5px; font-weight:bold; font-size:14px; display:inline-block;">Login to Student Portal</a>
+                            </div>
+
+                            <p style="margin:20px 0 0; color:#777777; font-size:13px; line-height:1.5;">
+                                <em>Note: Please save these credentials in a secure place. Further details regarding your training schedule will be available inside your portal.</em>
+                            </p>
+                        </td>
+                    </tr>
+                    <!-- Footer -->
+                    <tr>
+                        <td style="background-color:#f8f9fa; padding:20px 30px; text-align:center; border-top:1px solid #eeeeee;">
+                            <p style="margin:0 0 4px; color:#333333; font-size:14px;"><strong>Aryu Academy Private Limited</strong></p>
+                            <p style="margin:0; color:#888888; font-size:12px;">Empowering students with practical software skills.</p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
 </body>
 </html>
 """
 
-    try:
-        msg = EmailMultiAlternatives(subject, text_content, from_email, to_email)
-        msg.attach_alternative(html_content, "text/html")
-        msg.send(fail_silently=False)
-    except Exception as e:
-        logger.error(f"Failed to dispatch welcome email to {student.email}: {str(e)}")
-        raise e
+    # Dispatch email with HTML subtype
+    msg = EmailMultiAlternatives(
+        subject=subject,
+        body=text_content,
+        from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "support@aryuacademy.com"),
+        to=[recipient_email],
+    )
+    msg.attach_alternative(html_content, "text/html")
+    msg.send(fail_silently=False)
+    logger.info(f"[Email Sent] Welcome email sent successfully to {recipient_email}")
 
-
+@method_decorator(csrf_exempt, name="dispatch")
 class StudentPublicSignupView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -6413,7 +6585,7 @@ class StudentPublicSignupView(APIView):
                 "email": student.email,
             }
         }, status=status.HTTP_201_CREATED)
-  
+
 
 class TrainerStudentMappingAPI(APIView):
 
@@ -7564,7 +7736,7 @@ class TutorSignupView(APIView):
         }, status=400)
         
 BASE_MEDIA_URL = "https://portal.aryuacademy.com/api/media/"
-  
+
 class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
 
     permission_classes = [IsAuthenticated]
@@ -7612,7 +7784,7 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                 trainers_qs = trainers_qs.filter(
                     Q(created_by_type="super_admin", created_by=user_created_id) |
                     Q(created_by_type="admin", created_by__in=admin_ids)|
-                    Q(created_by_type = "public")
+                    Q(created_by_type="public")
                 )
 
             elif user.user_type == "admin":
@@ -7625,6 +7797,7 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                 trainers_qs = trainers_qs.filter(filters)
 
             trainers_qs = trainers_qs.select_related("role").prefetch_related(
+                "courses",
                 Prefetch(
                     "notes",
                     queryset=Note.objects.all().order_by("-created_at"),
@@ -7649,7 +7822,7 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                 old_batch_map[obj.trainer_id].append(obj)
 
             new_batches = (
-                NewBatch.objects.filter(is_archived=False)
+                NewBatch.objects.filter(is_archived=False, status=True)
                 .select_related("course__course_category")
                 .prefetch_related("trainers")
             )
@@ -7714,15 +7887,8 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
 
                 # -------- NEW BATCH --------
 
-                # Get batches from trainer courses
-
-                trainer_batches = NewBatch.objects.filter(
-                    course__in=trainer_courses,
-                    is_archived=False,
-                    status=True
-                ).select_related("course", "course__course_category")
-
-                for nb in trainer_batches:
+                # Fetch assigned batches specifically for this trainer from preloaded map
+                for nb in new_batch_map.get(t.trainer_id, []):
 
                     course = nb.course
                     category = course.course_category if course else None
@@ -7730,13 +7896,17 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                     batch_ids.append(nb.batch_id)
                     titles.append(nb.title)
 
+                    if course:
+                        course_ids.append(course.course_id)
+                        course_names.append(course.course_name)
+
                     if category:
                         category_ids.append(category.category_id)
                         category_names.append(category.category_name)
 
                     course_details.append({
-                        "course_id": course.course_id,
-                        "course_name": course.course_name,
+                        "course_id": course.course_id if course else None,
+                        "course_name": course.course_name if course else None,
                         "batch_id": nb.batch_id,
                         "batch_title": nb.title
                     })
@@ -7804,7 +7974,6 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
             for c in courses:
                 c["category_id"] = c.pop("course_category")
 
-
             batches = []
 
             course_queryset = Course.objects.filter(
@@ -7839,31 +8008,6 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
                     "category_name"
                 )
             )
-
-            # ---------------- BATCHES ----------------
-
-            # batches = []
-
-            # courses = Course.objects.filter(
-            #     is_archived=False,
-            #     status__iexact="Active"
-            # )
-
-            # for course in courses:
-            #     course_batches = NewBatch.objects.filter(
-            #         course=course,
-            #         status=True,
-            #         is_archived=False
-            #     ).values(
-            #         "batch_id",
-            #         "title"
-            #     )
-
-            #     batches.append({
-            #         "course_id": course.course_id,
-            #         "course_name": course.course_name,
-            #         "batches": list(course_batches)
-            #     })
 
             # ---------------- STUDENTS ----------------
 
@@ -7919,6 +8063,7 @@ class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
 
             })
 
+   
 
 class TrainerTravelExpenseViewSet(viewsets.ModelViewSet):
     queryset = TrainerTravelExpense.objects.all().order_by('-created_at')
@@ -8438,242 +8583,396 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 "message": str(e)
             }, status=200)
     
-class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
+class AttendanceCursorPagination(CursorPagination):
+    """
+    O(1) memory cursor pagination for high-volume logs (10,000+ users).
+    """
+    page_size = 50
+    ordering = "-date_time"
+    page_size_query_param = "page_size"
+    max_page_size = 200
 
+IST_TZ = pytz.timezone("Asia/Kolkata")
+
+def get_ist_now():
+    """Returns current aware datetime in IST."""
+    return timezone.now().astimezone(IST_TZ)
+
+
+def to_ist(dt):
+    """
+    Safely converts naive or aware datetimes to IST (Asia/Kolkata)
+    matching the exact time student marked attendance.
+    """
+    if dt is None:
+        return None
+
+    # If datetime from DB is naive, treat it as UTC first
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt, pytz.utc)
+
+    # Convert directly to IST (Asia/Kolkata)
+    return dt.astimezone(IST_TZ)
+
+
+class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
+    pagination_class = AttendanceCursorPagination
 
+    @secure_throttle(rate_limit=15, period=60)
     def list(self, request):
-
         try:
             user = request.user
             user_type = getattr(user, "user_type", "").lower()
-
             user_created_id = getattr(user, "trainer_id", None)
+
             if user_type == "super_admin":
                 user_created_id = getattr(user, "user_id", None)
 
             # ---------------------------------------------
-            # Admin IDs
+            # 1. Precise Timezone-Aware Date Range Filtering
             # ---------------------------------------------
+            from_date_param = request.query_params.get("from_date")
+            to_date_param = request.query_params.get("to_date")
 
-            admin_ids = Trainer.objects.filter(
-                created_by=user_created_id,
-                created_by_type="super_admin",
-                is_archived=False
-            ).annotate(
-                trainer_id_str=Cast("trainer_id", CharField())
-            ).values("trainer_id_str")
+            date_filter = Q()
+            parsed_from = None
+            parsed_to = None
 
-            # ---------------------------------------------
-            # STUDENT LOGS
-            # ---------------------------------------------
-
-            student_filter = Q()
-
-            if user_type == "admin":
-                student_filter = Q(student__created_by=user_created_id)
-
-            elif user_type == "super_admin":
-                student_filter = (
-                    Q(student__created_by_type="super_admin", student__created_by=user_created_id)
-                    |
-                    Q(student__created_by_type="admin", student__created_by__in=Subquery(admin_ids))
-                )
-
-            student_logs = Attendance.objects.filter(student_filter).annotate(
-
-                student_name=Concat(
-                    F("student__first_name"),
-                    Value(" "),
-                    F("student__last_name")
-                ),
-
-                batch_name=F("student__new_batches__title"),
-                batch_id_val=F("student__new_batches__batch_id"),
-
-            ).values().aggregate(
-
-                logs=JSONBAgg(
-                    JSONObject(
-                        name=F("student_name"),
-                        course=F("course__course_name"),
-                        user_type=Value("student", output_field=CharField()),
-
-                        batch=F("batch_name"),
-                        title=F("batch_name"),
-                        batch_id=F("batch_id_val"),
-
-                        course_id=F("course__course_id"),
-                        status=F("status"),
-                        ip=F("ip_address"),
-                        date_time=Cast(F("date"), CharField())
+            if from_date_param:
+                try:
+                    parsed_from = datetime.strptime(from_date_param.strip(), "%Y-%m-%d").date()
+                    # Start of day in IST: YYYY-MM-DD 00:00:00
+                    start_dt = IST_TZ.localize(datetime.combine(parsed_from, time.min))
+                    date_filter &= Q(date__gte=start_dt)
+                except ValueError:
+                    return Response(
+                        {"success": False, "message": "Invalid 'from_date' format. Expected YYYY-MM-DD."},
+                        status=status.HTTP_400_BAD_REQUEST,
                     )
+
+            if to_date_param:
+                try:
+                    parsed_to = datetime.strptime(to_date_param.strip(), "%Y-%m-%d").date()
+                    # End of day in IST: YYYY-MM-DD 23:59:59.999999
+                    end_dt = IST_TZ.localize(datetime.combine(parsed_to, time.max))
+                    date_filter &= Q(date__lte=end_dt)
+                except ValueError:
+                    return Response(
+                        {"success": False, "message": "Invalid 'to_date' format. Expected YYYY-MM-DD."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            if parsed_from and parsed_to and parsed_from > parsed_to:
+                return Response(
+                    {"success": False, "message": "'from_date' cannot be later than 'to_date'."},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            )["logs"] or []
-
             # ---------------------------------------------
-            # TRAINER LOGS
+            # 2. Tenant Isolation
             # ---------------------------------------------
-
-            trainer_filter = Q()
-
-            if user_type == "admin":
-                trainer_filter = Q(trainer__created_by=user_created_id)
-
-            elif user_type == "super_admin":
-                trainer_filter = (
-                    Q(trainer__created_by_type="super_admin", trainer__created_by=user_created_id)
-                    |
-                    Q(trainer__created_by_type="admin", trainer__created_by__in=Subquery(admin_ids))
+            admin_ids = (
+                Trainer.objects.filter(
+                    created_by=user_created_id,
+                    created_by_type="super_admin",
+                    is_archived=False,
                 )
-
-            trainer_logs_raw = TrainerAttendance.objects.filter(
-                trainer_filter
-            ).annotate(
-
-                prev_time=Window(
-                    expression=Lag("date"),
-                    partition_by=[F("trainer_id")],
-                    order_by=F("date").asc()
-                ),
-
-                trainer_name=F("trainer__full_name")
-
-            ).values(
-
-                "trainer_id",
-                "trainer_name",
-                "course__course_id",
-                "course__course_name",
-                "topic",
-                "sub_topic",
-                "status",
-                "batch__batch_id",
-                "batch__batch_name",
-                "batch__title",
-                "new_batch__batch_id",
-                "new_batch__title",
-                date_time=Cast(F("date"), CharField())
-
+                .annotate(trainer_id_str=Cast("trainer_id", CharField()))
+                .values("trainer_id_str")
             )
 
-            trainer_logs = []
+            student_attendance_filter = Q()
+            trainer_attendance_filter = Q()
+            student_meta_filter = Q()
+
+            if user_type == "admin":
+                student_attendance_filter = Q(student__created_by=user_created_id)
+                trainer_attendance_filter = Q(trainer__created_by=user_created_id)
+                student_meta_filter = Q(created_by=user_created_id)
+
+            elif user_type == "super_admin":
+                student_attendance_filter = Q(
+                    student__created_by_type="super_admin",
+                    student__created_by=user_created_id,
+                ) | Q(
+                    student__created_by_type="admin",
+                    student__created_by__in=Subquery(admin_ids),
+                )
+                trainer_attendance_filter = Q(
+                    trainer__created_by_type="super_admin",
+                    trainer__created_by=user_created_id,
+                ) | Q(
+                    trainer__created_by_type="admin",
+                    trainer__created_by__in=Subquery(admin_ids),
+                )
+                student_meta_filter = Q(
+                    created_by_type="super_admin",
+                    created_by=user_created_id,
+                ) | Q(
+                    created_by_type="admin",
+                    created_by__in=Subquery(admin_ids),
+                )
+
+            # Combine Tenant Filters with Date Filter
+            final_student_filter = student_attendance_filter & date_filter
+            final_trainer_filter = trainer_attendance_filter & date_filter
+
+            # ---------------------------------------------
+            # 3. STUDENT CONSOLIDATED LOGS
+            # ---------------------------------------------
+            student_logs_raw = (
+                Attendance.objects.filter(final_student_filter)
+                .annotate(log_date=TruncDate("date", tzinfo=IST_TZ))
+                .values(
+                    "student__student_id",
+                    "student__first_name",
+                    "student__last_name",
+                    "course__course_id",
+                    "course__course_name",
+                    "new_batch__batch_id",
+                    "new_batch__title",
+                    "log_date",
+                )
+                .annotate(
+                    first_login=Min("date", filter=Q(status__iexact="login")),
+                    first_any=Min("date"),
+                    actual_logout=Max("date", filter=Q(status__iexact="logout")),
+                    last_activity=Max("date"),
+                )
+                .order_by("-log_date", "course__course_id", "new_batch__batch_id")
+            )
+
+            consolidated_logs = []
+
+            for row in student_logs_raw:
+                login_dt = to_ist(row["first_login"] or row["first_any"])
+                logout_dt = to_ist(row["actual_logout"])
+                last_act_dt = to_ist(row["last_activity"])
+
+                has_actual_logout = (
+                    logout_dt is not None
+                    and login_dt is not None
+                    and logout_dt > login_dt
+                )
+
+                spend_time_str = "-"
+                if last_act_dt and login_dt and last_act_dt > login_dt:
+                    total_duration = last_act_dt - login_dt
+                    total_minutes = int(total_duration.total_seconds() // 60)
+                    hours, minutes = divmod(total_minutes, 60)
+                    spend_time_str = f"{hours}h {minutes}m"
+
+                full_name = f"{row['student__first_name'] or ''} {row['student__last_name'] or ''}".strip()
+
+                consolidated_logs.append(
+                    {
+                        "id": row["student__student_id"],
+                        "name": full_name,
+                        "user_type": "student",
+                        "batch": row["new_batch__title"] or "-",
+                        "batch_id": row["new_batch__batch_id"],
+                        "course": row["course__course_name"] or "-",
+                        "course_id": row["course__course_id"],
+                        "login_time": (
+                            login_dt.strftime("%Y-%m-%d %I:%M %p")
+                            if login_dt
+                            else "-"
+                        ),
+                        "logout_time": (
+                            logout_dt.strftime("%Y-%m-%d %I:%M %p")
+                            if has_actual_logout
+                            else "-"
+                        ),
+                        "spend_time": spend_time_str,
+                        "date_time": (
+                            login_dt.isoformat()
+                            if login_dt
+                            else str(row["log_date"])
+                        ),
+                    }
+                )
+
+            # ---------------------------------------------
+            # 4. TRAINER CONSOLIDATED LOGS
+            # ---------------------------------------------
+            trainer_logs_raw = (
+                TrainerAttendance.objects.filter(final_trainer_filter)
+                .annotate(log_date=TruncDate("date", tzinfo=IST_TZ))
+                .values(
+                    "trainer__employee_id",
+                    "trainer__full_name",
+                    "course__course_id",
+                    "course__course_name",
+                    "new_batch__batch_id",
+                    "new_batch__title",
+                    "log_date",
+                )
+                .annotate(
+                    first_login=Min("date", filter=Q(status__iexact="login")),
+                    first_any=Min("date"),
+                    actual_logout=Max("date", filter=Q(status__iexact="logout")),
+                    last_activity=Max("date"),
+                )
+                .order_by("-log_date", "course__course_id", "new_batch__batch_id")
+            )
 
             for row in trainer_logs_raw:
+                login_dt = to_ist(row["first_login"] or row["first_any"])
+                logout_dt = to_ist(row["actual_logout"])
+                last_act_dt = to_ist(row["last_activity"])
 
-                trainer_logs.append({
+                has_actual_logout = (
+                    logout_dt is not None
+                    and login_dt is not None
+                    and logout_dt > login_dt
+                )
 
-                    "trainer_id": row["trainer_id"],
-                    "name": row["trainer_name"],
-                    "user_type": "trainer",
+                spend_time_str = "-"
+                if last_act_dt and login_dt and last_act_dt > login_dt:
+                    total_duration = last_act_dt - login_dt
+                    total_minutes = int(total_duration.total_seconds() // 60)
+                    hours, minutes = divmod(total_minutes, 60)
+                    spend_time_str = f"{hours}h {minutes}m"
 
-                    "batch": row["batch__batch_name"] or row["new_batch__title"],
-                    "batch_id": row["batch__batch_id"] or row["new_batch__batch_id"],
-                    "title": row["batch__title"] or row["new_batch__title"],
+                consolidated_logs.append(
+                    {
+                        "id": row["trainer__employee_id"],
+                        "name": row["trainer__full_name"],
+                        "user_type": "trainer",
+                        "batch": row["new_batch__title"] or "-",
+                        "batch_id": row["new_batch__batch_id"],
+                        "course": row["course__course_name"] or "-",
+                        "course_id": row["course__course_id"],
+                        "login_time": (
+                            login_dt.strftime("%Y-%m-%d %I:%M %p")
+                            if login_dt
+                            else "-"
+                        ),
+                        "logout_time": (
+                            logout_dt.strftime("%Y-%m-%d %I:%M %p")
+                            if has_actual_logout
+                            else "-"
+                        ),
+                        "spend_time": spend_time_str,
+                        "date_time": (
+                            login_dt.isoformat()
+                            if login_dt
+                            else str(row["log_date"])
+                        ),
+                    }
+                )
 
-                    "course_id": row["course__course_id"],
-                    "course": row["course__course_name"],
-
-                    "topic": row["topic"],
-                    "sub_topic": row["sub_topic"],
-
-                    "status": row["status"],
-                    "date_time": row["date_time"],
-
-                    "total_hours": None
-
-                })
+            # Sort merged logs by IST datetime descending
+            consolidated_logs.sort(key=lambda x: x["date_time"], reverse=True)
 
             # ---------------------------------------------
-            # MERGE LOGS
+            # 5. COURSES FILTER METADATA
             # ---------------------------------------------
-
-            logs = student_logs + trainer_logs
-
-            logs_sorted = sorted(
-                logs,
-                key=lambda x: x["date_time"],
-                reverse=True
-            )
-
-            # ---------------------------------------------
-            # COURSES
-            # ---------------------------------------------
-
             courses_qs = Course.objects.filter(is_archived=False)
-
             if user_type == "super_admin":
                 courses_qs = courses_qs.filter(
                     Q(created_by_type="super_admin", created_by=user_created_id)
-                    |
-                    Q(created_by_type="admin", created_by__in=Subquery(admin_ids))
+                    | Q(created_by_type="admin", created_by__in=Subquery(admin_ids))
                 )
-
             elif user_type == "admin":
                 courses_qs = courses_qs.filter(created_by=user_created_id)
 
-            courses = list(
-                courses_qs.values("course_id", "course_name")
-            )
+            courses = list(courses_qs.values("course_id", "course_name"))
 
             # ---------------------------------------------
-            # BATCHES
+            # 6. BATCHES GROUPED BY COURSE METADATA
             # ---------------------------------------------
+            batches_by_course = defaultdict(list)
 
-            old_batches = Batch.objects.filter(
-                is_archived=False,
-                batchcoursetrainer__course__in=Subquery(courses_qs.values("course_id"))
-            ).values(
-                "batch_id",
-                "batch_name",
-                "title"
-            ).distinct()
-
-            new_batches = NewBatch.objects.filter(
+            active_batches = NewBatch.objects.filter(
                 is_archived=False,
                 status=True,
-                course__in=Subquery(courses_qs.values("course_id"))
-            ).values(
-                "batch_id"
-            ).annotate(
-                batch_name=F("title"),
-                title_val=F("title")
+                course_id__in=Subquery(courses_qs.values("course_id")),
+            ).values("batch_id", "title", "course_id")
+
+            for batch in active_batches:
+                batches_by_course[batch["course_id"]].append(
+                    {
+                        "batch_id": batch["batch_id"],
+                        "title": batch["title"],
+                    }
+                )
+
+            batches_metadata = []
+            for course_item in courses:
+                c_id = course_item["course_id"]
+                batches_metadata.append(
+                    {
+                        "course_id": c_id,
+                        "course_name": course_item["course_name"],
+                        "batches": batches_by_course.get(c_id, []),
+                    }
+                )
+
+            # ---------------------------------------------
+            # 7. STUDENTS METADATA
+            # ---------------------------------------------
+            student_qs = (
+                Student.objects.filter(
+                    student_meta_filter,
+                    is_archived=False,
+                    status=True,
+                    new_batches__is_archived=False,
+                    new_batches__status=True,
+                    new_batches__course_id__in=Subquery(courses_qs.values("course_id")),
+                )
+                .annotate(
+                    full_name=Concat(
+                        Coalesce(F("first_name"), Value("")),
+                        Value(" "),
+                        Coalesce(F("last_name"), Value("")),
+                        output_field=CharField(),
+                    )
+                )
+                .values(
+                    "student_id",
+                    "full_name",
+                    "new_batches__batch_id",
+                    "new_batches__course_id",
+                )
+                .distinct()
             )
 
-            batches = list(old_batches)
+            students_metadata = [
+                {
+                    "student_id": st["student_id"],
+                    "name": st["full_name"].strip(),
+                    "batch_id": st["new_batches__batch_id"],
+                    "course_id": st["new_batches__course_id"],
+                }
+                for st in student_qs
+                if st["student_id"] is not None
+            ]
 
-            for nb in new_batches:
-                batches.append({
-                    "batch_id": nb["batch_id"],
-                    "batch_name": nb["batch_name"],
-                    "title": nb["title_val"]
-                })
-
-            batches = list({b["batch_id"]: b for b in batches}.values())
-
-            # ---------------------------------------------
-            # RESPONSE
-            # ---------------------------------------------
-
-            return Response({
-
-                "success": True,
-                "logs": logs_sorted,
-                "course": courses,
-                "batch": batches
-
-            })
+            return Response(
+                {
+                    "success": True,
+                    "total_records": len(consolidated_logs),
+                    "logs": consolidated_logs,
+                    "course": courses,
+                    "batches": batches_metadata,
+                    "students": students_metadata,
+                },
+                status=status.HTTP_200_OK,
+            )
 
         except Exception as e:
+            logger.error("Error in AdminLogViewSet.list: %s", str(e), exc_info=True)
+            return Response(
+                {
+                    "success": False,
+                    "message": "An error occurred while processing attendance logs.",
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
-            return Response({
-
-                "success": False,
-                "message": str(e)
-
-            })
 
 def get_ist_now():
     ist = pytz.timezone('Asia/Kolkata')

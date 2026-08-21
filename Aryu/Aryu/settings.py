@@ -598,7 +598,7 @@ TWILIO_AUTH_TOKEN = "44fbdfc9f0960b464c20a193b797c7f7"
 TWILIO_PHONE_NUMBER = "+15075854260"
 
 
-MEDIA_URL = '/api/media/'
+MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'api/media')
 
 MEDIA_BASE_URL = "https://portal.aryuacademy.com/api"
@@ -743,7 +743,7 @@ STATICFILES_DIRS = [
     BASE_DIR / "aryuapp/static",
 ]
 
-MEDIA_URL = "/media/"
+MEDIA_URL = "/api/media/"
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 
 # Default primary key field type

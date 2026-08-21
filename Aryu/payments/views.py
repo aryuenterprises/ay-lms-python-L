@@ -1,4 +1,3 @@
-# from Aryu.payments.serializers import CourseDropdownSerializer
 from .models import *
 from .serializers import *
 from aryuapp.auth import CustomJWTAuthentication
@@ -46,7 +45,6 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-# Create your views here.
 # Create your views here.
 
 
@@ -219,56 +217,44 @@ def safe_float(value, default=0):
     except (ValueError, TypeError):
         return default
 class PaymentTransactionViewSet(viewsets.ViewSet):
-    
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-
-    def get_queryset(self):
-        return PaymentTransaction.objects.filter(is_archived=False)
-    
 
     def list(self, request):
         user = request.user
         user_type = getattr(user, "user_type", "")
         user_created_id = getattr(user, "trainer_id", None)
 
-        if getattr(user, "user_type", "") != "super_admin":
+        if user_type != "super_admin":
             return Response(
-                {
-                    "success": False,
-                    "message": "Unauthorized"
-                },
-                status=403
+                {"success": False, "message": "Unauthorized"},
+                status=status.HTTP_403_FORBIDDEN
             )
 
         if user_type == "super_admin":
             user_created_id = getattr(user, "user_id", None)
 
-        # ================================================================
-        # OPTIMIZATION 1: Global queries pulled OUTSIDE the loop (Runs only 1 time)
-        # ================================================================
+        # -------------------------------------------------------------
+        # 1. Global Metadata Queries
+        # -------------------------------------------------------------
         companies = list(
             Employer.objects.filter(is_archived=False).values("company_id", "company_name")
         )
-
         courses_list = list(
             Course.objects.filter(is_archived=False, status="Active").values("course_id", "course_name")
         )
-
         settings = Settings.objects.filter(is_archived=False).only(
             "stripe_enabled", "paypal_enabled", "razorpay_enabled"
         ).order_by("-created_at").first()
 
-        # ================================================================
-        # STEP 1 & 2: Base queryset & Hierarchy filter (FIXED: Removed select_related)
-        # ================================================================
-        # ALL STUDENTS
+        # -------------------------------------------------------------
+        # 2. Base Queryset Filtering
+        # -------------------------------------------------------------
         all_students = Student.objects.filter(is_archived=False)
 
         if user_type == "admin" and user_created_id:
             all_students = all_students.filter(created_by=user_created_id)
-
         elif user_type == "super_admin" and user_created_id:
             admin_ids = list(
                 Trainer.objects.filter(
@@ -277,192 +263,124 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                     is_archived=False
                 ).values_list("trainer_id", flat=True)
             )
-
             all_students = all_students.filter(
                 Q(created_by_type="super_admin", created_by=user_created_id) |
                 Q(created_by_type="admin", created_by__in=admin_ids)
             )
 
-        # ONLY STUDENTS WITH TRANSACTIONS
+        # Prefetch transactions with invoices & gateways
         students_qs = all_students.filter(
             transactions__is_archived=False
-        ).distinct()
-
-        # ================================================================
-        # STEP 3: Prefetch (Prefetching relationships cleanly)
-        # ================================================================
-        all_students = all_students.prefetch_related(
-            "new_batches__course"
-        )
-        students_qs = students_qs.prefetch_related(
-            "new_batches__course",  
+        ).distinct().prefetch_related(
+            "new_batches__course",
             Prefetch(
                 "transactions",
                 queryset=PaymentTransaction.objects.filter(
                     is_archived=False
-                ).select_related(
-                    "course", "gateway"
-                ).order_by("-created_at")
+                ).select_related("course", "gateway").order_by("-created_at")
             )
         )
 
-        # ================================================================
-        # STEP 4: Build response using the OPTIMIZED students_qs
-        # ================================================================
-        students = []
+        students_response_data = []
 
-        for student in all_students:
-
+        # -------------------------------------------------------------
+        # 3. Process Student Transactions & Build Payment History
+        # -------------------------------------------------------------
+        for student in students_qs:
             employer = getattr(student, "employer", None)
+            all_txs = list(student.transactions.all())
 
-            courses = []
+            student_payment_history = []
+            course_map = defaultdict(list)
 
+            for tx in all_txs:
+                # Lazy-generate missing invoice if status is completed/done
+                if not tx.invoice and str(tx.payment_status).lower() in ["success", "done", "paid", "complete"]:
+                    try:
+                        tx = InvoiceService.generate_invoice(tx.id)
+                    except Exception as e:
+                        logger.error(f"[Payment List] Lazy invoice generation failed for transaction {tx.id}: {str(e)}")
+
+                invoice_url = None
+                if tx.invoice and hasattr(tx.invoice, "url"):
+                    invoice_url = request.build_absolute_uri(tx.invoice.url)
+
+                payment_mode = tx.payment_mode or (tx.metadata.get("mode") if tx.metadata else "Cash")
+                course_name = tx.course.course_name if tx.course else (tx.description or "General Payment")
+
+                # Build full detailed payment log entry
+                tx_history_entry = {
+                    "transaction_id": tx.transaction_id,
+                    "course_id": tx.course.course_id if tx.course else None,
+                    "course_name": course_name,
+                    "amount": float(tx.amount or 0),
+                    "discount": float(getattr(tx, "discount", 0) or 0),
+                    "payment_status": tx.payment_status,
+                    "payment_mode": payment_mode,
+                    "currency": tx.currency or "INR",
+                    "gateway": tx.gateway.gatway_name if tx.gateway else None,
+                    "invoice_no": tx.invoice_no,
+                    "invoice_date": tx.invoice_date,
+                    "invoice_url": invoice_url,
+                    "created_at": tx.created_at,
+                }
+
+                student_payment_history.append(tx_history_entry)
+
+                if tx.course:
+                    course_map[tx.course].append(tx_history_entry)
+
+            # Include batch courses with zero transactions if present
             for batch in student.new_batches.all():
-                if not batch.course:
-                    continue
+                if batch.course and batch.course not in course_map:
+                    course_map[batch.course] = []
 
-                course = batch.course
-
-                # Get all transactions for this student & course
-                txs = PaymentTransaction.objects.filter(
-                    student=student,
-                    course=course,
-                    is_archived=False
-                )
+            courses_summary = []
+            for course_obj, tx_logs in course_map.items():
+                txs_sorted = sorted(tx_logs, key=lambda x: x["created_at"], reverse=True)
 
                 paid_amount = sum(
-                    float(tx.amount)
-                    for tx in txs
-                    if tx.payment_status
-                    and tx.payment_status.lower() in [
-                        "success",
-                        "done",
-                        "paid",
-                        "partial",
-                        "advanced",
-                        "complete",
+                    tx_log["amount"]
+                    for tx_log in txs_sorted
+                    if tx_log["payment_status"] and str(tx_log["payment_status"]).lower() in [
+                        "success", "done", "paid", "partial", "advanced", "complete", "captured"
                     ]
                 )
 
-                course_fee = float(course.fee or 0)
+                course_fee = float(getattr(course_obj, "fee", 0) or 0)
                 discount = float(getattr(student, "discount", 0) or 0)
+                total_after_discount = max(course_fee - discount, 0.0)
+                due_amount = max(total_after_discount - paid_amount, 0.0)
 
-                total_after_discount = course_fee - discount
-                due_amount = max(total_after_discount - paid_amount, 0)
-
-                courses.append({
-                    "course_id": course.course_id,
-                    "course_name": course.course_name,
+                courses_summary.append({
+                    "course_id": course_obj.course_id,
+                    "course_name": course_obj.course_name,
                     "course_fee": course_fee,
                     "discount": discount,
                     "total_after_discount": total_after_discount,
                     "paid_amount": paid_amount,
                     "due_amount": due_amount,
+                    "transactions": txs_sorted
                 })
 
-            students.append({
+            students_response_data.append({
                 "student_id": student.student_id,
                 "registration_id": student.registration_id,
-                "student_name": student.first_name,
+                "student_name": f"{student.first_name} {getattr(student, 'last_name', '') or ''}".strip(),
                 "email": student.email,
                 "phone": student.contact_no,
                 "company_id": getattr(employer, "company_id", None) if employer else None,
                 "company_name": getattr(employer, "company_name", None) if employer else None,
-                "courses": courses,
+                "payment_history": student_payment_history,  # Added student payment history log list
+                "courses": courses_summary,
             })
-        student_list = []
 
-        for student in students_qs:
-            try:
-                courses_data = []
+        # Sort queryset by most recent payment
+        students_qs = students_qs.annotate(
+            last_payment=Max("transactions__created_at")
+        ).order_by("-last_payment")
 
-                # Reads from memory cache now (0 database hits)
-                batches = student.new_batches.all()
-                all_transactions = student.transactions.all()
-
-                for batch in batches:
-                    course = batch.course
-                    if not course:
-                        continue
-
-                    # Filter in Python memory instead of hitting the DB
-                    txs = sorted(
-                        [
-                            tx for tx in student.transactions.all()
-                            if tx.course_id == course.course_id
-                        ],
-                        key=lambda x: x.created_at,
-                        reverse=True
-                    )
-
-                    discount = float(getattr(student, "discount", None) or 0)
-                    paid_amount = sum(
-                        float(tx.amount or 0)
-                        for tx in txs
-                        if tx.payment_status and tx.payment_status.lower() in [
-                            "success",
-                            "done",
-                            "paid",
-                            "partial",
-                            "advanced",
-                            "complete"
-                        ]
-                    )
-
-                    course_fee = float(getattr(course, "fee", None) or 0)
-                    discount = float(getattr(discount, "discount", None) or 0)
-
-                    total_after_discount = course_fee - discount
-                    due_amount = max(total_after_discount - paid_amount, 0.0)
-
-                    courses_data.append({
-                        "course_id": course.course_id,
-                        "course_name": course.course_name,
-                        "course_fee": course_fee,
-                        "discount": discount,
-                        "total_after_discount": total_after_discount,   
-                        "paid_amount": paid_amount,                     
-                        "due_amount": due_amount,                       
-                        "transactions": [
-                            {
-                                "transaction_id": tx.transaction_id,
-                                "amount": float(tx.amount),
-                                "payment_status": tx.payment_status,
-                                "payment_mode": tx.metadata.get("mode") if tx.metadata else None, 
-                                "currency": tx.currency,
-                                "created_at": tx.created_at,
-                            } for tx in txs
-                        ]
-                    })
-
-                # Safe evaluation for employer matching your original code strategy
-                employer = getattr(student, "employer", None) if hasattr(student, "employer") else None
-
-                student_list.append({
-                    "student_id": student.student_id,
-                    "registration_id": student.registration_id,
-                    "student_name": f"{student.first_name}".strip(),
-                    "email": student.email,
-                    "phone": student.contact_no,
-                    "courses": courses_data,  
-                    "company_id": getattr(employer, "company_id", None) if employer else None,
-                    "company_name": getattr(employer, "company_name", None) if employer else None,
-                })
-
-            except Exception as e:
-                print(f"Error processing student {student.student_id}: {e}")
-
-        # ================================================================
-        # STEP 5: Serializer & Gateways
-        # ================================================================
-
-        students_qs = (
-            students_qs
-            .annotate(last_payment=Max("transactions__created_at"))
-            .order_by("-last_payment")
-        )
-
-        serializer = StudentPaymentSummarySerializer(students_qs, many=True)
+        serializer = StudentPaymentSummarySerializer(students_qs, many=True, context={"request": request})
 
         enabled_gateways = []
         if settings:
@@ -473,30 +391,20 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             if settings.razorpay_enabled:
                 enabled_gateways.append("razorpay")
 
-        # ================================================================
-        # FINAL RESPONSE
-        # ================================================================
         return Response({
             "success": True,
-
-            # Students who have payment transactions
             "student_payment_summaries": serializer.data,
-
-            # All students
-            "students": students,
-
-            "students_count": len(students),
-
+            "students": students_response_data,
+            "students_count": len(students_response_data),
             "companies": companies,
             "courses_list": courses_list,
             "enabled_gateways": enabled_gateways,
-
             "meta": {
-                "total_students": len(students),
-                "students_with_transactions": len(student_list),
+                "total_students": len(students_response_data),
+                "students_with_transactions": len(students_response_data),
                 "user_type": user_type
             }
-        })  
+        }, status=status.HTTP_200_OK)
 
 
     def create(self, request):
@@ -837,85 +745,74 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             }, status=200)
 
     def student_payment_history(self, request, student_id=None):
-
         user = request.user
 
         if user.user_type not in ["student", "super_admin"]:
             return Response(
-                {
-                    "success": False,
-                    "message": "Unauthorized access"
-                },
+                {"success": False, "message": "Unauthorized access"},
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # Restrict students to their own records
-        if user.user_type == "student":
+        if user.user_type == "student" and str(student_id) != str(user.student_id):
+            return Response(
+                {"success": False, "message": "Unauthorized access to student record"},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
-            logged_student_id = str(user.student_id)
-
-            if str(student_id) != logged_student_id:
-
-                logger.warning(
-                    f"Student ID tampering attempt | "
-                    f"user={user.id} | "
-                    f"requested={student_id} | "
-                    f"actual={logged_student_id}"
-                )
-
-                return Response(
-                    {
-                        "success": False,
-                        "message": "You are not allowed to access other student payment records"
-                    },
-                    status=status.HTTP_403_FORBIDDEN
-                )
+        student = Student.objects.filter(student_id=student_id).first()
+        if not student:
+            return Response(
+                {"success": False, "message": "Student not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
         transactions = (
             PaymentTransaction.objects
-            .filter(
-                student__student_id=student_id,
-                is_archived=False
-            )
+            .filter(student=student, is_archived=False)
             .select_related("course", "gateway")
-            .order_by("-invoice_date", "-created_at")
+            .order_by("-created_at")
         )
-
-        student = Student.objects.get(student_id=student_id)
 
         serializer = StudentPaymentSummarySerializer(
             student,
             context={"request": request}
         )
 
-        payment_logs = [
-            {
-                "course_name": tx.course.course_name if tx.course else None,
+        payment_logs = []
+        for tx in transactions:
+            # Lazy-generate invoice if payment is successful but missing the PDF file
+            if not tx.invoice and str(tx.payment_status).lower() in ["success", "done", "paid", "complete"]:
+                try:
+                    tx = InvoiceService.generate_invoice(tx.id)
+                except Exception as e:
+                    logger.error(f"Lazy invoice generation failed for transaction {tx.id}: {str(e)}")
+
+            invoice_url = None
+            if tx.invoice and hasattr(tx.invoice, "url"):
+                invoice_url = request.build_absolute_uri(tx.invoice.url)
+
+            payment_logs.append({
+                "course_name": tx.course.course_name if tx.course else (tx.description or "N/A"),
                 "student_payment_summaries": serializer.data,
                 "invoice_date": tx.invoice_date,
                 "transaction_id": tx.transaction_id,
                 "amount": float(tx.amount or 0),
                 "payment_status": tx.payment_status,
-                "payment_mode":tx.payment_mode,
+                "payment_mode": tx.payment_mode or (tx.metadata.get("mode") if tx.metadata else "Cash"),
                 "discount": float(tx.discount or 0),
                 "currency": tx.currency,
                 "gateway": tx.gateway.gatway_name if tx.gateway else None,
-                "invoice_url": (
-                    request.build_absolute_uri(tx.invoice.url)
-                    if tx.invoice else None
-                ),
+                "invoice_no": tx.invoice_no,
+                "invoice_url": invoice_url,
                 "created_at": tx.created_at,
-            }
-            for tx in transactions
-        ]
+            })
 
-        return Response(
-            {
-                "success": True,
-                "count": len(payment_logs),
-                "payment_logs": payment_logs,
-            }
-        )
+        return Response({
+            "success": True,
+            "count": len(payment_logs),
+            "payment_logs": payment_logs,
+        })
+
     # 2. Delete FULL student + all transactions
     @action(detail=True, methods=['delete'], url_path='delete-student')
     def delete_student(self, request, pk=None):
@@ -1537,7 +1434,6 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             status=200
         )
 
-
 class TutorPaymentViewSet(viewsets.ModelViewSet):
     queryset = TutorPayment.objects.all().select_related('tutor', 'course', 'batch')
 
@@ -1594,13 +1490,13 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
 
         # Fetch Active Courses
         active_courses = Course.objects.filter(is_archived=False).exclude(status__iexact='inactive')
-        courses_data = CourseDropdownSerializer(active_courses, many=True).data
+        courses_data = CourseOptionSerializer(active_courses, many=True).data
 
         # --- NEW: Build Course-Grouped Batches ---
         # Prefetch active batches to prevent N+1 query overhead
         active_courses_with_batches = active_courses.prefetch_related(
             Prefetch(
-                'new_batches',  # Related name from Course to NewBatch (adjust if different e.g., 'newbatch_set')
+                'batches',  # Related name from Course to NewBatch (adjust if different e.g., 'newbatch_set')
                 queryset=NewBatch.objects.filter(status=True, is_archived=False),
                 to_attr='active_batches_list'
             )
@@ -2309,9 +2205,6 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             return Response({"success": False, "message": "Payment verification failed"}, status=200)
 
 class RazorpaySettlementViewSet(viewsets.ViewSet):
-    permission_classes = [IsAuthenticated]
-    authentication_classes = [CustomJWTAuthentication]
-    required_module = "Settlement"
 
     def list(self, request):
         try:
