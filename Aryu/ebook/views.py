@@ -976,7 +976,7 @@ class UnsafeSessionAuthentication(SessionAuthentication):
 
 @method_decorator(csrf_exempt, name='dispatch')
 class ReviewListCreateView(APIView):
-    authentication_classes = [UnsafeSessionAuthentication]
+    authentication_classes = []
     permission_classes = [AllowAny]
     parser_classes = [MultiPartParser, JSONParser]
 
