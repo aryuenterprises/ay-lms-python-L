@@ -3,6 +3,7 @@ from rest_framework import serializers
 from aryuapp.models import Submission, SubmissionReply
 from tests.models import StudentAnswers, TestResult
 from courses.models import StudentTopicStatus
+from django.conf import settings
 
 class NotificationSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
@@ -141,12 +142,12 @@ class ChatRoomSerializer(serializers.ModelSerializer):
 
     def get_student_profile_pic(self, obj):
         if obj.student and obj.student.profile_pic:
-            return 'https://aylms.aryuprojects.com/api' + obj.student.profile_pic.url
+            return settings.MEDIA_BASE_URL + obj.student.profile_pic.url
         return None
 
     def get_trainer_profile_pic(self, obj):
         if obj.trainer and obj.trainer.profile_pic:
-            return 'https://aylms.aryuprojects.com/api' + obj.trainer.profile_pic.url
+            return settings.MEDIA_BASE_URL + obj.trainer.profile_pic.url
         return None
 
     def get_student_name(self, obj):
@@ -169,10 +170,10 @@ class MessageSerializer(serializers.ModelSerializer):
 
     def get_upload_url(self, obj):
         if obj.upload:
-            return 'https://aylms.aryuprojects.com/api' + obj.upload.url
+            return settings.MEDIA_BASE_URL + obj.upload.url
         return None
 
     def get_audio_file_url(self, obj):
         if obj.audio_file:
-            return 'https://aylms.aryuprojects.com/api' + obj.audio_file.url
+            return settings.MEDIA_BASE_URL + obj.audio_file.url
         return None

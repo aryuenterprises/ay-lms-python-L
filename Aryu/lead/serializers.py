@@ -4,6 +4,7 @@ from rest_framework import serializers
 import requests
 from aryuapp.models import User
 from django.db import transaction
+from django.conf import settings
 
 
 # COMMON MIXINS
@@ -60,7 +61,7 @@ class LeadCallLogSerializer(serializers.ModelSerializer):
 
         if obj.recording_url and hasattr(obj.recording_url, "url"):
             return (
-                "https://aylms.aryuprojects.com/api"
+                settings.MEDIA_BASE_URL
                 + obj.recording_url.url
             )
 

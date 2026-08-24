@@ -1,5 +1,6 @@
 from .models import Announcement
 from rest_framework import serializers
+from django.conf import settings
 
 
 
@@ -14,12 +15,12 @@ class AnnouncementSerializer(serializers.ModelSerializer):
 
     def get_content_pic_url(self, obj):
         if obj.content_pic and hasattr(obj.content_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.content_pic.url
+            return settings.MEDIA_BASE_URL + obj.content_pic.url
         return None
     
     def get_background_pic_url(self, obj):
         if obj.background_pic and hasattr(obj.background_pic, 'url'):
-            return 'https://aylms.aryuprojects.com/api' + obj.background_pic.url
+            return settings.MEDIA_BASE_URL + obj.background_pic.url
         return None
     
     def create(self, validated_data):
