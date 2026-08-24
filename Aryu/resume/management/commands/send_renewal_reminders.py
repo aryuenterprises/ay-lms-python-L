@@ -136,7 +136,7 @@ class Command(BaseCommand):
     ">
 
 <img
-    src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+    src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
     alt="Pass ATS"
     style="
       width: 200px;

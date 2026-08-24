@@ -81,7 +81,7 @@ class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
 
         if obj.invoice and hasattr(obj.invoice, "url"):
             return (
-                "https://portal.aryuacademy.com/api"
+                "https://aylms.aryuprojects.com/api"
                 + obj.invoice.url
             )
 
@@ -298,7 +298,7 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
 
         if obj.invoice and hasattr(obj.invoice, "url"):
             return (
-                "https://portal.aryuacademy.com/api"
+                "https://aylms.aryuprojects.com/api"
                 + obj.invoice.url
             )
 

@@ -105,7 +105,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
         certificate = getattr(obj, "certificate", None)
 
         if certificate and certificate.certificate_file:
-            return 'https://portal.aryuacademy.com/api' + certificate.certificate_file.url
+            return 'https://aylms.aryuprojects.com/api' + certificate.certificate_file.url
 
         return None
 
@@ -238,7 +238,7 @@ class WebinarlistFeedbackSerializer(serializers.ModelSerializer):
 
     def get_rating_screenshot_url(self, obj):
         if obj.rating_screenshot:
-            return f"https://portal.aryuacademy.com/api{obj.rating_screenshot.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.rating_screenshot.url}"
         return None
 
 class WebinarToolSerializer(serializers.ModelSerializer):
@@ -264,7 +264,7 @@ class WebinarMetadataSerializer(serializers.ModelSerializer):
         # 1. Access the actual FileField/ImageField attribute on the model (e.g., obj.image)
         # 2. Safely verify that the file exists and has a .url property
         if hasattr(obj, 'image') and obj.image and hasattr(obj.image, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.image.url
+            return 'https://aylms.aryuprojects.com/api' + obj.image.url
         return None
         
 class WebinarFAQSerializer(serializers.ModelSerializer):
@@ -294,7 +294,7 @@ class WebinarSerializer(serializers.ModelSerializer):
 
     def get_webinar_image_url(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
+            return 'https://aylms.aryuprojects.com/api' + obj.webinar_image.url
         return None
     
     def get_total_amount_received(self, obj):
@@ -320,7 +320,7 @@ class WebinarSerializer(serializers.ModelSerializer):
                 "profession": r.profession,
                 "payment_status": txn.payment_status if txn else "free",
                 "certificate_url": (
-                    "https://portal.aryuacademy.com/api" + certificate.certificate_file.url
+                    "https://aylms.aryuprojects.com/api" + certificate.certificate_file.url
                     if certificate and certificate.certificate_file else None
                 ),
                 "feedback": WebinarFeedbackSerializer(r.feedback).data if getattr(r, "feedback", None) else None,
@@ -466,7 +466,7 @@ class WebinarListSerializer(serializers.ModelSerializer):
 
     def get_webinar_image_url(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
+            return 'https://aylms.aryuprojects.com/api' + obj.webinar_image.url
         return None
 
     def get_participants_count(self, obj):
@@ -733,7 +733,7 @@ class PublicWebinarListSerializer(serializers.ModelSerializer):
 
     def get_webinar_image(self, obj):
         if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.webinar_image.url
+            return 'https://aylms.aryuprojects.com/api' + obj.webinar_image.url
         return None
     
     def get_registered_count(self, obj):
@@ -986,7 +986,7 @@ class FormWithAnswersSerializer(serializers.ModelSerializer):
 
     def get_form_image_url(self, obj):
         if obj.form_image:
-            return f"https://portal.aryuacademy.com/api{obj.form_image.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.form_image.url}"
         return None
 
     def get_submissions_count(self, obj):
@@ -1033,7 +1033,7 @@ class FormCreateSerializer(serializers.Serializer):
 
     def get_form_image_url(self, obj):
         if obj.form_image:
-            return f"https://portal.aryuacademy.com/api{obj.form_image.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.form_image.url}"
         return None
 
     def create(self, validated_data):
@@ -1131,7 +1131,7 @@ class FormReadSerializer(serializers.ModelSerializer):
 
     def get_form_image_url(self, obj):
         if obj.form_image:
-            return f"https://portal.aryuacademy.com/api{obj.form_image.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.form_image.url}"
         return None
 
 class FormUpdateSerializer(serializers.Serializer):
@@ -1226,6 +1226,6 @@ class PublicFormSerializer(serializers.ModelSerializer):
 
     def get_form_image_url(self, obj):
         if obj.form_image:
-            return f"https://portal.aryuacademy.com/api{obj.form_image.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.form_image.url}"
         return None
 

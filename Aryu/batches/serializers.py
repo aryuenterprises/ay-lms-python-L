@@ -787,4 +787,4 @@ class BatchRecordingSerializer(serializers.ModelSerializer):
 
     def get_url(self, obj):
         if obj.url:
-            return f"https://portal.aryuacademy.com/api{obj.url.url}"
+            return f"https://aylms.aryuprojects.com/api{obj.url.url}"

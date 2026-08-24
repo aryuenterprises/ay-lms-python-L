@@ -92,7 +92,7 @@ def generate_complex_otp(length=6):
 def send_otp_email(email, otp):
     subject = "Aryu Academy – Password Reset OTP"
 
-    background_url = "https://portal.aryuacademy.com/api/media/email/banner.svg"
+    background_url = "https://aylms.aryuprojects.com/api/media/email/banner.svg"
 
     html_content = f"""
     <!DOCTYPE html>
@@ -192,7 +192,7 @@ Hi {student.first_name},
 Welcome to Aryu Academy! 🎓 We are thrilled to have you join our learning community.
 
 👉 Use the button below to log in and start your journey:
-https://portal.aryuacademy.com/dashboard
+https://aylms.aryuprojects.com/dashboard
 
 📞 For queries, call us at 9685741253.
 
@@ -243,7 +243,7 @@ Team Aryu Academy
 
             <!-- Smaller button -->
             <div style="text-align:center; margin:18px 0;">
-            <a href="https://portal.aryuacademy.com/dashboard"
+            <a href="https://aylms.aryuprojects.com/dashboard"
                 style="display:inline-block; background:linear-gradient(45deg,#b22222,#8b0000);
                         color:#fff; padding:8px 18px; font-size:14px; font-weight:bold;
                         border-radius:6px; text-decoration:none;">

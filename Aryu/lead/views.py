@@ -371,7 +371,7 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
                     "call_type": log.call_type,
                     "duration_seconds": log.duration_seconds,
                     "recording": (
-                        "https://portal.aryuacademy.com/api" + log.recording_url.url
+                        "https://aylms.aryuprojects.com/api" + log.recording_url.url
                         if log.recording_url and hasattr(log.recording_url, "url")
                         else None
                     ),

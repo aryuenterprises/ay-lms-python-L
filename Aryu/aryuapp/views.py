@@ -5856,7 +5856,7 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
                 status=404
             )
 
-        MEDIA_BASE_URL = "https://portal.aryuacademy.com/api/media/"
+        MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api/media/"
 
         # ----------------------------------
         # 1. STUDENT-SPECIFIC BATCHES
@@ -6404,7 +6404,7 @@ def generate_secure_password(length=8):
     return "".join(pwd_list)
 
 
-PORTAL_URL = getattr(settings, "PORTAL_URL", "https://portal.aryuacademy.com/")
+PORTAL_URL = getattr(settings, "PORTAL_URL", "https://aylms.aryuprojects.com/")
 
 def send_student_welcome_email(student, raw_password: str):
     """
@@ -7735,7 +7735,7 @@ class TutorSignupView(APIView):
             "errors": serializer.errors
         }, status=400)
         
-BASE_MEDIA_URL = "https://portal.aryuacademy.com/api/media/"
+BASE_MEDIA_URL = "https://aylms.aryuprojects.com/api/media/"
 
 class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
 

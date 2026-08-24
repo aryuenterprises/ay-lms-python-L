@@ -58,7 +58,7 @@ class ResourcesSerializer(serializers.ModelSerializer):
         if obj.image and hasattr(obj.image, 'url'):
             if request is not None:
                 return request.build_absolute_uri(obj.image.url)
-            return 'https://portal.aryuacademy.com/api' + obj.image.url
+            return 'https://aylms.aryuprojects.com/api' + obj.image.url
         return None
 
     def get_file_url(self, obj):
@@ -66,7 +66,7 @@ class ResourcesSerializer(serializers.ModelSerializer):
         if obj.file and hasattr(obj.file, 'url'):
             if request is not None:
                 return request.build_absolute_uri(obj.file.url)
-            return 'https://portal.aryuacademy.com/api' + obj.file.url
+            return 'https://aylms.aryuprojects.com/api' + obj.file.url
         return None
 
 

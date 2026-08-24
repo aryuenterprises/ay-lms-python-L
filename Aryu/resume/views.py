@@ -173,7 +173,7 @@ class AuthViewSet(viewsets.ViewSet):
             )
 
             token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
-            verification_link = f"https://portal.aryuacademy.com/api/resume/auth/verify-email/?token={token}"
+            verification_link = f"https://aylms.aryuprojects.com/api/resume/auth/verify-email/?token={token}"
 
             html_message = f"""
     <!DOCTYPE html>
@@ -225,7 +225,7 @@ class AuthViewSet(viewsets.ViewSet):
                     padding: 45px 5px;
                     ">
                     <img
-                    src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+                    src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
                     alt="Pass ATS"
                     style="
                         width: 200px;
@@ -517,7 +517,7 @@ class AuthViewSet(viewsets.ViewSet):
         )
 
         verification_link = (
-            "https://portal.aryuacademy.com"
+            "https://aylms.aryuprojects.com"
             f"/api/resume/auth/verify-email/?token={token}"
         )
 
@@ -575,7 +575,7 @@ class AuthViewSet(viewsets.ViewSet):
                   padding: 45px 5px;
                 ">
                 <img
-                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -1296,7 +1296,7 @@ class AuthViewSet(viewsets.ViewSet):
                 ">
 
                 <img
-                  src="https://portal.aryuacademy.com/api/media/logos/passats.png"
+                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -1969,7 +1969,7 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
                 )
 
             expected_hostnames = [
-                "portal.aryuacademy.com",
+                "aylms.aryuprojects.com",
                 "localhost",
                 "yourdomain.com"
             ]

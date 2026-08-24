@@ -391,7 +391,7 @@ class WebinarViewSet(
             is_deleted=False,
             type=True
         )
-        MEDIA_PREFIX = "https://portal.aryuacademy.com/api/media/"
+        MEDIA_PREFIX = "https://aylms.aryuprojects.com/api/media/"
         registrations = (
             WebinarRegistration.objects
             .filter(webinar_id=webinar.id)
@@ -964,7 +964,7 @@ class BootcampViewSet(
             is_deleted=False,
             type=False
         )
-        MEDIA_PREFIX = "https://portal.aryuacademy.com/api/media/"
+        MEDIA_PREFIX = "https://aylms.aryuprojects.com/api/media/"
         registrations = (
             WebinarRegistration.objects
             .filter(webinar_id=webinar.id)
@@ -1434,11 +1434,11 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
 
             data["success_url"] = request.data.get(
                 "success_url",
-                "https://portal.aryuacademy.com/payment-success"
+                "https://aylms.aryuprojects.com/payment-success"
             )
             data["failure_url"] = request.data.get(
                 "failure_url",
-                "https://portal.aryuacademy.com/payment-failed"
+                "https://aylms.aryuprojects.com/payment-failed"
             )
 
             request._full_data = data
@@ -1992,8 +1992,8 @@ def _create_payment(self, request, webinar):
     payment_request.data = {
         "amount": webinar.price,
         "currency": "INR",
-        "success_url": f"https://portal.aryuacademy.com/webinar/payment-success/{webinar.uuid}",
-        "failure_url": f"https://portal.aryuacademy.com/webinar/payment-failed/{webinar.uuid}",
+        "success_url": f"https://aylms.aryuprojects.com/webinar/payment-success/{webinar.uuid}",
+        "failure_url": f"https://aylms.aryuprojects.com/webinar/payment-failed/{webinar.uuid}",
     }
 
     return razorpay_view.create(payment_request)

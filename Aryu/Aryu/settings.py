@@ -461,7 +461,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
     "https://ayanew.aryuprojects.com",
 ]
 
@@ -473,7 +473,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
     "https://ayanew.aryuprojects.com",
 
 ]
@@ -487,7 +487,7 @@ ALLOWED_HOSTS = [
     "passats.aryuacademy.com",
     "aryuacademy.com",
     "127.0.0.1",
-    "portal.aryuacademy.com",
+    "aylms.aryuprojects.com",
     "ayanew.aryuprojects.com",
     "aylms.aryuprojects.com",
 ]  # Allow all hosts for development; change in production
@@ -602,7 +602,7 @@ TWILIO_PHONE_NUMBER = "+15075854260"
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'api/media')
 
-MEDIA_BASE_URL = "https://portal.aryuacademy.com/api"
+MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api"
 
 class DisableMigrations:
     def __getitem__(self, item):
