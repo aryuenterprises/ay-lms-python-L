@@ -545,6 +545,8 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
 
         context["student"] = student
         return context
+
+   
     
 class CourseVideoViewSet(viewsets.ModelViewSet):
     serializer_class = CourseVideoSerializer

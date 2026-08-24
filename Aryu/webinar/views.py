@@ -1466,59 +1466,85 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
         profession = meta.get("profession", "")
         source = meta.get("source", "webinar")
 
-        webinar = Webinar.objects.get(uuid=meta["webinar_id"])
+        with transaction.atomic():
+            webinar = Webinar.objects.get(uuid=meta["webinar_id"])
 
-        # 1. Fetch or create WebinarRegistration record
-        registration, created = WebinarRegistration.objects.get_or_create(
-            webinar=webinar,
-            phone=phone,
-            defaults={
-                "name": name,
-                "email": email,
-                "profession": profession,
-                "is_paid": True,
-                "payment_transaction": txn
-            }
-        )
-
-        if not created and not registration.is_paid:
-            registration.is_paid = True
-            registration.payment_transaction = txn
-            registration.save(update_fields=["is_paid", "payment_transaction"])
-
-        # 2. Synchronize to Student Model and Send Email Credentials
-        payment_status = getattr(txn, "payment_status", "")
-        if is_payment_successful(payment_status) or source in ["bootcamp", "campaign"]:
-            student, student_created = get_or_create_student_from_bootcamp(
-                name=name,
-                email=email,
+            # 1. Fetch or create WebinarRegistration record
+            registration, created = WebinarRegistration.objects.get_or_create(
+                webinar=webinar,
                 phone=phone,
-                profession=profession,
-                extra_data={
-                    "course_name": webinar.title,
-                    "transaction_id": str(txn.id) if txn else None
+                defaults={
+                    "name": name,
+                    "email": email,
+                    "profession": profession,
+                    "is_paid": True,
+                    "payment_transaction": txn
                 }
             )
-            if hasattr(registration, "student") and student:
-                registration.student = student
-                registration.save(update_fields=["student"])
 
-        # 3. Schedule ancillary notifications
-        if created:
-            try:
-                send_webinar_welcome_whatsapp(registration)
-            except Exception as e:
-                logger.error(f"Error sending welcome WhatsApp: {e}")
-            try:
-                send_webinar_registration_email(registration)
-            except Exception as e:
-                logger.error(f"Error sending registration email: {e}")
-            try:
-                schedule_webinar_messages(registration)
-            except Exception as e:
-                logger.error(f"Error scheduling webinar messages: {e}")
+            if not created and not registration.is_paid:
+                registration.is_paid = True
+                registration.payment_transaction = txn
+                registration.save(update_fields=["is_paid", "payment_transaction"])
 
-        return registration
+            # 2. Resolve/Create Student & Course Linking
+            payment_status = getattr(txn, "payment_status", "")
+            if is_payment_successful(payment_status) or source in ["bootcamp", "campaign", "webinar"]:
+                student, student_created = get_or_create_student_from_bootcamp(
+                    name=name,
+                    email=email,
+                    phone=phone,
+                    profession=profession,
+                    extra_data={
+                        "course_name": webinar.title,
+                        "transaction_id": str(txn.id) if txn else None,
+                        "source_type": source,
+                        "converter": "campaign" if source in ["bootcamp", "campaign"] else "webinar"
+                    }
+                )
+
+                if student:
+                    if hasattr(registration, "student"):
+                        registration.student = student
+                        registration.save(update_fields=["student"])
+
+                    # Sync Student model payment details
+                    if hasattr(student, "payment_transaction"):
+                        student.payment_transaction = txn
+                        student.save(update_fields=["payment_transaction"])
+
+                    # Fetch synchronized Course matching the Webinar
+                    course = getattr(webinar, "course", None)
+                    if not course:
+                        course = Course.objects.filter(course_name__iexact=webinar.title, is_archived=False).first()
+
+                    # Create or Update StudentCourse Enrollment
+                    if course and hasattr(StudentCourse, "objects"):
+                        StudentCourse.objects.get_or_create(
+                            student=student,
+                            course=course,
+                            defaults={
+                                "is_paid": True,
+                                "status": "active" if is_payment_successful(payment_status) else "pending"
+                            }
+                        )
+
+            # 3. Schedule ancillary notifications
+            if created:
+                try:
+                    send_webinar_welcome_whatsapp(registration)
+                except Exception as e:
+                    logger.error(f"Error sending welcome WhatsApp: {e}")
+                try:
+                    send_webinar_registration_email(registration)
+                except Exception as e:
+                    logger.error(f"Error sending registration email: {e}")
+                try:
+                    schedule_webinar_messages(registration)
+                except Exception as e:
+                    logger.error(f"Error scheduling webinar messages: {e}")
+
+            return registration
 
     # -----------------------------
     # CREATE API

@@ -250,7 +250,7 @@ class WebinarToolSerializer(serializers.ModelSerializer):
 
     def get_image_url(self, obj):
         if obj.tools_image:
-            return f"{settings.MEDIA_BASE_URL}{obj.tools_image.url}"
+            return f"https://portal.aryuacademy.com/api{obj.tools_image.url}"
         return None
     
 class WebinarMetadataSerializer(serializers.ModelSerializer):
@@ -261,12 +261,16 @@ class WebinarMetadataSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
     def get_image_url(self, obj):
-        # 1. Access the actual FileField/ImageField attribute on the model (e.g., obj.image)
-        # 2. Safely verify that the file exists and has a .url property
-        if hasattr(obj, 'image') and obj.image and hasattr(obj.image, 'url'):
-            return 'https://portal.aryuacademy.com/api' + obj.image.url
+        # 1. Access the actual ImageField 'meta_image' on the webinar_metadata model
+        if hasattr(obj, 'meta_image') and obj.meta_image and hasattr(obj.meta_image, 'url'):
+            url = obj.meta_image.url
+            # Avoid prepending domain if it already has a full HTTP/HTTPS scheme
+            if url.startswith("http://") or url.startswith("https://"):
+                return url
+            return 'https://portal.aryuacademy.com/api' + url
+            
         return None
-        
+
 class WebinarFAQSerializer(serializers.ModelSerializer):
     class Meta:
         model = Webinar_FAQ

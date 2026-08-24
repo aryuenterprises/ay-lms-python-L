@@ -1,4 +1,4 @@
-from Aryu.payments.serializers import TutorPaymentReadSerializer
+from payments.serializers import TutorPaymentReadSerializer
 from .models import *
 from .serializers import *
 from aryuapp.auth import CustomJWTAuthentication
