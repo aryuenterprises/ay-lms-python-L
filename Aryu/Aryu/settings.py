@@ -641,13 +641,16 @@ else:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
-            'NAME': 'aylms_live',  
-            'USER': 'aylms_live',
-            'PASSWORD':'KfdW543FDdfg',
-            'HOST': '187.127.178.144',   
-            'PORT': '5432',  
+            'NAME': 'academy_staging',
+            'USER': 'aryu_user',
+            'PASSWORD':'YUra@2025',
+            'HOST': '49.207.178.161',
+            'PORT': '5432',
             'AUTOCOMMIT': True,
             'CONN_MAX_AGE': 60,
+            'OPTIONS': {
+                'options': '-c search_path=livequiz,public'
+            }
         },
     }
 
