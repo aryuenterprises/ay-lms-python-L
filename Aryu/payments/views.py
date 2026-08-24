@@ -1,3 +1,4 @@
+from payments.serializers import TutorPaymentReadSerializer
 from .models import *
 from .serializers import *
 from aryuapp.auth import CustomJWTAuthentication
@@ -226,7 +227,8 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         user_type = getattr(user, "user_type", "")
         user_created_id = getattr(user, "trainer_id", None)
 
-        if user_type != "super_admin":
+        # Allowed roles: super_admin and admin
+        if user_type not in ["super_admin", "admin"]:
             return Response(
                 {"success": False, "message": "Unauthorized"},
                 status=status.HTTP_403_FORBIDDEN
@@ -268,10 +270,8 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 Q(created_by_type="admin", created_by__in=admin_ids)
             )
 
-        # Prefetch transactions with invoices & gateways
-        students_qs = all_students.filter(
-            transactions__is_archived=False
-        ).distinct().prefetch_related(
+        # Prefetch transactions with invoices & gateways for ALL active students
+        students_qs = all_students.distinct().prefetch_related(
             "new_batches__course",
             Prefetch(
                 "transactions",
@@ -371,7 +371,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "phone": student.contact_no,
                 "company_id": getattr(employer, "company_id", None) if employer else None,
                 "company_name": getattr(employer, "company_name", None) if employer else None,
-                "payment_history": student_payment_history,  # Added student payment history log list
+                "payment_history": student_payment_history,
                 "courses": courses_summary,
             })
 
@@ -406,65 +406,31 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             }
         }, status=status.HTTP_200_OK)
 
-
     def create(self, request):
-
         user = request.user
-
         if getattr(user, "user_type", "") != "super_admin":
+            return Response({"success": False, "message": "Unauthorized"}, status=403)
 
-            return Response(
-                {
-                    "success": False,
-                    "message": "Unauthorized"
-                },
-                status=403
-            )
-
-        serializer = (
-            PaymentTransactionCreateSerializer(
-                data=request.data,
-                context={"request": request}
-            )
+        serializer = PaymentTransactionCreateSerializer(
+            data=request.data, context={"request": request}
         )
-
-        serializer.is_valid(
-            raise_exception=True
-        )
-
+        serializer.is_valid(raise_exception=True)
         transaction = serializer.save()
 
         return Response({
             "success": True,
-            "message":
-            "Payment transaction created successfully",
-            "data":
-            PaymentTransactionDetailSerializer(
-                transaction,
-                context={"request": request}
+            "message": "Payment transaction created successfully",
+            "data": PaymentTransactionDetailSerializer(
+                transaction, context={"request": request}
             ).data
         })
-     
+
     def retrieve(self, request, pk=None):
-
         user = request.user
-
         if getattr(user, "user_type", "") != "super_admin":
+            return Response({"success": False, "message": "Unauthorized"}, status=403)
 
-            return Response(
-                {
-                    "success": False,
-                    "message": "Unauthorized"
-                },
-                status=403
-            )
-        """
-        Retrieve detailed payment information for a single student
-        
-        Args:
-            pk: student_id
-        """
-        student = Student.objects.filter(student_id=pk,is_archived=False).prefetch_related(
+        student = Student.objects.filter(student_id=pk, is_archived=False).prefetch_related(
             Prefetch(
                 "transactions",
                 queryset=PaymentTransaction.objects.select_related("course", "gateway")
@@ -474,39 +440,28 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 queryset=PaymentEMI.objects.prefetch_related("installments")
             ),
             Prefetch(
-                "new_batches",  # batches student is enrolled in
+                "new_batches",
                 queryset=NewBatch.objects.select_related("course")
             )
         ).first()
 
         if not student:
-            return Response({
-                "success": False,
-                "message": "Student not found"
-            }, status=status.HTTP_404_NOT_FOUND)
+            return Response({"success": False, "message": "Student not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # ================================================================
-        # Build courses with transactions
-        # ================================================================
         courses_list = []
         seen_course_ids = set()
 
         for batch in student.new_batches.all():
             course = batch.course
-            
-            # Skip if already processed (student in multiple batches of same course)
             if course.course_id in seen_course_ids:
                 continue
             seen_course_ids.add(course.course_id)
 
-            # Get transactions for this course
             txs = [
-                    tx for tx in student.transactions.all()
-                    if tx.course_id == course.course_id and not tx.is_archived
-                ]
+                tx for tx in student.transactions.all()
+                if tx.course_id == course.course_id and not tx.is_archived
+            ]
 
-
-            # Calculate paid amount (only successful payments)
             paid_amount = sum(
                 float(tx.amount) 
                 for tx in txs 
@@ -520,7 +475,6 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "paid_amount": paid_amount,
                 "balance": float(course.fee) - paid_amount,
                 "discount": float(getattr(student, 'discount', 0)),
-                # "date": course.date,  # Uncomment if needed
                 "transactions": [
                     {
                         "transaction_id": tx.transaction_id,
@@ -545,9 +499,6 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 ]
             })
 
-        # ================================================================
-        # Build the student payment summary
-        # ================================================================
         student_summary = {
             "student_id": student.student_id,
             "registration_id": student.registration_id,
@@ -570,9 +521,6 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             ]
         }
 
-        # ================================================================
-        # Get enabled gateways
-        # ================================================================
         settings = Settings.objects.filter(is_archived=False).only(
             "stripe_enabled", "paypal_enabled", "razorpay_enabled"
         ).order_by("-created_at").first()
@@ -599,57 +547,30 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         return Response({
             "success": True,
             "student_payment_summary": student_summary,
-            "gatway": gateway_list  # Note: typo in original, keeping for compatibility
+            "gatway": gateway_list
         })
-    
+
     def update(self, request, pk=None):
-
         user = request.user
-
         if getattr(user, "user_type", "") != "super_admin":
-            return Response(
-                {
-                    "success": False,
-                    "message": "Unauthorized"
-                },
-                status=403
-            )
+            return Response({"success": False, "message": "Unauthorized"}, status=403)
 
-        transaction = PaymentTransaction.objects.filter(
-            pk=pk,
-            is_archived=False
-        ).first()
-
+        transaction = PaymentTransaction.objects.filter(pk=pk, is_archived=False).first()
         if not transaction:
-            return Response(
-                {
-                    "success": False,
-                    "message": "Transaction not found"
-                },
-                status = 200
-            )
+            return Response({"success": False, "message": "Transaction not found"}, status=200)
 
-        # ---------- Check if course fee is already completed ----------
         if "amount" in request.data:
-
             student = transaction.student
             course = transaction.course
 
             if student and course:
-
                 final_fee = Decimal(str(course.fee or 0))
 
                 if hasattr(student, "course_fee") and student.course_fee:
                     try:
                         new_amount = Decimal(str(request.data["amount"]))
                     except (InvalidOperation, KeyError, TypeError):
-                        return Response(
-                            {
-                                "success": False,
-                                "message": "Invalid payment amount."
-                            },
-                            status=400
-                        )
+                        return Response({"success": False, "message": "Invalid payment amount."}, status=400)
 
                 already_paid = Decimal(
                     str(
@@ -664,25 +585,19 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 )
 
                 new_amount = Decimal(str(request.data["amount"]))
-
                 total_paid = already_paid + new_amount
 
                 if total_paid > final_fee:
                     remaining = final_fee - already_paid
-
-                    return Response(
-                        {
-                            "success": False,
-                            "message": (
-                                f"Payment exceeds the remaining course fee. "
-                                f"Course Fee: ₹{final_fee}, "
-                                f"Already Paid: ₹{already_paid}, "
-                                f"Remaining Balance: ₹{remaining}."
-                            )
-                        },
-                        status = 200
-                    )
-               
+                    return Response({
+                        "success": False,
+                        "message": (
+                            f"Payment exceeds the remaining course fee. "
+                            f"Course Fee: ₹{final_fee}, "
+                            f"Already Paid: ₹{already_paid}, "
+                            f"Remaining Balance: ₹{remaining}."
+                        )
+                    }, status=200)
 
         serializer = PaymentTransactionUpdateSerializer(
             transaction,
@@ -693,78 +608,43 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
         if not serializer.is_valid():
             first_error = next(iter(serializer.errors.values()))[0]
-
-            return Response(
-                {   
-                    "success": False,
-                    "message": str(first_error),
-                    "errors": serializer.errors,
-                },
-                status=200,
-            )
+            return Response({   
+                "success": False,
+                "message": str(first_error),
+                "errors": serializer.errors,
+            }, status=200)
 
         serializer.save()
+        return Response({
+            "success": True,
+            "message": "Transaction updated successfully",
+            "data": serializer.data
+        })
 
-        return Response(
-            {
-                "success": True,
-                "message": "Transaction updated successfully",
-                "data": serializer.data
-            }
-        )
-    
     def destroy(self, request, pk=None):
-
         user = request.user
-
         if getattr(user, "user_type", "") != "super_admin":
-
-            return Response(
-                {
-                    "success": False,
-                    "message": "Unauthorized"
-                },
-                status=403
-            )
+            return Response({"success": False, "message": "Unauthorized"}, status=403)
         
         try:
             transaction = PaymentTransaction.objects.get(pk=pk)
-
             transaction.is_archived = True
             transaction.save()
-
-            return Response({
-                "success": True,
-                "message": "Transaction deleted successfully"
-            })
-
+            return Response({"success": True, "message": "Transaction deleted successfully"})
         except PaymentTransaction.DoesNotExist:
-            return Response({
-                "success": False,
-                "message": "Transaction not found"
-            }, status=200)
+            return Response({"success": False, "message": "Transaction not found"}, status=200)
 
     def student_payment_history(self, request, student_id=None):
         user = request.user
-
         if user.user_type not in ["student", "super_admin"]:
-            return Response(
-                {"success": False, "message": "Unauthorized access"},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return Response({"success": False, "message": "Unauthorized access"}, status=status.HTTP_403_FORBIDDEN)
 
         if user.user_type == "student" and str(student_id) != str(user.student_id):
-            return Response(
-                {"success": False, "message": "Unauthorized access to student record"},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return Response({"success": False, "message": "Unauthorized access to student record"}, status=status.HTTP_403_FORBIDDEN)
 
         student = Student.objects.filter(student_id=student_id).first()
         if not student:
-            return Response(
-                {"success": False, "message": "Student not found"},
-                status=status.HTTP_404_NOT_FOUND
-            )
+            return Response({"success": False, "message": "Student not found"}, status=status.HTTP_404_NOT_FOUND)
 
         transactions = (
             PaymentTransaction.objects
@@ -773,14 +653,10 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             .order_by("-created_at")
         )
 
-        serializer = StudentPaymentSummarySerializer(
-            student,
-            context={"request": request}
-        )
+        serializer = StudentPaymentSummarySerializer(student, context={"request": request})
 
         payment_logs = []
         for tx in transactions:
-            # Lazy-generate invoice if payment is successful but missing the PDF file
             if not tx.invoice and str(tx.payment_status).lower() in ["success", "done", "paid", "complete"]:
                 try:
                     tx = InvoiceService.generate_invoice(tx.id)
@@ -813,288 +689,100 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             "payment_logs": payment_logs,
         })
 
-    # 2. Delete FULL student + all transactions
     @action(detail=True, methods=['delete'], url_path='delete-student')
     def delete_student(self, request, pk=None):
         user = request.user
-
         if getattr(user, "user_type", "") != "super_admin":
-
-            return Response(
-                {
-                    "success": False,
-                    "message": "Unauthorized"
-                },
-                status=403
-            )
+            return Response({"success": False, "message": "Unauthorized"}, status=403)
         
         try:
             student = Student.objects.get(student_id=pk)
+            PaymentTransaction.objects.filter(student_id=pk, is_archived=False).update(is_archived=True)
+            return Response({"success": True, "message": "Student and all transactions deleted"})
+        except Student.DoesNotExist:
+            return Response({"success": False, "message": "Student not found"}, status=404)
 
-            # delete all transactions
-            PaymentTransaction.objects.filter(
-                student_id=pk,
-                is_archived=False
-            ).update(is_archived=True)
+    @action(detail=False, methods=["post"])
+    def generate_invoice(self, request):
+        user = request.user
+        if getattr(user, "user_type", "") != "super_admin":
+            return Response({"success": False, "message": "Unauthorized"}, status=403)
+
+        serializer = GenerateInvoiceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        transaction = serializer.transaction
+        regenerate = serializer.validated_data.get("regenerate", False)
+
+        try:
+            transaction = InvoiceService.generate_invoice(transaction.id, regenerate=regenerate)
+            invoice_url = None
+            if transaction.invoice and hasattr(transaction.invoice, "url"):
+                invoice_url = request.build_absolute_uri(transaction.invoice.url)
 
             return Response({
                 "success": True,
-                "message": "Student and all transactions deleted"
-            })
-
-        except Student.DoesNotExist:
-            return Response({
-                "success": False,
-                "message": "Student not found"
-            }, status=404)
-
-    @action(detail=False,methods=["post"],)
-    def generate_invoice(self, request):
-
-        user = request.user
-
-        if getattr(user, "user_type", "") != "super_admin":
-
-            return Response(
-                {
-                    "success": False,
-                    "message": "Unauthorized"
-                },
-                status=403
-            )
-
-        serializer = GenerateInvoiceSerializer(
-            data=request.data
-        )
-
-        serializer.is_valid(
-            raise_exception=True
-        )
-
-        transaction = serializer.transaction
-
-        regenerate = serializer.validated_data.get(
-            "regenerate",
-            False
-        )
-
-        try:
-
-            transaction = (
-                InvoiceService.generate_invoice(
-                    transaction.id,
-                    regenerate=regenerate
-                )
-            )
-
-            invoice_url = None
-
-            if (
-                transaction.invoice
-                and hasattr(
-                    transaction.invoice,
-                    "url"
-                )
-            ):
-
-                invoice_url = (
-                    request.build_absolute_uri(
-                        transaction.invoice.url
-                    )
-                )
-
-            return Response(
-                {
-                    "success": True,
-                    "message": (
-                        "Invoice generated successfully"
-                    ),
-                    "data": {
-                        "transaction_id":
-                            transaction.id,
-
-                        "invoice_no":
-                            transaction.invoice_no,
-
-                        "invoice_url":
-                            invoice_url,
-
-                        "invoice_date":
-                            transaction.invoice_date,
-                    }
-                },
-                status=status.HTTP_200_OK
-            )
-
+                "message": "Invoice generated successfully",
+                "data": {
+                    "transaction_id": transaction.id,
+                    "invoice_no": transaction.invoice_no,
+                    "invoice_url": invoice_url,
+                    "invoice_date": transaction.invoice_date,
+                }
+            }, status=status.HTTP_200_OK)
         except Exception as e:
+            return Response({"success": False, "message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-            return Response(
-                {
-                    "success": False,
-                    "message": str(e)
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-    @action(detail=False,methods=["post"])
+    @action(detail=False, methods=["post"])
     def send_invoice_email(self, request):
-
         user = request.user
-
         if getattr(user, "user_type", "") != "super_admin":
+            return Response({"success": False, "message": "Unauthorized"}, status=403)
 
-            return Response(
-                {
-                    "success": False,
-                    "message": "Unauthorized"
-                },
-                status=403
-            )
-
-        transaction_id = request.data.get(
-            "transaction_id"
-        )
-
+        transaction_id = request.data.get("transaction_id")
         if not transaction_id:
-
-            return Response(
-                {
-                    "success": False,
-                    "message":
-                    "transaction_id is required"
-                },
-                status=400
-            )
+            return Response({"success": False, "message": "transaction_id is required"}, status=400)
 
         transaction = (
             PaymentTransaction.objects
-            .select_related(
-                "student",
-                "employer",
-                "course"
-            )
-            .filter(
-                id=transaction_id,
-                is_archived=False
-            )
+            .select_related("student", "employer", "course")
+            .filter(id=transaction_id, is_archived=False)
             .first()
         )
 
         if not transaction:
-
-            return Response(
-                {
-                    "success": False,
-                    "message":
-                    "Transaction not found"
-                },
-                status=200
-            )
-
-        # =====================================================
-        # CHECK INVOICE
-        # =====================================================
+            return Response({"success": False, "message": "Transaction not found"}, status=200)
 
         if not transaction.invoice:
-
-            return Response(
-                {
-                    "success": False,
-                    "message":
-                    "Invoice not generated"
-                },
-                status=400
-            )
-
-        # =====================================================
-        # GET EMAIL + NAME
-        # =====================================================
+            return Response({"success": False, "message": "Invoice not generated"}, status=400)
 
         recipient_email = None
         customer_name = None
 
-        # STUDENT BILLING
-        if (
-            transaction.billing_type == "student"
-            and transaction.student
-        ):
-
-            recipient_email = (
-                transaction.student.email
-            )
-
-            customer_name = (
-                transaction.student.first_name
-            )
-
-        # COMPANY BILLING
-        elif (
-            transaction.billing_type == "company"
-            and transaction.employer
-        ):
-
-            recipient_email = (
-                transaction.employer.email
-            )
-
-            customer_name = (
-                transaction.employer.company_name
-            )
+        if transaction.billing_type == "student" and transaction.student:
+            recipient_email = transaction.student.email
+            customer_name = transaction.student.first_name
+        elif transaction.billing_type == "company" and transaction.employer:
+            recipient_email = transaction.employer.email
+            customer_name = transaction.employer.company_name
 
         if not recipient_email:
+            return Response({"success": False, "message": "Recipient email not found"}, status=400)
 
-            return Response(
-                {
-                    "success": False,
-                    "message":
-                    "Recipient email not found"
-                },
-                status=400
-            )
-
-        # =====================================================
-        # EMAIL BODY
-        # =====================================================
-
-        subject = (
-            f"Aryu Academy Pvt Ltd - Invoice - "
-            f"{transaction.invoice_no}"
-        )
-
+        subject = f"Aryu Academy Pvt Ltd - Invoice - {transaction.invoice_no}"
         body = f"""
 <!DOCTYPE html>
 <html>
-
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Invoice Email</title>
 </head>
-
-<body style="
-    margin:0;
-    padding:0;
-    background-color:#eef1f7;
-    font-family:Arial, Helvetica, sans-serif;
-">
-
-<table width="100%" cellpadding="0" cellspacing="0" border="0"
-       style="background:#eef1f7;padding:30px 15px;">
-
+<body style="margin:0;padding:0;background-color:#eef1f7;font-family:Arial, Helvetica, sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#eef1f7;padding:30px 15px;">
 <tr>
 <td align="center">
-
-<table width="650" cellpadding="0" cellspacing="0" border="0"
-       style="
-            width:100%;
-            max-width:650px;
-            background:#ffffff;
-            border-radius:14px;
-            overflow:hidden;
-            border:1px solid #e5e7eb;
-       ">
-
-    <!-- HEADER -->
+<table width="650" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:650px;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e5e7eb;">
     <tr>
         <td align="center"
             style="
@@ -1127,277 +815,67 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
         </td>
     </tr>
-
-    <!-- BODY -->
     <tr>
         <td style="padding:40px 35px;">
-
-            <p style="
-                margin:0 0 18px 0;
-                color:#111827;
-                font-size:16px;
-                line-height:28px;
-            ">
-                Dear <strong>{customer_name}</strong>,
-            </p>
-
-            <p style="
-                margin:0 0 25px 0;
-                color:#4b5563;
-                font-size:15px;
-                line-height:28px;
-            ">
-                Thank you for choosing
-                <strong style="color:#430080;">
-                    Aryu Academy
-                </strong>.
-
-                Your payment has been successfully received.
-                Please find your invoice attached with this email
-                for your reference and records.
-            </p>
-
-            <!-- HIGHLIGHT BOX -->
-            <table width="100%" cellpadding="0" cellspacing="0"
-                   style="
-                        background:#faf7ff;
-                        border:1px solid #e9d8fd;
-                        border-radius:12px;
-                        margin-bottom:30px;
-                   ">
-
+            <p style="margin:0 0 18px 0;color:#111827;font-size:16px;line-height:28px;">Dear <strong>{customer_name}</strong>,</p>
+            <p style="margin:0 0 25px 0;color:#4b5563;font-size:15px;line-height:28px;">Thank you for choosing <strong style="color:#430080;">Aryu Academy</strong>. Your payment has been successfully received. Please find your invoice attached with this email for your reference and records.</p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#faf7ff;border:1px solid #e9d8fd;border-radius:12px;margin-bottom:30px;">
                 <tr>
                     <td style="padding:28px;">
-
                         <table width="100%" cellpadding="0" cellspacing="0">
-
                             <tr>
-                                <td style="
-                                    padding-bottom:16px;
-                                    color:#6b7280;
-                                    font-size:14px;
-                                    width:42%;
-                                ">
-                                    Invoice Number
-                                </td>
-
-                                <td style="
-                                    padding-bottom:16px;
-                                    color:#111827;
-                                    font-size:15px;
-                                    font-weight:700;
-                                ">
-                                    {transaction.invoice_no}
-                                </td>
+                                <td style="padding-bottom:16px;color:#6b7280;font-size:14px;width:42%;">Invoice Number</td>
+                                <td style="padding-bottom:16px;color:#111827;font-size:15px;font-weight:700;">{transaction.invoice_no}</td>
                             </tr>
-
                             <tr>
-                                <td style="
-                                    padding-bottom:16px;
-                                    color:#6b7280;
-                                    font-size:14px;
-                                ">
-                                    Course
-                                </td>
-
-                                <td style="
-                                    padding-bottom:16px;
-                                    color:#111827;
-                                    font-size:15px;
-                                    font-weight:600;
-                                ">
-                                    {transaction.course.course_name if transaction.course else '-'}
-                                </td>
+                                <td style="padding-bottom:16px;color:#6b7280;font-size:14px;">Course</td>
+                                <td style="padding-bottom:16px;color:#111827;font-size:15px;font-weight:600;">{transaction.course.course_name if transaction.course else '-'}</td>
                             </tr>
-
                             <tr>
-                                <td style="
-                                    padding-bottom:16px;
-                                    color:#6b7280;
-                                    font-size:14px;
-                                ">
-                                    Billing Type
-                                </td>
-
-                                <td style="
-                                    padding-bottom:16px;
-                                    color:#111827;
-                                    font-size:15px;
-                                    font-weight:600;
-                                    text-transform:capitalize;
-                                ">
-                                    {transaction.billing_type}
-                                </td>
+                                <td style="padding-bottom:16px;color:#6b7280;font-size:14px;">Billing Type</td>
+                                <td style="padding-bottom:16px;color:#111827;font-size:15px;font-weight:600;text-transform:capitalize;">{transaction.billing_type}</td>
                             </tr>
-
                             <tr>
-                                <td style="
-                                    color:#6b7280;
-                                    font-size:14px;
-                                ">
-                                    Payment Amount
-                                </td>
-
-                                <td style="
-                                    color:#430080;
-                                    font-size:22px;
-                                    font-weight:700;
-                                ">
-                                    ₹{transaction.amount}
-                                </td>
+                                <td style="color:#6b7280;font-size:14px;">Payment Amount</td>
+                                <td style="color:#430080;font-size:22px;font-weight:700;">₹{transaction.amount}</td>
                             </tr>
-
                         </table>
-
                     </td>
                 </tr>
-
             </table>
-
-            <p style="
-                margin:0 0 25px 0;
-                color:#4b5563;
-                font-size:14px;
-                line-height:26px;
-            ">
-                If you have any questions regarding this payment or invoice,
-                feel free to contact our support team.
-            </p>
-
-            <!-- BUTTON -->
-            <table cellpadding="0" cellspacing="0" border="0"
-                   style="margin:30px 0;">
-
+            <p style="margin:0 0 25px 0;color:#4b5563;font-size:14px;line-height:26px;">If you have any questions regarding this payment or invoice, feel free to contact our support team.</p>
+            <table cellpadding="0" cellspacing="0" border="0" style="margin:30px 0;">
                 <tr>
-                    <td align="center"
-                        style="
-                            border-radius:8px;
-                            background:#430080;
-                        ">
-
-                        <a href="https://aryuacademy.com/"
-                           target="_blank"
-                           style="
-                                display:inline-block;
-                                padding:14px 28px;
-                                color:#ffffff;
-                                font-size:14px;
-                                font-weight:600;
-                                text-decoration:none;
-                           ">
-                            Visit Our Website
-                        </a>
-
+                    <td align="center" style="border-radius:8px;background:#430080;">
+                        <a href="https://aryuacademy.com/" target="_blank" style="display:inline-block;padding:14px 28px;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;">Visit Our Website</a>
                     </td>
                 </tr>
-
             </table>
-
-            <!-- FOOTER -->
-            <hr style="
-                border:none;
-                border-top:1px solid #e5e7eb;
-                margin:35px 0 25px 0;
-            ">
-
-            <p style="
-                margin:0 0 15px 0;
-                color:#6b7280;
-                font-size:13px;
-                line-height:24px;
-            ">
-                This email and its attachments are confidential and intended
-                solely for the recipient.
-            </p>
-
-            <!-- SOCIAL LINKS -->
+            <hr style="border:none;border-top:1px solid #e5e7eb;margin:35px 0 25px 0;">
+            <p style="margin:0 0 15px 0;color:#6b7280;font-size:13px;line-height:24px;">This email and its attachments are confidential and intended solely for the recipient.</p>
             <table width="100%" cellpadding="0" cellspacing="0">
-
                 <tr>
                     <td align="center">
-
-                        <a href="https://aryuacademy.com/"
-                           style="
-                                color:#430080;
-                                text-decoration:none;
-                                font-size:13px;
-                                margin:0 8px;
-                                font-weight:600;
-                           ">
-                           Website
-                        </a>
-
+                        <a href="https://aryuacademy.com/" style="color:#430080;text-decoration:none;font-size:13px;margin:0 8px;font-weight:600;">Website</a>
                         <span style="color:#c4b5fd;">|</span>
-
-                        <a href="https://www.instagram.com/aryuacademyofficial/"
-                           style="
-                                color:#430080;
-                                text-decoration:none;
-                                font-size:13px;
-                                margin:0 8px;
-                                font-weight:600;
-                           ">
-                           Instagram
-                        </a>
-
+                        <a href="https://www.instagram.com/aryuacademyofficial/" style="color:#430080;text-decoration:none;font-size:13px;margin:0 8px;font-weight:600;">Instagram</a>
                         <span style="color:#c4b5fd;">|</span>
-
-                        <a href="https://www.facebook.com/aryuacademyofficial/"
-                           style="
-                                color:#430080;
-                                text-decoration:none;
-                                font-size:13px;
-                                margin:0 8px;
-                                font-weight:600;
-                           ">
-                           Facebook
-                        </a>
-
+                        <a href="https://www.facebook.com/aryuacademyofficial/" style="color:#430080;text-decoration:none;font-size:13px;margin:0 8px;font-weight:600;">Facebook</a>
                         <span style="color:#c4b5fd;">|</span>
-
-                        <a href="https://www.linkedin.com/company/aryuacademyofficial"
-                           style="
-                                color:#430080;
-                                text-decoration:none;
-                                font-size:13px;
-                                margin:0 8px;
-                                font-weight:600;
-                           ">
-                           LinkedIn
-                        </a>
-
+                        <a href="https://www.linkedin.com/company/aryuacademyofficial" style="color:#430080;text-decoration:none;font-size:13px;margin:0 8px;font-weight:600;">LinkedIn</a>
                     </td>
                 </tr>
-
             </table>
-
-            <p style="
-                margin:25px 0 0 0;
-                text-align:center;
-                color:#9ca3af;
-                font-size:12px;
-                line-height:22px;
-            ">
-                © 2026 Aryu Academy. All rights reserved.
-            </p>
-
+            <p style="margin:25px 0 0 0;text-align:center;color:#9ca3af;font-size:12px;line-height:22px;">© 2026 Aryu Academy. All rights reserved.</p>
         </td>
     </tr>
-
 </table>
-
 </td>
 </tr>
-
 </table>
-
 </body>
 </html>
 """
-
-        # =====================================================
-        # SEND EMAIL
-        # =====================================================
 
         email = EmailMessage(
             subject=subject,
@@ -1406,34 +884,21 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             to=[recipient_email]
         )
         email.content_subtype = "html"
-        # ATTACH PDF
-        email.attach_file(
-            transaction.invoice.path
-        )
-        logger.warning(
-            f"EMAIL TRIGGERED FOR: {recipient_email}"
-        )
-        email.send(
-            fail_silently=False
-        )
+        email.attach_file(transaction.invoice.path)
+        logger.warning(f"EMAIL TRIGGERED FOR: {recipient_email}")
+        email.send(fail_silently=False)
 
-        return Response(
-            {
-                "success": True,
-                "message":
-                "Invoice email sent successfully",
+        return Response({
+            "success": True,
+            "message": "Invoice email sent successfully",
+            "data": {
+                "invoice_no": transaction.invoice_no,
+                "sent_to": recipient_email
+            }
+        }, status=200)
 
-                "data": {
-                    "invoice_no":
-                        transaction.invoice_no,
 
-                    "sent_to":
-                        recipient_email
-                }
-            },
-            status=200
-        )
-
+        
 class TutorPaymentViewSet(viewsets.ModelViewSet):
     queryset = TutorPayment.objects.all().select_related('tutor', 'course', 'batch')
 
@@ -2313,4 +1778,17 @@ def stripe_success(request):
 @api_view(['GET'])
 def stripe_cancel(request):
     return Response({"success": False, "message": "Payment canceled!"})
+
+
+class PaymentStudentDropdownView(generics.ListAPIView):
+    """
+    Dropdown API for Payment Report Student Search.
+    Queries and returns ALL active, non-archived students from the primary Student model table.
+    """
+    serializer_class = StudentMinimalSerializer
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+
+    def get_queryset(self):
+        return Student.objects.filter(status=True, is_archived=False).order_by('first_name')
 

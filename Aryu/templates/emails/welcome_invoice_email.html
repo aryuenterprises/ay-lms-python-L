@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Registration Confirmed & Invoice</title>
+    <style>
+        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f6f9; margin: 0; padding: 0; color: #333333; }
+        .container { max-width: 600px; margin: 40px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.08); }
+        .header { background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: #ffffff; padding: 30px; text-align: center; }
+        .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
+        .content { padding: 30px; line-height: 1.6; }
+        .credentials-box { background: #eef2f7; border-left: 4px solid #2a5298; padding: 20px; border-radius: 4px; margin: 20px 0; }
+        .credentials-box p { margin: 8px 0; font-size: 15px; }
+        .btn { display: inline-block; padding: 12px 28px; background-color: #2a5298; color: #ffffff !important; text-decoration: none; border-radius: 4px; font-weight: bold; margin-top: 15px; }
+        .footer { background: #f4f6f9; padding: 20px; text-align: center; font-size: 12px; color: #777777; border-top: 1px solid #eeeeee; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Registration Confirmed & Invoice</h1>
+        </div>
+        <div class="content">
+            <p>Dear <strong>{{ student_name }}</strong>,</p>
+            <p>Thank you for completing your payment for <strong>{{ bootcamp_title }}</strong>! Your registration is now fully confirmed.</p>
+            
+            <div class="credentials-box">
+                <h3 style="margin-top: 0; color: #1e3c72;">Your Account Login Credentials</h3>
+                <p><strong>Portal URL:</strong> <a href="{{ login_url }}">{{ login_url }}</a></p>
+                <p><strong>Username / Email:</strong> {{ username }} ({{ email }})</p>
+                <p><strong>Temporary Password:</strong> <code style="background: #ffffff; padding: 2px 6px; border-radius: 3px; font-weight: bold;">{{ password }}</code></p>
+                <p><em>Amount Paid: ₹{{ amount }}</em></p>
+            </div>
+
+            <p style="text-align: center;">
+                <a href="{{ login_url }}" class="btn">Log In to Your Account</a>
+            </p>
+
+            <p>If you have any questions or need assistance, please contact our support team at <a href="mailto:support@aryuacademy.com">support@aryuacademy.com</a>.</p>
+        </div>
+        <div class="footer">
+            <p>&copy; 2026 Aryu Academy. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

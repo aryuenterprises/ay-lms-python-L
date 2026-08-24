@@ -39,7 +39,12 @@ urlpatterns = [
     path("razorpay/webhook/", razorpay_webhook, name="ebook-razorpay-webhook"),
     
     #Reviews
-    path('reviews', ReviewListCreateView.as_view(), name='review-list-create'),
-    path('reviews/<int:pk>/', ReviewDetailView.as_view(), name='review-detail'),
-    path('reviews/<slug:slug>/', EbookReviewBySlugView.as_view(), name='ebook-reviews-by-slug'),
+    path('reviews/', ReviewListCreateView.as_view(), name='review-list-create'),
+
+    # Route 2: Handles POST creation & GET reviews for specific ebook slug
+    path('reviews/<slug:slug>/', ReviewListCreateView.as_view(), name='review-list-create-slug'),
+
+    # Route 3: Handles GET, PUT, DELETE for specific review ID
+    path('reviews/detail/<int:pk>/', ReviewDetailView.as_view(), name='review-detail'),
+
 ]

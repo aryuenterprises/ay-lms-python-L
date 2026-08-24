@@ -815,3 +815,24 @@ class PayPalPaymentSerializer(serializers.ModelSerializer):
     cancel_url = serializers.URLField()
 
 
+class StudentMinimalSerializer(serializers.ModelSerializer):
+    student_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Student
+        fields = [
+            "student_id",
+            "registration_id",
+            "first_name",
+            "last_name",
+            "student_name",
+            "email",
+            "contact_no",
+            "status",
+            "is_archived",
+        ]
+
+    def get_student_name(self, obj):
+        return f"{obj.first_name} {getattr(obj, 'last_name', '') or ''}".strip()
+
+

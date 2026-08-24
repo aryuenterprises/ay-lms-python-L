@@ -267,3 +267,26 @@ class PaymentEMIInstallment(models.Model):
 
     def __str__(self):
         return f"Installment for {self.emi_plan.student.student_id} - {self.amount}"
+
+
+class PaymentReport(models.Model):
+    transaction_id = models.CharField(max_length=255, unique=True, db_index=True)
+    student = models.ForeignKey("aryuapp.Student", on_delete=models.CASCADE, related_name="payment_reports", null=True, blank=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    payment_status = models.CharField(max_length=50, default="COMPLETED")
+    payment_method = models.CharField(max_length=50, default="GATEWAY")
+    bootcamp = models.ForeignKey("webinar.Webinar", on_delete=models.SET_NULL, null=True, blank=True, related_name="payment_reports")
+    course = models.ForeignKey("courses.Course", on_delete=models.SET_NULL, null=True, blank=True, related_name="payment_reports")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'aryuapp_paymentreport'
+        indexes = [
+            models.Index(fields=["transaction_id"]),
+            models.Index(fields=["student"]),
+            models.Index(fields=["payment_status"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        return f"PaymentReport {self.transaction_id} - {self.student} ({self.amount})"

@@ -3919,8 +3919,8 @@ class StudentRegistration(viewsets.ModelViewSet):
 class StudentListAPIView(APIView):
     """
     Production-grade Student Listing API.
-    Maintains exact original response payload (students, courses, categories, companies)
-    while securely handling public/campaign registrants and avoiding ORM lookup crashes.
+    Maintains exact original response payload while handling public, campaign, 
+    and bootcamp registrants along with automated course/payment synchronization.
     """
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
@@ -3965,9 +3965,9 @@ class StudentListAPIView(APIView):
             # -----------------------------------------------------------------
             students_qs = Student.objects.filter(is_archived=False, status=True)
 
-            # Role Filter Logic (Inclusively allowing PUBLIC and CAMPAIGN signups)
+            # Role Filter Logic (Inclusively allowing PUBLIC, CAMPAIGN, BOOTCAMP signups)
             if user_type == "super_admin":
-                query_filter = Q(created_by_type="public") | Q(converter="campaign") | Q(source_type="webinar")
+                query_filter = Q(created_by_type="public") | Q(converter="campaign") | Q(source_type__in=["webinar", "bootcamp"])
                 if creator_id:
                     query_filter |= Q(created_by=creator_id, created_by_type="super_admin")
                 if admin_ids:
@@ -3976,7 +3976,7 @@ class StudentListAPIView(APIView):
                 students_qs = students_qs.filter(query_filter)
 
             elif user_type in ("admin", "tutor", "trainer"):
-                query_filter = Q(created_by_type="public") | Q(converter="campaign") | Q(source_type="webinar")
+                query_filter = Q(created_by_type="public") | Q(converter="campaign") | Q(source_type__in=["webinar", "bootcamp"])
                 if creator_id:
                     query_filter |= Q(created_by=creator_id, created_by_type="admin")
                 if super_admin_id:
@@ -4033,7 +4033,6 @@ class StudentListAPIView(APIView):
                 )
             ]
 
-            # Safely check if StudentCourse reverse relationship exists on Student
             if hasattr(Student, "studentcourse_set"):
                 prefetch_lookups.append(
                     Prefetch(
@@ -4043,7 +4042,6 @@ class StudentListAPIView(APIView):
                     )
                 )
 
-            # Safely check if courses ManyToMany relation exists on Student
             if hasattr(Student, "courses"):
                 prefetch_lookups.append(
                     Prefetch(
@@ -4053,7 +4051,6 @@ class StudentListAPIView(APIView):
                     )
                 )
 
-            # Dynamically check if new_batches attribute exists on Student model
             if hasattr(Student, "new_batches"):
                 prefetch_lookups.append(
                     Prefetch(
@@ -4112,7 +4109,7 @@ class StudentListAPIView(APIView):
                     category_id_list.append(getattr(category, "category_id", None) if category else None)
                     category_name_list.append(getattr(category, "category_name", None) if category else None)
 
-                # B. Collect from Direct Courses ManyToMany (if defined on model)
+                # B. Collect from Direct Courses ManyToMany
                 for direct_course in getattr(s, "prefetched_direct_courses", []):
                     category = getattr(direct_course, "course_category", None)
                     course_id_list.append(getattr(direct_course, "course_id", None))
@@ -4234,7 +4231,6 @@ class StudentListAPIView(APIView):
                 )
             )
 
-            # Extract active course IDs and fetch associated active batches
             course_ids = [c["course_id"] for c in courses if c.get("course_id")]
 
             batches = list(
@@ -4277,6 +4273,8 @@ class StudentListAPIView(APIView):
                 "success": False,
                 "message": f"Failed to fetch student list: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 
 class StudentTicketViewSet(APIView):
     permission_classes = [IsAuthenticated]

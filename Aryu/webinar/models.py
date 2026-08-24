@@ -45,6 +45,7 @@ class Webinar(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     is_deleted = models.BooleanField(default=False)
     type = models.BooleanField(default = True)
+    course = models.ForeignKey("courses.Course", on_delete=models.SET_NULL, null=True, blank=True, related_name="webinars")
     
     def get_image_url(self):
         if self.webinar_image:

@@ -250,7 +250,7 @@ class WebinarToolSerializer(serializers.ModelSerializer):
 
     def get_image_url(self, obj):
         if obj.tools_image:
-            return f"{settings.MEDIA_BASE_URL}{obj.tools_image.url}"
+            return f"https://portal.aryuacademy.com/api{obj.tools_image.url}"
         return None
     
 class WebinarMetadataSerializer(serializers.ModelSerializer):
@@ -266,7 +266,7 @@ class WebinarMetadataSerializer(serializers.ModelSerializer):
         if hasattr(obj, 'image') and obj.image and hasattr(obj.image, 'url'):
             return 'https://aylms.aryuprojects.com/api' + obj.image.url
         return None
-        
+
 class WebinarFAQSerializer(serializers.ModelSerializer):
     class Meta:
         model = Webinar_FAQ

@@ -32,7 +32,7 @@ from payments.services.razorpay_service import (
     process_razorpay_webhook_event,
     verify_razorpay_signature,
 )
-
+from rest_framework.authentication import SessionAuthentication
 from .ebook_emails import send_ebook_registration_email
 from .models import *
 from .serializers import *
@@ -968,25 +968,33 @@ class EbookUserViewSet(viewsets.ViewSet):
 # ─────────────────────────────────────────────────────────────────────────────
 # 8. Reviews Views
 # ─────────────────────────────────────────────────────────────────────────────
+# @method_decorator(csrf_exempt, name='dispatch')
+class UnsafeSessionAuthentication(SessionAuthentication):
+    def enforce_csrf(self, request):
+        return  # Bypasses CSRF validation for API requests
+
+
+@method_decorator(csrf_exempt, name='dispatch')
 class ReviewListCreateView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
     parser_classes = [MultiPartParser, JSONParser]
 
-    def get(self, request):
-        slug = request.query_params.get("slug", None)
+    def get(self, request, slug=None):
+        slug_param = slug or request.query_params.get("slug", None)
         reviews = Reviews.objects.filter(is_approved=True)
 
-        if slug:
-            reviews = reviews.filter(registration__ebook__slug=slug)
+        if slug_param:
+            reviews = reviews.filter(registration__ebook__slug=slug_param)
 
         serializer = ReviewSerializer(reviews, many=True)
         return Response({
             "status": True,
+            "reviews_count": reviews.count(),
             "data": serializer.data
-        })
+        }, status=status.HTTP_200_OK)
 
-    def post(self, request):
+    def post(self, request, slug=None):
         serializer = ReviewSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
@@ -1002,6 +1010,7 @@ class ReviewListCreateView(APIView):
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ReviewDetailView(APIView):
     authentication_classes = [CustomJWTAuthentication]
     permission_classes = [IsAuthenticated]
@@ -1015,44 +1024,50 @@ class ReviewDetailView(APIView):
     def get(self, request, pk):
         review = self.get_object(pk)
         if not review:
-            return Response({"status": False, "message": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({
+                "status": False, 
+                "message": "Review not found"
+            }, status=status.HTTP_404_NOT_FOUND)
 
         serializer = ReviewSerializer(review)
-        return Response({"status": True, "data": serializer.data})
+        return Response({
+            "status": True, 
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
 
     def put(self, request, pk):
         review = self.get_object(pk)
         if not review:
-            return Response({"status": False, "message": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({
+                "status": False, 
+                "message": "Review not found"
+            }, status=status.HTTP_404_NOT_FOUND)
 
         serializer = ReviewSerializer(review, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
-            return Response({"status": True, "data": serializer.data})
+            return Response({
+                "status": True, 
+                "data": serializer.data
+            }, status=status.HTTP_200_OK)
 
-        return Response({"status": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            "status": False, 
+            "errors": serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, pk):
         review = self.get_object(pk)
         if not review:
-            return Response({"status": False, "message": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({
+                "status": False, 
+                "message": "Review not found"
+            }, status=status.HTTP_404_NOT_FOUND)
 
         review.delete()
-        return Response({"status": True, "message": "Deleted successfully"})
-
-
-class EbookReviewBySlugView(APIView):
-    authentication_classes = []
-    permission_classes = [AllowAny]
-
-    def get(self, request, slug):
-        ebook = get_object_or_404(Ebook, slug=slug)
-        reviews = Reviews.objects.filter(registration__ebook=ebook).order_by('-created_at')
-        serializer = ReviewSerializer(reviews, many=True)
-
         return Response({
-            "status": True,
-            "ebook": ebook.title,
-            "reviews_count": reviews.count(),
-            "data": serializer.data
-        })
+            "status": True, 
+            "message": "Review deleted successfully"
+        }, status=status.HTTP_200_OK)
+
+        
