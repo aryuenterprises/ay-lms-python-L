@@ -87,15 +87,6 @@ pipeline {
             }
         }
 
-        stage("Migrate DB") {
-            steps {
-                sh '''
-                    "${VENV_PY}" \
-                        "${PROJECT_DIR}/manage.py" migrate --noinput
-                '''
-            }
-        }
-
         stage("Collect Static") {
             steps {
                 sh '''
