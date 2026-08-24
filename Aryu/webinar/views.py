@@ -14,6 +14,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .services.whatsapp import send_webinar_reminder, send_webinar_welcome_whatsapp, send_webinar_joining_whatsapp
 from payments.models import PaymentGateway, PaymentTransaction
 from aryuapp.models import Certificate
+from django.conf import settings
 import razorpay
 from rest_framework.viewsets import ReadOnlyModelViewSet
 from rest_framework.throttling import AnonRateThrottle
@@ -391,7 +392,7 @@ class WebinarViewSet(
             is_deleted=False,
             type=True
         )
-        MEDIA_PREFIX = "https://aylms.aryuprojects.com/api/media/"
+        MEDIA_PREFIX = f"{settings.MEDIA_BASE_URL}/media/"
         registrations = (
             WebinarRegistration.objects
             .filter(webinar_id=webinar.id)
@@ -964,7 +965,7 @@ class BootcampViewSet(
             is_deleted=False,
             type=False
         )
-        MEDIA_PREFIX = "https://aylms.aryuprojects.com/api/media/"
+        MEDIA_PREFIX = f"{settings.MEDIA_BASE_URL}/media/"
         registrations = (
             WebinarRegistration.objects
             .filter(webinar_id=webinar.id)

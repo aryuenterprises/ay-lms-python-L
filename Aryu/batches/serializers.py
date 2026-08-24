@@ -6,8 +6,8 @@ import calendar
 from collections import defaultdict
 import holidays
 from aryuapp.models import TrainerAttendance, Trainer, Student
-# from aryuapp.serializer import TrainerPreviewSerializer
 from rest_framework.response import Response
+from django.conf import settings
 
 
 
@@ -787,4 +787,4 @@ class BatchRecordingSerializer(serializers.ModelSerializer):
 
     def get_url(self, obj):
         if obj.url:
-            return f"https://aylms.aryuprojects.com/api{obj.url.url}"
+            return f"{settings.MEDIA_BASE_URL}{obj.url.url}"

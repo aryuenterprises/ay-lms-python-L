@@ -16,6 +16,7 @@ from aryuapp.models import Employer
 import uuid
 from collections import defaultdict
 from aryuapp.models import Trainer
+from django.conf import settings
 class PaymentGatewaySerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentGateway
@@ -81,7 +82,7 @@ class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
 
         if obj.invoice and hasattr(obj.invoice, "url"):
             return (
-                "https://aylms.aryuprojects.com/api"
+                settings.MEDIA_BASE_URL
                 + obj.invoice.url
             )
 
@@ -298,7 +299,7 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
 
         if obj.invoice and hasattr(obj.invoice, "url"):
             return (
-                "https://aylms.aryuprojects.com/api"
+                settings.MEDIA_BASE_URL
                 + obj.invoice.url
             )
 

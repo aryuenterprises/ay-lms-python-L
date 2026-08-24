@@ -104,7 +104,7 @@ class Command(BaseCommand):
     ">
 
 <img
-    src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
+    src="{settings.MEDIA_BASE_URL}/media/logos/passats.png"
     alt="Pass ATS"
     style="
       width: 200px;

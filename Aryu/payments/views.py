@@ -23,6 +23,7 @@ from django.db.models.functions import Coalesce
 from payments.services.invoice_service import (
     InvoiceService
 )
+from django.conf import settings
 from decimal import Decimal, InvalidOperation
 from aryuapp.utils import *
 from aryuapp.mixins import *
@@ -792,7 +793,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
             <!-- LOGO -->
             <img
-                src="https://aylms.aryuprojects.com/api/media/logos/email_logo.png"
+                src="{settings.MEDIA_BASE_URL}/media/logos/email_logo.png"
                 alt="Aryu Academy Private Limited"
                 style="
                     width:320px;

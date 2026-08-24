@@ -13,6 +13,7 @@ from courses.models import Course
 from django.core.cache import cache
 from django.db.models.functions import TruncMonth
 from django.utils import timezone
+from django.conf import settings
 from rest_framework.decorators import action
 import csv
 import io
@@ -371,7 +372,7 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
                     "call_type": log.call_type,
                     "duration_seconds": log.duration_seconds,
                     "recording": (
-                        "https://aylms.aryuprojects.com/api" + log.recording_url.url
+                        settings.MEDIA_BASE_URL + log.recording_url.url
                         if log.recording_url and hasattr(log.recording_url, "url")
                         else None
                     ),

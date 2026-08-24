@@ -49,7 +49,7 @@ class Webinar(models.Model):
     
     def get_image_url(self):
         if self.webinar_image:
-            return f"https://aylms.aryuprojects.com/api{self.webinar_image.url}"
+            return f"{settings.MEDIA_BASE_URL}{self.webinar_image.url}"
         return None
 
     def __str__(self):

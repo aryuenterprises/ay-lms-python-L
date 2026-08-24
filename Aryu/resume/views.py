@@ -225,7 +225,7 @@ class AuthViewSet(viewsets.ViewSet):
                     padding: 45px 5px;
                     ">
                     <img
-                    src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
+                    src="{settings.MEDIA_BASE_URL}/media/logos/passats.png"
                     alt="Pass ATS"
                     style="
                         width: 200px;
@@ -575,7 +575,7 @@ class AuthViewSet(viewsets.ViewSet):
                   padding: 45px 5px;
                 ">
                 <img
-                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
+                  src="{settings.MEDIA_BASE_URL}/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -1296,7 +1296,7 @@ class AuthViewSet(viewsets.ViewSet):
                 ">
 
                 <img
-                  src="https://aylms.aryuprojects.com/api/media/logos/passats.png"
+                  src="{settings.MEDIA_BASE_URL}/media/logos/passats.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;

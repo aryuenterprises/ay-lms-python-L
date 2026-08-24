@@ -4148,7 +4148,7 @@ class StudentListAPIView(APIView):
                 profile_pic_url = None
                 if getattr(s, "profile_pic", None):
                     try:
-                        profile_pic_url = f"https://aylms.aryuprojects.com/api{s.profile_pic.url}"
+                        profile_pic_url = f"{settings.MEDIA_BASE_URL}{s.profile_pic.url}"
                     except Exception:
                         profile_pic_url = None
 
@@ -5854,7 +5854,7 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
                 status=404
             )
 
-        MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api/media/"
+        MEDIA_BASE_URL = f"{settings.MEDIA_BASE_URL}/media/"
 
         # ----------------------------------
         # 1. STUDENT-SPECIFIC BATCHES
@@ -7733,7 +7733,7 @@ class TutorSignupView(APIView):
             "errors": serializer.errors
         }, status=400)
         
-BASE_MEDIA_URL = "https://aylms.aryuprojects.com/api/media/"
+BASE_MEDIA_URL = f"{settings.MEDIA_BASE_URL}/media/"
 
 class TrainerListAPIView(LoggingMixin, NotesMixin, APIView):
 
