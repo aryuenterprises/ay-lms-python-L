@@ -236,6 +236,10 @@ class FormViewset(
 
             form = serializer.save()
 
+            download_url = request.build_absolute_uri(resource.file.url)
+            if "/media/" in download_url and "/api/media/" not in download_url:
+                download_url = download_url.replace("/media/", "/api/media/")
+
             return Response(
                 {
                     "status": True,
@@ -244,9 +248,7 @@ class FormViewset(
                         "Form submitted successfully",
 
                     "download_url":
-                        request.build_absolute_uri(
-                            resource.file.url
-                        ),
+                        download_url,
 
                     "data":
                         FormSerializer(form).data
