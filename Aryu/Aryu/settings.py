@@ -345,7 +345,7 @@ SOCIALACCOUNT_PROVIDERS = {
 
 FASTAPI_URL="https://ai.aryuacademy.com"
 
-TELECRM_TOKEN="2b5fa0b5-b45c-4150-ab6f-09a001575ca01779800797507:0d16d31d-e820-45fa-aafc-869ef640917d"
+TELECRM_TOKEN="9f35bc20-8932-44f2-95ea-9918a63a9e8e1787650302139:a5302d6e-11f7-4a0b-8167-ffc206b19c63"
 TELECRM_ID="6a13da730fbcb752673e080c"
 TELECRM_API = "https://next-api.telecrm.in"
 
@@ -388,6 +388,12 @@ LOGGING = {
             "filename": SERVER_ROOT / "logs" / "whatsapp.log",
             "formatter": "verbose",
         },
+        "telecrm_file": {
+            "level": "DEBUG",
+            "class": "logging.FileHandler",
+            "filename": SERVER_ROOT / "logs" / "telecrm.log",
+            "formatter": "verbose",
+        },
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "simple",
@@ -411,6 +417,12 @@ LOGGING = {
         "whatsapp": {
             "handlers": ["whatsapp_file", "console"],  # Logs to file AND terminal
             "level": "DEBUG",                          # Ensures logger.debug() writes to the file
+            "propagate": False,
+        },
+
+        "telecrm": {
+            "handlers": ["telecrm_file", "console"],  # Logs to file AND terminal
+            "level": "DEBUG",
             "propagate": False,
         },
 

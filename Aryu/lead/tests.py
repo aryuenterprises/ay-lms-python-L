@@ -59,7 +59,7 @@ class TeleCRMPayloadAndServiceTestCase(TestCase):
     def test_build_telecrm_payload_from_lead_model(self):
         payload = build_telecrm_payload(
             self.lead,
-            action_type="ACTION_1002",
+            action_type="ACTION_1001",
             action_note="Test Lead Note",
         )
         fields = payload.get("fields", {})
@@ -76,7 +76,7 @@ class TeleCRMPayloadAndServiceTestCase(TestCase):
 
         actions = payload.get("actions", [])
         self.assertEqual(len(actions), 1)
-        self.assertEqual(actions[0]["type"], "ACTION_1002")
+        self.assertEqual(actions[0]["type"], "ACTION_1001")
         self.assertEqual(actions[0]["fields"]["note"], "Test Lead Note")
 
     def test_build_telecrm_payload_from_dict(self):
