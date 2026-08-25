@@ -487,7 +487,6 @@ CSRF_TRUSTED_ORIGINS = [
     "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
     "https://portal.aryuacademy.com",
-
 ]
 
 ALLOWED_HOSTS = [
@@ -750,6 +749,9 @@ AUTH_PASSWORD_VALIDATORS = [
 LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'Asia/Kolkata'
+
+FRONTEND_URL = 'https://lms.aryuprojects.com'
+SITE_URL = FRONTEND_URL
 
 USE_I18N = True
 

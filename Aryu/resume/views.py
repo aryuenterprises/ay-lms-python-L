@@ -173,7 +173,8 @@ class AuthViewSet(viewsets.ViewSet):
             )
 
             token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
-            verification_link = f"https://portal.aryuacademy.com/api/resume/auth/verify-email/?token={token}"
+            frontend_url = getattr(settings, 'FRONTEND_URL', 'https://lms.aryuprojects.com')
+            verification_link = f"{frontend_url}/api/resume/auth/verify-email/?token={token}"
 
             html_message = f"""
     <!DOCTYPE html>
@@ -516,8 +517,9 @@ class AuthViewSet(viewsets.ViewSet):
             salt=SIGNING_SALT
         )
 
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'https://lms.aryuprojects.com')
         verification_link = (
-            "https://portal.aryuacademy.com"
+            "https://aylms.aryuprojects.com"
             f"/api/resume/auth/verify-email/?token={token}"
         )
 
@@ -1969,7 +1971,7 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
                 )
 
             expected_hostnames = [
-                "portal.aryuacademy.com",
+                "aylms.aryuprojects.com",
                 "localhost",
                 "yourdomain.com"
             ]
