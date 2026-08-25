@@ -35,15 +35,19 @@
     }
     .no-border td {
         border: none;
-        padding: 1.5px 3px;
+        padding: 1px 3px;
     }
     .b-bottom { border-bottom: 1px solid #000000; }
     .b-right { border-right: 1px solid #000000; }
     .b-top { border-top: 1px solid #000000; }
-    .b-left { border-left: 1px solid #000000; }
     .bold { font-weight: bold; }
     .text-center { text-align: center; }
     .text-right { text-align: right; }
+    .brand-box {
+        font-size: 13px;
+        font-weight: bold;
+        color: #6B21A8;
+    }
 </style>
 </head>
 <body>
@@ -54,10 +58,19 @@
     <table>
         <tr>
             <td width="55%" class="b-bottom b-right" style="padding: 6px;" valign="top">
-                <div style="font-size: 11px; font-weight: bold; color: #6B21A8; margin-bottom: 3px;">
-                    &#9745; ARYU Academy Private Limited
-                </div>
-                <div>
+                <table class="no-border">
+                    <tr>
+                        <td width="26" valign="middle">
+                            <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAGXRFWHRTb2Z0d2FyZQB3d3cuaW5rc2NhcGUub3Jnm+48GgAABExJREFUeNrtm1uoTV8Uxz8z5yZ3vE0eLpIL5T3E1YtQEl7kHh4oyYMieXB4IA8UykOEvCgPQl4k4kFeXEhJ8pDkIknmzn28zZ3J/G3m//7OOcd+z9p77/NfVf3W3mefffa817/2Ouv6r28Vq1evrq2qqiq4gGvgPnAYuA28A87h2o57HjgPnAFmAZOBy0C157F3A5XATWAx8Azo31q+eA68AY4B64BLwEpgKzAI2Af8BCb0AOA28ACYAeT7IeA5sBRYCWwDvgFDeQCwC1jS1wIqgWfALGA18NkDgGpgN1DfgwW8BiYD7YB2wP/bQAVwaR8F7AeO9wP/L4H/zYALwJ5eCjgAfO4H/jcDHs83ARnAgF4IaAeu9AP/m4FLwOSeCjgHvOsl/kbgK+AVsK+HABh3XvUS/yPgc78wUAI86UX+R8BHoLgfGPgBPNtL/LeAT/3CQAq404v8twDf+oWBn8DNXuT/H/B0v7AQAj4D9T0EuA887yf+G8Bf/cJCEfgJ/OhBALwL/t3P/L8Bdf3GQhD4jbtP/g+47+1LwBHgJ/AcGAgM6sO413B39xHgb278L00p9UeAj4G1PZzvR8Dqvgq/BHgP/N4D2S4CG/sy7j8BN4B7gL+f7N8Bv/uF/x/AfuBCb2S7CPzsq/A/Ag8AN4BnvZDtPvCt3/gfAm8BN4D3vZDte+BVv/GvAXcBN4GnvZDtB+B1v/HXAJ8BN4AHvZDte+Blv/HXB4BPwANgcy9k2w486zf+W8A7wA1gXy9k2w487Tf+S8A7wFXgUS9kewJ41m/8ZcBzwBVgXy9k2w487Tf+48DrXuR/AfgEfO2n8CsBP4FvgIHA7x7IdgP40m/8JcBdwHXgQS9kewJ41m/8ZcBzwBVgfS9kewFY3W/8ZcBzwBVgeS9kWw487zf+csAN4HsvkL8fvOk3/sPAzV4gfwd40+/8z4HPAQ3qBf41wH+A10D/fgnwAegH9AMGAP1x57/n7v886H4Q8BfXD9c/2eG44bhh2+4+5g3G/f5m4543+vT/B23i3UfgPvA1cAvY2wf5HwFeAk8An/e19kOAB4A/4P7/r8At3PH8f26/APgA3McdP/0F4Cq6+z/0Q4A33L363Y7vV7h+tD6/n87+77gP6C76k8D1w4CtwNte8D8BPAOuAc96kP8r4DvgB7q2/7n9c+B99yZ/919wH4D9B+wD7gO3gR/dRP8G8Ab4BHzp+P4a14+2W4/jbuV4H/s07v72+3E3PdyNu+9u4e59f23v4B5N6w9cBzbgtj7fAJeBm7h9/5vdfbB7G+p/E/8jYCVu+7KzE+4Cbh9wGrgDXMUtgS8C53DL4EvAKeA8brv+FXATN7z0LdC02fQ/8009yW6WkLwAAAAASUVORK5CYII=" class="logo-img" />
+                        </td>
+                        <td valign="middle">
+                            <span style="font-size: 11px; font-weight: bold; color: #6B21A8;">
+                                ARYU Academy Private Limited
+                            </span>
+                        </td>
+                    </tr>
+                </table>
+                <div style="margin-top: 3px; font-size: 8.5px;">
                     No 33/14, Ground floor, Jayammal St,<br/>
                     Ayyavoo Colony, Aminjikarai,<br/>
                     Chennai, Tamil Nadu 600029<br/>
@@ -173,7 +186,6 @@
     <!-- Bottom Section with Ledger Note Table & Bank Details -->
     <table>
         <tr>
-            <!-- Left: Bank Details -->
             <td width="50%" class="b-right" style="padding: 4px;" valign="top">
                 <div class="bold" style="text-decoration: underline; margin-bottom: 2px;">Company's Bank Details</div>
                 <table class="no-border" style="font-size: 8px;">
@@ -185,7 +197,6 @@
                 </table>
             </td>
             
-            <!-- Right: Note / History Ledger Table -->
             <td width="50%" style="padding: 4px;" valign="top">
                 <div class="bold" style="text-decoration: underline; margin-bottom: 2px;">Note</div>
                 <table class="bordered" style="font-size: 7.5px;">
