@@ -58,16 +58,24 @@ class ResourcesSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if obj.image and hasattr(obj.image, 'url'):
             if request is not None:
-                return request.build_absolute_uri(obj.image.url)
-            return settings.MEDIA_BASE_URL + obj.image.url
+                url = request.build_absolute_uri(obj.image.url)
+            else:
+                url = settings.MEDIA_BASE_URL + obj.image.url
+            if "/media/" in url and "/api/media/" not in url:
+                url = url.replace("/media/", "/api/media/")
+            return url
         return None
 
     def get_file_url(self, obj):
         request = self.context.get('request')
         if obj.file and hasattr(obj.file, 'url'):
             if request is not None:
-                return request.build_absolute_uri(obj.file.url)
-            return settings.MEDIA_BASE_URL + obj.file.url
+                url = request.build_absolute_uri(obj.file.url)
+            else:
+                url = settings.MEDIA_BASE_URL + obj.file.url
+            if "/media/" in url and "/api/media/" not in url:
+                url = url.replace("/media/", "/api/media/")
+            return url
         return None
 
 
