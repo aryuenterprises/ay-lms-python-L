@@ -7340,6 +7340,17 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                 },
                 status=status.HTTP_200_OK,
             )  
+
+    # @action(detail=True, methods=['get'], url_path='courses')
+    def get_permissions(self):
+        """
+        Instantiates and returns the list of permissions that this view requires.
+        """
+        if self.action == 'get_courses_taken':
+            # Only require authentication for this action
+            return [IsAuthenticated()]
+        # Default permissions for other actions
+        return [permission() for permission in self.permission_classes]
     @action(detail=True, methods=['get'], url_path='courses')
     def get_courses_taken(self, request, employee_id=None):
         try:
