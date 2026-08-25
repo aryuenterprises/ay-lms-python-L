@@ -6402,7 +6402,7 @@ def generate_secure_password(length=8):
     return "".join(pwd_list)
 
 
-PORTAL_URL = getattr(settings, "PORTAL_URL", "https://portal.aryuacademy.com/")
+PORTAL_URL = getattr(settings, "PORTAL_URL", "https://aylms.aryuprojects.com/")
 
 def send_student_welcome_email(student, raw_password: str):
     """
@@ -7340,6 +7340,17 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                 },
                 status=status.HTTP_200_OK,
             )  
+
+    # @action(detail=True, methods=['get'], url_path='courses')
+    def get_permissions(self):
+        """
+        Instantiates and returns the list of permissions that this view requires.
+        """
+        if self.action == 'get_courses_taken':
+            # Only require authentication for this action
+            return [IsAuthenticated()]
+        # Default permissions for other actions
+        return [permission() for permission in self.permission_classes]
     @action(detail=True, methods=['get'], url_path='courses')
     def get_courses_taken(self, request, employee_id=None):
         try:
