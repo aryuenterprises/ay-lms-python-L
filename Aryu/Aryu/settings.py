@@ -663,18 +663,18 @@ else:
         },
     }
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'aylms_live',
-        'USER': 'aylms_live',
-        'PASSWORD': 'KfdW543FDdfg',
-        'HOST': '187.127.178.144',
-        'PORT': '5432',
-        'AUTOCOMMIT': True,
-        'CONN_MAX_AGE': 60,
-    },
-}
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': 'aylms_live',
+#         'USER': 'aylms_live',
+#         'PASSWORD': 'KfdW543FDdfg',
+#         'HOST': '187.127.178.144',
+#         'PORT': '5432',
+#         'AUTOCOMMIT': True,
+#         'CONN_MAX_AGE': 60,
+#     },
+# }
 
 # DATABASES = {
 #     'default': {
