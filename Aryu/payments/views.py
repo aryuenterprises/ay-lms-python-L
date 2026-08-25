@@ -297,7 +297,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
             for tx in all_txs:
                 # Lazy-generate missing invoice if status is completed/done
-                if not tx.invoice and str(tx.payment_status).lower() in ["success", "done", "paid", "complete"]:
+                if not tx.invoice and str(tx.payment_status).lower() in ["success", "done", "paid", "complete", "captured"]:
                     try:
                         tx = InvoiceService.generate_invoice(tx.id)
                     except Exception as e:

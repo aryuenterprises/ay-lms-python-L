@@ -102,7 +102,7 @@ class WebinarWebhookTestCase(TransactionTestCase):
         self.assertEqual(response.status_code, 200)
 
         self.txn.refresh_from_db()
-        self.assertEqual(self.txn.payment_status, "done")
+        self.assertEqual(self.txn.payment_status, "captured")
         self.assertEqual((self.txn.metadata or {}).get("razorpay_payment_id"), "pay_webinar_pay_id")
 
         self.registration.refresh_from_db()
@@ -212,9 +212,39 @@ class WebinarRegistrationFlowTestCase(TransactionTestCase):
 
         # 3. Assert PaymentTransaction is found and updated
         txn = PaymentTransaction.objects.get(order_id=order_id)
-        self.assertEqual(txn.payment_status, "done")
+        self.assertEqual(txn.payment_status, "captured")
         self.assertEqual((txn.metadata or {}).get("razorpay_payment_id"), "pay_charlie_payment_777")
 
         # 4. Assert WebinarRegistration becomes paid
         reg = WebinarRegistration.objects.get(phone="9998887776", webinar=self.webinar)
         self.assertTrue(reg.is_paid)
+
+        # 5. Assert Student is created and status is True
+        from aryuapp.models import Student, StudentCourse
+        from courses.models import Course
+        from batches.models import NewBatch
+        from payments.models import PaymentReport
+
+        student = Student.objects.filter(contact_no="9998887776").first()
+        self.assertIsNotNone(student)
+        self.assertTrue(student.status)
+
+        # 6. Assert Course matching Webinar title exists
+        course = Course.objects.filter(course_name=self.webinar.title).first()
+        self.assertIsNotNone(course)
+
+        # 7. Assert StudentCourse is active and paid
+        student_course = StudentCourse.objects.filter(student=student, course=course).first()
+        self.assertIsNotNone(student_course)
+        self.assertTrue(student_course.is_paid)
+        self.assertEqual(student_course.status, "active")
+
+        # 8. Assert student is linked to the NewBatch
+        batch = NewBatch.objects.filter(course=course).first()
+        self.assertIsNotNone(batch)
+        self.assertTrue(batch.students.filter(student_id=student.student_id).exists())
+
+        # 9. Assert PaymentReport is created and COMPLETED
+        payment_report = PaymentReport.objects.filter(transaction_id=str(txn.id)).first()
+        self.assertIsNotNone(payment_report)
+        self.assertEqual(payment_report.payment_status, "COMPLETED")

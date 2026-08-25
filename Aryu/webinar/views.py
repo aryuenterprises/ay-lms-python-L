@@ -104,17 +104,31 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
     def _get_client(self):
         gateway = PaymentGateway.objects.filter(
-            gatway_name__icontains="razorpay"
+            gatway_name__icontains="razorpay",
+            is_archived=False
         ).first()
 
+        if gateway and gateway.public_key and gateway.secret_key:
+            client = razorpay.Client(
+                auth=(gateway.public_key, gateway.secret_key)
+            )
+            return client, gateway
 
-        if not gateway:
-            return None, None
+        key_id = getattr(settings, "RAZORPAY_KEY_ID", None)
+        key_secret = getattr(settings, "RAZORPAY_KEY_SECRET", None)
+        if key_id and key_secret:
+            gateway, _ = PaymentGateway.objects.get_or_create(
+                gatway_name="razorpay",
+                defaults={
+                    "public_key": key_id,
+                    "secret_key": key_secret,
+                    "is_archived": False
+                }
+            )
+            client = razorpay.Client(auth=(key_id, key_secret))
+            return client, gateway
 
-        client = razorpay.Client(
-            auth=(gateway.public_key, gateway.secret_key)
-        )
-        return client, gateway
+        return None, None
 
     @action(detail=False, methods=["post"])
     def create(self, request):
@@ -1410,17 +1424,31 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
 
     def _get_client(self):
         gateway = PaymentGateway.objects.filter(
-            gatway_name__icontains="razorpay"
+            gatway_name__icontains="razorpay",
+            is_archived=False
         ).first()
 
+        if gateway and gateway.public_key and gateway.secret_key:
+            client = razorpay.Client(
+                auth=(gateway.public_key, gateway.secret_key)
+            )
+            return client, gateway
 
-        if not gateway:
-            return None, None
+        key_id = getattr(settings, "RAZORPAY_KEY_ID", None)
+        key_secret = getattr(settings, "RAZORPAY_KEY_SECRET", None)
+        if key_id and key_secret:
+            gateway, _ = PaymentGateway.objects.get_or_create(
+                gatway_name="razorpay",
+                defaults={
+                    "public_key": key_id,
+                    "secret_key": key_secret,
+                    "is_archived": False
+                }
+            )
+            client = razorpay.Client(auth=(key_id, key_secret))
+            return client, gateway
 
-        client = razorpay.Client(
-            auth=(gateway.public_key, gateway.secret_key)
-        )
-        return client, gateway
+        return None, None
 
     # -----------------------------
     # PAYMENT CREATION
@@ -1460,6 +1488,15 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
     # -----------------------------
     @classmethod
     def create_registration_from_transaction(cls, txn):
+        # Local imports to avoid circular dependencies
+        from aryuapp.models import Student, StudentCourse
+        from courses.models import Course
+        from batches.models import NewBatch
+        from payments.models import PaymentReport, PaymentTransaction
+        from aryuapp.services.dashboard.student_registration_service import get_or_create_student_from_bootcamp, is_payment_successful
+        from datetime import date, time, timedelta
+        from django.db import transaction as db_transaction
+
         meta = txn.metadata or {}
         phone = meta.get("phone", "")
         email = meta.get("email", "")
@@ -1467,7 +1504,7 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
         profession = meta.get("profession", "")
         source = meta.get("source", "webinar")
 
-        with transaction.atomic():
+        with db_transaction.atomic():
             webinar = Webinar.objects.get(uuid=meta["webinar_id"])
 
             # 1. Fetch or create WebinarRegistration record
@@ -1483,52 +1520,100 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
                 }
             )
 
-            if not created and not registration.is_paid:
+            if not created:
                 registration.is_paid = True
                 registration.payment_transaction = txn
                 registration.save(update_fields=["is_paid", "payment_transaction"])
 
             # 2. Resolve/Create Student & Course Linking
-            payment_status = getattr(txn, "payment_status", "")
-            if is_payment_successful(payment_status) or source in ["bootcamp", "campaign", "webinar"]:
-                student, student_created = get_or_create_student_from_bootcamp(
-                    name=name,
-                    email=email,
-                    phone=phone,
-                    profession=profession,
-                    extra_data={
-                        "course_name": webinar.title,
-                        "transaction_id": str(txn.id) if txn else None,
-                        "source_type": source,
-                        "converter": "campaign" if source in ["bootcamp", "campaign"] else "webinar"
+            student, student_created = get_or_create_student_from_bootcamp(
+                name=name,
+                email=email,
+                phone=phone,
+                profession=profession,
+                extra_data={
+                    "course_name": webinar.title,
+                    "transaction_id": str(txn.id) if txn else None,
+                    "source_type": source,
+                    "converter": "campaign" if source in ["bootcamp", "campaign"] else "webinar"
+                }
+            )
+
+            if student:
+                if hasattr(registration, "student"):
+                    registration.student = student
+                    registration.save(update_fields=["student"])
+
+                # Link student directly to transaction
+                txn.student = student
+                txn.payment_status = "captured"
+                
+                # Retrieve payment ID
+                razorpay_payment_id = meta.get("razorpay_payment_id")
+                if razorpay_payment_id:
+                    txn.transaction_id = razorpay_payment_id
+                txn.save(update_fields=["student", "payment_status", "transaction_id"])
+
+                # Fetch/Create synchronized Course matching the Webinar title
+                course = getattr(webinar, "course", None)
+                if not course:
+                    course = Course.objects.filter(course_name__iexact=webinar.title, is_archived=False).first()
+                if not course:
+                    course = Course.objects.create(
+                        course_name=webinar.title,
+                        status="Active",
+                        is_archived=False
+                    )
+
+                # Fetch/Create batch
+                batch = NewBatch.objects.filter(course=course, is_archived=False).first()
+                if not batch:
+                    batch = NewBatch.objects.create(
+                        title=f"Batch - {course.course_name[:30]}",
+                        course=course,
+                        start_date=date.today(),
+                        end_date=date.today() + timedelta(days=30),
+                        start_time=time(10, 0),
+                        end_time=time(11, 0),
+                        slots=100,
+                        status=True
+                    )
+                if hasattr(batch, 'students'):
+                    batch.students.add(student)
+
+                # Add to student courses relationship
+                if hasattr(student, 'courses'):
+                    student.courses.add(course)
+                if hasattr(student, 'enrolled_courses'):
+                    student.enrolled_courses.add(course)
+
+                # Enroll the student by creating a StudentCourse record
+                student_course, sc_created = StudentCourse.objects.get_or_create(
+                    student=student,
+                    course=course,
+                    batch=batch,
+                    defaults={
+                        "is_paid": True,
+                        "status": "active"
                     }
                 )
+                if not sc_created:
+                    student_course.is_paid = True
+                    student_course.status = "active"
+                    student_course.save(update_fields=["is_paid", "status"])
 
-                if student:
-                    if hasattr(registration, "student"):
-                        registration.student = student
-                        registration.save(update_fields=["student"])
-
-                    # Sync Student model payment details
-                    if hasattr(student, "payment_transaction"):
-                        student.payment_transaction = txn
-                        student.save(update_fields=["payment_transaction"])
-
-                    # Fetch synchronized Course matching the Webinar
-                    course = getattr(webinar, "course", None)
-                    if not course:
-                        course = Course.objects.filter(course_name__iexact=webinar.title, is_archived=False).first()
-
-                    # Create or Update StudentCourse Enrollment
-                    if course and hasattr(StudentCourse, "objects"):
-                        StudentCourse.objects.get_or_create(
-                            student=student,
-                            course=course,
-                            defaults={
-                                "is_paid": True,
-                                "status": "active" if is_payment_successful(payment_status) else "pending"
-                            }
-                        )
+                # Payment Report Sync
+                PaymentReport.objects.update_or_create(
+                    transaction_id=str(txn.id),
+                    defaults={
+                        "student": student,
+                        "amount": txn.amount,
+                        "payment_status": "COMPLETED",
+                        "payment_method": "GATEWAY",
+                        "bootcamp": webinar,
+                        "course": course
+                    }
+                )
 
             # 3. Schedule ancillary notifications
             if created:
@@ -1714,6 +1799,7 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
             },
             status=status.HTTP_200_OK
         )
+    
     
 def fetch_zoom_participants(meeting_id):
     token = get_zoom_access_token()

@@ -110,13 +110,13 @@ def process_razorpay_webhook_event(data: dict) -> dict:
                 return {"status": "success", "message": "Transaction not found, safe acknowledge", "processed": False}
 
             # Idempotency check: if transaction is already marked as done/paid, skip re-processing
-            if txn.payment_status in ["done", "paid", "success"]:
+            if txn.payment_status in ["done", "paid", "success", "captured"]:
                 logger.info("Razorpay Webhook: Transaction %s already processed (status=%s). Skipping.",
                             order_id, txn.payment_status)
                 return {"status": "success", "message": "Already processed", "processed": True}
 
             # Update PaymentTransaction status safely
-            txn.payment_status = "done"
+            txn.payment_status = "captured"
             if payment_id:
                 if not isinstance(txn.metadata, dict):
                     txn.metadata = {}
@@ -130,40 +130,10 @@ def process_razorpay_webhook_event(data: dict) -> dict:
 
             if webinar_id or getattr(txn, "webinar_registration", None):
                 try:
-                    from webinar.models import WebinarRegistration
-                    web_reg = None
-                    if getattr(txn, "webinar_registration", None):
-                        web_reg = txn.webinar_registration
-                    elif phone and webinar_id:
-                        web_reg = WebinarRegistration.objects.filter(
-                            phone=phone,
-                            webinar__uuid=webinar_id
-                        ).first()
-
-                    if web_reg:
-                        logger.info("Updating WebinarRegistration ID %s for phone: %s to paid.", web_reg.id, phone)
-                        web_reg.is_paid = True
-                        web_reg.payment_transaction = txn
-                        web_reg.save(update_fields=["is_paid", "payment_transaction"])
-
-                    # Create Student profile and send credentials + invoice email
-                    from aryuapp.services.dashboard.student_registration_service import get_or_create_student_from_bootcamp
-                    student, created = get_or_create_student_from_bootcamp(
-                        name=metadata.get("name", ""),
-                        email=metadata.get("email", ""),
-                        phone=phone or "",
-                        profession=metadata.get("profession", ""),
-                        extra_data={
-                            "transaction_id": str(txn.id) if txn else None
-                        }
-                    )
-                    
-                    if web_reg and hasattr(web_reg, "student") and student:
-                        web_reg.student = student
-                        web_reg.save(update_fields=["student"])
-
+                    from webinar.views import WebinarRegistrationViewSet
+                    WebinarRegistrationViewSet.create_registration_from_transaction(txn)
                 except Exception as e:
-                    logger.exception("Error updating WebinarRegistration/Student for transaction %s: %s", txn.id, e)
+                    logger.exception("Error processing WebinarRegistration via create_registration_from_transaction for transaction %s: %s", txn.id, e)
 
             # 2. Handle Ebook Registration Payment Flow
             if metadata.get("ebook_id") or metadata.get("registration_id") or getattr(txn, "ebookregistration", None):

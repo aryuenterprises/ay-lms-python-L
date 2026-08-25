@@ -112,7 +112,7 @@ class RazorpayServiceTestCase(TestCase):
         res1 = process_razorpay_webhook_event(payload)
         self.assertTrue(res1["processed"])
         txn.refresh_from_db()
-        self.assertEqual(txn.payment_status, "done")
+        self.assertEqual(txn.payment_status, "captured")
         self.assertEqual((txn.metadata or {}).get("razorpay_payment_id"), "pay_captured_999")
 
         # Duplicate event execution (Idempotency)
@@ -120,7 +120,7 @@ class RazorpayServiceTestCase(TestCase):
         self.assertTrue(res2["processed"])
         self.assertEqual(res2["message"], "Already processed")
         txn.refresh_from_db()
-        self.assertEqual(txn.payment_status, "done")
+        self.assertEqual(txn.payment_status, "captured")
 
     def test_process_webhook_event_payment_failed(self):
         order_id = "order_test_failed_001"

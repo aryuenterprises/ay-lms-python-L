@@ -472,6 +472,9 @@ class StudentCourse(models.Model):
         default=0
     )
 
+    is_paid = models.BooleanField(default=False)
+    status = models.CharField(max_length=20, default="pending")
+
     assigned_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
