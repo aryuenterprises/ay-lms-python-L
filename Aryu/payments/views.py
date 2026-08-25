@@ -1232,22 +1232,22 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         if len(search) > 100:
             raise ValidationError({"search": "Search parameter too long."})
 
-        start_date = request.GET.get("start_date")
-        end_date = request.GET.get("end_date")
+        start_date = request.GET.get("start_date") or request.GET.get("from_date")
+        end_date = request.GET.get("end_date") or request.GET.get("to_date")
 
         if start_date:
             try:
-                datetime.strptime(start_date, "%Y-%m-%d")
+                datetime.strptime(start_date.strip(), "%Y-%m-%d")
             except ValueError:
                 raise ValidationError({"start_date": "Incorrect date format, should be YYYY-MM-DD"})
         if end_date:
             try:
-                datetime.strptime(end_date, "%Y-%m-%d")
+                datetime.strptime(end_date.strip(), "%Y-%m-%d")
             except ValueError:
                 raise ValidationError({"end_date": "Incorrect date format, should be YYYY-MM-DD"})
 
         if start_date and end_date:
-            if start_date > end_date:
+            if start_date.strip() > end_date.strip():
                 raise ValidationError({"end_date": "end_date must be after or equal to start_date"})
 
         key_id, key_secret, _ = self._get_credentials()
@@ -1258,10 +1258,10 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
         params = {}
         if start_date:
-            params["from"] = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp())
+            params["from"] = int(datetime.strptime(start_date.strip(), "%Y-%m-%d").timestamp())
         if end_date:
             params["to"] = int(
-                datetime.strptime(end_date, "%Y-%m-%d")
+                datetime.strptime(end_date.strip(), "%Y-%m-%d")
                 .replace(hour=23, minute=59, second=59)
                 .timestamp()
             )
@@ -1472,6 +1472,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 "success": True,
                 "page": page,
                 "page_size": page_size,
+                "total_count": total_records,
                 "total_records": total_records,
                 "total_transactions": data_dict["total_transactions"],
                 "total_amount": round(data_dict["total_amount"], 2),
@@ -1758,168 +1759,168 @@ class RazorpaySettlementViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
 
-    def _get_credentials(self):
-        gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay", is_archived=False).first()
-        if gateway and gateway.public_key and gateway.secret_key:
-            return gateway.public_key, gateway.secret_key
-        key_id = getattr(settings, "RAZORPAY_KEY_ID", None)
-        key_secret = getattr(settings, "RAZORPAY_KEY_SECRET", None)
-        return key_id, key_secret
+    def _parse_date(self, date_str, is_end=False):
+        if not date_str:
+            return None
+        date_str = str(date_str).strip()
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d-%m-%Y"):
+            try:
+                dt = datetime.strptime(date_str, fmt)
+                if is_end:
+                    dt = dt.replace(hour=23, minute=59, second=59)
+                else:
+                    dt = dt.replace(hour=0, minute=0, second=0)
+                return int(dt.timestamp())
+            except ValueError:
+                continue
+        return None
 
     def list(self, request):
         try:
-            count_str = request.query_params.get("count", "50").strip()
-            skip_str = request.query_params.get("skip", "0").strip()
+            start_date_raw = (
+                request.query_params.get("start_date") 
+                or request.query_params.get("from_date") 
+                or request.query_params.get("from")
+            )
+            end_date_raw = (
+                request.query_params.get("end_date") 
+                or request.query_params.get("to_date") 
+                or request.query_params.get("to")
+            )
+            status_filter = request.query_params.get("status", "all").strip().lower()
+            search = request.query_params.get("search", "").strip().lower()
 
-            try:
-                count = int(count_str)
-                if count <= 0:
-                    raise ValueError()
-                if count > 100:
-                    count = 100
-            except ValueError:
-                raise ValidationError({"count": "Count must be a positive integer."})
+            from_ts = self._parse_date(start_date_raw, is_end=False)
+            to_ts = self._parse_date(end_date_raw, is_end=True)
 
-            try:
-                skip = int(skip_str)
-                if skip < 0:
-                    raise ValueError()
-            except ValueError:
-                raise ValidationError({"skip": "Skip must be a non-negative integer."})
-
-            key_id, key_secret = self._get_credentials()
-            if not key_id or not key_secret:
-                return Response({"success": False, "message": "Razorpay not configured"}, status=400)
-
-            response = requests.get(
-                "https://api.razorpay.com/v1/settlements",
-                params={
-                    "count": count,
-                    "skip": skip
-                },
-                auth=HTTPBasicAuth(key_id, key_secret),
-                timeout=30
+            auth = HTTPBasicAuth(
+                "rzp_live_SKfiZYRJEe8WuU",
+                "Du4L7ebKchXQSOMcgzx5wE3h"
             )
 
-            data = response.json()
+            params = {}
+            if from_ts:
+                params["from"] = from_ts
+            if to_ts:
+                params["to"] = to_ts
 
-            ist = ZoneInfo("Asia/Kolkata")
+            all_settlements = []
+            batch_size = 100
+            skip = 0
 
-            for item in data.get("items", []):
-                item["amount"] = float(
-                    round(Decimal(item["amount"]) / Decimal("100"), 2)
+            while True:
+                response = requests.get(
+                    "https://api.razorpay.com/v1/settlements",
+                    params={**params, "count": batch_size, "skip": skip},
+                    auth=auth,
+                    timeout=30
                 )
 
-                item["created_at"] = datetime.fromtimestamp(
-                    item["created_at"],
-                    tz=ist
-                ).strftime("%d %b %Y %I:%M:%S %p")
+                if response.status_code != 200:
+                    return Response(
+                        {"success": False, "message": "Failed to fetch settlements from Razorpay."},
+                        status=response.status_code
+                    )
+
+                data = response.json()
+                items = data.get("items", []) if isinstance(data, dict) else []
+                if not items:
+                    break
+
+                all_settlements.extend(items)
+                if len(items) < batch_size:
+                    break
+                skip += batch_size
+
+            ist = ZoneInfo("Asia/Kolkata")
+            filtered_items = []
+
+            for item in all_settlements:
+                raw_ts = item.get("created_at", 0)
+
+                if from_ts and raw_ts < from_ts:
+                    continue
+                if to_ts and raw_ts > to_ts:
+                    continue
+
+                amt = float(round(Decimal(str(item.get("amount", 0))) / Decimal("100"), 2))
+                item_status = str(item.get("status", "")).lower()
+                settlement_id = str(item.get("id", ""))
+                utr = str(item.get("utr", ""))
+
+                if status_filter != "all" and item_status != status_filter:
+                    continue
+
+                if search:
+                    searchable = f"{settlement_id} {item_status} {utr} {amt}".lower()
+                    if search not in searchable:
+                        continue
+
+                item_copy = dict(item)
+                item_copy["amount"] = amt
+                item_copy["status"] = item_status
+                item_copy["created_at"] = datetime.fromtimestamp(raw_ts, tz=ist).strftime("%d %b %Y %I:%M:%S %p")
+                filtered_items.append(item_copy)
+
+            for idx, item in enumerate(filtered_items, start=1):
+                item["sno"] = idx
+
+            total_amount = round(sum(item["amount"] for item in filtered_items), 2)
 
             return Response({
                 "success": True,
-                "status_code": response.status_code,
-                "data": data
-            })
+                "status_code": 200,
+                "total_settlements": len(filtered_items),
+                "total_amount": total_amount,
+                "data": {
+                    "entity": "collection",
+                    "count": len(filtered_items),
+                    "total_amount": total_amount,
+                    "items": filtered_items
+                }
+            }, status=status.HTTP_200_OK)
 
-        except ValidationError as e:
-            raise e
         except Exception as e:
-            logger.error("Error fetching settlements list: %s", str(e), exc_info=True)
-            return Response({
-                "success": False,
-                "message": "An error occurred while processing your request."
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"success": False, "message": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    @action(detail=False, methods=['get'], url_path='balance')
     def balance(self, request):
         try:
-            key_id, key_secret = self._get_credentials()
-            if not key_id or not key_secret:
-                return Response({"success": False, "message": "Razorpay not configured"}, status=400)
-
-            auth = HTTPBasicAuth(key_id, key_secret)
+            auth = HTTPBasicAuth(
+                "rzp_live_SKfiZYRJEe8WuU",
+                "Du4L7ebKchXQSOMcgzx5wE3h"
+            )
 
             balance_response = requests.get(
                 "https://api.razorpay.com/v1/balance",
                 auth=auth,
-                timeout=30
+                timeout=15
             )
-
-            balance_data = balance_response.json()
-            available_balance = balance_data.get("balance", 0) / 100
-
-            # Dynamic date range parameters
-            from_param = request.query_params.get("from")
-            to_param = request.query_params.get("to")
-            count_param = request.query_params.get("count")
-
-            count = 100
-            if count_param:
-                try:
-                    count = int(count_param)
-                    if count <= 0:
-                        raise ValueError()
-                    if count > 100:
-                        count = 100
-                except ValueError:
-                    raise ValidationError({"count": "Count must be a positive integer."})
-
-            from_timestamp = None
-            if from_param:
-                try:
-                    from_timestamp = int(datetime.strptime(from_param.strip(), "%Y-%m-%d").timestamp())
-                except ValueError:
-                    try:
-                        from_timestamp = int(from_param.strip())
-                        if from_timestamp < 0:
-                            raise ValueError()
-                    except ValueError:
-                        raise ValidationError({"from": "Invalid date or timestamp format. Use YYYY-MM-DD or Unix timestamp."})
-
-            to_timestamp = None
-            if to_param:
-                try:
-                    to_timestamp = int(
-                        datetime.strptime(to_param.strip(), "%Y-%m-%d")
-                        .replace(hour=23, minute=59, second=59)
-                        .timestamp()
-                    )
-                except ValueError:
-                    try:
-                        to_timestamp = int(to_param.strip())
-                        if to_timestamp < 0:
-                            raise ValueError()
-                    except ValueError:
-                        raise ValidationError({"to": "Invalid date or timestamp format. Use YYYY-MM-DD or Unix timestamp."})
-
-            settlement_params = {"count": count}
-            if from_timestamp is not None:
-                settlement_params["from"] = from_timestamp
-            if to_timestamp is not None:
-                settlement_params["to"] = to_timestamp
+            balance_data = balance_response.json() if balance_response.status_code == 200 else {}
+            available_balance = (balance_data.get("balance", 0) or 0) / 100
 
             settlement_response = requests.get(
-                "https://api.razorpay.com/v1/settlements",
-                params=settlement_params,
+                "https://api.razorpay.com/v1/settlements?count=100",
                 auth=auth,
-                timeout=30
+                timeout=20
             )
-
-            settlement_data = settlement_response.json()
+            settlement_data = settlement_response.json() if settlement_response.status_code == 200 else {}
 
             today = datetime.now().date()
             yesterday = today - timedelta(days=1)
 
             today_settlement = 0
             yesterday_settlement = 0
-            total_settlements_amount = 0
+            total_settled_amount = 0
 
             for settlement in settlement_data.get("items", []):
                 settlement_date = datetime.fromtimestamp(
-                    settlement["created_at"]
+                    settlement["created_at"],
+                    tz=ZoneInfo("Asia/Kolkata")
                 ).date()
 
-                amount = settlement.get("amount", 0)
-                total_settlements_amount += amount
+                amount = (settlement.get("amount", 0) or 0) / 100
+                total_settled_amount += amount
 
                 if settlement_date == today:
                     today_settlement += amount
@@ -1930,21 +1931,18 @@ class RazorpaySettlementViewSet(viewsets.ViewSet):
                 "success": True,
                 "data": {
                     "available_balance": round(available_balance, 2),
-                    "today_settlement": round(today_settlement / 100, 2),
-                    "yesterday_settlement": round(yesterday_settlement / 100, 2),
-                    "total_settlements_amount": round(total_settlements_amount / 100, 2),
+                    "today_settlement": round(today_settlement, 2),
+                    "yesterday_settlement": round(yesterday_settlement, 2),
+                    "total_settled_amount": round(total_settled_amount, 2)
                 }
-            })
+            }, status=status.HTTP_200_OK)
 
-        except ValidationError as e:
-            raise e
         except Exception as e:
-            logger.error("Error fetching balance/settlements: %s", str(e), exc_info=True)
             return Response({
                 "success": False,
-                "message": "An error occurred while processing your request."
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)    
-        
+                "message": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 @api_view(['GET'])
 def stripe_success(request):
     return Response({"success": True, "message": "Payment successful!"})

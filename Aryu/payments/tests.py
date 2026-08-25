@@ -53,7 +53,7 @@ class RazorpayServiceTestCase(TestCase):
             gatway_name="razorpay",
             public_key="rzp_live_SKfiZYRJEe8WuU",
             secret_key="Du4L7ebKchXQSOMcgzx5wE3h",
-            webhook_secret="Aryu_Academy_wev26",
+            webhook_secret=None,
             is_archived=False
         )
         self.assertIsNone(get_webhook_secret(gw))
@@ -149,3 +149,115 @@ class RazorpayServiceTestCase(TestCase):
         self.assertTrue(res["processed"])
         txn.refresh_from_db()
         self.assertEqual(txn.payment_status, "failed")
+
+from unittest.mock import patch, MagicMock
+from rest_framework.test import APIClient
+from django.contrib.auth import get_user_model
+
+class RazorpayViewTestCase(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(username="testuser", email="test@example.com", password="testpassword")
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        # Ensure active gateway exists
+        PaymentGateway.objects.filter(gatway_name__icontains="razorpay").delete()
+        self.gateway = PaymentGateway.objects.create(
+            gatway_name="razorpay",
+            public_key="rzp_live_SKfiZYRJEe8WuU",
+            secret_key="Du4L7ebKchXQSOMcgzx5wE3h",
+            webhook_secret="Aryu_Academy_wev26",
+            is_archived=False
+        )
+
+    @patch("razorpay.Client")
+    def test_payments_list_metrics(self, mock_client_class):
+        # Mock payment list returned by razorpay
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_client.payment.all.return_value = {
+            "items": [
+                {
+                    "id": "pay_001",
+                    "amount": 5000,  # 50.00
+                    "status": "captured",
+                    "method": "upi",
+                    "created_at": 1713518400,
+                    "notes": {"name": "Alice", "email": "alice@example.com"}
+                },
+                {
+                    "id": "pay_002",
+                    "amount": 7500,  # 75.00
+                    "status": "failed",
+                    "method": "card",
+                    "created_at": 1713518400,
+                    "notes": {"name": "Bob", "email": "bob@example.com"}
+                }
+            ]
+        }
+
+        # Call endpoint (payments viewset get)
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from payments.views import RazorpayPaymentViewSet
+        factory = APIRequestFactory()
+        request = factory.get("/api/razorpay-payments/", {"page": "1", "page_size": "10"})
+        force_authenticate(request, user=self.user)
+        view = RazorpayPaymentViewSet.as_view({"get": "get"})
+        response = view(request)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.data
+        self.assertTrue(data["success"])
+        self.assertEqual(data["total_count"], 2)
+        self.assertEqual(data["total_amount"], 125.0)
+        self.assertEqual(data["total_captured_amount"], 50.0)
+        self.assertEqual(data["total_failed_amount"], 75.0)
+
+    @patch("requests.get")
+    def test_settlements_list_metrics(self, mock_requests_get):
+        # Mock settlement API response
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "items": [
+                {
+                    "id": "setl_001",
+                    "entity": "settlement",
+                    "amount": 10000,  # 100.00
+                    "status": "processed",
+                    "fees": 200,
+                    "tax": 36,
+                    "utr": "UTR123",
+                    "created_at": 1713518400
+                },
+                {
+                    "id": "setl_002",
+                    "entity": "settlement",
+                    "amount": 25000,  # 250.00
+                    "status": "processed",
+                    "fees": 500,
+                    "tax": 90,
+                    "utr": "UTR456",
+                    "created_at": 1713518400
+                }
+            ]
+        }
+        mock_requests_get.return_value = mock_response
+
+        # Call endpoint (settlements viewset list)
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from payments.views import RazorpaySettlementViewSet
+        factory = APIRequestFactory()
+        request = factory.get("/api/razorpay-settlements/", {"page": "1", "page_size": "10"})
+        force_authenticate(request, user=self.user)
+        view = RazorpaySettlementViewSet.as_view({"get": "list"})
+        response = view(request)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.data
+        self.assertTrue(data["success"])
+        self.assertEqual(data["total_settlements"], 2)
+        self.assertEqual(data["total_amount"], 350.0)
+        self.assertEqual(data["data"]["count"], 2)
+        self.assertEqual(len(data["data"]["items"]), 2)
