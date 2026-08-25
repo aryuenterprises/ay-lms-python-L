@@ -352,6 +352,9 @@ TELECRM_API = "https://next-api.telecrm.in"
 
 
 SERVER_ROOT = Path("/var/www/ay-lms-python-L")
+if not SERVER_ROOT.exists() or not os.access(SERVER_ROOT, os.W_OK):
+    SERVER_ROOT = BASE_DIR.parent
+(SERVER_ROOT / "logs").mkdir(parents=True, exist_ok=True)
 # SERVER_ROOT = Path(r'E:\Aryu projects\ay-lms-python-L')
 # SERVER_ROOT = Path("/home/tamilselvi/Documents/GitHub/ay-lms-python-L")
 
