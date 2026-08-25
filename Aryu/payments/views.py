@@ -11,6 +11,7 @@ from django.views.decorators.csrf import csrf_exempt
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from rest_framework import status, viewsets
+from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 import stripe
@@ -1197,29 +1198,63 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
     authentication_classes = [CustomJWTAuthentication]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
+    def _get_credentials(self):
+        # Fetch dynamically from PaymentGateway or secure environment variables
+        gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay", is_archived=False).first()
+        if gateway and gateway.public_key and gateway.secret_key:
+            return gateway.public_key, gateway.secret_key, gateway
+        
+        key_id = getattr(settings, "RAZORPAY_KEY_ID", None)
+        key_secret = getattr(settings, "RAZORPAY_KEY_SECRET", None)
+        return key_id, key_secret, gateway
+
     def _get_client(self):
-        gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay_test").first()
-        if not gateway:
+        key_id, key_secret, gateway = self._get_credentials()
+        if not key_id or not key_secret:
             return None, None
-        client = razorpay.Client(auth=(gateway.public_key, gateway.secret_key))
+        client = razorpay.Client(auth=(key_id, key_secret))
         return client, gateway
 
     # ---------------------------------------------------------
     # Helper: Fetch, Map & Filter Payments (Shared Logic)
     # ---------------------------------------------------------
     def _get_filtered_payments_data(self, request):
-        status_filter = request.GET.get("status", "all")
-        course_filter = request.GET.get("course", "all").strip().lower()
-        search = request.GET.get("search", "").strip().lower()
+        status_filter = request.GET.get("status", "all").strip().lower()
+        allowed_statuses = {"all", "captured", "failed", "refunded", "created", "authorized"}
+        if status_filter not in allowed_statuses:
+            raise ValidationError({"status": "Invalid status value."})
+
+        course_filter = request.GET.get("course", "all").strip()
+        if len(course_filter) > 200:
+            raise ValidationError({"course": "Course parameter too long."})
+
+        search = request.GET.get("search", "").strip()
+        if len(search) > 100:
+            raise ValidationError({"search": "Search parameter too long."})
+
         start_date = request.GET.get("start_date")
         end_date = request.GET.get("end_date")
 
-        client = razorpay.Client(
-            auth=(
-                "rzp_live_SKfiZYRJEe8WuU",
-                "Du4L7ebKchXQSOMcgzx5wE3h"
-            )
-        )
+        if start_date:
+            try:
+                datetime.strptime(start_date, "%Y-%m-%d")
+            except ValueError:
+                raise ValidationError({"start_date": "Incorrect date format, should be YYYY-MM-DD"})
+        if end_date:
+            try:
+                datetime.strptime(end_date, "%Y-%m-%d")
+            except ValueError:
+                raise ValidationError({"end_date": "Incorrect date format, should be YYYY-MM-DD"})
+
+        if start_date and end_date:
+            if start_date > end_date:
+                raise ValidationError({"end_date": "end_date must be after or equal to start_date"})
+
+        key_id, key_secret, _ = self._get_credentials()
+        if not key_id or not key_secret:
+            raise ValidationError({"gateway": "Razorpay gateway credentials are not configured."})
+
+        client = razorpay.Client(auth=(key_id, key_secret))
 
         params = {}
         if start_date:
@@ -1231,7 +1266,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 .timestamp()
             )
 
-        has_filter = search or (status_filter.lower() != "all") or (course_filter != "all")
+        has_filter = search or (status_filter != "all") or (course_filter.lower() != "all")
 
         all_payments = []
         batch_size = 100
@@ -1333,13 +1368,14 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
         # 3. Apply Filters
         if has_filter:
-            if course_filter != "all":
-                all_rows = [r for r in all_rows if r["description"].lower() == course_filter]
+            if course_filter.lower() != "all":
+                all_rows = [r for r in all_rows if r["description"].lower() == course_filter.lower()]
 
-            if status_filter.lower() != "all":
-                all_rows = [r for r in all_rows if str(r["status"]).lower() == status_filter.lower()]
+            if status_filter != "all":
+                all_rows = [r for r in all_rows if str(r["status"]).lower() == status_filter]
 
             if search:
+                search_lower = search.lower()
                 filtered = []
                 for r in all_rows:
                     searchable = (
@@ -1351,11 +1387,11 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                     ).lower()
 
                     try:
-                        amount_match = float(search) == float(r["amount"])
+                        amount_match = float(search_lower) == float(r["amount"])
                     except ValueError:
                         amount_match = False
 
-                    if search in searchable or amount_match:
+                    if search_lower in searchable or amount_match:
                         filtered.append(r)
 
                 all_rows = filtered
@@ -1364,30 +1400,40 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
         for idx, row in enumerate(all_rows, start=1):
             row["sno"] = idx
 
-        success_amount = sum(
+        total_transactions = len(all_rows)
+        total_amount = sum(float(row.get("amount", 0)) for row in all_rows)
+        total_captured_amount = sum(
             float(row.get("amount", 0))
             for row in all_rows
             if str(row.get("status", "")).lower() == "captured"
         )
-
-        failed_amount = sum(
+        total_failed_amount = sum(
             float(row.get("amount", 0))
             for row in all_rows
             if str(row.get("status", "")).lower() == "failed"
         )
-
-        refunded_amount = sum(
+        total_refunded_amount = sum(
             float(row.get("amount", 0))
             for row in all_rows
             if str(row.get("status", "")).lower() == "refunded"
+        )
+        total_razorpay_fee = sum(
+            float(row.get("razorpay_fee", 0))
+            for row in all_rows
         )
 
         return {
             "all_rows": all_rows,
             "courses_list": courses_list,
-            "success_amount": success_amount,
-            "failed_amount": failed_amount,
-            "refunded_amount": refunded_amount
+            "success_amount": total_captured_amount,
+            "failed_amount": total_failed_amount,
+            "refunded_amount": total_refunded_amount,
+            "total_transactions": total_transactions,
+            "total_amount": total_amount,
+            "total_captured_amount": total_captured_amount,
+            "total_failed_amount": total_failed_amount,
+            "total_refunded_amount": total_refunded_amount,
+            "total_razorpay_fee": total_razorpay_fee,
         }
 
     # -------------------------
@@ -1395,8 +1441,24 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
     # -------------------------
     def get(self, request):
         try:
-            page = int(request.GET.get("page", 1))
-            page_size = int(request.GET.get("page_size", 50))
+            page_str = request.GET.get("page", "1").strip()
+            page_size_str = request.GET.get("page_size", "50").strip()
+
+            try:
+                page = int(page_str)
+                if page <= 0:
+                    raise ValueError()
+            except ValueError:
+                raise ValidationError({"page": "Page must be a positive integer."})
+
+            try:
+                page_size = int(page_size_str)
+                if page_size <= 0:
+                    raise ValueError()
+                if page_size > 1000:
+                    page_size = 1000
+            except ValueError:
+                raise ValidationError({"page_size": "Page size must be a positive integer."})
 
             data_dict = self._get_filtered_payments_data(request)
             all_rows = data_dict["all_rows"]
@@ -1411,6 +1473,12 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 "page": page,
                 "page_size": page_size,
                 "total_records": total_records,
+                "total_transactions": data_dict["total_transactions"],
+                "total_amount": round(data_dict["total_amount"], 2),
+                "total_captured_amount": round(data_dict["total_captured_amount"], 2),
+                "total_failed_amount": round(data_dict["total_failed_amount"], 2),
+                "total_refunded_amount": round(data_dict["total_refunded_amount"], 2),
+                "total_razorpay_fee": round(data_dict["total_razorpay_fee"], 2),
                 "success_amount": round(data_dict["success_amount"], 2),
                 "failed_amount": round(data_dict["failed_amount"], 2),
                 "refunded_amount": round(data_dict["refunded_amount"], 2),
@@ -1418,10 +1486,11 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 "data": paginated_data
             })
 
+        except ValidationError as e:
+            raise e
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return Response({"success": False, "message": str(e)}, status=500)
+            logger.error("Error fetching Razorpay payments: %s", str(e), exc_info=True)
+            return Response({"success": False, "message": "An error occurred while processing your request."}, status=500)
 
     # ---------------------------------------------------------
     # Export PDF Action Endpoint
@@ -1478,22 +1547,26 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             elements.append(Paragraph(f"Generated on: {datetime.now().strftime('%d %b %Y %I:%M %p')}", cell_style))
             elements.append(Spacer(1, 12))
 
-            # Summary Table
+            # Summary Table with Breakdown
             summary_data = [
                 [
                     Paragraph("<b>Total Transactions</b>", cell_style),
+                    Paragraph("<b>Total Amount</b>", cell_style),
                     Paragraph("<b>Captured Amount</b>", cell_style),
                     Paragraph("<b>Failed Amount</b>", cell_style),
                     Paragraph("<b>Refunded Amount</b>", cell_style),
+                    Paragraph("<b>Total Fees</b>", cell_style),
                 ],
                 [
-                    Paragraph(str(len(all_rows)), cell_style),
-                    Paragraph(f"₹ {data_dict['success_amount']:,.2f}", cell_style),
-                    Paragraph(f"₹ {data_dict['failed_amount']:,.2f}", cell_style),
-                    Paragraph(f"₹ {data_dict['refunded_amount']:,.2f}", cell_style),
+                    Paragraph(str(data_dict["total_transactions"]), cell_style),
+                    Paragraph(f"₹ {data_dict['total_amount']:,.2f}", cell_style),
+                    Paragraph(f"₹ {data_dict['total_captured_amount']:,.2f}", cell_style),
+                    Paragraph(f"₹ {data_dict['total_failed_amount']:,.2f}", cell_style),
+                    Paragraph(f"₹ {data_dict['total_refunded_amount']:,.2f}", cell_style),
+                    Paragraph(f"₹ {data_dict['total_razorpay_fee']:,.2f}", cell_style),
                 ]
             ]
-            summary_table = Table(summary_data, colWidths=[180, 180, 180, 180])
+            summary_table = Table(summary_data, colWidths=[120, 120, 120, 120, 120, 120])
             summary_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
@@ -1555,17 +1628,25 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             response['Content-Disposition'] = f'attachment; filename="Razorpay_Payments_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf"'
             return response
 
+        except ValidationError as e:
+            raise e
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return Response({"success": False, "message": str(e)}, status=500)
+            logger.error("Error exporting Razorpay payments PDF: %s", str(e), exc_info=True)
+            return Response({"success": False, "message": "An error occurred while processing your request."}, status=500)
 
     # -------------------------
     # Create Razorpay Payment Link
     # -------------------------
     @action(detail=False, methods=['post'])
     def create(self, request, webinar):
-        amount = float(request.data.get("amount", 0))
+        amount_val = request.data.get("amount", 0)
+        try:
+            amount = float(amount_val)
+            if amount <= 0:
+                raise ValueError()
+        except (TypeError, ValueError):
+            return Response({"success": False, "message": "Invalid amount value."}, status=400)
+
         currency = request.data.get("currency", "INR")
         success_url = request.data.get("success_url")
         cancel_url = request.data.get("failure_url")
@@ -1631,12 +1712,12 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             })
 
         except Exception as e:
-            return Response({"success": False, "message": str(e)}, status=500)
+            logger.error("Error creating Razorpay payment link: %s", str(e), exc_info=True)
+            return Response({"success": False, "message": "An error occurred while processing your request."}, status=500)
 
     # -------------------------
     # Verify Razorpay Payment
     # -------------------------
-    @csrf_exempt
     @action(detail=False, methods=['post'], url_path="verify")
     def verify_payment(self, request):
         payment_id = request.data.get("razorpay_payment_id")
@@ -1669,13 +1750,46 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             return Response({"success": True, "message": "Payment verified successfully"})
         except razorpay.errors.SignatureVerificationError:
             return Response({"success": False, "message": "Payment verification failed"}, status=200)
+        except Exception as e:
+            logger.error("Error verifying Razorpay payment: %s", str(e), exc_info=True)
+            return Response({"success": False, "message": "An error occurred while processing your request."}, status=500)
 
 class RazorpaySettlementViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+
+    def _get_credentials(self):
+        gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay", is_archived=False).first()
+        if gateway and gateway.public_key and gateway.secret_key:
+            return gateway.public_key, gateway.secret_key
+        key_id = getattr(settings, "RAZORPAY_KEY_ID", None)
+        key_secret = getattr(settings, "RAZORPAY_KEY_SECRET", None)
+        return key_id, key_secret
 
     def list(self, request):
         try:
-            count = request.query_params.get("count", 50)
-            skip = request.query_params.get("skip", 0)
+            count_str = request.query_params.get("count", "50").strip()
+            skip_str = request.query_params.get("skip", "0").strip()
+
+            try:
+                count = int(count_str)
+                if count <= 0:
+                    raise ValueError()
+                if count > 100:
+                    count = 100
+            except ValueError:
+                raise ValidationError({"count": "Count must be a positive integer."})
+
+            try:
+                skip = int(skip_str)
+                if skip < 0:
+                    raise ValueError()
+            except ValueError:
+                raise ValidationError({"skip": "Skip must be a non-negative integer."})
+
+            key_id, key_secret = self._get_credentials()
+            if not key_id or not key_secret:
+                return Response({"success": False, "message": "Razorpay not configured"}, status=400)
 
             response = requests.get(
                 "https://api.razorpay.com/v1/settlements",
@@ -1683,10 +1797,7 @@ class RazorpaySettlementViewSet(viewsets.ViewSet):
                     "count": count,
                     "skip": skip
                 },
-                auth=HTTPBasicAuth(
-                   "rzp_live_SKfiZYRJEe8WuU",
-                    "Du4L7ebKchXQSOMcgzx5wE3h"
-                ),
+                auth=HTTPBasicAuth(key_id, key_secret),
                 timeout=30
             )
 
@@ -1710,31 +1821,87 @@ class RazorpaySettlementViewSet(viewsets.ViewSet):
                 "data": data
             })
 
+        except ValidationError as e:
+            raise e
         except Exception as e:
+            logger.error("Error fetching settlements list: %s", str(e), exc_info=True)
             return Response({
                 "success": False,
-                "message": str(e)
+                "message": "An error occurred while processing your request."
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def balance(self, request):
         try:
-            auth = HTTPBasicAuth(
-                "rzp_live_SKfiZYRJEe8WuU",
-                "Du4L7ebKchXQSOMcgzx5wE3h"
-            )
+            key_id, key_secret = self._get_credentials()
+            if not key_id or not key_secret:
+                return Response({"success": False, "message": "Razorpay not configured"}, status=400)
+
+            auth = HTTPBasicAuth(key_id, key_secret)
 
             balance_response = requests.get(
                 "https://api.razorpay.com/v1/balance",
-                auth=auth
+                auth=auth,
+                timeout=30
             )
 
             balance_data = balance_response.json()
-
             available_balance = balance_data.get("balance", 0) / 100
 
+            # Dynamic date range parameters
+            from_param = request.query_params.get("from")
+            to_param = request.query_params.get("to")
+            count_param = request.query_params.get("count")
+
+            count = 100
+            if count_param:
+                try:
+                    count = int(count_param)
+                    if count <= 0:
+                        raise ValueError()
+                    if count > 100:
+                        count = 100
+                except ValueError:
+                    raise ValidationError({"count": "Count must be a positive integer."})
+
+            from_timestamp = None
+            if from_param:
+                try:
+                    from_timestamp = int(datetime.strptime(from_param.strip(), "%Y-%m-%d").timestamp())
+                except ValueError:
+                    try:
+                        from_timestamp = int(from_param.strip())
+                        if from_timestamp < 0:
+                            raise ValueError()
+                    except ValueError:
+                        raise ValidationError({"from": "Invalid date or timestamp format. Use YYYY-MM-DD or Unix timestamp."})
+
+            to_timestamp = None
+            if to_param:
+                try:
+                    to_timestamp = int(
+                        datetime.strptime(to_param.strip(), "%Y-%m-%d")
+                        .replace(hour=23, minute=59, second=59)
+                        .timestamp()
+                    )
+                except ValueError:
+                    try:
+                        to_timestamp = int(to_param.strip())
+                        if to_timestamp < 0:
+                            raise ValueError()
+                    except ValueError:
+                        raise ValidationError({"to": "Invalid date or timestamp format. Use YYYY-MM-DD or Unix timestamp."})
+
+            settlement_params = {"count": count}
+            if from_timestamp is not None:
+                settlement_params["from"] = from_timestamp
+            if to_timestamp is not None:
+                settlement_params["to"] = to_timestamp
+
             settlement_response = requests.get(
-                "https://api.razorpay.com/v1/settlements?count=100",
-                auth=auth
+                "https://api.razorpay.com/v1/settlements",
+                params=settlement_params,
+                auth=auth,
+                timeout=30
             )
 
             settlement_data = settlement_response.json()
@@ -1744,6 +1911,7 @@ class RazorpaySettlementViewSet(viewsets.ViewSet):
 
             today_settlement = 0
             yesterday_settlement = 0
+            total_settlements_amount = 0
 
             for settlement in settlement_data.get("items", []):
                 settlement_date = datetime.fromtimestamp(
@@ -1751,6 +1919,7 @@ class RazorpaySettlementViewSet(viewsets.ViewSet):
                 ).date()
 
                 amount = settlement.get("amount", 0)
+                total_settlements_amount += amount
 
                 if settlement_date == today:
                     today_settlement += amount
@@ -1763,13 +1932,17 @@ class RazorpaySettlementViewSet(viewsets.ViewSet):
                     "available_balance": round(available_balance, 2),
                     "today_settlement": round(today_settlement / 100, 2),
                     "yesterday_settlement": round(yesterday_settlement / 100, 2),
+                    "total_settlements_amount": round(total_settlements_amount / 100, 2),
                 }
             })
 
+        except ValidationError as e:
+            raise e
         except Exception as e:
+            logger.error("Error fetching balance/settlements: %s", str(e), exc_info=True)
             return Response({
                 "success": False,
-                "message": str(e)
+                "message": "An error occurred while processing your request."
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)    
         
 @api_view(['GET'])
