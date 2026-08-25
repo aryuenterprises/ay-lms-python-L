@@ -5,6 +5,7 @@ import requests
 from aryuapp.models import User
 from django.db import transaction
 from django.conf import settings
+from .telecrm import sync_lead_to_telecrm
 
 
 # COMMON MIXINS
@@ -395,45 +396,7 @@ class LeadSerializer(serializers.ModelSerializer):
         # ==========================================
         # TELECRM LEAD CREATE
         # ==========================================
-
-        try:
-
-            url = f"https://next-api.telecrm.in/enterprise/6a13da730fbcb752673e080c/autoupdatelead"
-
-            headers = {
-                "Authorization": f"Bearer 2b5fa0b5-b45c-4150-ab6f-09a001575ca01779800797507:0d16d31d-e820-45fa-aafc-869ef640917d",
-                "Content-Type": "application/json"
-            }
-
-            payload = {
-                "fields": {
-                    "name": name,
-                    "phone": phone,
-                    "email": email
-                },
-                "actions": [
-                    {
-                        "type": "ACTION_1002",
-                        "fields": {
-                            "note": "Lead Created From Website"
-                        }
-                    }
-                ]
-            }
-
-            response = requests.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=10
-            )
-
-            print("TeleCRM Status:", response.status_code)
-            print("TeleCRM Response:", response.json())
-
-        except Exception as e:
-            print("TeleCRM Error:", str(e))
-        
+        sync_lead_to_telecrm(lead, action_note="Lead Created")
 
         return lead
 
@@ -463,7 +426,7 @@ class LeadSerializer(serializers.ModelSerializer):
             if request and request.user.is_authenticated:
 
                 changed_by_user = User.objects.filter(
-                    id=request.user.user_id
+                    id=getattr(request.user, "user_id", None) or getattr(request.user, "id", None)
                 ).first()
 
             LeadStatusHistory.objects.create(
@@ -473,6 +436,14 @@ class LeadSerializer(serializers.ModelSerializer):
                 changed_by=changed_by_user,
                 remarks="Status Updated"
             )
+
+        # ==========================================
+        # TELECRM LEAD UPDATE
+        # ==========================================
+        sync_lead_to_telecrm(
+            instance,
+            action_note=f"Lead Updated: Status={instance.status}"
+        )
 
         return instance
 
@@ -644,55 +615,15 @@ class PublicLeadCreateSerializer(serializers.ModelSerializer):
             "created_by_type",
             "public"
         )
-        phone = validated_data.get("phone")
-        phone = "".join(filter(str.isdigit, str(phone)))
-        if len(phone) == 10:
-            phone = f"91{phone}"
-        name = validated_data.get('name')
-        email = validated_data.get('email')
+
+        lead = Lead.objects.create(**validated_data)
+
         # ==========================================
         # TELECRM LEAD CREATE
         # ==========================================
+        sync_lead_to_telecrm(lead, action_note="Lead Created From Website")
 
-        try:
-
-            url = f"https://next-api.telecrm.in/enterprise/6a13da730fbcb752673e080c/autoupdatelead"
-
-            headers = {
-                "Authorization": f"Bearer 2b5fa0b5-b45c-4150-ab6f-09a001575ca01779800797507:0d16d31d-e820-45fa-aafc-869ef640917d",
-                "Content-Type": "application/json"
-            }
-
-            payload = {
-                "fields": {
-                    "name": name,
-                    "phone": phone,
-                    "email": email
-                },
-                "actions": [
-                    {
-                        "type": "ACTION_1002",
-                        "fields": {
-                            "note": "Lead Created From Website"
-                        }
-                    }
-                ]
-            }
-
-            response = requests.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=10
-            )
-
-            print("TeleCRM Status:", response.status_code)
-            print("TeleCRM Response:", response.json())
-
-        except Exception as e:
-            print("TeleCRM Error:", str(e))
-
-        return Lead.objects.create(**validated_data)
+        return lead
 
 # ---------------------------------------------------------------------------
 # Request payload serializers

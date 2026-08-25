@@ -7,6 +7,7 @@ import jwt
 
 from aryuapp.models import Student, Settings
 from lead.models import Lead
+from lead.telecrm import sync_lead_to_telecrm
 
 class SocialLoginCompleteAPIView(APIView):
     permission_classes = []
@@ -89,6 +90,11 @@ class SocialLoginCompleteAPIView(APIView):
             interested=True,
             status="new",
             source="social_login"
+        )
+
+        sync_lead_to_telecrm(
+            lead,
+            action_note="Lead Created via Google Social Login"
         )
 
         return Response({

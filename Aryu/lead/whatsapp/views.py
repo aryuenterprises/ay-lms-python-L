@@ -51,6 +51,7 @@ from .models import (
     WhatsAppChat
 )
 from lead.models import Lead
+from lead.telecrm import sync_lead_to_telecrm
 from .pagination import (
     CampaignPageNumberPagination,
     MessageStreamCursorPagination,
@@ -1162,10 +1163,12 @@ class WhatsAppWebhookView(APIView):
 
         try:
             with transaction.atomic():
-                lead_obj, _ = Lead.objects.get_or_create(
+                lead_obj, lead_created = Lead.objects.get_or_create(
                     phone=e164_phone,
-                    defaults={'name': customer_name}
+                    defaults={'name': customer_name, 'source': 'whatsapp'}
                 )
+                if lead_created:
+                    sync_lead_to_telecrm(lead_obj, action_note="Lead Created via WhatsApp Webhook")
 
                 # Fetch chat instance with selective row locking to guarantee serial safety
                 chat_obj, created = WhatsAppChat.objects.select_for_update().get_or_create(

@@ -8,6 +8,7 @@ from confluent_kafka import Consumer, KafkaError
 from lead.whatsapp.services.meta_client import MetaClient
 from ...models import WhatsAppChat, WhatsAppMessage
 from lead.models import Lead
+from lead.telecrm import sync_lead_to_telecrm
 
 logger = logging.getLogger("whatsapp")
 
@@ -95,7 +96,12 @@ class Command(BaseCommand):
 
         try:
             print(f"💾 [DB STEP] Accessing models for phone: +{clean_phone}...")
-            lead_obj, _ = Lead.objects.get_or_create(phone=f"+{clean_phone}")
+            lead_obj, lead_created = Lead.objects.get_or_create(
+                phone=f"+{clean_phone}",
+                defaults={'source': 'whatsapp'}
+            )
+            if lead_created:
+                sync_lead_to_telecrm(lead_obj, action_note="Lead Created via WhatsApp Kafka Consumer")
             
             chat_obj, _ = WhatsAppChat.objects.get_or_create(
                 whatsapp_id=clean_phone,

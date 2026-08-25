@@ -57,6 +57,7 @@ from django.db.models import F
 from django.utils import timezone
 
 from lead.models import Lead
+from lead.telecrm import sync_lead_to_telecrm
 from .models import (
     WhatsAppCampaign,
     WhatsAppCampaignRecipient,
@@ -361,10 +362,12 @@ def process_excel_broadcast_task(self, campaign_id: int, file_path: str):
             with transaction.atomic():
                 # 1. Resolve or create structural tracking Lead record
                 lead_name = final_params[0] if final_params else "Recipient"
-                lead_obj, _ = Lead.objects.get_or_create(
+                lead_obj, lead_created = Lead.objects.get_or_create(
                     phone=recipient_phone,
-                    defaults={'name': lead_name}
+                    defaults={'name': lead_name, 'source': 'whatsapp_campaign'}
                 )
+                if lead_created:
+                    sync_lead_to_telecrm(lead_obj, action_note="Lead Created via WhatsApp Campaign")
                 
                 # 2. Setup individual campaign target recipient entry
                 recipient_entry, created = WhatsAppCampaignRecipient.objects.get_or_create(
