@@ -8156,7 +8156,7 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         ).order_by('-date')
 
     def list(self, request, *args, **kwargs):
-        employee_id = self.kwargs.get('employee_id') or request.query_params.get('trainer')
+        employee_id = self.kwargs.get('employee_id')
 
         if not employee_id:
             return Response({"success": False, "message": "Trainer employee_id is required."}, status=200)
@@ -8165,40 +8165,96 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         ist = pytz.timezone("Asia/Kolkata")
 
         # Get now in IST
-        now_ist = timezone.now().astimezone(ist)
+        today_ist = timezone.now().astimezone(ist).date()
 
-        # IST today's start & end
-        start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_ist = now_ist.replace(hour=23, minute=59, second=59, microsecond=999999)
+        # Create datetime range for today in IST
+        start_ist = ist.localize(datetime.combine(today_ist, datetime.min.time()))
+        end_ist = ist.localize(datetime.combine(today_ist, datetime.max.time()))
 
-        # Convert IST → UTC (because DB stores in UTC)
+        # Convert to UTC
         start_utc = start_ist.astimezone(pytz.utc)
         end_utc = end_ist.astimezone(pytz.utc)
 
-        # Final queryset (100% correct)
+        # Final queryset
         queryset = TrainerAttendance.objects.filter(
             trainer__employee_id=employee_id,
-            date__range=(start_utc, end_utc)
-        ).order_by('-date')
+            date__gte=start_utc,
+            date__lte=end_utc
+        ).order_by('date')
 
-        # ------------------- Attendance Data -------------------
-        attendance_data = [
-            {
-                "trainer": att.trainer.employee_id,
-                "trainer_name": att.trainer.full_name,
-                "title": att.new_batch.title if att.new_batch else (att.batch.title if att.batch else None),
-                "course_id": att.course.course_id,
-                "course_name": att.course.course_name,
-                "batch_id": att.new_batch.batch_id if att.new_batch else (att.batch_id if att.batch else None),
-                "topic": getattr(att, 'topic', ""),
-                "sub_topic": getattr(att, 'sub_topic', ""),
-                "date": att.date.astimezone(ist).strftime("%Y-%m-%d %I:%M:%S %p"),
-                "status": att.status,
-                "marked_by_admin": att.marked_by_admin,
-                "extra_hours": getattr(att, 'extra_hours', None)
-            }
-            for att in queryset
-        ]
+        # ------------------- Process Attendance Data -------------------
+        trainer_info = None
+        sessions = {}
+
+        for att in queryset:
+            if not trainer_info:
+                trainer_info = {
+                    "trainer": att.trainer.employee_id,
+                    "trainer_name": att.trainer.full_name
+                }
+
+            batch_id = att.new_batch.batch_id if att.new_batch else (att.batch.batch_id if att.batch else None)
+            course_id = att.course.course_id
+            course_name = att.course.course_name
+            session_key = f"{batch_id}_{course_id}"
+
+            if session_key not in sessions:
+                sessions[session_key] = {
+                    "login": None,
+                    "logout": None,
+                    "batch_id": batch_id,
+                    "batch_title": att.new_batch.title if att.new_batch else (att.batch.title if att.batch else None),
+                    "course_id": course_id,
+                    "course_name": course_name
+                }
+
+            if att.status == "Login":
+                sessions[session_key]["login"] = att.date
+            elif att.status == "Logout":
+                sessions[session_key]["logout"] = att.date
+
+        attendance_data = []
+        total_seconds = 0
+
+        # MODIFIED: Include sessions even if only login exists
+        for session in sessions.values():
+            # Check if login exists (with OR condition)
+            if session["login"] or session["logout"]:
+                time_diff = None
+                seconds = 0
+                
+                # Calculate time difference only if both exist
+                if session["login"] and session["logout"]:
+                    time_diff = session["logout"] - session["login"]
+                    seconds = time_diff.total_seconds()
+                    total_seconds += seconds
+
+                hours = int(seconds // 3600) if seconds > 0 else 0
+                minutes = int((seconds % 3600) // 60) if seconds > 0 else 0
+
+                login_ist = session["login"].astimezone(ist) if session["login"] else None
+                logout_ist = session["logout"].astimezone(ist) if session["logout"] else None
+
+                attendance_data.append({
+                    "trainer": trainer_info["trainer"],
+                    "trainer_name": trainer_info["trainer_name"],
+                    "batch_id": session["batch_id"],
+                    "batch_name": session["batch_title"],
+                    "course_id": session["course_id"],
+                    "course_name": session["course_name"],
+                    "login_time": login_ist.strftime("%Y-%m-%d %I:%M:%S %p") if login_ist else None,
+                    "logout_time": logout_ist.strftime("%Y-%m-%d %I:%M:%S %p") if logout_ist else None,
+                    "spent_time": f"{hours}h {minutes}m" if seconds > 0 else "0m",
+                    "total_seconds": seconds,
+                    "status": "Active" if session["login"] and not session["logout"] else "Completed" if session["login"] and session["logout"] else "Unknown"  # Optional: add status
+                })
+
+        if total_seconds > 0:
+            total_hours = int(total_seconds // 3600)
+            total_minutes = int((total_seconds % 3600) // 60)
+            total_spent_time = f"{total_hours}h {total_minutes}m"
+        else:
+            total_spent_time = "0m"
 
         # ------------------- Trainer Info -------------------
         try:
@@ -8207,7 +8263,11 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             return Response({"success": False, "message": "Trainer not found."}, status=200)
 
         # ------------------- New Batches -------------------
-        new_batches = NewBatch.objects.filter(trainer=trainer, is_archived=False, status=True)
+        new_batches = NewBatch.objects.filter(
+            trainers__trainer_id=trainer.trainer_id,
+            is_archived=False,
+            status=True
+        )
         new_batch_data = [
             {
                 "batch_id": batch.batch_id,
@@ -8240,88 +8300,91 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         return Response({
             "success": True,
             "message": "Trainer today's attendance and batches fetched.",
-            "data": attendance_data,  # all today logs
-            "batches": final_batches  # full batch list
+            "data": attendance_data,
+            "total_spent_time": total_spent_time,
+            "batches": final_batches
         }, status=200)
-    
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=False)
+    # def create(self, request, *args, **kwargs):
+    #     serializer = self.get_serializer(data=request.data)
+    #     serializer.is_valid(raise_exception=False)
 
-        if not serializer.is_valid():
-            flat_errors = {
-                key: value[0] if isinstance(value, list) and value else value
-                for key, value in serializer.errors.items()
-            }
-            return Response({
-                'success': False,
-                'message': flat_errors
-            }, status=status.HTTP_200_OK)
+    #     if not serializer.is_valid():
+    #         flat_errors = {
+    #             key: value[0] if isinstance(value, list) and value else value
+    #             for key, value in serializer.errors.items()
+    #         }
+    #         return Response({
+    #             'success': False,
+    #             'message': flat_errors
+    #         }, status=status.HTTP_200_OK)
 
-        trainer_employee_id = request.data.get('trainer')
-        course_id = request.data.get('course')
-        batch_id = request.data.get('new_batch')   # This is NEW BATCH ID now
+    #     trainer_employee_id = request.data.get('trainer')
+    #     course_id = request.data.get('course')
+    #     batch_id = request.data.get('new_batch')   # This is NEW BATCH ID now
 
-        if not all([trainer_employee_id, course_id, batch_id]):
-            return Response({
-                'success': False,
-                'message': 'Trainer, course, and batch are required.'
-            }, status=status.HTTP_200_OK)
+    #     if not all([trainer_employee_id, course_id, batch_id]):
+    #         return Response({
+    #             'success': False,
+    #             'message': 'Trainer, course, and batch are required.'
+    #         }, status=status.HTTP_200_OK)
 
-        # Fetch trainer
-        try:
-            trainer = Trainer.objects.get(employee_id=trainer_employee_id)
-        except Trainer.DoesNotExist:
-            return Response({'success': False, 'message': 'Trainer not found.'}, status=status.HTTP_200_OK)
+    #     # Fetch trainer
+    #     try:
+    #         trainer = Trainer.objects.get(employee_id=trainer_employee_id)
+    #     except Trainer.DoesNotExist:
+    #         return Response({'success': False, 'message': 'Trainer not found.'}, status=status.HTTP_200_OK)
 
-        # Fetch course
-        try:
-            course = Course.objects.get(pk=course_id)
-        except Course.DoesNotExist:
-            return Response({'success': False, 'message': 'Course not found.'}, status=status.HTTP_200_OK)
+    #     # Fetch course
+    #     try:
+    #         course = Course.objects.get(pk=course_id)
+    #     except Course.DoesNotExist:
+    #         return Response({'success': False, 'message': 'Course not found.'}, status=status.HTTP_200_OK)
 
-        # 🚀 Fetch NEW batch
-        try:
-            new_batch = NewBatch.objects.get(batch_id=batch_id, is_archived=False)
-        except NewBatch.DoesNotExist:
-            return Response({'success': False, 'message': 'Batch not found.'}, status=status.HTTP_200_OK)
+    #     # 🚀 Fetch NEW batch
+    #     try:
+    #         new_batch = NewBatch.objects.get(batch_id=batch_id, is_archived=False)
+    #     except NewBatch.DoesNotExist:
+    #         return Response({'success': False, 'message': 'Batch not found.'}, status=status.HTTP_200_OK)
 
-        # 🔹 Validate trainer-course-batch assignment (NewBatch version)
-        is_course_assigned = (
-            new_batch.course_id == course.course_id and
-            new_batch.trainer_id == trainer.trainer_id
-        )
+    #     # 🔹 Validate trainer-course-batch assignment (NewBatch version)
+    #     is_course_assigned = (
+    #         new_batch.course_id == course.course_id and
+    #         new_batch.trainers.filter(
+    #             trainer_id=trainer.trainer_id
+    #         ).exists()
+    #     )
+        
 
-        if not is_course_assigned:
-            return Response({
-                'success': False,
-                'message': 'This course is not assigned to the trainer for this batch.'
-            }, status=status.HTTP_200_OK)
+    #     if not is_course_assigned:
+    #         return Response({
+    #             'success': False,
+    #             'message': 'This course is not assigned to the trainer for this batch.'
+    #         }, status=status.HTTP_200_OK)
 
-        # 🔹 Check if trainer has this course scheduled today
-        today = localtime().date()
-        class_scheduled = ClassSchedule.objects.filter(
-            trainer=trainer,
-            course=course,
-            new_batch=new_batch,    # Use new batch mapping
-            scheduled_date=today,
-            is_archived=False
-        ).exists()
+    #     # 🔹 Check if trainer has this course scheduled today
+    #     today = localtime().date()
+    #     class_scheduled = ClassSchedule.objects.filter(
+    #         trainer=trainer,
+    #         course=course,
+    #         new_batch=new_batch,    # Use new batch mapping
+    #         scheduled_date=today,
+    #         is_archived=False
+    #     ).exists()
 
-        if not class_scheduled:
-            return Response({
-                'success': False,
-                'message': 'No class scheduled today for this trainer, course, and batch.'
-            }, status=status.HTTP_200_OK)
+    #     if not class_scheduled:
+    #         return Response({
+    #             'success': False,
+    #             'message': 'No class scheduled today for this trainer, course, and batch.'
+    #         }, status=status.HTTP_200_OK)
 
-        # 🔹 All validations passed → create attendance
-        self.perform_create(serializer)
+    #     # 🔹 All validations passed → create attendance
+    #     self.perform_create(serializer)
 
-        return Response({
-            'message': 'Attendance recorded successfully',
-            'success': True,
-            'data': serializer.data
-        }, status=status.HTTP_201_CREATED)
+    #     return Response({
+    #         'message': 'Attendance recorded successfully',
+    #         'success': True,
+    #         'data': serializer.data
+    #     }, status=status.HTTP_201_CREATED)
 
     def format_hhmmss(self, total_seconds):
         hours = total_seconds // 3600
@@ -8331,7 +8394,6 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
     
     @action(detail=True, methods=['get'], url_path='full_logs')
     def full_logs(self, request, employee_id=None, *args, **kwargs):
-        employee_id = employee_id
         month = request.query_params.get("month")
         year = request.query_params.get("year")
         
@@ -8580,7 +8642,99 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 "success": False,
                 "message": str(e)
             }, status=200)
+
+
+    def create(self, request, employee_id=None):
+        try:
+            employee_id = request.data.get("trainer")
+            course_id = request.data.get("course")
+            batch_id = request.data.get("batch")
+            status_val = request.data.get("status", "Login")
+            # Get date from request or use current date
+            date_str = request.data.get("date")  # Add this
+
+            if not all([employee_id, course_id, batch_id]):
+                return Response({
+                    "success": False,
+                    "message": "Trainer, course, and batch are required."
+                }, status=200)
+
+            # ---------- Trainer & Course ----------
+            try:
+                trainer = Trainer.objects.get(employee_id=employee_id)
+            except Trainer.DoesNotExist:
+                return Response({"success": False, "message": "Trainer not found"}, status=200)
+
+            try:
+                course = Course.objects.get(pk=course_id)
+            except Course.DoesNotExist:
+                return Response({"success": False, "message": "Course not found"}, status=200)
+
+            # ---------- Handle Both Batch & NewBatch ----------
+            batch = None
+            new_batch = None
+
+            # Try NewBatch first
+            new_batch = NewBatch.objects.filter(batch_id=batch_id, is_archived=False).first()
+
+            if new_batch:
+                batch_obj = new_batch  # use new batch object
+            else:
+                # fallback to old batch
+                batch = Batch.objects.filter(pk=batch_id, is_archived=False).first()
+                if not batch:
+                    return Response({"success": False, "message": "Batch not found"}, status=200)
+                batch_obj = batch
+
+            # ---------- Date Parsing ----------
+            # Use provided date or current date
+            if date_str:
+                scheduled_date = parse_datetime(date_str)
+                if not scheduled_date:
+                    return Response({
+                        "success": False,
+                        "message": "Invalid datetime format. Use ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."
+                    }, status=200)
+                attendance_date = scheduled_date
+            else:
+                attendance_date = timezone.now()
+
+            # ---------- Prevent Duplicate Attendance ----------
+            # Check for existing attendance on the SAME date
+            if TrainerAttendance.objects.filter(
+                trainer=trainer,
+                batch_id=batch_id,
+                course=course,
+                date__date=attendance_date.date(),  # Check same date
+                status=status_val
+            ).exists():
+                return Response({"success": False, "message": "Attendance already marked for this date."}, status=200)
+
+            # ---------- Create Attendance ----------
+            attendance = TrainerAttendance.objects.create(
+                trainer=trainer,
+                course=course,
+                batch_id=batch_id,
+                date=attendance_date,  # Use the parsed date
+                status=status_val,
+                marked_by_admin=False
+            )
+
+            return Response({
+                "success": True,
+                "message": f"marked attendance as {status_val}",
+                "data": TrainerAttendanceSerializer(attendance).data,
+            }, status=201)
+
+        except Exception as e:
+            return Response({
+                "success": False,
+                "message": str(e)
+            }, status=200)
     
+# Define IST Timezone
+IST_TZ = pytz.timezone("Asia/Kolkata")
+
 class AttendanceCursorPagination(CursorPagination):
     """
     O(1) memory cursor pagination for high-volume logs (10,000+ users).
