@@ -351,8 +351,8 @@ TELECRM_API = "https://next-api.telecrm.in"
 
 
 
-# SERVER_ROOT = Path("/var/www/ay-lms-python-L") if Path("/var/www/ay-lms-python-L/logs").exists() else BASE_DIR.parent
-SERVER_ROOT = Path("/var/www/python-staging") if Path("/var/www/python-staging/logs").exists() else BASE_DIR.parent
+SERVER_ROOT = Path("/var/www/ay-lms-python-L") if Path("/var/www/ay-lms-python-L/logs").exists() else BASE_DIR.parent
+# SERVER_ROOT = Path("/var/www/python-staging") if Path("/var/www/python-staging/logs").exists() else BASE_DIR.parent
 # SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L") if Path("/home/aryu_user/Arun/ay-lms-python-L/logs").exists() else BASE_DIR.parent
 
 LOGGING = {
@@ -471,7 +471,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
     "https://portal.aryuacademy.com",
 ]
@@ -484,7 +484,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
     "https://portal.aryuacademy.com",
 
@@ -498,9 +498,9 @@ ALLOWED_HOSTS = [
     "passats.aryuacademy.com",
     "aryuacademy.com",
     "127.0.0.1",
-    "aylms.aryuprojects.com",
+    "portal.aryuacademy.com",
     "ayanew.aryuprojects.com",
-    "aylms.aryuprojects.com",
+    "portal.aryuacademy.com",
     "portal.aryuacademy.com",
 ]  # Allow all hosts for development; change in production
 
