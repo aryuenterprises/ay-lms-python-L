@@ -26,6 +26,7 @@ from rest_framework.parsers import MultiPartParser, JSONParser, FormParser
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.pagination import CursorPagination
 from .services import ReportService
+from .telecrm import sync_lead_to_telecrm, sync_leads_bulk_to_telecrm
 
 # Create your views here.
 
@@ -842,6 +843,14 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
             )
 
             # =============================================
+            # TELECRM BULK SYNC
+            # =============================================
+            sync_leads_bulk_to_telecrm(
+                bulk_leads,
+                action_note="Bulk Lead Upload"
+            )
+
+            # =============================================
             # CACHE INVALIDATION
             # =============================================
 
@@ -946,6 +955,68 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
         )
 
     # =====================================================
+    # FULL UPDATE LEAD
+    # =====================================================
+
+    @transaction.atomic
+    def update(self, request, pk=None):
+
+        self.validate_admin_access(request)
+
+        self.validate_payload_security(request)
+
+        try:
+
+            lead = Lead.objects.get(
+                pk=pk,
+                is_archived=False
+            )
+
+        except Lead.DoesNotExist:
+
+            return Response(
+                {
+                    "detail": "Lead not found."
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        serializer = LeadSerializer(
+            lead,
+            data=request.data,
+            partial=False,
+            context={
+                "request": request
+            }
+        )
+
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        serializer.save()
+
+        # =====================================
+        # CACHE INVALIDATION
+        # =====================================
+        try:
+            raw_client = cache._cache
+            keys_to_delete = raw_client.keys("*lead-engine:*")
+            if keys_to_delete:
+                decoded_keys = [k.decode("utf-8") if isinstance(k, bytes) else k for k in keys_to_delete]
+                raw_client.delete(*decoded_keys)
+        except Exception as e:
+            print(f"Cache invalidation failed: {e}")
+
+        return Response(
+            {
+                "success": True,
+                "message": "Lead updated successfully.",
+                "data": serializer.data
+            }
+        )
+
+    # =====================================================
     # SOFT DELETE
     # =====================================================
 
@@ -977,6 +1048,11 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
                 "is_archived"
             ]
         )
+
+        # ==========================================
+        # TELECRM LEAD ARCHIVE SYNC
+        # ==========================================
+        sync_lead_to_telecrm(lead, action_note="Lead Archived")
 
         cache.delete_pattern("lead-engine:*")
         cache.delete(f"lead-detail:{pk}")
@@ -1013,9 +1089,17 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
             call_log = serializer.save(
                 lead=lead,
                 called_by=User.objects.filter(
-                    id=request.user.user_id
+                    id=getattr(request.user, "user_id", None) or getattr(request.user, "id", None)
                 ).first(),
                 recording_url=request.FILES.get("recording_url")
+            )
+
+            # ==========================================
+            # TELECRM CALL LOG SYNC
+            # ==========================================
+            sync_lead_to_telecrm(
+                lead,
+                action_note=f"Call Log Added: {call_log.call_status} - {call_log.remarks or ''}"
             )
             
             # Invalidate cache so the lead details page updates

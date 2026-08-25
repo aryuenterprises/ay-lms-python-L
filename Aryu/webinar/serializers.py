@@ -9,6 +9,7 @@ import re
 import json
 from aryuapp.models import StudentTicket, TicketAttachment, TicketReply, Certificate
 from lead.models import Lead
+from lead.telecrm import sync_lead_to_telecrm
 from django.utils.text import slugify
 import requests
 import logging
@@ -160,45 +161,17 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
             **validated_data
         )
         # -----------------------------
-        # TELECRM LEAD CREATE
+        # TELECRM LEAD SYNC
         # -----------------------------
-        try:
-            url = f"https://next-api.telecrm.in/enterprise/6a13da730fbcb752673e080c/autoupdatelead"
-
-            headers = {
-                "Authorization": f"Bearer 2b5fa0b5-b45c-4150-ab6f-09a001575ca01779800797507:0d16d31d-e820-45fa-aafc-869ef640917d",
-                "Content-Type": "application/json"
+        sync_lead_to_telecrm(
+            lead,
+            action_type="ACTION_1001",
+            action_note=f"Webinar registration: {getattr(webinar, 'title', 'Webinar')}",
+            extra_fields={
+                "source": validated_data.get("source") or "webinar",
+                "course": validated_data.get("course"),
             }
-
-            payload = {
-                "fields": {
-                    "name": name,
-                    "phone": phone,
-                    "email": email,
-                    "source":validated_data.get('source'),
-                    "course":validated_data.get('course'),
-                },
-                "actions": [
-                    {
-                        "type": "ACTION_1001",
-                        "fields": {
-                            "note": "Webinar registration"
-                        }
-                    }
-                ]
-            }
-
-            response = requests.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=10
-            )
-
-            logger.debug("TeleCRM Response:", response.json())
-
-        except Exception as e:
-            logger.exception("TeleCRM Error:", str(e))
+        )
 
         return registration
 

@@ -86,6 +86,7 @@ class WhatsAppChatEngine:
         automatically transferring control back to the human agent.
         """
         from lead.models import Lead
+        from lead.telecrm import sync_lead_to_telecrm
         
         cleaned_phone = self.validate_and_standardize_phone(phone_number)
         local_10_digits = cleaned_phone[-10:]
@@ -99,9 +100,10 @@ class WhatsAppChatEngine:
             if not lead:
                 lead = Lead.objects.create(
                     phone=cleaned_phone,
-                    first_name="WhatsApp Lead",
-                    last_name=local_10_digits,
+                    name=f"WhatsApp Lead ({local_10_digits})",
+                    source="whatsapp",
                 )
+                sync_lead_to_telecrm(lead, action_note="Lead Created via WhatsApp")
 
             chat = WhatsAppChat.objects.create(
                 lead=lead,

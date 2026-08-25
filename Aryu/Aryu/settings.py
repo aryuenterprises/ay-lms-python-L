@@ -351,14 +351,8 @@ TELECRM_API = "https://next-api.telecrm.in"
 
 
 
-SERVER_ROOT = Path("/var/www/ay-lms-python-L")
-if not SERVER_ROOT.exists() or not os.access(SERVER_ROOT, os.W_OK):
-    SERVER_ROOT = BASE_DIR.parent
-(SERVER_ROOT / "logs").mkdir(parents=True, exist_ok=True)
-# SERVER_ROOT = Path(r'E:\Aryu projects\ay-lms-python-L')
-# SERVER_ROOT = Path("/home/tamilselvi/Documents/GitHub/ay-lms-python-L")
-
-# SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L")
+# SERVER_ROOT = Path("/var/www/ay-lms-python-L") if Path("/var/www/ay-lms-python-L/logs").exists() else BASE_DIR.parent
+SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L") if Path("/home/aryu_user/Arun/ay-lms-python-L/logs").exists() else BASE_DIR.parent
 
 LOGGING = {
     "version": 1,
@@ -609,53 +603,6 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'api/media')
 
 MEDIA_BASE_URL = "https://portal.aryuacademy.com/api"
 
-class DisableMigrations:
-    def __getitem__(self, item):
-        return None
-    def __contains__(self, item):
-        return True
-
-if 'test' in sys.argv:
-    import django.contrib.postgres.fields
-    import django.db.models
-    from django.db.backends.sqlite3.schema import DatabaseSchemaEditor
-
-    class DummyArrayField(django.db.models.JSONField):
-        def __init__(self, *args, **kwargs):
-            kwargs.pop('base_field', None)
-            kwargs.pop('size', None)
-            super().__init__(*args, **kwargs)
-
-    django.contrib.postgres.fields.ArrayField = DummyArrayField
-
-    orig_quote_name = DatabaseSchemaEditor.quote_name
-    def safe_quote_name(self, name):
-        if "." in name:
-            name = name.split(".")[-1].strip('"')
-        return orig_quote_name(self, name)
-    DatabaseSchemaEditor.quote_name = safe_quote_name
-
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': ':memory:',
-        }
-    }
-    MIGRATION_MODULES = DisableMigrations()
-else:
-    # DATABASES = {
-    #     'default': {
-    #         'ENGINE': 'django.db.backends.postgresql',
-    #         'NAME': 'aylms_live',  
-    #         'USER': 'aylms_live',
-    #         'PASSWORD':'KfdW543FDdfg',
-    #         'HOST': '187.127.178.144',   
-    #         'PORT': '5432',  
-    #         'AUTOCOMMIT': True,
-    #         'CONN_MAX_AGE': 60,
-    #     },
-    # }
-
 # class DisableMigrations:
 #     def __getitem__(self, item):
 #         return None
@@ -690,6 +637,53 @@ else:
 #     }
 #     MIGRATION_MODULES = DisableMigrations()
 # else:
+#     DATABASES = {
+#         'default': {
+#             'ENGINE': 'django.db.backends.postgresql',
+#             'NAME': 'aylms_live',  
+#             'USER': 'aylms_live',
+#             'PASSWORD':'KfdW543FDdfg',
+#             'HOST': '187.127.178.144',   
+#             'PORT': '5432',  
+#             'AUTOCOMMIT': True,
+#             'CONN_MAX_AGE': 60,
+#         },
+#     }
+
+class DisableMigrations:
+    def __getitem__(self, item):
+        return None
+    def __contains__(self, item):
+        return True
+
+if 'test' in sys.argv:
+    import django.contrib.postgres.fields
+    import django.db.models
+    from django.db.backends.sqlite3.schema import DatabaseSchemaEditor
+
+    class DummyArrayField(django.db.models.JSONField):
+        def __init__(self, *args, **kwargs):
+            kwargs.pop('base_field', None)
+            kwargs.pop('size', None)
+            super().__init__(*args, **kwargs)
+
+    django.contrib.postgres.fields.ArrayField = DummyArrayField
+
+    orig_quote_name = DatabaseSchemaEditor.quote_name
+    def safe_quote_name(self, name):
+        if "." in name:
+            name = name.split(".")[-1].strip('"')
+        return orig_quote_name(self, name)
+    DatabaseSchemaEditor.quote_name = safe_quote_name
+
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': ':memory:',
+        }
+    }
+    MIGRATION_MODULES = DisableMigrations()
+else:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',

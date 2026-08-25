@@ -14,6 +14,7 @@ from rest_framework.decorators import action
 from .models import *
 from .serializers import *
 from django.shortcuts import get_object_or_404
+from lead.telecrm import sync_lead_to_telecrm
 logger = logging.getLogger("razorpay_webhook")
 
 class ResourceDownloadRateThrottle(AnonRateThrottle):
@@ -141,12 +142,27 @@ class ResourcesViewSet(viewsets.ModelViewSet):
                             existing_lead.message = download_note
 
                         existing_lead.save()
+                        target_lead = existing_lead
                     else:
-                        Lead.objects.create(
+                        target_lead = Lead.objects.create(
                             phone=phone,
                             message=f"Downloaded: {resource.title}",
                             **lead_defaults,
                         )
+
+                    # ==========================================
+                    # TELECRM RESOURCE DOWNLOAD SYNC
+                    # ==========================================
+                    sync_lead_to_telecrm(
+                        target_lead,
+                        action_type="ACTION_1001",
+                        action_note=f"Resource Downloaded: {resource.title}",
+                        extra_fields={
+                            "source": lead_defaults.get("source"),
+                            "source_campaign": lead_defaults.get("source_campaign"),
+                            "course_interested_in": lead_defaults.get("course_interested_in"),
+                        }
+                    )
 
             # 2. Return Response
             resource_serializer = self.get_serializer(resource)
