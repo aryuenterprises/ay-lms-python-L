@@ -3326,21 +3326,24 @@ class SubscriptionService:
 class SubscriptionViewSet(viewsets.ViewSet):
 
     permission_classes = [permissions.IsAuthenticated]
-
     authentication_classes = [CustomJWTAuthentication]
 
-    @secure_throttle(rate_limit=20, period=60)
-    @action(detail=False,methods=["get"],url_path="plans")
-    def plans(self, request):
-
-        subscriptions = Subscription.objects.filter(
-            is_active=True
-        ).order_by("order")
-
-        serializer = SubscriptionSerializer(
-            subscriptions,
-            many=True
+    def _is_admin(self, request):
+        return (
+            getattr(request.user, "is_authenticated", False)
+            and getattr(request.user, "user_type", None) in ["admin", "super_admin"]
         )
+
+    @secure_throttle(rate_limit=20, period=60)
+    @action(detail=False, methods=["get"], url_path="plans")
+    def plans(self, request):
+        # Admins or callers passing ?include_inactive=true get all plans (active & inactive)
+        if self._is_admin(request) or request.query_params.get("include_inactive") == "true":
+            subscriptions = Subscription.objects.all().order_by("order")
+        else:
+            subscriptions = Subscription.objects.filter(is_active=True).order_by("order")
+
+        serializer = SubscriptionSerializer(subscriptions, many=True)
 
         return Response(
             {
@@ -3350,13 +3353,10 @@ class SubscriptionViewSet(viewsets.ViewSet):
             status=status.HTTP_200_OK
         )
 
-
     @secure_throttle(rate_limit=20, period=60)
-    @action(detail=False,methods=["get"],url_path="my-subscription")
+    @action(detail=False, methods=["get"], url_path="my-subscription")
     def my_subscription(self, request):
-
         if not request.user.is_authenticated:
-
             return Response(
                 {
                     "success": False,
@@ -3373,7 +3373,6 @@ class SubscriptionViewSet(viewsets.ViewSet):
         ).order_by("-id").first()
 
         if not current_subscription:
-
             return Response(
                 {
                     "success": True,
@@ -3384,21 +3383,14 @@ class SubscriptionViewSet(viewsets.ViewSet):
 
         if (
             current_subscription.end_date
-            and timezone.now() >
-            current_subscription.end_date
+            and timezone.now() > current_subscription.end_date
         ):
-
             current_subscription.status = "expired"
+            current_subscription.save(update_fields=["status"])
 
-            current_subscription.save(
-                update_fields=["status"]
-            )
-
-            current_subscription.user.current_subscription = None
-
-            current_subscription.user.save(
-                update_fields=["current_subscription"]
-            )
+            if hasattr(current_subscription.user, "current_subscription"):
+                current_subscription.user.current_subscription = None
+                current_subscription.user.save(update_fields=["current_subscription"])
 
             return Response(
                 {
@@ -3409,9 +3401,7 @@ class SubscriptionViewSet(viewsets.ViewSet):
                 status=status.HTTP_200_OK
             )
 
-        serializer = UserSubscriptionSerializer(
-            current_subscription
-        )
+        serializer = UserSubscriptionSerializer(current_subscription)
 
         return Response(
             {
@@ -3422,11 +3412,9 @@ class SubscriptionViewSet(viewsets.ViewSet):
         )
 
     @secure_throttle(rate_limit=20, period=60)
-    @action(detail=False,methods=["get"],url_path="subscription-history")
+    @action(detail=False, methods=["get"], url_path="subscription-history")
     def subscription_history(self, request):
-
         if not request.user.is_authenticated:
-
             return Response(
                 {
                     "success": False,
@@ -3441,10 +3429,7 @@ class SubscriptionViewSet(viewsets.ViewSet):
             user_id=request.user.id
         ).order_by("-id")
 
-        serializer = UserSubscriptionSerializer(
-            subscriptions,
-            many=True
-        )
+        serializer = UserSubscriptionSerializer(subscriptions, many=True)
 
         return Response(
             {
@@ -3452,20 +3437,12 @@ class SubscriptionViewSet(viewsets.ViewSet):
                 "subscriptions": serializer.data
             },
             status=status.HTTP_200_OK
-        ) 
-    
-    def _is_admin(self, request):
-
-        return request.user.user_type in [
-            "admin",
-            "super_admin"
-        ]
+        )
 
     @secure_throttle(rate_limit=10, period=60)
-    @action(detail=False,methods=["post"],url_path="create-plan")
+    @action(detail=False, methods=["post"], url_path="create-plan")
     def create_plan(self, request):
         if not self._is_admin(request):
-
             return Response(
                 {
                     "success": False,
@@ -3474,45 +3451,29 @@ class SubscriptionViewSet(viewsets.ViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        serializer = SubscriptionSerializer(
-            data=request.data
-        )
-
-        serializer.is_valid(
-            raise_exception=True
-        )
-
+        serializer = SubscriptionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         validated_data = serializer.validated_data
 
-        if (
-            validated_data.get("price", 0) < 0
-        ):
-
+        if validated_data.get("price", 0) < 0:
             return Response(
                 {
                     "success": False,
                     "message": "Invalid price"
                 },
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         if (
-            validated_data.get(
-                "discount_price"
-            )
-            and
-            validated_data["discount_price"]
-            >
-            validated_data["price"]
+            validated_data.get("discount_price") is not None
+            and validated_data["discount_price"] > validated_data["price"]
         ):
-
             return Response(
                 {
                     "success": False,
-                    "message":
-                    "Discount price cannot exceed price"
+                    "message": "Discount price cannot exceed price"
                 },
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         subscription = Subscription.objects.create(
@@ -3532,26 +3493,21 @@ class SubscriptionViewSet(viewsets.ViewSet):
             subscription.order = subscription.id
             subscription.save(update_fields=["order"])
 
-        response_serializer = SubscriptionSerializer(
-            subscription
-        )
+        response_serializer = SubscriptionSerializer(subscription)
 
         return Response(
             {
                 "success": True,
-                "message":
-                "Subscription plan created successfully",
+                "message": "Subscription plan created successfully",
                 "plan": response_serializer.data
             },
             status=status.HTTP_201_CREATED
         )
 
     @secure_throttle(rate_limit=10, period=60)
-    @action(detail=False,methods=["patch"],url_path="update-plan/(?P<plan_id>[^/.]+)")
+    @action(detail=False, methods=["patch"], url_path=r"update-plan/(?P<plan_id>[^/.]+)")
     def update_plan(self, request, plan_id=None):
-
         if not self._is_admin(request):
-
             return Response(
                 {
                     "success": False,
@@ -3560,113 +3516,74 @@ class SubscriptionViewSet(viewsets.ViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        subscription = get_object_or_404(
-            Subscription,
-            id=plan_id
-        )
+        subscription = get_object_or_404(Subscription, id=plan_id)
 
         serializer = SubscriptionSerializer(
             subscription,
             data=request.data,
             partial=True
         )
-
-        serializer.is_valid(
-            raise_exception=True
-        )
-
+        serializer.is_valid(raise_exception=True)
         validated_data = serializer.validated_data
 
-        new_price = validated_data.get(
-            "price",
-            subscription.price
-        )
-
-        new_discount_price = validated_data.get(
-            "discount_price",
-            subscription.discount_price
-        )
+        new_price = validated_data.get("price", subscription.price)
+        new_discount_price = validated_data.get("discount_price", subscription.discount_price)
 
         if new_price < 0:
-
             return Response(
                 {
                     "success": False,
                     "message": "Invalid price"
                 },
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         if (
-            new_discount_price
-            and
-            new_discount_price > new_price
+            new_discount_price is not None
+            and new_discount_price > new_price
         ):
-
             return Response(
                 {
                     "success": False,
-                    "message":
-                    "Discount price cannot exceed price"
+                    "message": "Discount price cannot exceed price"
                 },
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         allowed_fields = [
-
             "name",
-
             "slug",
-
             "description",
-
             "price",
-
             "discount_price",
-
             "billing_type",
-
             "duration_days",
-
             "limit",
-
             "order",
-
             "is_active"
         ]
 
         for field in allowed_fields:
-
             if field in validated_data:
-
-                setattr(
-                    subscription,
-                    field,
-                    validated_data[field]
-                )
+                setattr(subscription, field, validated_data[field])
 
         subscription.save()
 
-        response_serializer = SubscriptionSerializer(
-            subscription
-        )
+        response_serializer = SubscriptionSerializer(subscription)
 
         return Response(
             {
                 "success": True,
-                "message":
-                "Subscription updated successfully",
+                "message": "Subscription updated successfully",
                 "plan": response_serializer.data
             },
             status=status.HTTP_200_OK
         )
 
     @secure_throttle(rate_limit=10, period=60)
-    @action(detail=False,methods=["patch"],url_path="delete-plan/(?P<plan_id>[^/.]+)")
+    @action(detail=False, methods=["patch"], url_path=r"delete-plan/(?P<plan_id>[^/.]+)")
     def delete_plan(self, request, plan_id=None):
-
         if not self._is_admin(request):
-
             return Response(
                 {
                     "success": False,
@@ -3675,30 +3592,21 @@ class SubscriptionViewSet(viewsets.ViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        subscription = get_object_or_404(
-            Subscription,
-            id=plan_id
-        )
+        subscription = get_object_or_404(Subscription, id=plan_id)
 
-        # =====================================
-        # SOFT DELETE
-        # =====================================
-
+        # Soft delete: update status flag
         subscription.is_active = False
-
-        subscription.save(
-            update_fields=["is_active"]
-        )
+        subscription.save(update_fields=["is_active"])
 
         return Response(
             {
                 "success": True,
-                "message":
-                "Subscription deleted successfully"
+                "message": "Subscription deactivated successfully"
             },
             status=status.HTTP_200_OK
         )
 
+        
 import requests
 
 class ResumeGateway(APIView):
