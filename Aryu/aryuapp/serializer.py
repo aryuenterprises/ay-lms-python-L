@@ -2345,7 +2345,15 @@ class TrainerAttendanceSerializer(serializers.ModelSerializer):
     extra_hours = serializers.SerializerMethodField()
 
     # New field for POST only (NewBatch)
-    new_batch = serializers.IntegerField(write_only=True, required=False)
+    new_batch = serializers.PrimaryKeyRelatedField(
+        queryset=NewBatch.objects.filter(
+            is_archived=False
+        )
+    )
+    trainer = serializers.SlugRelatedField(
+        slug_field='employee_id',
+        queryset=Trainer.objects.all()
+    )
 
     class Meta:
         model = TrainerAttendance
@@ -2378,7 +2386,7 @@ class TrainerAttendanceSerializer(serializers.ModelSerializer):
         from aryuapp.models import ClassSchedule
 
         schedules = ClassSchedule.objects.filter(
-            trainers=obj.trainer,
+            trainer=obj.trainer,
             batch=obj.batch,
             course=obj.course,
             scheduled_date=obj.date.date(),
@@ -2424,10 +2432,10 @@ class TrainerAttendanceSerializer(serializers.ModelSerializer):
             return data
 
         # If POST does NOT contain new_batch → reject
-        if self.instance is None:  # Only for POST
-            raise serializers.ValidationError(
-                {"new_batch": "Batch is required for trainer attendance creation."}
-            )
+        # if self.instance is None:  # Only for POST
+        #     raise serializers.ValidationError(
+        #         {"new_batch": "Batch is required for trainer attendance creation."}
+        #     )
 
         # GET request for old attendance → allow without validation
         return data
