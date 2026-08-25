@@ -72,8 +72,25 @@ def get_or_create_student_from_bootcamp(name: str, email: str, phone: str, profe
             city="N/A",
             state="N/A",
             country="India",
-        )
         student.save()
+
+        # Create corresponding auth User record to prevent invalid login credentials
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        user_name_val = username if username else email
+        user, user_created = User.objects.get_or_create(
+            email=email,
+            defaults={
+                "username": user_name_val,
+                "full_name": name_clean or first_name,
+                "is_active": True,
+                "user_type": "student"
+            }
+        )
+        if user_created:
+            user.set_password(random_password)
+            user.save()
+
 
         # Create profession-specific subprofile
         prof_lower = profession.lower()
