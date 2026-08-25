@@ -1413,49 +1413,62 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
         try:
             trainer_id = str(trainer_id)
 
-            unified_batches = []
+            # ------------------- Get Trainer -------------------
+            try:
+                trainer = Trainer.objects.get(trainer_id=trainer_id)
+            except Trainer.DoesNotExist:
+                return Response({
+                    "success": False, 
+                    "message": "Trainer not found."
+                }, status=200)
 
-            # ----------------------------
-            # OLD BATCHES
-            # ----------------------------
-            assigned_old_batch_ids = BatchCourseTrainer.objects.filter(
-                trainers__trainer_id=trainer_id
-            ).values_list("batch_id", flat=True)
-
-            old_batches = Batch.objects.filter(
-                batch_id__in=assigned_old_batch_ids,
+            # ------------------- New Batches -------------------
+            new_batches = NewBatch.objects.filter(
+                trainers__trainer_id=trainer_id,
                 is_archived=False
             ).order_by("-created_at")
 
-            for b in old_batches:
-                assignments = BatchCourseTrainer.objects.filter(batch=b)
+            # ------------------- Old Batches -------------------
+            old_batch_ids = BatchCourseTrainer.objects.filter(
+                trainer__trainer_id=trainer_id
+            ).values_list("batch_id", flat=True).distinct()
 
-                # students
+            old_batches = Batch.objects.filter(
+                batch_id__in=old_batch_ids,
+                is_archived=False
+            ).order_by("-created_at")
+
+            unified_batches = []
+
+            # ------------------- Process Old Batches -------------------
+            for batch in old_batches:
+                # Get assignments for this batch
+                assignments = BatchCourseTrainer.objects.filter(batch=batch)
+                
+                # Get students from assignments
                 students_data = []
-                for a in assignments:
-                    if a.student:
+                for assignment in assignments:
+                    if assignment.student:
                         students_data.append({
-                            "student_id": a.student.student_id,
-                            "registration_id": a.student.registration_id,
-                            "full_name": f"{a.student.first_name}".strip()
+                            "student_id": assignment.student.student_id,
+                            "registration_id": assignment.student.registration_id,
+                            "full_name": assignment.student.first_name.strip()
                         })
 
-                # trainer + course
-                trainer_data = None
-                course_data = None
-                if assignments.exists():
-                    first = assignments.first()
-                    trainer_data = {
-                        "trainer_id": first.trainer.trainer_id if first.trainer else None,
-                        "trainer_name": first.trainer.full_name if first.trainer else None
-                    }
-                    course_data = {
-                        "course_id": first.course.course_id if first.course else None,
-                        "course_name": first.course.course_name if first.course else None
-                    }
+                # Get trainer and course from first assignment
+                first_assignment = assignments.first()
+                trainer_info = {
+                    "trainer_id": first_assignment.trainer.trainer_id if first_assignment and first_assignment.trainer else None,
+                    "trainer_name": first_assignment.trainer.full_name if first_assignment and first_assignment.trainer else None
+                } if first_assignment else None
+                
+                course_info = {
+                    "course_id": first_assignment.course.course_id if first_assignment and first_assignment.course else None,
+                    "course_name": first_assignment.course.course_name if first_assignment and first_assignment.course else None
+                } if first_assignment else None
 
-                # schedules
-                schedules = ClassSchedule.objects.filter(batch=b).values(
+                # Get schedules
+                schedules = ClassSchedule.objects.filter(batch=batch).values(
                     "schedule_id",
                     "course_id",
                     "course__course_name",
@@ -1466,68 +1479,67 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     "end_time",
                 )
 
-                # notes
+                # Get notes
                 note_ct = ContentType.objects.get_for_model(Batch)
-                old_notes = Note.objects.filter(
-                    object_id=b.batch_id,
+                notes = Note.objects.filter(
+                    object_id=batch.batch_id,
                     content_type=note_ct
                 ).order_by("-created_at")
 
                 notes_data = [
                     {
-                        "note_id": n.id,
-                        "reason": n.reason,
-                        "created_by": getattr(n.created_by, "username", ""),
-                        "created_at": n.created_at.strftime("%Y-%m-%d %H:%M")
+                        "note_id": note.id,
+                        "reason": note.reason,
+                        "created_by": getattr(note.created_by, "username", ""),
+                        "created_at": note.created_at.strftime("%Y-%m-%d %H:%M")
                     }
-                    for n in old_notes
+                    for note in notes
                 ]
 
                 unified_batches.append({
-                    "id": b.batch_id,
-                    "title": b.title,
-                    "course": course_data.get("course_id") if course_data else None,
-                    "course_name": course_data.get("course_name") if course_data else None,
+                    "id": batch.batch_id,
+                    "title": batch.title,
+                    "batch_name": batch.batch_name if hasattr(batch, "batch_name") else batch.title,
+                    "course": course_info.get("course_id") if course_info else None,
+                    "course_name": course_info.get("course_name") if course_info else None,
                     "category": None,
-                    "trainer": trainer_data.get("trainer_id") if trainer_data else None,
-                    "trainer_name": trainer_data.get("full_name") if trainer_data else None,
-                    "start_date": b.scheduled_date,
-                    "end_date": b.end_date,
-                    "start_time": b.start_time if hasattr(b, "start_time") else None,
-                    "end_time": b.end_time if hasattr(b, "end_time") else None,
-                    "slots": b.slots if hasattr(b, "slots") else None,
-                    "created_at": b.created_at,
-                    "created_by": b.created_by,
-                    "created_by_type": b.created_by_type,
-                    "status": b.status,
-                    "is_archived": b.is_archived,
-                    "available_slots": getattr(b, "available_slots", None),
+                    "trainer": trainer_info.get("trainer_id") if trainer_info else None,
+                    "trainer_name": trainer_info.get("trainer_name") if trainer_info else None,
+                    "start_date": batch.scheduled_date,
+                    "end_date": batch.end_date,
+                    "start_time": getattr(batch, "start_time", None),
+                    "end_time": getattr(batch, "end_time", None),
+                    "slots": getattr(batch, "slots", None),
+                    "available_slots": getattr(batch, "available_slots", None),
+                    "status": batch.status,
+                    "is_archived": batch.is_archived,
+                    "created_at": batch.created_at,
+                    "created_by": batch.created_by,
+                    "created_by_type": batch.created_by_type,
                     "students": students_data or None,
                     "notes": notes_data or None,
                     "schedules": list(schedules),
                     "source": "old"
                 })
 
-            new_batches = NewBatch.objects.filter(
-                trainers__trainer_id=trainer_id,
-                is_archived=False
-            ).order_by("-created_at")
-
-            for nb in new_batches:
-
-                # students
+            # ------------------- Process New Batches -------------------
+            all_students = []
+            
+            for batch in new_batches:
+                # Get students
                 students_data = [
                     {
-                        "student_id": s.student_id,
-                        "registration_id": s.registration_id,
-                        "full_name": f"{s.first_name}".strip()
+                        "student_id": student.student_id,
+                        "registration_id": student.registration_id,
+                        "full_name": student.first_name.strip()
                     }
-                    for s in nb.students.all()
+                    for student in batch.students.all()
                 ]
+                all_students.extend(students_data)
 
-                # schedules
+                # Get schedules
                 schedules = ClassSchedule.objects.filter(
-                    batch__batch_id=nb.batch_id
+                    batch__batch_id=batch.batch_id
                 ).annotate(
                     course_name=F("course__course_name"),
                     trainer_name=F("trainer__full_name")
@@ -1542,109 +1554,106 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     "end_time",
                 )
 
-                # notes
+                # Get notes
                 note_ct = ContentType.objects.get_for_model(NewBatch)
-                new_notes = Note.objects.filter(
-                    object_id=nb.pk,
+                notes = Note.objects.filter(
+                    object_id=batch.pk,
                     content_type=note_ct
                 ).order_by("-created_at")
 
                 notes_data = [
                     {
-                        "note_id": n.id,
-                        "reason": n.reason,
-                        "created_by": n.created_by,
-                        "created_by_type": n.created_by_type,
-                        "status": n.status,
-                        "created_at": n.created_at.strftime("%Y-%m-%d %H:%M"),
+                        "note_id": note.id,
+                        "reason": note.reason,
+                        "created_by": note.created_by,
+                        "created_by_type": note.created_by_type,
+                        "status": note.status,
+                        "created_at": note.created_at.strftime("%Y-%m-%d %H:%M"),
                     }
-                    for n in new_notes
+                    for note in notes
+                ]
+
+                # Get trainers for this batch
+                trainers_data = [
+                    {
+                        "trainer_id": t.trainer_id,
+                        "trainer_name": t.full_name,
+                        "employee_id": t.employee_id,
+                    }
+                    for t in batch.trainers.all()
                 ]
 
                 unified_batches.append({
-                    "id": nb.batch_id,
-                    "title": nb.title,
-                    "course": nb.course.course_id if nb.course else None,
-                    "category": nb.course.course_category.category_id if nb.course and nb.course.course_category else None,
-                    "course_name": nb.course.course_name if nb.course else None,
-                    "trainers": [
-                        {
-                            "trainer_id": t.trainer_id,
-                            "trainer_name": t.full_name,
-                            "employee_id": t.employee_id,
-                        }
-                        for t in nb.trainers.all()
-                    ],
-                    "start_date": nb.start_date,
-                    "end_date": nb.end_date,
-                    "start_time": nb.start_time,
-                    "end_time": nb.end_time,
-                    "slots": nb.slots,
-                    "status": nb.status,
-                    "created_at": nb.created_at,
-                    "created_by": nb.created_by,
-                    "created_by_type": nb.created_by_type,
-                    "is_archived": nb.is_archived,
-                    "available_slots": nb.available_slots(),
+                    "id": batch.batch_id,
+                    "title": batch.title,
+                    "batch_name": batch.title,
+                    "course": batch.course.course_id if batch.course else None,
+                    "course_name": batch.course.course_name if batch.course else None,
+                    "category": batch.course.course_category.category_id if batch.course and batch.course.course_category else None,
+                    "trainers": trainers_data,
+                    "start_date": batch.start_date,
+                    "end_date": batch.end_date,
+                    "start_time": batch.start_time,
+                    "end_time": batch.end_time,
+                    "slots": batch.slots,
+                    "available_slots": batch.available_slots(),
+                    "status": batch.status,
+                    "is_archived": batch.is_archived,
+                    "created_at": batch.created_at,
+                    "created_by": batch.created_by,
+                    "created_by_type": batch.created_by_type,
                     "students": students_data or None,
                     "notes": notes_data or None,
                     "schedules": list(schedules),
                     "source": "new"
                 })
 
-            trainer_id = trainer_id
-            # Get all courses assigned to this trainer via NewBatch
+            # ------------------- Active Courses -------------------
             assigned_course_ids = NewBatch.objects.filter(
                 trainers__trainer_id=trainer_id,
                 is_archived=False,
                 status=True
             ).values_list("course_id", flat=True).distinct()
             
-            course_queryset = Course.objects.filter(
+            active_courses = Course.objects.filter(
                 course_id__in=assigned_course_ids,
                 is_archived=False,
                 status__iexact='Active'
-            )
-            
-            course_data = course_queryset.annotate(
-                category_id=F('course_category__category_id')).values('course_id', 'course_name', 'category_id')
-            
-            category_ids = course_queryset.values_list('course_category__category_id', flat=True).distinct()
-            
-            categories = CourseCategory.objects.filter(category_id__in=category_ids).values(
-                'category_id', 'category_name'
-            )
-            
-            # From NEW batches (NewBatch -> students M2M)
-            new_batches = NewBatch.objects.filter(
-                trainers__trainer_id=trainer_id,
-                is_archived=False
-            ).order_by("-created_at")
+            ).annotate(
+                category_id=F('course_category__category_id')
+            ).values('course_id', 'course_name', 'category_id')
 
-            for nb in new_batches:
+            # ------------------- Categories -------------------
+            category_ids = active_courses.values_list(
+                'course_category__category_id', flat=True
+            ).distinct()
+            
+            categories = CourseCategory.objects.filter(
+                category_id__in=category_ids
+            ).values('category_id', 'category_name')
 
-                # students
-                students_data = [
-                    {
-                        "student_id": s.student_id,
-                        "registration_id": s.registration_id,
-                        "full_name": f"{s.first_name}".strip()
-                    }
-                    for s in nb.students.all()
-                ]
+            # ------------------- Unique Students -------------------
+            seen_student_ids = set()
+            unique_students = []
+            for student in all_students:
+                if student["student_id"] not in seen_student_ids:
+                    seen_student_ids.add(student["student_id"])
+                    unique_students.append(student)
 
             return Response({
                 "success": True,
                 "message": "Trainer filtered batches retrieved successfully.",
                 "batches": unified_batches,
-                "active_course": course_data,
-                "assigned_students": students_data,
-                'active_category': categories
-            })
+                "active_courses": active_courses,
+                "assigned_students": unique_students,
+                "categories": categories
+            }, status=200)
 
         except Exception as e:
-            return Response({"success": False, "message": str(e)})
-        
+            return Response({
+                "success": False, 
+                "message": str(e)
+            }, status=200)
     @action(detail=False, methods=['get'], url_path='student/(?P<student_id>[^/.]+)')
     def student_batches(self, request, student_id):
         try:
