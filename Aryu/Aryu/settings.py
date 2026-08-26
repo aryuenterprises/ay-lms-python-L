@@ -689,7 +689,7 @@ else:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
-            'NAME': 'aylms_staging',
+            'NAME': 'academy_staging',
             'USER': 'aryu_user',
             'PASSWORD':'YUra@2025',
             'HOST': '49.207.178.161',
