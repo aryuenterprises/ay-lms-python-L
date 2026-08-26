@@ -921,19 +921,38 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         payment_status = request.query_params.get('payment_status')
         search_query = request.query_params.get('search')
         
-        # Fetch courses for the specific trainer (optimized)
+        # Fetch courses for the specific trainer with fee as string
         course = None
         if trainer_id:
-            # Get courses directly from trainer_courses table
-            course = Course.objects.filter(
-                trainer_courses__trainer_id=trainer_id,  # Using the junction table
+            # Get courses from trainer_courses table with fee
+            course_qs = Course.objects.filter(
+                trainer_courses__trainer_id=trainer_id,
                 is_archived=False
-            ).values("course_id", "course_name","fee").distinct()
+            ).values("course_id", "course_name", "fee").distinct()
+            
+            # Convert fee to string for each course
+            course = []
+            for c in course_qs:
+                course_dict = {
+                    "course_id": c["course_id"],
+                    "course_name": c["course_name"],
+                    "fee": str(c["fee"]) if c["fee"] is not None else "0.0"
+                }
+                course.append(course_dict)
         else:
-            # If no trainer_id, get all active courses
-            course = Course.objects.filter(
+            # If no trainer_id, get all active courses with fee as string
+            course_qs = Course.objects.filter(
                 is_archived=False
-            ).values("course_id", "course_name","fee").distinct()
+            ).values("course_id", "course_name", "fee").distinct()
+            
+            course = []
+            for c in course_qs:
+                course_dict = {
+                    "course_id": c["course_id"],
+                    "course_name": c["course_name"],
+                    "fee": str(c["fee"]) if c["fee"] is not None else "0.0"
+                }
+                course.append(course_dict)
         
         # Apply filters
         if trainer_id:
@@ -971,7 +990,7 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
             except Trainer.DoesNotExist:
                 trainer_details = None
         
-        # Fetch Active Courses (optimized)
+        # Fetch Active Courses (optimized) - these are for dropdown/selection
         active_courses = Course.objects.filter(
             is_archived=False
         ).exclude(status__iexact='inactive')
@@ -1001,13 +1020,10 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
             for course in active_courses_with_batches
         ]
         
-        # Convert course queryset to list if it exists
-        course_list = list(course) if course else []
-        
         # Prepare response data
         response_data = {
             'trainer_details': trainer_details,
-            'courses': course_list,  # Now properly handles None case
+            'courses': course,  # Now includes fee as string
             'active_courses': courses_data,
             'all_batches': batches_by_course,
         }
@@ -1025,6 +1041,8 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         response_data['results'] = serializer.data
         return Response(response_data, status=status.HTTP_200_OK)
+
+    
 class StripePaymentViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['post'])
