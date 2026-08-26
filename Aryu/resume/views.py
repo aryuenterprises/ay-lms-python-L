@@ -545,71 +545,59 @@ class AuthViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["post"], url_path="resend-verification-email")
     def resend_verification_email(self, request):
-
-        email = str(
-            request.data.get("email", "")
-        ).strip().lower()
-
-        if not email:
-
-            return Response(
-                {
-                    "error": "Email is required"
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
         try:
+            email = str(
+                request.data.get("email", "")
+            ).strip().lower()
 
-            user = ResumeRegistration.objects.only(
-                "id",
-                "email",
-                "first_name",
-                "is_verified"
-            ).get(email=email)
+            if not email:
+                return Response(
+                    {
+                        "success": False,
+                        "error": "Email is required"
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
-        except ResumeRegistration.DoesNotExist:
+            user = ResumeRegistration.objects.filter(email__iexact=email).first()
+            if not user:
+                user = User.objects.filter(email__iexact=email).first()
 
-            return Response(
+            if not user:
+                return Response(
+                    {
+                        "success": False,
+                        "error": "Account not found"
+                    },
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # already verified
+            if getattr(user, 'is_verified', False) or getattr(user, 'is_email_verified', False):
+                return Response(
+                    {
+                        "success": True,
+                        "message": "Account already verified"
+                    },
+                    status=status.HTTP_200_OK
+                )
+
+            # TOKEN
+            token = signing.dumps(
                 {
-                    "error": "Account not found"
+                    "user_id": user.id,
+                    "email": user.email
                 },
-                status=status.HTTP_404_NOT_FOUND
+                salt=SIGNING_SALT
             )
 
-        # already verified
-        if user.is_verified:
+            portal_url = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
+            verification_link = f"{portal_url}/api/resume/auth/verify-email/?token={token}"
 
-            return Response(
-                {
-                    "message": "Account already verified"
-                },
-                status=status.HTTP_200_OK
-            )
+            first_name = getattr(user, 'first_name', 'User') or 'User'
 
-        # =========================================
-        # TOKEN
-        # =========================================
-
-        token = signing.dumps(
-            {
-                "user_id": user.id,
-                "email": user.email
-            },
-            salt=SIGNING_SALT
-        )
-
-        frontend_url = getattr(settings, 'FRONTEND_URL', 'https://portal.aryuacademy.com')
-        verification_link = (
-            "https://portal.aryuacademy.com"
-            f"/api/resume/auth/verify-email/?token={token}"
-        )
-
-        # =========================================
-        # EMAIL TEMPLATE
-        # =========================================
-
-        html_message = f"""
+            # EMAIL TEMPLATE
+            html_message = f"""
 <!DOCTYPE html>
 <html lang="en">
 
@@ -692,7 +680,7 @@ class AuthViewSet(viewsets.ViewSet):
                     color: #1e1b4b;
                     font-weight: 700;
                   ">
-                  Hello {user.first_name},
+                  Hello {first_name},
                 </h2>
 
                 <p
@@ -850,59 +838,52 @@ class AuthViewSet(viewsets.ViewSet):
 </html>
 """
 
-        # =========================================
-        # SEND EMAIL
-        # =========================================
+            # SEND EMAIL
+            email_message = EmailMultiAlternatives(
+                subject=f"{first_name}, complete your Pass ATS registration",
+                body=f"Hello {first_name},\n\nPlease verify your PassATS account:\n\n{verification_link}\n\nWebsite:\nhttps://portal.aryuacademy.com\n",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=[user.email],
+            )
 
-        email_message = EmailMultiAlternatives(
+            email_message.attach_alternative(
+                html_message,
+                "text/html"
+            )
 
-            subject=f"{user.first_name}, complete your Pass ATS registration",
+            email_message.extra_headers = {
+                "Reply-To": "support@aryuacademy.com",
+                "X-Auto-Response-Suppress": "OOF, AutoReply"
+            }
 
-            body=f"""
-    Hello {user.first_name},
-
-    Please verify your PassATS account:
-
-    {verification_link}
-
-    Website:
-    https://aryuacademy.com
-    """,
-
-            from_email=settings.DEFAULT_FROM_EMAIL,
-
-            to=[user.email],
-        )
-
-        email_message.attach_alternative(
-            html_message,
-            "text/html"
-        )
-
-        email_message.extra_headers = {
-            "Reply-To": "support@aryuacademy.com",
-            "X-Auto-Response-Suppress": "OOF, AutoReply"
-        }
-
-        try:
-
-            email_message.send(fail_silently=False)
-
-        except Exception:
+            try:
+                email_message.send(fail_silently=False)
+            except Exception as mail_err:
+                logger.error(f"Failed to send email in resend_verification_email: {mail_err}\n{traceback.format_exc()}")
+                return Response(
+                    {
+                        "success": False,
+                        "error": "Unable to send verification email"
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
 
             return Response(
                 {
-                    "error": "Unable to send verification email"
+                    "success": True,
+                    "message": "Verification email sent successfully"
+                },
+                status=status.HTTP_200_OK
+            )
+        except Exception as e:
+            logger.error(f"Error in resend_verification_email: {e}\n{traceback.format_exc()}")
+            return Response(
+                {
+                    "success": False,
+                    "error": str(e)
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
-        return Response(
-            {
-                "message": "Verification email sent successfully"
-            },
-            status=status.HTTP_200_OK
-        )
 
     
     @action(
@@ -1085,73 +1066,50 @@ class AuthViewSet(viewsets.ViewSet):
     @action(detail=False, methods=["post"], url_path="forgot-password")
     @secure_throttle(rate_limit=5, period=60)
     def forgot_password(self, request):
-
-        email = str(
-            request.data.get("email", "")
-        ).strip().lower()
-
-        # generic response
-        generic_response = {
-            "message": (
-                "If the account exists, "
-                "a password reset OTP has been sent."
-            )
-        }
-
-        if not email:
-
-            return Response(
-                generic_response,
-                status=status.HTTP_200_OK
-            )
-
         try:
+            email = str(
+                request.data.get("email", "")
+            ).strip().lower()
 
-            user = ResumeRegistration.objects.get(
-                email=email
-            )
+            generic_response = {
+                "success": True,
+                "message": "If the account exists, a password reset OTP has been sent."
+            }
 
-        except ResumeRegistration.DoesNotExist:
+            if not email:
+                return Response(
+                    generic_response,
+                    status=status.HTTP_200_OK
+                )
 
-            return Response(
-                # generic_response,
-                # status=status.HTTP_200_OK
-                {
-                "success":False,
-                "message":"No account found with this email address."
-                },
-                status=status.HTTP_404_NOT_FOUND
+            user = ResumeRegistration.objects.filter(email__iexact=email).first()
+            if not user:
+                user = User.objects.filter(email__iexact=email).first()
 
-            )
+            if not user:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "No account found with this email address."
+                    },
+                    status=status.HTTP_404_NOT_FOUND
+                )
 
-        # generate secure OTP
-        otp = self.generate_secure_otp()
+            otp = self.generate_secure_otp()
+            if hasattr(user, 'reset_otp_hash'):
+                user.reset_otp_hash = make_password(otp)
+            if hasattr(user, 'reset_otp_expiry'):
+                user.reset_otp_expiry = timezone.now() + timedelta(minutes=5)
+            if hasattr(user, 'reset_otp_attempts'):
+                user.reset_otp_attempts = 0
+            if hasattr(user, 'reset_verified'):
+                user.reset_verified = False
 
-        # store hashed OTP
-        user.reset_otp_hash = make_password(otp)
+            user.save()
 
-        # expiry
-        user.reset_otp_expiry = (
-            timezone.now() + timedelta(minutes=5)
-        )
+            first_name = getattr(user, 'first_name', 'User') or 'User'
 
-        # reset attempts
-        user.reset_otp_attempts = 0
-
-        # reset verification
-        user.reset_verified = False
-
-        user.save(
-            update_fields=[
-                "reset_otp_hash",
-                "reset_otp_expiry",
-                "reset_otp_attempts",
-                "reset_verified"
-            ]
-        )
-
-        # email template
-        html_message = f"""
+            html_message = f"""
 <!DOCTYPE html>
 <html lang="en">
 
@@ -1241,7 +1199,7 @@ class AuthViewSet(viewsets.ViewSet):
                     color: #1e1b4b;
                     font-weight: 700;
                   ">
-                  Hello {user.first_name},
+                  Hello {first_name},
                 </h2>
 
                 <p
@@ -1368,7 +1326,7 @@ class AuthViewSet(viewsets.ViewSet):
                   Product of
 
                   <a
-                    href="https://aryuacademy.com"
+                    href="https://portal.aryuacademy.com"
                     style="
                       color: #005aef;
                       text-decoration: none;
@@ -1455,244 +1413,231 @@ class AuthViewSet(viewsets.ViewSet):
 </html>
 """
 
-        email_message = EmailMultiAlternatives(
+            email_message = EmailMultiAlternatives(
+                subject="Secure Password Reset OTP",
+                body=f"Hello {first_name},\n\nYour OTP is: {otp}\n\nThis OTP expires in 5 minutes.",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=[user.email],
+            )
 
-            subject="Secure Password Reset OTP",
+            email_message.attach_alternative(
+                html_message,
+                "text/html"
+            )
 
-            body=f"""
-    Hello {user.first_name},
+            email_message.send(
+                fail_silently=True
+            )
 
-    Your OTP is:
-
-    {otp}
-
-    This OTP expires in 5 minutes.
-            """,
-
-            from_email=settings.DEFAULT_FROM_EMAIL,
-
-            to=[user.email],
-        )
-
-        email_message.attach_alternative(
-            html_message,
-            "text/html"
-        )
-
-        email_message.send(
-            fail_silently=True
-        )
-
-        return Response(
-            generic_response,
-            status=status.HTTP_200_OK
-        )
+            return Response(
+                generic_response,
+                status=status.HTTP_200_OK
+            )
+        except Exception as e:
+            logger.error(f"Error in forgot_password: {e}\n{traceback.format_exc()}")
+            return Response(
+                {
+                    "success": False,
+                    "message": "An error occurred while processing password reset request."
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
     
     @action(detail=False, methods=["post"], url_path="verify-reset-otp")
     def verify_reset_otp(self, request):
-
-        email = str(
-            request.data.get("email", "")
-        ).strip().lower()
-
-        otp = str(
-            request.data.get("otp", "")
-        ).strip()
-
-        if not email or not otp:
-
-            return Response(
-                {
-                    "error": "Email and OTP required"
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
         try:
+            email = str(
+                request.data.get("email", "")
+            ).strip().lower()
 
-            user = ResumeRegistration.objects.get(
-                email=email
+            otp = str(
+                request.data.get("otp", "")
+            ).strip()
+
+            if not email or not otp:
+                return Response(
+                    {
+                        "success": False,
+                        "error": "Email and OTP required"
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            user = ResumeRegistration.objects.filter(email__iexact=email).first()
+            if not user:
+                user = User.objects.filter(email__iexact=email).first()
+
+            if not user:
+                return Response(
+                    {
+                        "success": False,
+                        "error": "Invalid OTP"
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # expiry check
+            expiry = getattr(user, 'reset_otp_expiry', None)
+            if not expiry or timezone.now() > expiry:
+                return Response(
+                    {
+                        "success": False,
+                        "error": "OTP expired"
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            attempts = getattr(user, 'reset_otp_attempts', 0)
+            if attempts >= 5:
+                return Response(
+                    {
+                        "success": False,
+                        "error": "Too many attempts"
+                    },
+                    status=status.HTTP_429_TOO_MANY_REQUESTS
+                )
+
+            if hasattr(user, 'reset_otp_attempts'):
+                user.reset_otp_attempts += 1
+                user.save(update_fields=["reset_otp_attempts"])
+
+            otp_hash = getattr(user, 'reset_otp_hash', '') or ''
+            if not check_password(otp, otp_hash):
+                return Response(
+                    {
+                        "success": False,
+                        "error": "Invalid OTP"
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if hasattr(user, 'reset_verified'):
+                user.reset_verified = True
+                user.save(update_fields=["reset_verified"])
+
+            reset_token = signing.dumps(
+                {
+                    "user_id": user.id,
+                    "email": user.email,
+                    "purpose": "password_reset"
+                },
+                salt="password-reset"
             )
-
-        except ResumeRegistration.DoesNotExist:
 
             return Response(
                 {
-                    "error": "Invalid OTP"
+                    "success": True,
+                    "message": "OTP verified",
+                    "reset_token": reset_token
                 },
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_200_OK
             )
-
-        # expiry check
-        if (
-            not user.reset_otp_expiry
-            or timezone.now() > user.reset_otp_expiry
-        ):
-
+        except Exception as e:
+            logger.error(f"Error in verify_reset_otp: {e}\n{traceback.format_exc()}")
             return Response(
                 {
-                    "error": "OTP expired"
+                    "success": False,
+                    "error": str(e)
                 },
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
-        # attempt limit
-        if user.reset_otp_attempts >= 5:
-
-            return Response(
-                {
-                    "error": "Too many attempts"
-                },
-                status=status.HTTP_429_TOO_MANY_REQUESTS
-            )
-
-        # increment attempts
-        user.reset_otp_attempts += 1
-        user.save(update_fields=["reset_otp_attempts"])
-
-        # verify OTP
-        if not check_password(
-            otp,
-            user.reset_otp_hash
-        ):
-
-            return Response(
-                {
-                    "error": "Invalid OTP"
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # verified
-        user.reset_verified = True
-
-        user.save(update_fields=["reset_verified"])
-
-        # create reset token
-        reset_token = signing.dumps(
-            {
-                "user_id": user.id,
-                "email": user.email,
-                "purpose": "password_reset"
-            },
-            salt="password-reset"
-        )
-
-        return Response(
-            {
-                "message": "OTP verified",
-                "reset_token": reset_token
-            },
-            status=status.HTTP_200_OK
-        )
     
     @action(detail=False, methods=["post"], url_path="reset-password")
     def reset_password(self, request):
-
-        token = request.data.get("reset_token")
-
-        new_password = request.data.get(
-            "new_password"
-        )
-
-        if not token or not new_password:
-
-            return Response(
-                {
-                    "error": (
-                        "Token and password required"
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # validate password
-        password_error = self.validate_password(
-            new_password
-        )
-
-        if password_error:
-
-            return Response(
-                {
-                    "error": password_error
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
         try:
+            token = request.data.get("reset_token")
+            new_password = request.data.get("new_password")
 
-            data = signing.loads(
-                token,
-                salt="password-reset",
-                max_age=300
-            )
-
-            user = ResumeRegistration.objects.get(
-                id=data["user_id"],
-                email=data["email"]
-            )
-
-        except SignatureExpired:
-
-            return Response(
-                {
-                    "error": "Reset session expired"
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        except (
-            BadSignature,
-            ResumeRegistration.DoesNotExist
-        ):
-
-            return Response(
-                {
-                    "error": "Invalid reset token"
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # ensure OTP verified
-        if not user.reset_verified:
-
-            return Response(
-                {
-                    "error": "OTP verification required"
-                },
-                status=status.HTTP_403_FORBIDDEN
-            )
-
-        # update password
-        user.password = make_password(
-            new_password
-        )
-
-        # clear reset data
-        user.reset_otp_hash = None
-        user.reset_otp_expiry = None
-        user.reset_otp_attempts = 0
-        user.reset_verified = False
-
-        user.save(
-            update_fields=[
-                "password",
-                "reset_otp_hash",
-                "reset_otp_expiry",
-                "reset_otp_attempts",
-                "reset_verified"
-            ]
-        )
-
-        return Response(
-            {
-                "message": (
-                    "Password reset successful"
+            if not token or not new_password:
+                return Response(
+                    {
+                        "success": False,
+                        "error": "Token and password required"
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
                 )
-            },
-            status=status.HTTP_200_OK
-        )
+
+            password_error = self.validate_password(new_password)
+            if password_error:
+                return Response(
+                    {
+                        "success": False,
+                        "error": password_error
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            try:
+                data = signing.loads(
+                    token,
+                    salt="password-reset",
+                    max_age=300
+                )
+                user = ResumeRegistration.objects.filter(id=data.get("user_id"), email=data.get("email")).first()
+                if not user:
+                    user = User.objects.filter(id=data.get("user_id"), email=data.get("email")).first()
+                if not user:
+                    return Response(
+                        {
+                            "success": False,
+                            "error": "Invalid reset token"
+                        },
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            except SignatureExpired:
+                return Response(
+                    {
+                        "success": False,
+                        "error": "Reset session expired"
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            except BadSignature:
+                return Response(
+                    {
+                        "success": False,
+                        "error": "Invalid reset token"
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if hasattr(user, 'reset_verified') and not user.reset_verified:
+                return Response(
+                    {
+                        "success": False,
+                        "error": "OTP verification required"
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            user.password = make_password(new_password)
+            if hasattr(user, 'reset_otp_hash'):
+                user.reset_otp_hash = None
+            if hasattr(user, 'reset_otp_expiry'):
+                user.reset_otp_expiry = None
+            if hasattr(user, 'reset_otp_attempts'):
+                user.reset_otp_attempts = 0
+            if hasattr(user, 'reset_verified'):
+                user.reset_verified = False
+
+            user.save()
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "Password reset successful"
+                },
+                status=status.HTTP_200_OK
+            )
+        except Exception as e:
+            logger.error(f"Error in reset_password: {e}\n{traceback.format_exc()}")
+            return Response(
+                {
+                    "success": False,
+                    "error": str(e)
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 class CustomTokenRefreshView(APIView):
