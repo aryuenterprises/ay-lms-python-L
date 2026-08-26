@@ -57,7 +57,81 @@ import traceback
 logger = logging.getLogger(__name__)
 
 
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
+
 SIGNING_SALT = "resume-email-verification"
+
+@api_view(['GET', 'POST'])
+@permission_classes([AllowAny])
+def verify_email(request):
+    token = request.query_params.get('token') or (request.data.get('token') if hasattr(request, 'data') and request.data else None)
+
+    if not token:
+        return Response({
+            'success': False,
+            'message': 'Verification token is required.'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # Clean and strip any surrounding quotes/whitespace
+    token = str(token).strip().strip('"').strip("'")
+
+    try:
+        # Verify and decode signed token (max_age: 3 days = 259200 seconds)
+        try:
+            payload = signing.loads(token, salt=SIGNING_SALT, max_age=259200)
+        except BadSignature:
+            payload = signing.loads(token, max_age=259200)
+    except SignatureExpired:
+        return Response({
+            'success': False,
+            'message': 'Verification link has expired. Please request a new verification email.'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    except (BadSignature, Exception) as e:
+        return Response({
+            'success': False,
+            'message': 'Invalid verification token.'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    user_id = payload.get('user_id')
+    email = payload.get('email')
+
+    user = None
+    if user_id:
+        user = ResumeRegistration.objects.filter(id=user_id).first()
+        if not user:
+            user = User.objects.filter(id=user_id).first()
+    elif email:
+        user = ResumeRegistration.objects.filter(email__iexact=email).first()
+        if not user:
+            user = User.objects.filter(email__iexact=email).first()
+
+    if not user:
+        return Response({
+            'success': False,
+            'message': 'User associated with this token was not found.'
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    # Update verification fields dynamically based on available model fields
+    if hasattr(user, 'is_verified'):
+        user.is_verified = True
+    if hasattr(user, 'is_email_verified'):
+        user.is_email_verified = True
+    if hasattr(user, 'is_active'):
+        user.is_active = True
+
+    user.save()
+
+    return Response({
+        'success': True,
+        'message': 'Email verified successfully! You can now log in.',
+        'data': {
+            'user_id': user.id,
+            'email': user.email
+        }
+    }, status=status.HTTP_200_OK)
+
 
 class AuthViewSet(viewsets.ViewSet): 
 
@@ -824,187 +898,13 @@ class AuthViewSet(viewsets.ViewSet):
 
     
     @action(
-    detail=False,
-    methods=["get"],
-    url_path="verify-email"
+        detail=False,
+        methods=["get", "post"],
+        url_path="verify-email",
+        permission_classes=[AllowAny]
     )
     def verify_email(self, request):
-
-        start = time.perf_counter()
-
-        # =====================================
-        # LOCAL TESTING (DEBUG MODE)
-        # =====================================
-
-        if settings.DEBUG:
-
-            logger.info(
-                "Email verification skipped (DEBUG=True)"
-            )
-
-            user = ResumeRegistration.objects.filter(
-                is_verified=False
-            ).first()
-
-            if not user:
-
-                logger.warning(
-                    "No unverified users found"
-                )
-
-                return Response(
-                    {
-                        "status": False,
-                        "message": "No unverified users found"
-                    },
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            update_start = time.perf_counter()
-
-            user.is_verified = True
-            user.save(
-                update_fields=["is_verified"]
-            )
-
-            logger.info(
-                f"User verification update took "
-                f"{time.perf_counter() - update_start:.4f}s"
-            )
-
-            logger.info(
-                f"TOTAL VERIFY EMAIL TIME: "
-                f"{time.perf_counter() - start:.4f}s"
-            )
-
-            return Response(
-                {
-                    "status": True,
-                    "message": (
-                        "Email verified successfully "
-                        "(DEBUG mode)"
-                    ),
-                    "user_id": user.id
-                },
-                status=status.HTTP_200_OK
-            )
-
-        # =====================================
-        # PRODUCTION FLOW
-        # =====================================
-
-        token = request.GET.get("token")
-
-        logger.info(
-            f"Token Present: {bool(token)}"
-        )
-
-        if not token:
-
-            logger.error(
-                "No token provided"
-            )
-
-            return Response(
-                {
-                    "error": "Invalid verification link"
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        try:
-
-            decode_start = time.perf_counter()
-
-            data = signing.loads(
-                token,
-                salt=SIGNING_SALT,
-                max_age=60 * 60 * 24
-            )
-
-            logger.info(
-                f"Token decode took "
-                f"{time.perf_counter() - decode_start:.4f}s"
-            )
-
-            user_fetch_start = time.perf_counter()
-
-            user = ResumeRegistration.objects.only(
-                "id",
-                "email",
-                "is_verified"
-            ).get(
-                id=data["user_id"],
-                email=data["email"]
-            )
-
-            logger.info(
-                f"User fetch took "
-                f"{time.perf_counter() - user_fetch_start:.4f}s"
-            )
-
-        except SignatureExpired:
-
-            logger.warning(
-                "Verification link expired"
-            )
-
-            return Response(
-                {
-                    "error": "Verification link expired"
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        except (
-            BadSignature,
-            ResumeRegistration.DoesNotExist
-        ) as exc:
-
-            logger.error(
-                f"Verification failed: {exc}"
-            )
-
-            return Response(
-                {
-                    "error": str(exc)
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        if user.is_verified:
-
-            logger.info(
-                f"User {user.id} already verified. "
-                f"Total Time: "
-                f"{time.perf_counter() - start:.4f}s"
-            )
-
-            return redirect(
-                "https://passats.aryuacademy.com/email-verified"
-            )
-
-        update_start = time.perf_counter()
-
-        user.is_verified = True
-
-        user.save(
-            update_fields=["is_verified"]
-        )
-
-        logger.info(
-            f"User verification update took "
-            f"{time.perf_counter() - update_start:.4f}s"
-        )
-
-        logger.info(
-            f"TOTAL VERIFY EMAIL TIME: "
-            f"{time.perf_counter() - start:.4f}s"
-        )
-
-        return redirect(
-            "https://passats.aryuacademy.com/email-verified"
-        )
+        return verify_email(request)
 
     # =========================
     # LOGIN
@@ -1785,6 +1685,7 @@ class AuthViewSet(viewsets.ViewSet):
             },
             status=status.HTTP_200_OK
         )
+
 
 class CustomTokenRefreshView(APIView):
     permission_classes = [AllowAny]
