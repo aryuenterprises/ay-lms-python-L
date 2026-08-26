@@ -4646,56 +4646,206 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
 
-    # Determine which batch to use (new_batch preferred)
     def get_active_batch(self, obj):
         return obj.new_batch if obj.new_batch else obj.batch
 
-    # Determine course for new_batch or old
     def get_active_course(self, obj):
         if obj.new_batch:
             return obj.new_batch.course
         return obj.course
 
-    # 1) DAILY ATTENDANCE FETCH
     def get_queryset(self):
         student_id = self.request.query_params.get('student')
         if not student_id:
             return Attendance.objects.none()
 
-        today = timezone.localtime().date()
+        today_ist = timezone.now().astimezone(IST).date()
+        start_dt = IST.localize(datetime.combine(today_ist, time.min))
+        end_dt = IST.localize(datetime.combine(today_ist, time.max))
 
         return Attendance.objects.filter(
             student__student_id=student_id,
-            date__date=today
+            date__range=(start_dt, end_dt)
         ).order_by('-date')
 
-    # LIST API → Today's attendance + batches
     def list(self, request, student_id=None):
         if not student_id:
-            return Response({'success': False, 'message': 'student_id is required.', 'data': {}}, status=200)
+            student_id = request.query_params.get('student_id') or request.query_params.get('student')
 
-        ist = pytz.timezone("Asia/Kolkata")
-        today = timezone.localtime().date()
+        if not student_id:
+            return Response({'success': False, 'message': 'student_id is required.', 'data': []}, status=200)
 
         student = Student.objects.filter(student_id=student_id).first()
         if not student:
-            return Response({"success": False, "message": "Student not found.", "data": {}}, status=200)
-        # --------------- FETCH TODAY ATTENDANCE -----------------
-        ist = pytz.timezone("Asia/Kolkata")
-        today = timezone.now().astimezone(ist).date()
-        start_datetime = datetime.combine(today, time.min)
-        end_datetime = datetime.combine(today, time.max)
+            return Response({"success": False, "message": "Student not found.", "data": []}, status=200)
 
-        # Make them timezone-aware in IST
-        start_datetime = ist.localize(start_datetime)
-        end_datetime = ist.localize(end_datetime)
-        
+        now_ist = timezone.now().astimezone(IST)
+        today_ist = now_ist.date()
+
+        start_date_str = request.query_params.get('start_date')
+        end_date_str = request.query_params.get('end_date')
+
+        if start_date_str and end_date_str:
+            try:
+                start_d = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                end_d = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+            except ValueError:
+                start_d, end_d = today_ist, today_ist
+        else:
+            start_d, end_d = today_ist, today_ist
+
+        start_datetime = IST.localize(datetime.combine(start_d, time.min))
+        end_datetime = IST.localize(datetime.combine(end_d, time.max))
+
         attendance_qs = Attendance.objects.filter(
             student=student,
             date__range=(start_datetime, end_datetime)
-        ).order_by('-date')
+        ).select_related('course', 'batch', 'new_batch').order_by('date')
 
-        # --------------- BOTH BATCH SOURCES ---------------------
+        grouped_records = {}
+
+        for att in attendance_qs:
+            att_dt = get_ist_datetime(att.date)
+            date_key = att_dt.date()
+            batch_id = att.new_batch_id if att.new_batch_id else (att.batch_id if att.batch_id else 0)
+            course_id = att.course_id if att.course_id else 0
+
+            group_key = (date_key, batch_id, course_id)
+
+            if group_key not in grouped_records:
+                batch_name = "-"
+                if att.new_batch:
+                    batch_name = att.new_batch.title
+                elif att.batch:
+                    batch_name = getattr(att.batch, 'batch_name', None) or getattr(att.batch, 'title', "-")
+
+                grouped_records[group_key] = {
+                    "date_obj": date_key,
+                    "date": date_key.strftime("%m/%d/%y"),
+                    "day": date_key.strftime("%a").upper(),
+                    "date_formatted": f"{date_key.strftime('%m/%d/%y')} ({date_key.strftime('%a').upper()})",
+                    "batch": batch_name,
+                    "course": att.course.course_name if att.course else "-",
+                    "raw_logs": []
+                }
+
+            grouped_records[group_key]["raw_logs"].append({
+                "status": (att.status or "").strip(),
+                "dt": att_dt,
+                "id": att.id
+            })
+
+        formatted_list = []
+
+        for idx, ((d_key, b_id, c_id), row) in enumerate(sorted(grouped_records.items(), key=lambda x: x[0][0], reverse=True), start=1):
+            raw_logs = row["raw_logs"]
+            raw_logs.sort(key=lambda x: x["dt"])
+
+            login_dt = None
+            logout_dt = None
+            break_pairs = []
+            pending_break_out = None
+            break_popover_list = []
+
+            for log in raw_logs:
+                s_lower = log["status"].lower()
+                dt = log["dt"]
+                time_str = dt.strftime("%H:%M:%S")
+
+                if s_lower in ['login', 'present'] and not login_dt:
+                    login_dt = dt
+                elif s_lower == 'logout':
+                    logout_dt = dt
+                elif s_lower in ['breakout', 'break out']:
+                    pending_break_out = dt
+                    break_popover_list.append({
+                        "label": "Break Out",
+                        "time": time_str
+                    })
+                elif s_lower in ['breakin', 'break in']:
+                    break_popover_list.append({
+                        "label": "Break In",
+                        "time": time_str
+                    })
+                    if pending_break_out:
+                        break_pairs.append((pending_break_out, dt))
+                        pending_break_out = None
+
+            if raw_logs:
+                latest_status_raw = raw_logs[-1]["status"].strip()
+                latest_lower = latest_status_raw.lower()
+
+                if latest_lower in ['breakout', 'break out'] or pending_break_out:
+                    current_status = "On Break"
+                elif latest_lower in ['logout']:
+                    current_status = "Logged Out"
+                elif latest_lower in ['login', 'present', 'breakin', 'break in']:
+                    current_status = "Present"
+                else:
+                    current_status = latest_status_raw
+            else:
+                current_status = "Absent"
+
+            total_break_seconds = 0
+            for b_out, b_in in break_pairs:
+                diff = (b_in - b_out).total_seconds()
+                if diff > 0:
+                    total_break_seconds += int(diff)
+
+            if pending_break_out and not logout_dt and d_key == today_ist:
+                diff = (now_ist - pending_break_out).total_seconds()
+                if diff > 0:
+                    total_break_seconds += int(diff)
+
+            gross_time_str = "-"
+            net_time_str = "-"
+            break_duration_str = "00:00:00 (0)"
+
+            if login_dt:
+                end_calc_dt = logout_dt if logout_dt else (now_ist if d_key == today_ist else login_dt)
+                if end_calc_dt < login_dt:
+                    end_calc_dt = login_dt
+
+                gross_seconds = max(0, int((end_calc_dt - login_dt).total_seconds()))
+                net_seconds = max(0, gross_seconds - total_break_seconds)
+
+                g_h = gross_seconds // 3600
+                g_m = (gross_seconds % 3600) // 60
+                g_s = gross_seconds % 60
+                gross_time_str = f"{g_h:02}:{g_m:02}:{g_s:02}"
+
+                n_h = net_seconds // 3600
+                n_m = (net_seconds % 3600) // 60
+                n_s = net_seconds % 60
+                net_time_str = f"{n_h:02}:{n_m:02}:{n_s:02}"
+
+                b_h = total_break_seconds // 3600
+                b_m = (total_break_seconds % 3600) // 60
+                b_s = total_break_seconds % 60
+                break_count = len(break_pairs) + (1 if pending_break_out else 0)
+                break_duration_str = f"{b_h:02}:{b_m:02}:{b_s:02} ({break_count})"
+
+            formatted_list.append({
+                "s_no": idx,
+                "date": row["date"],
+                "day": row["day"],
+                "date_formatted": row["date_formatted"],
+                "attendance_status": current_status,
+                "status": current_status,
+                "batch": row["batch"],
+                "course": row["course"],
+                "first_login": login_dt.strftime("%H:%M:%S") if login_dt else "-",
+                "last_logout": logout_dt.strftime("%H:%M:%S") if logout_dt else "-",
+                "first_break": break_pairs[0][0].strftime("%H:%M:%S") if break_pairs else "-",
+                "break_duration": break_duration_str,
+                "break_logs": break_popover_list,
+                "gross_hours": gross_time_str,
+                "net_hours": net_time_str,
+                "total_spend": net_time_str,
+                "login_time": login_dt.strftime("%I:%M %p") if login_dt else "-",
+                "logout_time": logout_dt.strftime("%I:%M %p") if logout_dt else "-",
+            })
+
         old_batches = Batch.objects.filter(
             batchcoursetrainer__student=student,
             is_archived=False,
@@ -4709,19 +4859,17 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         ).distinct()
 
         batch_data = []
-
-        # ---- OLD BATCH DATA ----
         for batch in old_batches:
             course_obj = batch.batchcoursetrainer.first().course if batch.batchcoursetrainer.exists() else None
             todays_schedules = batch.schedules.filter(
-                scheduled_date=today,
+                scheduled_date=today_ist,
                 is_archived=False
             ).select_related('course', 'trainer')
 
             batch_data.append({
                 "type": "old_batch",
                 "batch_id": batch.batch_id,
-                "batch_name": batch.batch_name,
+                "batch_name": getattr(batch, "batch_name", batch.title),
                 "title": batch.title,
                 "course": course_obj.course_id if course_obj else None,
                 "course_name": course_obj.course_name if course_obj else None,
@@ -4742,11 +4890,10 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 ]
             })
 
-        # ---- NEW BATCH DATA ----
         for nb in new_batches:
             todays_schedules = ClassSchedule.objects.filter(
                 new_batch=nb,
-                scheduled_date=today,
+                scheduled_date=today_ist,
                 is_archived=False
             ).select_related("course", "trainer")
 
@@ -4773,17 +4920,16 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 ]
             })
 
-        serializer = AttendanceSerializer(attendance_qs, many=True)
         return Response({
             "success": True,
-            "data": serializer.data,
+            "data": formatted_list,
             "batches": batch_data
         }, status=200)
-    
+
     def create(self, request, *args, **kwargs):
         student_id = request.data.get('student')
         course_id = request.data.get('course')
-        new_batch_id = request.data.get('new_batch')  # <-- changed
+        new_batch_id = request.data.get('new_batch')
         marked_by = request.data.get('marked_by')
 
         if not student_id or not course_id or not new_batch_id:
@@ -4792,49 +4938,40 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 'success': False
             }, status=status.HTTP_200_OK)
 
-        # Fetch Student
         try:
             student = Student.objects.get(student_id=student_id)
         except Student.DoesNotExist:
             return Response({'message': 'Student not found.', 'success': False}, status=status.HTTP_200_OK)
 
-        # Fetch Course
         try:
             course = Course.objects.get(pk=course_id)
         except Course.DoesNotExist:
             return Response({'message': 'Course not found.', 'success': False}, status=status.HTTP_200_OK)
 
-        # Fetch NEW Batch (main one from now)
         try:
             new_batch = NewBatch.objects.get(pk=new_batch_id)
         except NewBatch.DoesNotExist:
             return Response({'message': 'NewBatch not found.', 'success': False}, status=status.HTTP_200_OK)
 
-        # Block deleted students
         if student.is_archived:
             return Response({'message': 'Deleted students cannot mark attendance.', 'success': False}, status=status.HTTP_200_OK)
 
-        # Admin settings
         settings = Settings.objects.first()
         attendance_options = settings.attendance_options if settings else []
 
-        # Student marking
         if marked_by == 'student':
             if 'by_student' not in attendance_options and 'automatic_by_link' not in attendance_options:
                 return Response({'success': False, 'message': 'Student attendance disabled by admin.'}, status=200)
 
-        # VALIDATION: Ensure student belongs to this new batch
         if not new_batch.students.filter(student_id=student.student_id).exists():
             return Response({'success': False, 'message': 'Student is not part of this new batch.'}, status=200)
 
-        # VALIDATION: Ensure student-course matches new batch course
         if new_batch.course_id != course.course_id:
             return Response({'success': False, 'message': 'Course does not match the new batch.'}, status=200)
 
-        # Check class schedule
-        today = localtime().date()
+        today = timezone.now().astimezone(IST).date()
         class_scheduled = ClassSchedule.objects.filter(
-            new_batch=new_batch,    # <-- only new batch schedules now
+            new_batch=new_batch,
             course=course,
             scheduled_date=today,
             is_archived=False
@@ -4843,25 +4980,18 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         if not class_scheduled:
             return Response({'success': False, 'message': 'No class scheduled today.'}, status=200)
 
-        # Status
         status_value = request.data.get('status', '').strip()
-
         if not status_value:
-            return Response({
-                'success': False,
-                'message': 'Status is required.'
-            }, status=200)
+            return Response({'success': False, 'message': 'Status is required.'}, status=200)
 
-        # Capture IP
         ip_address = None
         if marked_by == 'student':
             x_forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
             ip_address = x_forwarded.split(',')[0].strip() if x_forwarded else request.META.get('REMOTE_ADDR')
 
-        # Build data for serializer
         data = request.data.copy()
-        data['new_batch'] = new_batch_id       # <-- assign here
-        data['batch'] = None                   # <-- old batch becomes null for new records
+        data['new_batch'] = new_batch_id
+        data['batch'] = None
         if ip_address:
             data['ip_address'] = ip_address
         data['marked_by_admin'] = True if marked_by == 'trainer' else False
@@ -4881,7 +5011,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         try:
             student_id = request.data.get("student")
             course_id = request.data.get("course")
-            new_batch_id = request.data.get("new_batch")  # <--- CHANGED
+            new_batch_id = request.data.get("new_batch")
             date_str = request.data.get("date")
             status_val = request.data.get("status", "Present")
 
@@ -4891,7 +5021,6 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     "message": "student, course, new_batch, and date are required."
                 }, status=200)
 
-            # Fetch instances
             try:
                 student = Student.objects.get(student_id=student_id)
                 course = Course.objects.get(pk=course_id)
@@ -4899,7 +5028,6 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             except (Student.DoesNotExist, Course.DoesNotExist, NewBatch.DoesNotExist):
                 return Response({"success": False, "message": "Invalid student/course/new_batch."}, status=200)
 
-            # Parse DateTime
             scheduled_date = parse_datetime(date_str)
             if not scheduled_date:
                 return Response({
@@ -4907,16 +5035,11 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     "message": "Invalid datetime format. Use ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."
                 }, status=200)
 
-            # Validate student belongs to new batch
             if not new_batch.students.filter(student_id=student.student_id).exists():
                 return Response({"success": False, "message": "Student is not in this new batch."}, status=200)
 
-            # Validate course matches new batch course
             if new_batch.course_id != course.course_id:
                 return Response({"success": False, "message": "Course does not belong to this new batch."}, status=200)
-
-            # Prevent duplicate attendance for same day
-            # Prevent duplicate SAME STATUS only
 
             already_exists = Attendance.objects.filter(
                 student=student,
@@ -4927,16 +5050,15 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             ).exists()
 
             if already_exists:
-
                 return Response({
                     "success": False,
                     "message": f"{status_val} already marked."
                 }, status=200)
-            # Create attendance with new_batch, old batch always null
+
             attendance = Attendance.objects.create(
                 student=student,
-                new_batch=new_batch,      # <--- MAIN CHANGE
-                batch=None,               # <--- Ensures no new old-batch data
+                new_batch=new_batch,
+                batch=None,
                 course=course,
                 date=scheduled_date,
                 status=status_val,
@@ -4953,620 +5075,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         except Exception as e:
             return Response({"success": False, "message": str(e)}, status=200)
 
-    @action(detail=False, methods=['get'], permission_classes = [IsAuthenticated],authentication_classes = [CustomJWTAuthentication],url_path='full_logs/(?P<student_id>[^/.]+)')
-    def full_logs(self, request, student_id=None):
-        # permission_classes = [IsAuthenticated]
-        # authentication_classes = [CustomJWTAuthentication]
-        try:
-            if not student_id:
-                return Response({
-                    'success': False,
-                    'message': 'student_id is required'
-                }, status=200)
-
-            month = request.query_params.get('month')
-            year = request.query_params.get('year')
-
-            queryset = Attendance.objects.filter(
-                student__student_id=student_id
-            ).order_by('date')
-
-            if month:
-                queryset = queryset.filter(
-                    date__month=int(month)
-                )
-
-            if year:
-                queryset = queryset.filter(
-                    date__year=int(year)
-                )
-
-            ist = pytz.timezone("Asia/Kolkata")
-
-            grouped = {}
-
-            # ======================================================
-            # GROUP ATTENDANCE
-            # ======================================================
-
-            for att in queryset:
-
-                serializer_data = AttendanceSerializer(att).data
-
-                local_dt = datetime.strptime(
-                    serializer_data['date'],
-                    '%Y-%m-%d %I:%M:%S %p'
-                )
-
-                local_dt = ist.localize(local_dt)
-
-                # ----------------------------------------
-                # BATCH
-                # ----------------------------------------
-
-                batch_id = None
-                batch_title = None
-
-                if att.new_batch_id:
-
-                    batch_id = att.new_batch.batch_id
-
-                    batch_title = att.new_batch.title
-
-                # ----------------------------------------
-                # GROUP KEY
-                # ----------------------------------------
-
-                key = (
-                    att.student.student_id,
-                    att.course.course_id,
-                    batch_id,
-                    local_dt.date()
-                )
-
-                # ----------------------------------------
-                # INITIALIZE
-                # ----------------------------------------
-
-                if key not in grouped:
-
-                    grouped[key] = {
-
-                        'attendance_id': att.id,
-
-                        'student_id': att.student.student_id,
-
-                        'student_name': (
-                            f"{att.student.first_name} "
-                           
-                        ),
-
-                        'batch_id': batch_id,
-
-                        'title': batch_title,
-
-                        'course_id': att.course.course_id,
-
-                        'course_name': att.course.course_name,
-
-                        'date': local_dt.strftime('%d-%m-%Y'),
-
-                        'status': 'Absent',
-
-                        'login_time': None,
-
-                        'logout_time': None,
-
-                        'break_in': None,
-
-                        'break_out': None,
-
-                        'time_spend': '-',
-
-                        'break_duration': '-',
-
-                        'net_time_spend': '-',
-
-                        # TEMP FIELDS
-
-                        'login_dt': None,
-
-                        'logout_dt': None,
-
-                        'break_sessions': [],
-
-                        'current_break_in': None,
-                    }
-
-                current = grouped[key]
-
-                status_lower = att.status.lower()
-
-                # ----------------------------------------
-                # LOGIN
-                # ----------------------------------------
-
-                if status_lower in ['login', 'present']:
-
-                    current['login_time'] = (
-                        local_dt.strftime('%I:%M %p')
-                    )
-
-                    current['login_dt'] = local_dt
-
-                    current['status'] = 'Present'
-
-                # ----------------------------------------
-                # LOGOUT
-                # ----------------------------------------
-
-                elif status_lower == 'logout':
-
-                    current['logout_time'] = (
-                        local_dt.strftime('%I:%M %p')
-                    )
-
-                    current['logout_dt'] = local_dt
-
-                    current['status'] = 'Present'
-
-                # ----------------------------------------
-                # BREAK IN
-                # ----------------------------------------
-
-                elif status_lower in ['breakin', 'break in']:
-
-                    current['break_in'] = local_dt.strftime('%I:%M %p')
-                    current['current_break_in'] = local_dt
-
-                elif status_lower in ['breakout', 'break out']:
-
-                    current['break_out'] = local_dt.strftime('%I:%M %p')
-
-                    if current['current_break_in']:
-                        current['break_sessions'].append({
-                            'break_in': current['current_break_in'],
-                            'break_out': local_dt
-                        })
-
-                        current['current_break_in'] = None
-            logs = list(grouped.values())
-
-            # ======================================================
-            # CALCULATIONS
-            # ======================================================
-
-            for item in logs:
-
-                # ----------------------------------------
-                # CHECK CLASS SCHEDULE
-                # ----------------------------------------
-
-                schedule_exists = ClassSchedule.objects.filter(
-
-                    new_batch_id=item['batch_id'],
-
-                    course_id=item['course_id'],
-
-                    scheduled_date=datetime.strptime(
-                        item['date'],
-                        '%d-%m-%Y'
-                    ).date(),
-
-                    is_archived=False
-
-                ).exists()
-
-                # ----------------------------------------
-                # HOLIDAY
-                # ----------------------------------------
-
-                if (
-                    not schedule_exists
-                    and not item['login_dt']
-                ):
-
-                    item['status'] = 'Holiday'
-
-                # ----------------------------------------
-                # AUTO LOGOUT
-                # ----------------------------------------
-
-                if item['login_dt'] and not item['logout_dt']:
-
-                    now_ist = timezone.now().astimezone(ist)
-
-                    # SAME DATE CHECK
-
-                    if now_ist.date() != item['login_dt'].date():
-
-                        now_ist = item['login_dt']
-
-                    # NEGATIVE TIME CHECK
-
-                    if now_ist < item['login_dt']:
-
-                        now_ist = item['login_dt']
-
-                    item['logout_dt'] = now_ist
-
-                    item['logout_time'] = (
-                        now_ist.strftime('%I:%M %p')
-                    )
-
-                # ----------------------------------------
-                # TOTAL TIME
-                # ----------------------------------------
-
-                if item['login_dt'] and item['logout_dt']:
-
-                    time_diff = (
-                        item['logout_dt']
-                        - item['login_dt']
-                    ).total_seconds()
-
-                    # PREVENT NEGATIVE TIME
-
-                    if time_diff < 0:
-
-                        time_diff = 0
-
-                        item['logout_dt'] = (
-                            item['login_dt']
-                        )
-
-                        item['logout_time'] = (
-                            item['login_time']
-                        )
-
-                    total_seconds = int(time_diff)
-
-                    # ----------------------------------------
-                    # TOTAL BREAK
-                    # ----------------------------------------
-
-                    total_break_seconds = 0
-
-                    for session in item['break_sessions']:
-
-                        break_diff = (
-                            session['break_out']
-                            - session['break_in']
-                        ).total_seconds()
-
-                        if break_diff < 0:
-
-                            break_diff = 0
-
-                        total_break_seconds += int(
-                            break_diff
-                        )
-
-                    # ----------------------------------------
-                    # NET WORKING TIME
-                    # ----------------------------------------
-
-                    net_seconds = max(
-                        total_seconds - total_break_seconds,
-                        0
-                    )
-
-                    # ----------------------------------------
-                    # TOTAL TIME FORMAT
-                    # ----------------------------------------
-
-                    total_hours = (
-                        total_seconds // 3600
-                    )
-
-                    total_minutes = (
-                        total_seconds % 3600
-                    ) // 60
-
-                    item['time_spend'] = (
-                        f"{total_hours:02}:{total_minutes:02} Hrs"
-                    )
-
-                    # ----------------------------------------
-                    # BREAK FORMAT
-                    # ----------------------------------------
-
-                    break_hours = (
-                        total_break_seconds // 3600
-                    )
-
-                    break_minutes = (
-                        total_break_seconds % 3600
-                    ) // 60
-
-                    item['break_duration'] = (
-                        f"{break_hours:02}:{break_minutes:02} Hrs"
-                    )
-
-                    # ----------------------------------------
-                    # NET TIME FORMAT
-                    # ----------------------------------------
-
-                    net_hours = (
-                        net_seconds // 3600
-                    )
-
-                    net_minutes = (
-                        net_seconds % 3600
-                    ) // 60
-
-                    item['net_time_spend'] = (
-                        f"{net_hours:02}:{net_minutes:02} Hrs"
-                    )
-
-                # ----------------------------------------
-                # REMOVE TEMP FIELDS
-                # ----------------------------------------
-
-                item.pop('login_dt', None)
-
-                item.pop('logout_dt', None)
-
-                item.pop('current_break_in', None)
-
-                item.pop('break_sessions', None)
-
-            return Response({
-
-                'success': True,
-
-                'message': (
-                    f'Full attendance logs for student '
-                    f'{student_id}'
-                ),
-
-                'data': logs
-
-            }, status=200)
-        except Exception as e:
-            print(traceback.format_exc())
-            return Response(
-                {
-                    "success": False,
-                    "message": str(e),
-                    "traceback": traceback.format_exc(),
-                },
-                status=500,
-            )
-    
-    @action(detail=True, methods=['get'], url_path='status')
-    def attendance_status(self, request, student_id=None):
-        ist = pytz.timezone("Asia/Kolkata")
-        start_date_str = request.query_params.get("start_date")
-        end_date_str = request.query_params.get("end_date")
-
-        # Parse start and end dates
-        try:
-            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").astimezone(ist).date() if start_date_str else None
-            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date() if end_date_str else timezone.now().astimezone(ist).date()
-        except ValueError:
-            return Response({
-                "success": False,
-                "message": "Invalid date format. Use YYYY-MM-DD."
-            }, status=status.HTTP_200_OK)
-
-        # Fetch student
-        try:
-            student = Student.objects.get(student_id=student_id)
-        except Student.DoesNotExist:
-            return Response({
-                "success": False,
-                "message": "Student not found."
-            }, status=status.HTTP_200_OK)
-
-        # ---------------------------------------------------------------------
-        # SUPPORT BOTH: old BatchSchedule AND new NewBatch-generated schedules
-        # ---------------------------------------------------------------------
-
-        # OLD batch schedules (existing)
-        scheduled_old = ClassSchedule.objects.filter(
-            batch__batchcoursetrainer__student=student,
-            scheduled_date__lte=end_date,
-            is_archived=False
-        ).select_related("course", "batch", "trainer")
-
-        # NEW batch schedules
-        scheduled_new = ClassSchedule.objects.filter(
-            new_batch__students=student,
-            scheduled_date__lte=end_date,
-            is_archived=False
-        ).select_related("course", "new_batch", "trainer")
-
-        # Combine both
-        scheduled_classes = (scheduled_old | scheduled_new).order_by("-scheduled_date", "-start_time")
-
-        class_statuses = []
-        attended_count = 0
-        not_attended_count = 0
-
-        for sched in scheduled_classes:
-
-            # -----------------------------------------------------------------
-            # DETECT IF IT IS OLD BATCH OR NEW BATCH
-            # -----------------------------------------------------------------
-            using_new_batch = hasattr(sched, "new_batch") and sched.new_batch is not None
-
-            if using_new_batch:
-                batch_name = sched.new_batch.title
-                title = sched.new_batch.title
-                batch_obj = None
-                new_batch_obj = sched.new_batch
-            else:
-                batch_name = sched.batch.batch_name
-                title = sched.batch.title
-                batch_obj = sched.batch
-                new_batch_obj = None
-
-            # -----------------------------------------------------------------
-            # TRAINER attendance check
-            # -----------------------------------------------------------------
-            trainer_attendance = TrainerAttendance.objects.filter(
-                Q(
-                    course=sched.course,
-                    date__date=sched.scheduled_date,
-                    trainer=sched.trainer
-                ) & (Q(status__iexact="Login") | Q(status__iexact="Logout"))
-            ).exists()
-
-            if not trainer_attendance:
-                status_str = "Leave"
-            else:
-                # -------------------------------------------------------------
-                # STUDENT attendance check for both batch types
-                # -------------------------------------------------------------
-                if using_new_batch:
-                    student_attendance = Attendance.objects.filter(
-                        student=student,
-                        course=sched.course,
-                        new_batch=new_batch_obj,
-                        date__date=sched.scheduled_date
-                    ).exists()
-                else:
-                    student_attendance = Attendance.objects.filter(
-                        student=student,
-                        course=sched.course,
-                        batch=batch_obj,
-                        date__date=sched.scheduled_date
-                    ).exists()
-
-                status_str = "Present" if student_attendance else "Absent"
-
-                if student_attendance:
-                    attended_count += 1
-                else:
-                    not_attended_count += 1
-
-            class_statuses.append({
-                "id": sched.schedule_id,
-                "date": sched.scheduled_date.strftime("%Y-%m-%d"),
-                "start_time": sched.start_time.strftime("%I:%M %p"),
-                "course": sched.course.course_name,
-                "batch": batch_name,
-                "title": title,
-                "trainer": sched.trainer.full_name if sched.trainer else None,
-                "status": status_str
-            })
-
-        total_classes = attended_count + not_attended_count
-        attendance_percentage = (attended_count / total_classes * 100) if total_classes > 0 else 0
-
-        return Response({
-            "success": True,
-            "student": f"{student.first_name or ''} {student.last_name or ''}".strip(),
-            "total_classes": total_classes,
-            "attended": attended_count,
-            "not_attended": not_attended_count,
-            "attendance_percentage": round(attendance_percentage, 2),
-            "classes": class_statuses
-        }, status=status.HTTP_200_OK)
-    
-    @action(detail=False,methods=['get'],url_path='attendance-logs')
-    def attendance_logs(self, request):
-
-        student_id = request.GET.get("student_id")
-        course_id = request.GET.get("course_id")
-        batch_id = request.GET.get("batch_id")
-        date = request.GET.get("date")
-
-        queryset = Attendance.objects.all()
-
-        if student_id:
-            queryset = queryset.filter(student__student_id=student_id)
-
-        if course_id:
-            queryset = queryset.filter(course_id=course_id)
-
-        if batch_id:
-            queryset = queryset.filter(new_batch_id=batch_id)
-
-        if date:
-            queryset = queryset.filter(date__date=date)
-
-        queryset = queryset.order_by("date")
-
-        data = []
-
-        for obj in queryset:
-
-            dt = obj.date
-
-            if timezone.is_naive(dt):
-                dt = timezone.make_aware(
-                    dt,
-                    timezone.get_current_timezone()
-                )
-
-            dt = timezone.localtime(dt)
-
-            data.append({
-                "id": obj.id,
-                "status": obj.status,
-                "datetime": dt.strftime(
-                    "%Y-%m-%d %I:%M %p"
-                )
-            })
-
-        return Response({
-            "success": True,
-            "data": data
-        })
-    
-    @action(detail=False,methods=['put'],url_path='update-attendance-log')
-    def update_attendance_log(self, request, student_id=None):
-
-        attendance_id = (
-            request.data.get("attendance_id")
-            or request.data.get("id")
-        )
-
-        datetime_value = request.data.get("datetime")
-        status_value = request.data.get("status")
-
-        if not attendance_id:
-            return Response({
-                "success": False,
-                "message": "attendance_id is required"
-            })
-
-        try:
-            attendance = Attendance.objects.get(
-                id=attendance_id
-            )
-
-        except Attendance.DoesNotExist:
-
-            return Response({
-                "success": False,
-                "message": f"Attendance {attendance_id} not found"
-            })
-
-        if datetime_value:
-
-            naive_dt = datetime.strptime(
-                datetime_value,
-                "%Y-%m-%d %I:%M %p"
-            )
-
-            attendance.date = timezone.make_aware(
-                naive_dt,
-                timezone.get_current_timezone()
-            )
-
-        if status_value:
-            attendance.status = status_value
-
-        attendance.save()
-
-        return Response({
-            "success": True,
-            "message": "Attendance updated successfully"
-        })
-
+        
 class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
 
     permission_classes = [IsAuthenticated]
