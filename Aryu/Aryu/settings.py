@@ -353,6 +353,7 @@ TELECRM_API = "https://next-api.telecrm.in"
 
 # SERVER_ROOT = Path("/var/www/ay-lms-python-L") if Path("/var/www/ay-lms-python-L/logs").exists() else BASE_DIR.parent
 SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L") if Path("/home/aryu_user/Arun/ay-lms-python-L/logs").exists() else BASE_DIR.parent
+SERVER_ROOT = Path("/var/www/python-staging") if Path("/var/www/python-staging/logs").exists() else BASE_DIR.parent
 
 LOGGING = {
     "version": 1,
@@ -460,7 +461,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://aryuacademy.com",
     "https://aylms.aryuprojects.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -473,7 +474,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://aryuacademy.com",
     "https://aylms.aryuprojects.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
 
 ]
 
@@ -488,7 +489,7 @@ ALLOWED_HOSTS = [
     "aylms.aryuprojects.com",
     "ayanew.aryuprojects.com",
     "aylms.aryuprojects.com",
-    "portal.aryuacademy.com",
+    "aylms.aryuprojects.com",
 ]  # Allow all hosts for development; change in production
 
 
@@ -601,7 +602,7 @@ TWILIO_PHONE_NUMBER = "+15075854260"
 MEDIA_URL = 'media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'api/media')
 
-MEDIA_BASE_URL = "https://portal.aryuacademy.com/api"
+MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api"
 
 # class DisableMigrations:
 #     def __getitem__(self, item):

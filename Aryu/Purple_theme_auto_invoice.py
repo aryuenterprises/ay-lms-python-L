@@ -104,7 +104,7 @@ def main():
         
         # Flat/Auth credentials
         "student_name": student_name,
-        "portal_url": "https://portal.aryuacademy.com",
+        "portal_url": "https://aylms.aryuprojects.com",
     }
 
     # 3. Render HTML Email Body from `invoice_email.html`
@@ -122,7 +122,7 @@ def main():
 Welcome to ARYU Academy!
 
 Your account details:
-• Learning Portal: https://portal.aryuacademy.com
+• Learning Portal: https://aylms.aryuprojects.com
 • Username: {test_email}
 • Password: {raw_password}
 
