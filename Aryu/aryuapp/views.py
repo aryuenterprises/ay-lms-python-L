@@ -6879,41 +6879,58 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                 "success": False,
                 "message": "Trainer not found."
             }, status=status.HTTP_200_OK)
-
+        
+        trainer_id = trainer.trainer_id
+        
         # ========== 1. Courses from Old Batch Model ==========
-        active_old_batches = BatchCourseTrainer.objects.filter(
+        course_ids_old = BatchCourseTrainer.objects.filter(
             trainer=trainer,
             batch__status=True,
             batch__is_archived=False
-        )
-
-        course_ids_old = active_old_batches.values_list('course_id', flat=True)
-
+        ).values_list('course_id', flat=True)
+        
         # ========== 2. Courses from NewBatch Model ==========
-        active_new_batches = NewBatch.objects.filter(
-            trainers=trainer,
+        course_ids_new = NewBatch.objects.filter(
+            trainers__trainer_id=trainer_id,
             status=True,
             is_archived=False
-        )
-
-        course_ids_new = active_new_batches.values_list('course_id', flat=True)
-
+        ).values_list('course_id', flat=True)
+        
+        # ========== 3. Courses from TrainerCourse (Direct DB Query) ==========
+        from django.db import connection
+        
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT course_id FROM public.aryuapp_trainer_courses WHERE trainer_id = %s",
+                [trainer_id]
+            )
+            course_ids_direct = [row[0] for row in cursor.fetchall()]
+        
         # ========== Combine & Remove Duplicates ==========
-        all_course_ids = set(list(course_ids_old) + list(course_ids_new))
-
+        all_course_ids = set(
+            list(course_ids_old) + 
+            list(course_ids_new) + 
+            course_ids_direct
+        )
+        
+        # Debug: Print to see what's being found
+        print(f"Old course IDs: {list(course_ids_old)}")
+        print(f"New course IDs: {list(course_ids_new)}")
+        print(f"Direct course IDs: {course_ids_direct}")
+        print(f"All course IDs: {all_course_ids}")
+        
         courses = Course.objects.filter(
             course_id__in=all_course_ids,
             is_archived=False
         ).distinct()
-
+        
         serializer = CourseSerializer(courses, many=True)
-
+        
         return Response({
             "success": True,
             "message": f"Courses assigned to trainer {trainer.full_name}.",
             "data": serializer.data
         }, status=status.HTTP_200_OK)
-        
     @action(detail=False, methods=['get'], url_path='admins')
     def list_admins(self, request):
         try:
@@ -7687,47 +7704,47 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         employee_id = self.kwargs.get('employee_id')
-
+        
         if not employee_id:
             return Response({"success": False, "message": "Trainer employee_id is required."}, status=200)
-
+        
         # ----------------- Today's Attendance -----------------
         ist = pytz.timezone("Asia/Kolkata")
-
+        
         # Get now in IST
         today_ist = timezone.now().astimezone(ist).date()
-
+        
         # Create datetime range for today in IST
         start_ist = ist.localize(datetime.combine(today_ist, datetime.min.time()))
         end_ist = ist.localize(datetime.combine(today_ist, datetime.max.time()))
-
+        
         # Convert to UTC
         start_utc = start_ist.astimezone(pytz.utc)
         end_utc = end_ist.astimezone(pytz.utc)
-
-        # Final queryset
+        
+        # Final queryset with select_related for optimization
         queryset = TrainerAttendance.objects.filter(
             trainer__employee_id=employee_id,
             date__gte=start_utc,
             date__lte=end_utc
-        ).order_by('-date')
-
+        ).select_related('trainer', 'new_batch', 'batch', 'course').order_by('-date')
+        
         # ------------------- Process Attendance Data -------------------
         trainer_info = None
         sessions = {}
-
+        
         for att in queryset:
             if not trainer_info:
                 trainer_info = {
                     "trainer": att.trainer.employee_id,
                     "trainer_name": att.trainer.full_name
                 }
-
+            
             batch_id = att.new_batch.batch_id if att.new_batch else (att.batch.batch_id if att.batch else None)
-            course_id = att.course.course_id
-            course_name = att.course.course_name
-            session_key = f"{batch_id}_{course_id}"
-
+            course_id = att.course.course_id if att.course else None
+            course_name = att.course.course_name if att.course else None
+            session_key = f"{batch_id}_{course_id}_{att.date.strftime('%Y-%m-%d')}"  # Added date for daily grouping
+        
             if session_key not in sessions:
                 sessions[session_key] = {
                     "login": None,
@@ -7735,36 +7752,84 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     "batch_id": batch_id,
                     "batch_title": att.new_batch.title if att.new_batch else (att.batch.title if att.batch else None),
                     "course_id": course_id,
-                    "course_name": course_name
+                    "course_name": course_name,
+                    "date": att.date.strftime("%Y-%m-%d"),
+                    "logs": []  # Store all logs for this session
                 }
-
+            
+            # Store individual log
+            sessions[session_key]["logs"].append({
+                "date": att.date.strftime("%Y-%m-%d %H:%M:%S"),
+                "status": att.status,
+                "date_obj": att.date
+            })
+            
             if att.status == "Login":
                 sessions[session_key]["login"] = att.date
             elif att.status == "Logout":
                 sessions[session_key]["logout"] = att.date
-
+        
         attendance_data = []
         total_seconds = 0
-
-        # MODIFIED: Include sessions even if only login exists
+        
+        # Process sessions with proper login/logout pairing
         for session in sessions.values():
-            # Check if login exists (with OR condition)
-            if session["login"] or session["logout"]:
-                time_diff = None
-                seconds = 0
+            # Sort logs by time
+            session_logs = sorted(session["logs"], key=lambda x: x["date_obj"])
+            
+            # Calculate working hours for this session
+            session_seconds = 0
+            first_login = None
+            last_logout = None
+            login_time = None
+            
+            for log in session_logs:
+                log_time = log["date_obj"]
+                if log["status"] == "Login":
+                    if not first_login:
+                        first_login = log_time
+                    login_time = log_time
+                elif log["status"] == "Logout" and login_time:
+                    logout_time = log_time
+                    if not last_logout or logout_time > last_logout:
+                        last_logout = logout_time
+                    session_seconds += (logout_time - login_time).total_seconds()
+                    login_time = None
+            
+            # If login exists but no logout, consider it active session
+            if login_time and not last_logout:
+                last_logout = None  # No logout yet
+            
+            # Convert to IST for display
+            login_ist = first_login.astimezone(ist) if first_login else None
+            logout_ist = last_logout.astimezone(ist) if last_logout else None
+            
+            # Only include if there's a login (even without logout)
+            if login_ist:
+                total_seconds += session_seconds
                 
-                # Calculate time difference only if both exist
-                if session["login"] and session["logout"]:
-                    time_diff = session["logout"] - session["login"]
-                    seconds = time_diff.total_seconds()
-                    total_seconds += seconds
-
-                hours = int(seconds // 3600) if seconds > 0 else 0
-                minutes = int((seconds % 3600) // 60) if seconds > 0 else 0
-
-                login_ist = session["login"].astimezone(ist) if session["login"] else None
-                logout_ist = session["logout"].astimezone(ist) if session["logout"] else None
-
+                hours = int(session_seconds // 3600) if session_seconds > 0 else 0
+                minutes = int((session_seconds % 3600) // 60) if session_seconds > 0 else 0
+                
+                # Get extra working hours (similar to full_logs)
+                extra_time_str = "0:00:00"
+                if session["date"]:
+                    try:
+                        log_date = datetime.strptime(session["date"], "%Y-%m-%d").date()
+                        schedules = ClassSchedule.objects.filter(
+                            trainer__employee_id=employee_id,
+                            scheduled_date=log_date,
+                            is_archived=False,
+                            is_class_cancelled=False
+                        )
+                        
+                        extra_time = timedelta(0)
+                        for s in schedules:
+                            extra_time += s.get_extra_time()
+                        extra_time_str = str(extra_time)
+                    except:
+                        extra_time_str = "0:00:00"
+                
                 attendance_data.append({
                     "trainer": trainer_info["trainer"],
                     "trainer_name": trainer_info["trainer_name"],
@@ -7774,30 +7839,36 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     "course_name": session["course_name"],
                     "login_time": login_ist.strftime("%Y-%m-%d %I:%M:%S %p") if login_ist else None,
                     "logout_time": logout_ist.strftime("%Y-%m-%d %I:%M:%S %p") if logout_ist else None,
-                    "spent_time": f"{hours}h {minutes}m" if seconds > 0 else "0m",
-                    "total_seconds": seconds,
-                    "status": "Active" if session["login"] and not session["logout"] else "Completed" if session["login"] and session["logout"] else "Unknown"  # Optional: add status
+                    "spent_time": f"{hours}h {minutes}m" if session_seconds > 0 else "0m",
+                    "total_seconds": session_seconds,
+                    "extra_working_hours": extra_time_str,
+                    "date": session["date"],
+                    "first_login_time": login_ist.strftime("%I:%M:%S %p") if login_ist else None,
+                    "last_logout_time": logout_ist.strftime("%I:%M:%S %p") if logout_ist else None,
+                    "status": "Active" if login_ist and not logout_ist else "Completed" if login_ist and logout_ist else "Unknown"
                 })
-
+        
+        # Calculate total spent time
         if total_seconds > 0:
             total_hours = int(total_seconds // 3600)
             total_minutes = int((total_seconds % 3600) // 60)
             total_spent_time = f"{total_hours}h {total_minutes}m"
         else:
             total_spent_time = "0m"
-
+        
         # ------------------- Trainer Info -------------------
         try:
             trainer = Trainer.objects.get(employee_id=employee_id)
         except Trainer.DoesNotExist:
             return Response({"success": False, "message": "Trainer not found."}, status=200)
-
+        
         # ------------------- New Batches -------------------
         new_batches = NewBatch.objects.filter(
             trainers__trainer_id=trainer.trainer_id,
             is_archived=False,
             status=True
-        )
+        ).select_related('course')
+        
         new_batch_data = [
             {
                 "batch_id": batch.batch_id,
@@ -7808,32 +7879,51 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             }
             for batch in new_batches
         ]
-
+        
         # ------------------- Old Batches -------------------
         old_batch_ids = BatchCourseTrainer.objects.filter(trainer=trainer).values_list("batch_id", flat=True).distinct()
         old_batches = Batch.objects.filter(batch_id__in=old_batch_ids, is_archived=False, status=True)
-
+        
         old_batch_data = []
         for batch in old_batches:
             course_obj = BatchCourseTrainer.objects.filter(batch=batch, trainer=trainer).first()
             old_batch_data.append({
                 "batch_id": batch.batch_id,
-                "batch_name": batch.batch_name,
+                "batch_name": batch.batch_name or batch.title,
                 "title": batch.title,
                 "course": course_obj.course.course_id if course_obj else None,
                 "course_name": course_obj.course.course_name if course_obj else None,
             })
-
+        
         # ------------------- Combine -------------------
         final_batches = new_batch_data + old_batch_data
-
+        
+        # ------------------- Get Courses from Direct Assignment -------------------
+        from django.db import connection
+        
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT course_id FROM public.aryuapp_trainer_courses WHERE trainer_id = %s",
+                [trainer.trainer_id]
+            )
+            course_ids_direct = [row[0] for row in cursor.fetchall()]
+        
+        # Get course details
+        direct_courses = Course.objects.filter(
+            course_id__in=course_ids_direct,
+            is_archived=False
+        ).values('course_id', 'course_name')
+        
         return Response({
             "success": True,
             "message": "Trainer today's attendance and batches fetched.",
             "data": attendance_data,
             "total_spent_time": total_spent_time,
-            "batches": final_batches
+            "batches": final_batches,
+            "direct_courses": list(direct_courses)  # Added for completeness
         }, status=200)
+
+
     # def create(self, request, *args, **kwargs):
     #     serializer = self.get_serializer(data=request.data)
     #     serializer.is_valid(raise_exception=False)
