@@ -8421,139 +8421,233 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         if not employee_id:
             return Response({"success": False, "message": "employee_id is required"}, status=200)
 
-        trainer = Trainer.objects.filter(employee_id=employee_id).first()
-        if not trainer:
+        # Get trainer with proper error handling
+        try:
+            trainer = Trainer.objects.get(employee_id=employee_id)
+        except Trainer.DoesNotExist:
             return Response({"success": False, "message": "Trainer not found"}, status=200)
 
         full_name = trainer.full_name
 
-        # Base queryset
+        # Set timezone to IST
+        ist = pytz.timezone("Asia/Kolkata")
+
+        # Base queryset with proper timezone handling
         queryset = TrainerAttendance.objects.filter(
             trainer__employee_id=employee_id
-        ).order_by("-date")
+        ).select_related('trainer', 'new_batch', 'batch', 'course').order_by("-date")
 
         # Filter monthly logs only if both provided
         monthly_filter = False
         if month and year:
             monthly_filter = True
+            # Convert month and year to datetime range in IST
+            try:
+                year_int = int(year)
+                month_int = int(month)
+                
+                # First day of month in IST
+                start_date_ist = ist.localize(datetime(year_int, month_int, 1, 0, 0, 0))
+                # Last day of month
+                if month_int == 12:
+                    end_date_ist = ist.localize(datetime(year_int + 1, 1, 1, 0, 0, 0)) - timedelta(seconds=1)
+                else:
+                    end_date_ist = ist.localize(datetime(year_int, month_int + 1, 1, 0, 0, 0)) - timedelta(seconds=1)
+                
+                # Convert to UTC
+                start_utc = start_date_ist.astimezone(pytz.utc)
+                end_utc = end_date_ist.astimezone(pytz.utc)
+                
+                queryset = queryset.filter(
+                    date__gte=start_utc,
+                    date__lte=end_utc
+                )
+            except ValueError:
+                return Response({"success": False, "message": "Invalid month or year format"}, status=200)
+
+        # If no month/year provided, default to today's attendance (like list function)
+        else:
+            # Get today in IST
+            today_ist = timezone.now().astimezone(ist).date()
+            
+            # Create datetime range for today in IST
+            start_ist = ist.localize(datetime.combine(today_ist, datetime.min.time()))
+            end_ist = ist.localize(datetime.combine(today_ist, datetime.max.time()))
+            
+            # Convert to UTC
+            start_utc = start_ist.astimezone(pytz.utc)
+            end_utc = end_ist.astimezone(pytz.utc)
+            
             queryset = queryset.filter(
-                date__month=int(month),
-                date__year=int(year)
+                date__gte=start_utc,
+                date__lte=end_utc
             )
 
-        serializer = self.get_serializer(queryset, many=True)
-        logs = serializer.data
+        # Process attendance data similar to list function
+        sessions = {}
+        trainer_info = None
 
-        from collections import defaultdict
-        grouped_logs = defaultdict(list)
+        for att in queryset:
+            if not trainer_info:
+                trainer_info = {
+                    "trainer": att.trainer.employee_id,
+                    "trainer_name": att.trainer.full_name
+                }
 
-        for log in logs:
-            log_date = log["date"].split(" ")[0]
-            grouped_logs[log_date].append(log)
+            batch_id = att.new_batch.batch_id if att.new_batch else (att.batch.batch_id if att.batch else None)
+            course_id = att.course.course_id if att.course else None
+            course_name = att.course.course_name if att.course else None
+            session_key = f"{batch_id}_{course_id}_{att.date.strftime('%Y-%m-%d')}"  # Add date to session key for daily grouping
 
+            if session_key not in sessions:
+                sessions[session_key] = {
+                    "date": att.date.strftime("%Y-%m-%d"),
+                    "login": None,
+                    "logout": None,
+                    "batch_id": batch_id,
+                    "batch_title": att.new_batch.title if att.new_batch else (att.batch.title if att.batch else None),
+                    "course_id": course_id,
+                    "course_name": course_name,
+                    "trainer_full_name": trainer_info["trainer_name"],
+                    "logs": []  # Store all logs for this session
+                }
+
+            # Store individual log
+            sessions[session_key]["logs"].append({
+                "date": att.date.strftime("%Y-%m-%d %H:%M:%S"),
+                "status": att.status,
+                "date_obj": att.date
+            })
+
+            if att.status == "Login":
+                sessions[session_key]["login"] = att.date
+            elif att.status == "Logout":
+                sessions[session_key]["logout"] = att.date
+
+        # Build final logs
         final_logs = []
         monthly_total_seconds = 0
 
-        # Process each day's logs
-        for log_date, day_logs in grouped_logs.items():
-            work_start = None
-            break_start = None
-            break_seconds = 0
+        for session_key, session in sessions.items():
+            # Calculate working hours for this session
             total_seconds = 0
             first_login = None
             last_logout = None
 
-            # sort logs of the day
-            day_logs = sorted(day_logs, key=lambda x: x["date"], reverse=True)
-
-            for log in day_logs:
-                status = log["status"].lower()
-                log_time = datetime.strptime(log["date"], "%Y-%m-%d %H:%M:%S")
-
-                if status == "login":
+            # Sort logs by time
+            session_logs = sorted(session["logs"], key=lambda x: x["date_obj"])
+            
+            # Process login/logout pairs
+            login_time = None
+            for log in session_logs:
+                log_time = log["date_obj"]
+                if log["status"] == "Login":
                     if not first_login:
                         first_login = log_time
-                    work_start = log_time
+                    login_time = log_time
+                elif log["status"] == "Logout" and login_time:
+                    logout_time = log_time
+                    if not last_logout or logout_time > last_logout:
+                        last_logout = logout_time
+                    total_seconds += (logout_time - login_time).total_seconds()
+                    login_time = None
 
-                elif status == "logout":
-                    last_logout = log_time
-                    if work_start:
-                        total_seconds += (log_time - work_start).total_seconds() - break_seconds
-                        work_start = None
-                        break_seconds = 0
+            # If login exists but no logout, consider it active session
+            if login_time and not last_logout:
+                last_logout = None  # No logout yet
+                # Still count it with partial time
+                if first_login:
+                    total_seconds = max(total_seconds, 0)
 
-                elif status == "break out" and work_start:
-                    break_start = log_time
+            # Convert to IST for display
+            login_ist = first_login.astimezone(ist) if first_login else None
+            logout_ist = last_logout.astimezone(ist) if last_logout else None
 
-                elif status == "break in" and break_start:
-                    break_seconds += (log_time - break_start).total_seconds()
-                    break_start = None
-
-            # Daily total
             total_seconds = max(total_seconds, 0)
             total_time_str = self.format_hhmmss(total_seconds)
 
-            # Add to monthly total
             if monthly_filter:
                 monthly_total_seconds += total_seconds
 
-            # EXTRA WORKING HOURS (sum of schedule extra time)
-            schedules = ClassSchedule.objects.filter(
-                trainer=trainer,
-                scheduled_date=log_date,
-                is_archived=False,
-                is_class_cancelled=False
-            )
+            # Get extra working hours (similar to original logic)
+            if session["date"]:
+                log_date = datetime.strptime(session["date"], "%Y-%m-%d").date()
+                schedules = ClassSchedule.objects.filter(
+                    trainer=trainer,
+                    scheduled_date=log_date,
+                    is_archived=False,
+                    is_class_cancelled=False
+                )
 
-            extra_time = timedelta(0)
-            for s in schedules:
-                extra_time += s.get_extra_time()
+                extra_time = timedelta(0)
+                for s in schedules:
+                    extra_time += s.get_extra_time()
+                extra_str = str(extra_time)
+            else:
+                extra_str = "0:00:00"
 
-            extra_str = str(extra_time)
+            # Add to final logs
+            final_log = {
+                "trainer_full_name": trainer_info["trainer_name"],
+                "batch_id": session["batch_id"],
+                "batch_name": session["batch_title"],
+                "course_id": session["course_id"],
+                "course_name": session["course_name"],
+                "login_time": login_ist.strftime("%Y-%m-%d %I:%M:%S %p") if login_ist else None,
+                "logout_time": logout_ist.strftime("%Y-%m-%d %I:%M:%S %p") if logout_ist else None,
+                "working_hours": total_time_str,
+                "extra_working_hours": extra_str,
+                "date": session["date"],
+                "first_login_time": login_ist.strftime("%I:%M:%S %p") if login_ist else None,
+                "last_logout_time": logout_ist.strftime("%I:%M:%S %p") if logout_ist else None,
+                "status": "Active" if login_ist and not logout_ist else "Completed" if login_ist and logout_ist else "Unknown"
+            }
+            final_logs.append(final_log)
 
-            # Assign full_name, daily totals, extra hours
-            for log in day_logs:
-                log["trainer_full_name"] = full_name
-                log["working_hours"] = total_time_str
-                log["extra_working_hours"] = extra_str
-                log["first_login_time"] = first_login.strftime("%I:%M:%S %p") if first_login else None
-                log["last_logout_time"] = last_logout.strftime("%I:%M:%S %p") if last_logout else None
-                final_logs.append(log)
-
-        # COURSES (unchanged)
+        # Get courses (optimized)
         course = Course.objects.filter(
             batchcoursetrainer__trainer__employee_id=employee_id,
             is_archived=False
         ).values("course_id", "course_name").distinct()
 
-        # OLD BATCHES (Batch)
-        old_batches = Batch.objects.filter(
-            batchcoursetrainer__trainer__employee_id=employee_id,
-            is_archived=False,
-            status=True
-        ).values("batch_id", "batch_name", "title").distinct()
-
-        # NEW BATCHES (NewBatch)
-        new_batches_qs = NewBatch.objects.filter(
-            trainer=trainer,
+        # Get batches (optimized like list function)
+        # New batches
+        new_batches = NewBatch.objects.filter(
+            trainers__trainer_id=trainer.trainer_id,
             is_archived=False,
             status=True
         ).select_related("course")
-
-        # Convert new batch into old-batch response format
-        new_batches = [
+        
+        new_batch_data = [
             {
-                "batch_id": nb.batch_id,
-                "batch_name": nb.title,      # Mapping -> Batch.batch_name
-                "title": nb.title,
+                "batch_id": batch.batch_id,
+                "batch_name": batch.title,
+                "title": batch.title,
+                "course": batch.course.course_id,
+                "course_name": batch.course.course_name
             }
-            for nb in new_batches_qs
+            for batch in new_batches
         ]
 
-        # COMBINE BOTH
-        all_batches = list(old_batches) + list(new_batches)
+        # Old batches
+        old_batch_ids = BatchCourseTrainer.objects.filter(trainer=trainer).values_list("batch_id", flat=True).distinct()
+        old_batches = Batch.objects.filter(batch_id__in=old_batch_ids, is_archived=False, status=True)
+        
+        old_batch_data = []
+        for batch in old_batches:
+            course_obj = BatchCourseTrainer.objects.filter(batch=batch, trainer=trainer).first()
+            old_batch_data.append({
+                "batch_id": batch.batch_id,
+                "batch_name": batch.batch_name or batch.batch_name,
+                "title": batch.title,
+                "course": course_obj.course.course_id if course_obj else None,
+                "course_name": course_obj.course.course_name if course_obj else None,
+            })
 
-        # Final response
+        # Combine batches
+        all_batches = new_batch_data + old_batch_data
+
+        # Response
         response = {
             "success": True,
             "message": f"Full attendance logs for {full_name}",
@@ -8567,7 +8661,7 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             response["monthly_total_working_hours"] = self.format_hhmmss(int(monthly_total_seconds))
 
         return Response(response, status=200)
-        
+
     from datetime import datetime, timedelta
     from django.utils.dateparse import parse_datetime
     from django.db.models import Q
