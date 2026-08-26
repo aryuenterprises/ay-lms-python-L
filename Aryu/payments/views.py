@@ -717,10 +717,21 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         regenerate = serializer.validated_data.get("regenerate", False)
 
         try:
+            # 1. Generate the invoice
             transaction = InvoiceService.generate_invoice(transaction.id, regenerate=regenerate)
+            
+            # 2. Reload latest DB values into the transaction instance
+            transaction.refresh_from_db()
+
+            # 3. Resolve the URL safely for both FileField and CharField/URLField
             invoice_url = None
-            if transaction.invoice and hasattr(transaction.invoice, "url"):
-                invoice_url = request.build_absolute_uri(transaction.invoice.url)
+            if transaction.invoice:
+                if hasattr(transaction.invoice, "url"):
+                    # Case: Django FileField / FieldFile
+                    invoice_url = request.build_absolute_uri(transaction.invoice.url)
+                elif isinstance(transaction.invoice, str):
+                    # Case: Saved as a string/relative path
+                    invoice_url = request.build_absolute_uri(transaction.invoice) if not transaction.invoice.startswith("http") else transaction.invoice
 
             return Response({
                 "success": True,
@@ -734,7 +745,8 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             }, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"success": False, "message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
+        
+            
     @action(detail=False, methods=["post"])
     def send_invoice_email(self, request):
         user = request.user
