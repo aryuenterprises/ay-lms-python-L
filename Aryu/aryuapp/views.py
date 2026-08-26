@@ -8191,7 +8191,7 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             trainer__employee_id=employee_id,
             date__gte=start_utc,
             date__lte=end_utc
-        ).order_by('date')
+        ).order_by('-date')
 
         # ------------------- Process Attendance Data -------------------
         trainer_info = None
