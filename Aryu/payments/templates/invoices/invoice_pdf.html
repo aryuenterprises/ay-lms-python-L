@@ -242,9 +242,9 @@
                     <tbody>
                         <tr>
                             <td class="text-center">1</td>
-                            <td>{{ invoice_no }}</td>
-                            <td>{{ invoice_date }}</td>
-                            <td class="text-right">{{ total_amount }}</td>
+                            <td>{{ transaction.invoice_no|default:invoice_no }}</td>
+                            <td>{{ transaction.invoice_date|default:invoice_date }}</td>
+                            <td class="text-right">{{ transaction.amount|default:total_amount }}</td>
                         </tr>
                         <tr class="bold" style="background-color: #FAFAFA;">
                             <td colspan="3" class="text-right">Total Received</td>
