@@ -717,10 +717,21 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         regenerate = serializer.validated_data.get("regenerate", False)
 
         try:
+            # 1. Generate the invoice
             transaction = InvoiceService.generate_invoice(transaction.id, regenerate=regenerate)
+            
+            # 2. Reload latest DB values into the transaction instance
+            transaction.refresh_from_db()
+
+            # 3. Resolve the URL safely for both FileField and CharField/URLField
             invoice_url = None
-            if transaction.invoice and hasattr(transaction.invoice, "url"):
-                invoice_url = request.build_absolute_uri(transaction.invoice.url)
+            if transaction.invoice:
+                if hasattr(transaction.invoice, "url"):
+                    # Case: Django FileField / FieldFile
+                    invoice_url = request.build_absolute_uri(transaction.invoice.url)
+                elif isinstance(transaction.invoice, str):
+                    # Case: Saved as a string/relative path
+                    invoice_url = request.build_absolute_uri(transaction.invoice) if not transaction.invoice.startswith("http") else transaction.invoice
 
             return Response({
                 "success": True,
@@ -734,7 +745,8 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             }, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"success": False, "message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
+        
+            
     @action(detail=False, methods=["post"])
     def send_invoice_email(self, request):
         user = request.user
@@ -985,7 +997,7 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         trainer_details = None
         if trainer_id:
             try:
-                trainer_obj = Trainer.objects.get(employee_id=trainer_id)
+                trainer_obj = Trainer.objects.get(trainer_id=trainer_id)
                 trainer_details = TrainerHeaderSerializer(trainer_obj).data
             except Trainer.DoesNotExist:
                 trainer_details = None
@@ -1020,12 +1032,36 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
             for course in active_courses_with_batches
         ]
         
+        # Fetch New Batches for the trainer (serialized properly)
+        new_batches_data = []
+        if trainer_id:
+            new_batches = NewBatch.objects.filter(
+                trainers__trainer_id=trainer_id,  # Assuming ManyToMany relationship
+                is_archived=False,
+                status=True
+            ).select_related('course')
+            
+            # Convert to list of dictionaries
+            new_batches_data = [
+                {
+                    "batch_id": batch.batch_id,
+                    "title": batch.title,
+                    "course_id": batch.course.course_id if batch.course else None,
+                    "course_name": batch.course.course_name if batch.course else None,
+                    "start_date": batch.start_date.strftime("%Y-%m-%d") if batch.start_date else None,
+                    "end_date": batch.end_date.strftime("%Y-%m-%d") if batch.end_date else None,
+                    "status": batch.status
+                }
+                for batch in new_batches
+            ]
+        
         # Prepare response data
         response_data = {
             'trainer_details': trainer_details,
             'courses': course,  # Now includes fee as string
             'active_courses': courses_data,
-            'all_batches': batches_by_course,
+            # 'all_batches': batches_by_course,
+            'all_batches': new_batches_data  # Now properly serialized
         }
         
         # Paginated Response
@@ -1041,8 +1077,6 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         response_data['results'] = serializer.data
         return Response(response_data, status=status.HTTP_200_OK)
-
-    
 class StripePaymentViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['post'])
