@@ -11,7 +11,8 @@ from django.conf import settings
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.db import transaction
 from django.shortcuts import get_object_or_404
-from django.http import HttpResponse
+from django.http import HttpResponse, HttpResponseRedirect
+from urllib.parse import quote
 from rest_framework.views import APIView
 import razorpay
 import hmac
@@ -66,13 +67,25 @@ SIGNING_SALT = "resume-email-verification"
 @api_view(['GET', 'POST'])
 @permission_classes([AllowAny])
 def verify_email(request):
+    portal_base_url = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com')
+
+    # Detect if request comes from web browser navigation
+    accept_header = request.headers.get('Accept', '')
+    is_browser = request.method == 'GET' and ('text/html' in accept_header or '*/*' in accept_header or not accept_header)
+
     token = request.query_params.get('token') or (request.data.get('token') if hasattr(request, 'data') and request.data else None)
 
-    if not token:
+    def handle_error(msg, status_code=status.HTTP_400_BAD_REQUEST):
+        if is_browser:
+            encoded_msg = quote(msg)
+            return HttpResponseRedirect(f"{portal_base_url}/login?verified=false&error={encoded_msg}")
         return Response({
             'success': False,
-            'message': 'Verification token is required.'
-        }, status=status.HTTP_400_BAD_REQUEST)
+            'message': msg
+        }, status=status_code)
+
+    if not token:
+        return handle_error('Verification token is required.', status.HTTP_400_BAD_REQUEST)
 
     # Clean and strip any surrounding quotes/whitespace
     token = str(token).strip().strip('"').strip("'")
@@ -84,15 +97,9 @@ def verify_email(request):
         except BadSignature:
             payload = signing.loads(token, max_age=259200)
     except SignatureExpired:
-        return Response({
-            'success': False,
-            'message': 'Verification link has expired. Please request a new verification email.'
-        }, status=status.HTTP_400_BAD_REQUEST)
-    except (BadSignature, Exception) as e:
-        return Response({
-            'success': False,
-            'message': 'Invalid verification token.'
-        }, status=status.HTTP_400_BAD_REQUEST)
+        return handle_error('Verification link has expired. Please request a new verification email.', status.HTTP_400_BAD_REQUEST)
+    except (BadSignature, Exception):
+        return handle_error('Invalid verification token.', status.HTTP_400_BAD_REQUEST)
 
     user_id = payload.get('user_id')
     email = payload.get('email')
@@ -108,10 +115,7 @@ def verify_email(request):
             user = User.objects.filter(email__iexact=email).first()
 
     if not user:
-        return Response({
-            'success': False,
-            'message': 'User associated with this token was not found.'
-        }, status=status.HTTP_404_NOT_FOUND)
+        return handle_error('User associated with this token was not found.', status.HTTP_404_NOT_FOUND)
 
     # Update verification fields dynamically based on available model fields
     if hasattr(user, 'is_verified'):
@@ -122,6 +126,10 @@ def verify_email(request):
         user.is_active = True
 
     user.save()
+
+    if is_browser:
+        msg = quote('Email verified successfully')
+        return HttpResponseRedirect(f"{portal_base_url}/login?verified=true&message={msg}")
 
     return Response({
         'success': True,
