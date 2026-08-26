@@ -857,59 +857,74 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"], url_path="user-history")
     def user_transaction_history(self, request):
-        email = request.query_params.get("email")
-        phone = request.query_params.get("phone")
+        # 1. Sanitize & Normalize Inputs (Prevents subtle bypasses via extra spaces)
+        email = request.query_params.get("email", "").strip()
+        phone = request.query_params.get("phone", "").strip()
 
         if not email and not phone:
             return Response(
                 {"success": False, "message": "Email or phone required"},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # 2. Build Registration Filter efficiently
         reg_filter = Q()
         if email:
             reg_filter |= Q(email__iexact=email)
         if phone:
             reg_filter |= Q(phone=phone)
 
-        registrations = EbookRegistration.objects.filter(reg_filter)
+        # Fetch registration IDs directly (Flat list of integers - lightweight memory footprint)
+        reg_ids = EbookRegistration.objects.filter(reg_filter).values_list(
+            "id", flat=True
+        )
+
+        # 3. Build Transaction Filter
         txn_filter = Q()
-
-        if registrations.exists():
-            txn_filter |= Q(ebookregistration__in=registrations)
-
+        if reg_ids:
+            txn_filter |= Q(ebookregistration_id__in=reg_ids)
         if phone:
-            txn_filter |= Q(phone=phone)
-            txn_filter |= Q(metadata__phone=phone)
-
+            txn_filter |= Q(phone=phone) | Q(metadata__phone=phone)
         if email:
             txn_filter |= Q(metadata__email__iexact=email)
 
-        transactions = PaymentTransaction.objects.filter(txn_filter)\
-            .select_related("ebookregistration", "ebookregistration__ebook")\
-            .order_by("-id")\
+        # 4. Optimized Query Execution ($O(N)$ DB operation using native values parsing)
+        # Fetches exact fields including transaction_id and payment_mode
+        transactions = (
+            PaymentTransaction.objects.filter(txn_filter)
+            .order_by("-id")
             .distinct()
+            .values(
+                "id",
+                "amount",
+                "payment_status",
+                "transaction_id",
+                "payment_mode",
+                "metadata",
+                "created_at",
+                "ebookregistration__ebook__title",
+                "ebookregistration__ebook__slug",
+            )
+        )
 
-        data = []
-        for txn in transactions:
-            ebook = txn.ebookregistration.ebook if txn.ebookregistration else None
+        # 5. Transform records efficiently
+        data = [
+            {
+                "id": txn["id"],
+                "amount": txn["amount"],
+                "status": txn["payment_status"],
+                "transaction_id": txn["transaction_id"],
+                "payment_mode": txn["payment_mode"],
+                "phone": txn["metadata"].get("phone") if txn["metadata"] else None,
+                "email": txn["metadata"].get("email") if txn["metadata"] else None,
+                "created_at": txn["created_at"],
+                "ebook_title": txn["ebookregistration__ebook__title"],
+                "ebook_slug": txn["ebookregistration__ebook__slug"],
+            }
+            for txn in transactions
+        ]
 
-            data.append({
-                "id": txn.id,
-                "amount": txn.amount,
-                "status": txn.payment_status,
-                "phone": txn.metadata.get("phone") if txn.metadata else None,
-                "email": txn.metadata.get("email") if txn.metadata else None,
-                "created_at": txn.created_at,
-                "ebook_title": ebook.title if ebook else None,
-                "ebook_slug": ebook.slug if ebook else None,
-            })
-
-        return Response({
-            "success": True,
-            "count": len(data),
-            "data": data
-        })
+        return Response({"success": True, "count": len(data), "data": data})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
