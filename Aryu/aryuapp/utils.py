@@ -182,7 +182,7 @@ def send_otp_email(email, otp):
 
 
 def send_welcome_email(student,plain_password):
-    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://lms.aryuprojects.com')
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://portal.aryuacademy.com')
     subject = f"🎉 Welcome {student.first_name}! Your Aryu Academy Journey Begins 🚀"
     from_email = settings.DEFAULT_FROM_EMAIL
     to = [student.email]

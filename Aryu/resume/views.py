@@ -64,81 +64,94 @@ User = get_user_model()
 
 SIGNING_SALT = "resume-email-verification"
 
+BASE_PORTAL_URL = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
+VERIFY_ENDPOINT = f"{BASE_PORTAL_URL}/api/resume/auth/verify-email/"
+LOGIN_SUCCESS_REDIRECT = f"{BASE_PORTAL_URL}/login?verified=true"
+LOGIN_ERROR_REDIRECT = f"{BASE_PORTAL_URL}/login?verified=false&error="
+
 @api_view(['GET', 'POST'])
 @permission_classes([AllowAny])
 def verify_email(request):
-    portal_base_url = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com')
+    try:
+        # Detect if request comes from web browser navigation
+        accept_header = request.headers.get('Accept', '') if hasattr(request, 'headers') else ''
+        is_browser = request.method == 'GET' and ('text/html' in accept_header or '*/*' in accept_header or not accept_header)
 
-    # Detect if request comes from web browser navigation
-    accept_header = request.headers.get('Accept', '')
-    is_browser = request.method == 'GET' and ('text/html' in accept_header or '*/*' in accept_header or not accept_header)
+        token = request.query_params.get('token') or (request.data.get('token') if hasattr(request, 'data') and request.data else None)
 
-    token = request.query_params.get('token') or (request.data.get('token') if hasattr(request, 'data') and request.data else None)
+        def handle_error(msg, status_code=status.HTTP_400_BAD_REQUEST):
+            if is_browser:
+                encoded_msg = quote(msg)
+                return HttpResponseRedirect(f"{LOGIN_ERROR_REDIRECT}{encoded_msg}")
+            return Response({
+                'success': False,
+                'message': msg
+            }, status=status_code)
 
-    def handle_error(msg, status_code=status.HTTP_400_BAD_REQUEST):
+        if not token:
+            return handle_error('Verification token is required.', status.HTTP_400_BAD_REQUEST)
+
+        # Clean and strip any surrounding quotes/whitespace
+        token = str(token).strip().strip('"').strip("'")
+
+        try:
+            # Verify and decode signed token (max_age: 3 days = 259200 seconds)
+            try:
+                payload = signing.loads(token, salt=SIGNING_SALT, max_age=259200)
+            except BadSignature:
+                payload = signing.loads(token, max_age=259200)
+        except SignatureExpired:
+            return handle_error('Verification link has expired. Please request a new verification email.', status.HTTP_400_BAD_REQUEST)
+        except (BadSignature, Exception):
+            return handle_error('Invalid verification token.', status.HTTP_400_BAD_REQUEST)
+
+        user_id = payload.get('user_id')
+        email = payload.get('email')
+
+        user = None
+        if user_id:
+            user = ResumeRegistration.objects.filter(id=user_id).first()
+            if not user:
+                user = User.objects.filter(id=user_id).first()
+        elif email:
+            user = ResumeRegistration.objects.filter(email__iexact=email).first()
+            if not user:
+                user = User.objects.filter(email__iexact=email).first()
+
+        if not user:
+            return handle_error('User associated with this token was not found.', status.HTTP_404_NOT_FOUND)
+
+        # Update verification fields dynamically based on available model fields
+        if hasattr(user, 'is_verified'):
+            user.is_verified = True
+        if hasattr(user, 'is_email_verified'):
+            user.is_email_verified = True
+        if hasattr(user, 'is_active'):
+            user.is_active = True
+
+        user.save()
+
         if is_browser:
-            encoded_msg = quote(msg)
-            return HttpResponseRedirect(f"{portal_base_url}/login?verified=false&error={encoded_msg}")
+            msg = quote('Email verified successfully')
+            return HttpResponseRedirect(f"{LOGIN_SUCCESS_REDIRECT}&message={msg}")
+
+        return Response({
+            'success': True,
+            'message': 'Email verified successfully! You can now log in.',
+            'data': {
+                'user_id': user.id,
+                'email': user.email
+            }
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"Error in verify_email: {e}\n{traceback.format_exc()}")
+        accept_header = request.headers.get('Accept', '') if hasattr(request, 'headers') else ''
+        if request.method == 'GET' and ('text/html' in accept_header or '*/*' in accept_header or not accept_header):
+            return HttpResponseRedirect(f"{LOGIN_ERROR_REDIRECT}server_error")
         return Response({
             'success': False,
-            'message': msg
-        }, status=status_code)
-
-    if not token:
-        return handle_error('Verification token is required.', status.HTTP_400_BAD_REQUEST)
-
-    # Clean and strip any surrounding quotes/whitespace
-    token = str(token).strip().strip('"').strip("'")
-
-    try:
-        # Verify and decode signed token (max_age: 3 days = 259200 seconds)
-        try:
-            payload = signing.loads(token, salt=SIGNING_SALT, max_age=259200)
-        except BadSignature:
-            payload = signing.loads(token, max_age=259200)
-    except SignatureExpired:
-        return handle_error('Verification link has expired. Please request a new verification email.', status.HTTP_400_BAD_REQUEST)
-    except (BadSignature, Exception):
-        return handle_error('Invalid verification token.', status.HTTP_400_BAD_REQUEST)
-
-    user_id = payload.get('user_id')
-    email = payload.get('email')
-
-    user = None
-    if user_id:
-        user = ResumeRegistration.objects.filter(id=user_id).first()
-        if not user:
-            user = User.objects.filter(id=user_id).first()
-    elif email:
-        user = ResumeRegistration.objects.filter(email__iexact=email).first()
-        if not user:
-            user = User.objects.filter(email__iexact=email).first()
-
-    if not user:
-        return handle_error('User associated with this token was not found.', status.HTTP_404_NOT_FOUND)
-
-    # Update verification fields dynamically based on available model fields
-    if hasattr(user, 'is_verified'):
-        user.is_verified = True
-    if hasattr(user, 'is_email_verified'):
-        user.is_email_verified = True
-    if hasattr(user, 'is_active'):
-        user.is_active = True
-
-    user.save()
-
-    if is_browser:
-        msg = quote('Email verified successfully')
-        return HttpResponseRedirect(f"{portal_base_url}/login?verified=true&message={msg}")
-
-    return Response({
-        'success': True,
-        'message': 'Email verified successfully! You can now log in.',
-        'data': {
-            'user_id': user.id,
-            'email': user.email
-        }
-    }, status=status.HTTP_200_OK)
+            'message': 'An internal error occurred during verification.'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class AuthViewSet(viewsets.ViewSet): 
@@ -255,8 +268,7 @@ class AuthViewSet(viewsets.ViewSet):
             )
 
             token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
-            frontend_url = getattr(settings, 'FRONTEND_URL', 'https://portal.aryuacademy.com')
-            verification_link = f"{frontend_url}/api/resume/auth/verify-email/?token={token}"
+            verification_link = f"{VERIFY_ENDPOINT}?token={token}"
 
             html_message = f"""
     <!DOCTYPE html>
@@ -591,8 +603,7 @@ class AuthViewSet(viewsets.ViewSet):
                 salt=SIGNING_SALT
             )
 
-            portal_url = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
-            verification_link = f"{portal_url}/api/resume/auth/verify-email/?token={token}"
+            verification_link = f"{VERIFY_ENDPOINT}?token={token}"
 
             first_name = getattr(user, 'first_name', 'User') or 'User'
 

@@ -11,7 +11,7 @@ def send_webinar_registration_email(registration):
     webinar = registration.webinar
     ist_time = timezone.localtime(webinar.scheduled_start)
     subject = f"Registration Confirmed: {webinar.title}"
-    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://lms.aryuprojects.com')
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://portal.aryuacademy.com')
 
     html_content = f"""
     <!DOCTYPE html>
@@ -104,7 +104,7 @@ def send_webinar_registration_email(registration):
 
 def send_webinar_certificate_email(registration, certificate_file):
     webinar = registration.webinar
-    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://lms.aryuprojects.com')
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://portal.aryuacademy.com')
 
     subject = f"Certificate of Completion - {webinar.title}"
     from_email = settings.DEFAULT_FROM_EMAIL

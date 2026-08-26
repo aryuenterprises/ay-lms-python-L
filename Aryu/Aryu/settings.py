@@ -750,7 +750,8 @@ LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'Asia/Kolkata'
 
-FRONTEND_URL = 'https://lms.aryuprojects.com'
+FRONTEND_URL = 'https://portal.aryuacademy.com'
+PORTAL_FRONTEND_URL = FRONTEND_URL
 SITE_URL = FRONTEND_URL
 
 USE_I18N = True
