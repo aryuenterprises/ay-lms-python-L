@@ -4716,89 +4716,98 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
         for d_key, logs in daily_logs.items():
             logs.sort(key=lambda x: x["dt"])
-            login_dt = None
-            logout_dt = None
 
-            for log in logs:
+            # ---------------- 1. WORK SESSIONS (LOGIN -> LOGOUT) ----------------
+            used_logouts = set()
+            for idx, log in enumerate(logs):
                 s_lower = log["status"].lower()
-                dt = log["dt"]
-                if s_lower in ['login', 'present'] and not login_dt:
-                    login_dt = dt
-                elif s_lower == 'logout':
-                    logout_dt = dt
+                if s_lower in ['login', 'present']:
+                    login_dt = log["dt"]
+                    login_str = login_dt.strftime('%I:%M %p')
 
-            work_spend_str = "-"
-            if login_dt:
-                end_calc_dt = logout_dt if logout_dt else (now_ist if d_key == today_ist else login_dt)
-                if end_calc_dt < login_dt:
-                    end_calc_dt = login_dt
-                gross_seconds = max(0, int((end_calc_dt - login_dt).total_seconds()))
-                g_h = gross_seconds // 3600
-                g_m = (gross_seconds % 3600) // 60
-                work_spend_str = f"{g_h:02}:{g_m:02} Hrs"
-
-            login_time_str = login_dt.strftime('%I:%M %p') if login_dt else "-"
-            logout_time_str = logout_dt.strftime('%I:%M %p') if logout_dt else "-"
-
-            i = 0
-            n = len(logs)
-            while i < n:
-                s_lower = logs[i]["status"].lower()
-                if s_lower in ['breakout', 'break out']:
-                    b_out_log = logs[i]
-                    b_in_log = None
-                    j = i + 1
-                    while j < n:
-                        if logs[j]["status"].lower() in ['breakin', 'break in']:
-                            b_in_log = logs[j]
+                    matched_logout = None
+                    for j in range(idx + 1, len(logs)):
+                        if logs[j]["status"].lower() == 'logout' and logs[j]["id"] not in used_logouts:
+                            matched_logout = logs[j]
+                            used_logouts.add(logs[j]["id"])
                             break
-                        j += 1
 
-                    b_out_dt = b_out_log["dt"]
+                    if matched_logout:
+                        logout_dt = matched_logout["dt"]
+                        logout_str = logout_dt.strftime('%I:%M %p')
+                        diff = max(0, int((logout_dt - login_dt).total_seconds()))
+                        spend_str = f"{diff // 3600:02}:{(diff % 3600) // 60:02} Hrs"
+
+                        metric = {
+                            "login_time": login_str,
+                            "logout_time": logout_str,
+                            "break_in": "-",
+                            "break_out": "-",
+                            "total_spend": spend_str
+                        }
+                        log_metrics[log["id"]] = metric
+                        log_metrics[matched_logout["id"]] = metric
+                    else:
+                        logout_str = "-"
+                        if d_key == today_ist:
+                            diff = max(0, int((now_ist - login_dt).total_seconds()))
+                            spend_str = f"{diff // 3600:02}:{(diff % 3600) // 60:02} Hrs"
+                        else:
+                            spend_str = "00:00 Hrs"
+
+                        log_metrics[log["id"]] = {
+                            "login_time": login_str,
+                            "logout_time": logout_str,
+                            "break_in": "-",
+                            "break_out": "-",
+                            "total_spend": spend_str
+                        }
+
+            # ---------------- 2. BREAK SESSIONS (BREAK OUT -> BREAK IN) ----------------
+            used_break_ins = set()
+            for idx, log in enumerate(logs):
+                s_lower = log["status"].lower()
+                if s_lower in ['breakout', 'break out']:
+                    b_out_dt = log["dt"]
                     b_out_str = b_out_dt.strftime('%I:%M %p')
 
-                    if b_in_log:
-                        b_in_dt = b_in_log["dt"]
-                        b_in_str = b_in_dt.strftime('%I:%M %p')
-                        b_diff = max(0, int((b_in_dt - b_out_dt).total_seconds()))
-                        b_spend_str = f"{b_diff // 3600:02}:{(b_diff % 3600) // 60:02} Hrs"
+                    matched_b_in = None
+                    for j in range(idx + 1, len(logs)):
+                        if logs[j]["status"].lower() in ['breakin', 'break in'] and logs[j]["id"] not in used_break_ins:
+                            matched_b_in = logs[j]
+                            used_break_ins.add(logs[j]["id"])
+                            break
 
-                        break_metric = {
+                    if matched_b_in:
+                        b_in_dt = matched_b_in["dt"]
+                        b_in_str = b_in_dt.strftime('%I:%M %p')
+                        diff = max(0, int((b_in_dt - b_out_dt).total_seconds()))
+                        spend_str = f"{diff // 3600:02}:{(diff % 3600) // 60:02} Hrs"
+
+                        metric = {
                             "login_time": "-",
                             "logout_time": "-",
                             "break_in": b_in_str,
                             "break_out": b_out_str,
-                            "total_spend": b_spend_str
+                            "total_spend": spend_str
                         }
-                        log_metrics[b_out_log["id"]] = break_metric
-                        log_metrics[b_in_log["id"]] = break_metric
+                        log_metrics[log["id"]] = metric
+                        log_metrics[matched_b_in["id"]] = metric
                     else:
                         b_in_str = "-"
                         if d_key == today_ist:
-                            b_diff = max(0, int((now_ist - b_out_dt).total_seconds()))
-                            b_spend_str = f"{b_diff // 3600:02}:{(b_diff % 3600) // 60:02} Hrs"
+                            diff = max(0, int((now_ist - b_out_dt).total_seconds()))
+                            spend_str = f"{diff // 3600:02}:{(diff % 3600) // 60:02} Hrs"
                         else:
-                            b_spend_str = "-"
+                            spend_str = "-"
 
-                        break_metric = {
+                        log_metrics[log["id"]] = {
                             "login_time": "-",
                             "logout_time": "-",
                             "break_in": b_in_str,
                             "break_out": b_out_str,
-                            "total_spend": b_spend_str
+                            "total_spend": spend_str
                         }
-                        log_metrics[b_out_log["id"]] = break_metric
-
-                elif s_lower in ['login', 'present', 'logout']:
-                    log_metrics[logs[i]["id"]] = {
-                        "login_time": login_time_str,
-                        "logout_time": logout_time_str,
-                        "break_in": "-",
-                        "break_out": "-",
-                        "total_spend": work_spend_str
-                    }
-
-                i += 1
 
         data_list = []
         for idx, att in enumerate(attendance_qs.order_by('-date'), start=1):
