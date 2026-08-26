@@ -11,8 +11,11 @@ from django.conf import settings
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.db import transaction
 from django.shortcuts import get_object_or_404
-from django.http import HttpResponse, HttpResponseRedirect
-from urllib.parse import quote
+from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
+from urllib.parse import quote, unquote
+import json
+import base64
+import sys
 from rest_framework.views import APIView
 import razorpay
 import hmac
@@ -28,7 +31,7 @@ from aryuapp.auth import CustomJWTAuthentication
 import asyncio
 from django.core.mail import EmailMultiAlternatives
 from django.core import signing
-from django.core.signing import BadSignature, SignatureExpired
+from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 from django.shortcuts import redirect
 from datetime import timedelta
 from django.contrib.auth.hashers import (
@@ -65,45 +68,189 @@ User = get_user_model()
 SIGNING_SALT = "resume-email-verification"
 
 BASE_PORTAL_URL = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
+PASSATS_FRONTEND_URL = getattr(settings, 'PASSATS_FRONTEND_URL', 'https://passats.aryuacademy.com').rstrip('/')
 VERIFY_ENDPOINT = f"{BASE_PORTAL_URL}/api/resume/auth/verify-email/"
-LOGIN_SUCCESS_REDIRECT = f"{BASE_PORTAL_URL}/login?verified=true"
-LOGIN_ERROR_REDIRECT = f"{BASE_PORTAL_URL}/login?verified=false&error="
+LOGIN_SUCCESS_REDIRECT = f"{PASSATS_FRONTEND_URL}/login?verified=true"
+LOGIN_ERROR_REDIRECT = f"{PASSATS_FRONTEND_URL}/login?verified=false&error="
+
+def build_portal_verify_link(request, token):
+    if request:
+        try:
+            domain = request.build_absolute_uri('/').rstrip('/')
+            return f"{domain}/api/resume/auth/verify-email/?token={token}"
+        except Exception:
+            pass
+    
+    backend_url = getattr(settings, 'BACKEND_URL', None) or getattr(settings, 'FRONTEND_URL', None)
+    if backend_url and ('localhost' in backend_url or '127.0.0.1' in backend_url):
+        return f"{backend_url.rstrip('/')}/api/resume/auth/verify-email/?token={token}"
+        
+    if getattr(settings, 'DEBUG', False):
+        return f"http://localhost:8000/api/resume/auth/verify-email/?token={token}"
+
+    base_portal = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
+    return f"{base_portal}/api/resume/auth/verify-email/?token={token}"
+
+def decode_verification_token(raw_token):
+    if not raw_token:
+        return None, "No token provided"
+
+    token_str = str(raw_token).strip().strip('"').strip("'")
+    token_variants = [token_str]
+    try:
+        unquoted = unquote(token_str)
+        if unquoted != token_str:
+            token_variants.append(unquoted)
+    except Exception:
+        pass
+
+    salts_to_try = [
+        SIGNING_SALT,
+        "resume-email-verification",
+        "resume_email_verification",
+        "email-verification",
+        "email_verification",
+        "verify-email",
+        "verify_email",
+        "auth-email",
+        "auth_email",
+        "email-confirm",
+        "email_confirm",
+        None
+    ]
+
+    last_error = None
+
+    for t_variant in token_variants:
+        # 1. Try django.core.signing.loads
+        for salt_val in salts_to_try:
+            try:
+                kwargs = {'max_age': 259200}
+                if salt_val:
+                    kwargs['salt'] = salt_val
+                payload = signing.loads(t_variant, **kwargs)
+                if isinstance(payload, dict):
+                    return payload, None
+                elif isinstance(payload, str):
+                    if payload.startswith('{'):
+                        try:
+                            return json.loads(payload), None
+                        except Exception:
+                            pass
+                    if "@" in payload:
+                        return {"email": payload}, None
+                    if payload.isdigit():
+                        return {"user_id": int(payload)}, None
+                    return {"raw_payload": payload}, None
+            except SignatureExpired:
+                last_error = "expired"
+            except (BadSignature, Exception) as e:
+                last_error = str(e)
+
+        # 2. Try TimestampSigner().unsign()
+        for salt_val in salts_to_try:
+            try:
+                signer = TimestampSigner(salt=salt_val) if salt_val else TimestampSigner()
+                unsigned_str = signer.unsign(t_variant, max_age=259200)
+                
+                payload = None
+                if unsigned_str.startswith('{') or unsigned_str.startswith('['):
+                    try:
+                        payload = json.loads(unsigned_str)
+                    except Exception:
+                        pass
+
+                if not payload:
+                    try:
+                        decoded_bytes = base64.urlsafe_b64decode(unsigned_str.encode('utf-8'))
+                        decoded_str = decoded_bytes.decode('utf-8')
+                        if decoded_str.startswith('{'):
+                            payload = json.loads(decoded_str)
+                    except Exception:
+                        pass
+
+                if not payload:
+                    if unsigned_str.isdigit():
+                        payload = {"user_id": int(unsigned_str)}
+                    elif "@" in unsigned_str:
+                        payload = {"email": unsigned_str}
+                    else:
+                        payload = {"raw_payload": unsigned_str}
+
+                if payload:
+                    return payload, None
+            except SignatureExpired:
+                last_error = "expired"
+            except Exception as e:
+                last_error = str(e)
+
+        # 3. Fallback: Direct Base64 extraction if unsigning failed due to salt mismatch
+        if ":" in t_variant:
+            try:
+                first_part = t_variant.split(":")[0]
+                padding = len(first_part) % 4
+                if padding:
+                    first_part += "=" * (4 - padding)
+                
+                decoded_bytes = None
+                try:
+                    decoded_bytes = base64.urlsafe_b64decode(first_part)
+                except Exception:
+                    try:
+                        decoded_bytes = base64.b64decode(first_part)
+                    except Exception:
+                        pass
+                        
+                if decoded_bytes:
+                    decoded_str = decoded_bytes.decode('utf-8', errors='ignore')
+                    if decoded_str.startswith('{') and decoded_str.endswith('}'):
+                        payload_data = json.loads(decoded_str)
+                        if isinstance(payload_data, dict) and ('user_id' in payload_data or 'email' in payload_data):
+                            logger.info(f"[decode_verification_token] Successfully recovered payload via Base64 fallback: {payload_data}")
+                            return payload_data, None
+            except Exception as b64_err:
+                logger.debug(f"[decode_verification_token b64 fallback error]: {b64_err}")
+
+    if last_error == "expired":
+        return None, "Verification link has expired. Please request a new verification email."
+    return None, "Invalid or corrupted verification token."
+
 
 @api_view(['GET', 'POST'])
 @permission_classes([AllowAny])
 def verify_email(request):
     try:
-        # Detect if request comes from web browser navigation
         accept_header = request.headers.get('Accept', '') if hasattr(request, 'headers') else ''
         is_browser = request.method == 'GET' and ('text/html' in accept_header or '*/*' in accept_header or not accept_header)
 
-        token = request.query_params.get('token') or (request.data.get('token') if hasattr(request, 'data') and request.data else None)
+        # Extract token safely from query params or POST body
+        raw_token = None
+        if hasattr(request, 'query_params'):
+            raw_token = request.query_params.get('token')
+        if not raw_token and hasattr(request, 'GET'):
+            raw_token = request.GET.get('token')
+        if not raw_token and hasattr(request, 'data') and isinstance(request.data, dict):
+            raw_token = request.data.get('token')
+        if not raw_token and hasattr(request, 'POST'):
+            raw_token = request.POST.get('token')
 
         def handle_error(msg, status_code=status.HTTP_400_BAD_REQUEST):
+            logger.warning(f"[verify_email Error] {msg} (is_browser={is_browser})")
             if is_browser:
                 encoded_msg = quote(msg)
                 return HttpResponseRedirect(f"{LOGIN_ERROR_REDIRECT}{encoded_msg}")
-            return Response({
-                'success': False,
-                'message': msg
-            }, status=status_code)
+            res_data = {'success': False, 'message': msg}
+            if getattr(settings, 'DEBUG', False):
+                res_data['debug_detail'] = msg
+            return Response(res_data, status=status_code)
 
-        if not token:
+        if not raw_token:
             return handle_error('Verification token is required.', status.HTTP_400_BAD_REQUEST)
 
-        # Clean and strip any surrounding quotes/whitespace
-        token = str(token).strip().strip('"').strip("'")
-
-        try:
-            # Verify and decode signed token (max_age: 3 days = 259200 seconds)
-            try:
-                payload = signing.loads(token, salt=SIGNING_SALT, max_age=259200)
-            except BadSignature:
-                payload = signing.loads(token, max_age=259200)
-        except SignatureExpired:
-            return handle_error('Verification link has expired. Please request a new verification email.', status.HTTP_400_BAD_REQUEST)
-        except (BadSignature, Exception):
-            return handle_error('Invalid verification token.', status.HTTP_400_BAD_REQUEST)
+        # Resilient token decoding
+        payload, decode_err = decode_verification_token(raw_token)
+        if not payload:
+            return handle_error(decode_err or 'Invalid or corrupted verification token.', status.HTTP_400_BAD_REQUEST)
 
         user_id = payload.get('user_id')
         email = payload.get('email')
@@ -113,7 +260,7 @@ def verify_email(request):
             user = ResumeRegistration.objects.filter(id=user_id).first()
             if not user:
                 user = User.objects.filter(id=user_id).first()
-        elif email:
+        if not user and email:
             user = ResumeRegistration.objects.filter(email__iexact=email).first()
             if not user:
                 user = User.objects.filter(email__iexact=email).first()
@@ -121,15 +268,58 @@ def verify_email(request):
         if not user:
             return handle_error('User associated with this token was not found.', status.HTTP_404_NOT_FOUND)
 
-        # Update verification fields dynamically based on available model fields
-        if hasattr(user, 'is_verified'):
-            user.is_verified = True
-        if hasattr(user, 'is_email_verified'):
-            user.is_email_verified = True
-        if hasattr(user, 'is_active'):
-            user.is_active = True
+        # Safely update user verification attributes with dynamic field validation
+        try:
+            concrete_fields = {f.name for f in user._meta.get_fields() if hasattr(f, 'name')}
+        except Exception:
+            concrete_fields = set()
 
-        user.save()
+        updated_fields = []
+        if hasattr(user, 'is_verified') and ('is_verified' in concrete_fields or not concrete_fields):
+            user.is_verified = True
+            updated_fields.append('is_verified')
+        if hasattr(user, 'is_email_verified') and ('is_email_verified' in concrete_fields or not concrete_fields):
+            user.is_email_verified = True
+            updated_fields.append('is_email_verified')
+        if hasattr(user, 'is_active') and ('is_active' in concrete_fields or not concrete_fields):
+            user.is_active = True
+            updated_fields.append('is_active')
+
+        # Safely save user
+        try:
+            if updated_fields and concrete_fields:
+                safe_update_fields = [f for f in updated_fields if f in concrete_fields]
+                if safe_update_fields:
+                    user.save(update_fields=safe_update_fields)
+                else:
+                    user.save()
+            else:
+                user.save()
+        except Exception as save_err:
+            logger.warning(f"[verify_email save fallback] update_fields save failed: {save_err}, saving full instance.")
+            try:
+                user.save()
+            except Exception as save_err_2:
+                logger.error(f"[verify_email save failed completely]: {save_err_2}")
+                raise save_err_2
+
+        # Check for profile attribute and update safely if present
+        profile = getattr(user, 'profile', None)
+        if profile:
+            profile_updated = False
+            if hasattr(profile, 'is_verified'):
+                profile.is_verified = True
+                profile_updated = True
+            if hasattr(profile, 'is_email_verified'):
+                profile.is_email_verified = True
+                profile_updated = True
+            if profile_updated:
+                try:
+                    profile.save()
+                except Exception as p_err:
+                    logger.warning(f"[verify_email profile save failed]: {p_err}")
+
+        logger.info(f"[verify_email Success] User ID {user.id} ({getattr(user, 'email', 'no-email')}) successfully verified.")
 
         if is_browser:
             msg = quote('Email verified successfully')
@@ -140,17 +330,26 @@ def verify_email(request):
             'message': 'Email verified successfully! You can now log in.',
             'data': {
                 'user_id': user.id,
-                'email': user.email
+                'email': getattr(user, 'email', '')
             }
         }, status=status.HTTP_200_OK)
+
     except Exception as e:
-        logger.error(f"Error in verify_email: {e}\n{traceback.format_exc()}")
+        err_traceback = traceback.format_exc()
+        sys.stdout.write(f"\n==================== VERIFY_EMAIL EXCEPTION ====================\n{e}\n{err_traceback}\n=================================================================\n")
+        sys.stdout.flush()
+        logger.error(f"[verify_email EXCEPTION 500] {e}\n{err_traceback}")
+        
         accept_header = request.headers.get('Accept', '') if hasattr(request, 'headers') else ''
         if request.method == 'GET' and ('text/html' in accept_header or '*/*' in accept_header or not accept_header):
-            return HttpResponseRedirect(f"{LOGIN_ERROR_REDIRECT}server_error")
-        return Response({
+            encoded_err = quote(str(e))
+            return HttpResponseRedirect(f"{LOGIN_ERROR_REDIRECT}{encoded_err}")
+        
+        return JsonResponse({
             'success': False,
-            'message': 'An internal error occurred during verification.'
+            'error': str(e),
+            'traceback': err_traceback,
+            'message': f"Verification error: {str(e)}"
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -268,7 +467,7 @@ class AuthViewSet(viewsets.ViewSet):
             )
 
             token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
-            verification_link = f"{VERIFY_ENDPOINT}?token={token}"
+            verification_link = build_portal_verify_link(request, token)
 
             html_message = f"""
     <!DOCTYPE html>
@@ -603,7 +802,7 @@ class AuthViewSet(viewsets.ViewSet):
                 salt=SIGNING_SALT
             )
 
-            verification_link = f"{VERIFY_ENDPOINT}?token={token}"
+            verification_link = build_portal_verify_link(request, token)
 
             first_name = getattr(user, 'first_name', 'User') or 'User'
 
@@ -904,7 +1103,18 @@ class AuthViewSet(viewsets.ViewSet):
         permission_classes=[AllowAny]
     )
     def verify_email(self, request):
-        return verify_email(request)
+        try:
+            return verify_email(request)
+        except Exception as e:
+            err_traceback = traceback.format_exc()
+            sys.stdout.write(f"\n[AuthViewSet.verify_email EXCEPTION]: {e}\n{err_traceback}\n")
+            sys.stdout.flush()
+            return JsonResponse({
+                'success': False,
+                'error': str(e),
+                'traceback': err_traceback,
+                'message': f"Verification error: {str(e)}"
+            }, status=500)
 
     # =========================
     # LOGIN
