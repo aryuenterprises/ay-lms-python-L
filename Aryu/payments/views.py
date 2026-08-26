@@ -909,9 +909,10 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
             return TutorPaymentReadSerializer
         return TutorPaymentWriteSerializer
 
-    def list(self, request, *args, **kwargs):
+    def list(self, request):
         queryset = self.get_queryset()
-
+        
+        # Get query parameters
         trainer_id = request.query_params.get('trainer_id') or request.query_params.get('tutor_id')
         from_date = request.query_params.get('from_date')
         to_date = request.query_params.get('to_date')
@@ -919,23 +920,37 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         batch_id = request.query_params.get('batch')
         payment_status = request.query_params.get('payment_status')
         search_query = request.query_params.get('search')
-
-        # Filters
+        
+        # Fetch courses for the specific trainer (optimized)
+        course = None
+        if trainer_id:
+            # Get courses directly from trainer_courses table
+            course = Course.objects.filter(
+                trainer_courses__trainer_id=trainer_id,  # Using the junction table
+                is_archived=False
+            ).values("course_id", "course_name","fee").distinct()
+        else:
+            # If no trainer_id, get all active courses
+            course = Course.objects.filter(
+                is_archived=False
+            ).values("course_id", "course_name","fee").distinct()
+        
+        # Apply filters
         if trainer_id:
             queryset = queryset.filter(tutor_id=trainer_id)
-
+        
         if from_date:
             queryset = queryset.filter(payment_date__gte=from_date)
         if to_date:
             queryset = queryset.filter(payment_date__lte=to_date)
-
+        
         if course_id:
             queryset = queryset.filter(course_id=course_id)
         if batch_id:
             queryset = queryset.filter(batch_id=batch_id)
         if payment_status and payment_status.lower() != 'all':
             queryset = queryset.filter(payment_status__iexact=payment_status)
-
+        
         if search_query:
             queryset = queryset.filter(
                 Q(course__course_name__icontains=search_query) |
@@ -943,35 +958,37 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
                 Q(notes__icontains=search_query) |
                 Q(payment_type__icontains=search_query)
             )
-
+        
+        # Order by
         queryset = queryset.order_by('-payment_date', '-created_at')
-
-        # Trainer Header Details
+        
+        # Trainer Header Details (with proper error handling)
         trainer_details = None
         if trainer_id:
             try:
-                trainer_obj = Trainer.objects.get(trainer_id=trainer_id)
+                trainer_obj = Trainer.objects.get(employee_id=trainer_id)
                 trainer_details = TrainerHeaderSerializer(trainer_obj).data
             except Trainer.DoesNotExist:
                 trainer_details = None
-
-        # Fetch Active Courses
-        active_courses = Course.objects.filter(is_archived=False).exclude(status__iexact='inactive')
+        
+        # Fetch Active Courses (optimized)
+        active_courses = Course.objects.filter(
+            is_archived=False
+        ).exclude(status__iexact='inactive')
         courses_data = CourseOptionSerializer(active_courses, many=True).data
-
-        # --- NEW: Build Course-Grouped Batches ---
-        # Prefetch active batches to prevent N+1 query overhead
+        
+        # Build Course-Grouped Batches (optimized with Prefetch)
         active_courses_with_batches = active_courses.prefetch_related(
             Prefetch(
-                'batches',  # Related name from Course to NewBatch (adjust if different e.g., 'newbatch_set')
+                'batches',
                 queryset=NewBatch.objects.filter(status=True, is_archived=False),
                 to_attr='active_batches_list'
             )
         )
-
+        
         batches_by_course = [
             {
-                "course_id": course.course_id,  # Changed from course.id to course.course_id
+                "course_id": course.course_id,
                 "course_name": course.course_name,
                 "batches": [
                     {
@@ -983,27 +1000,31 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
             }
             for course in active_courses_with_batches
         ]
-
+        
+        # Convert course queryset to list if it exists
+        course_list = list(course) if course else []
+        
+        # Prepare response data
+        response_data = {
+            'trainer_details': trainer_details,
+            'courses': course_list,  # Now properly handles None case
+            'active_courses': courses_data,
+            'all_batches': batches_by_course,
+        }
+        
         # Paginated Response
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             response = self.get_paginated_response(serializer.data)
-            response.data['trainer_details'] = trainer_details
-            response.data['active_courses'] = courses_data
-            response.data['all_batches'] = batches_by_course
+            # Add extra data to paginated response
+            response.data.update(response_data)
             return response
-
+        
         # Non-paginated Response
         serializer = self.get_serializer(queryset, many=True)
-        return Response({
-            'trainer_details': trainer_details,
-            'active_courses': courses_data,
-            'all_batches': batches_by_course,
-            'results': serializer.data
-        }, status=status.HTTP_200_OK)
-        
-
+        response_data['results'] = serializer.data
+        return Response(response_data, status=status.HTTP_200_OK)
 class StripePaymentViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['post'])
