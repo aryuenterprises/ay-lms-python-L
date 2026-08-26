@@ -15,6 +15,7 @@ from .models import *
 from .serializers import *
 from django.shortcuts import get_object_or_404
 from lead.telecrm import sync_lead_to_telecrm
+from rest_framework.pagination import PageNumberPagination
 logger = logging.getLogger("razorpay_webhook")
 
 class ResourceDownloadRateThrottle(AnonRateThrottle):
@@ -41,12 +42,17 @@ class ResourceDownloadRateThrottle(AnonRateThrottle):
         # 3. Direct connection fallback (e.g. local dev without Nginx)
         return request.META.get("REMOTE_ADDR")
 
+class CustomPageNumberPagination(PageNumberPagination):
+    page_size = 25                      # Default items per page
+    page_size_query_param = "page_size" # Allows the client to override page size using ?page_size=50
+    max_page_size = 100
 
 class ResourcesViewSet(viewsets.ModelViewSet):
     queryset = Resources.objects.all().order_by("-id")
     serializer_class = ResourcesSerializer
     permission_classes = [AllowAny]
     authentication_classes = []
+    pagination_class = CustomPageNumberPagination
 
     def get_object(self):
         """
