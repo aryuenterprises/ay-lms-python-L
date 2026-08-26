@@ -195,7 +195,7 @@ Welcome to ARYU Academy!
 
 Your account has been configured. You can log in to your learning portal using the credentials below:
 
-• Portal URL: https://portal.aryuacademy.com
+• Portal URL: https://aylms.aryuprojects.com
 • Username: {test_email}
 • Password: {raw_password}
 
