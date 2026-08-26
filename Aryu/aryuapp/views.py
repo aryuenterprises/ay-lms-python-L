@@ -4726,7 +4726,6 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     "date_formatted": f"{date_key.strftime('%m/%d/%y')} ({date_key.strftime('%a').upper()})",
                     "batch": batch_name,
                     "course": att.course.course_name if att.course else "-",
-                    "attendance_status": "Present",
                     "raw_logs": []
                 }
 
@@ -4772,6 +4771,21 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                         break_pairs.append((pending_break_out, dt))
                         pending_break_out = None
 
+            if raw_logs:
+                latest_status_raw = raw_logs[-1]["status"].strip()
+                latest_lower = latest_status_raw.lower()
+
+                if latest_lower in ['breakout', 'break out'] or pending_break_out:
+                    current_status = "On Break"
+                elif latest_lower in ['logout']:
+                    current_status = "Logged Out"
+                elif latest_lower in ['login', 'present', 'breakin', 'break in']:
+                    current_status = "Present"
+                else:
+                    current_status = latest_status_raw
+            else:
+                current_status = "Absent"
+
             total_break_seconds = 0
             for b_out, b_in in break_pairs:
                 diff = (b_in - b_out).total_seconds()
@@ -4816,7 +4830,8 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 "date": row["date"],
                 "day": row["day"],
                 "date_formatted": row["date_formatted"],
-                "attendance_status": row["attendance_status"],
+                "attendance_status": current_status,
+                "status": current_status,
                 "batch": row["batch"],
                 "course": row["course"],
                 "first_login": login_dt.strftime("%H:%M:%S") if login_dt else "-",
