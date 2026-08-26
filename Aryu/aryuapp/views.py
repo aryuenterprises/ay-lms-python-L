@@ -4700,150 +4700,160 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         attendance_qs = Attendance.objects.filter(
             student=student,
             date__range=(start_datetime, end_datetime)
-        ).select_related('course', 'batch', 'new_batch').order_by('date')
+        ).select_related('course', 'batch', 'new_batch')
 
-        grouped_records = {}
-
+        daily_logs = defaultdict(list)
         for att in attendance_qs:
             att_dt = get_ist_datetime(att.date)
-            date_key = att_dt.date()
-            batch_id = att.new_batch_id if att.new_batch_id else (att.batch_id if att.batch_id else 0)
-            course_id = att.course_id if att.course_id else 0
-
-            group_key = (date_key, batch_id, course_id)
-
-            if group_key not in grouped_records:
-                batch_name = "-"
-                if att.new_batch:
-                    batch_name = att.new_batch.title
-                elif att.batch:
-                    batch_name = getattr(att.batch, 'batch_name', None) or getattr(att.batch, 'title', "-")
-
-                grouped_records[group_key] = {
-                    "date_obj": date_key,
-                    "date": date_key.strftime("%m/%d/%y"),
-                    "day": date_key.strftime("%a").upper(),
-                    "date_formatted": f"{date_key.strftime('%m/%d/%y')} ({date_key.strftime('%a').upper()})",
-                    "batch": batch_name,
-                    "course": att.course.course_name if att.course else "-",
-                    "raw_logs": []
-                }
-
-            grouped_records[group_key]["raw_logs"].append({
+            daily_logs[att_dt.date()].append({
+                "id": att.id,
                 "status": (att.status or "").strip(),
                 "dt": att_dt,
-                "id": att.id
+                "att": att
             })
 
-        formatted_list = []
+        log_metrics = {}
 
-        for idx, ((d_key, b_id, c_id), row) in enumerate(sorted(grouped_records.items(), key=lambda x: x[0][0], reverse=True), start=1):
-            raw_logs = row["raw_logs"]
-            raw_logs.sort(key=lambda x: x["dt"])
+        for d_key, logs in daily_logs.items():
+            logs.sort(key=lambda x: x["dt"])
 
-            login_dt = None
-            logout_dt = None
-            break_pairs = []
-            pending_break_out = None
-            break_popover_list = []
-
-            for log in raw_logs:
+            # ---------------- 1. WORK SESSIONS (LOGIN -> LOGOUT) ----------------
+            used_logouts = set()
+            for idx, log in enumerate(logs):
                 s_lower = log["status"].lower()
-                dt = log["dt"]
-                time_str = dt.strftime("%H:%M:%S")
+                if s_lower in ['login', 'present']:
+                    login_dt = log["dt"]
+                    login_str = login_dt.strftime('%I:%M %p')
 
-                if s_lower in ['login', 'present'] and not login_dt:
-                    login_dt = dt
-                elif s_lower == 'logout':
-                    logout_dt = dt
-                elif s_lower in ['breakout', 'break out']:
-                    pending_break_out = dt
-                    break_popover_list.append({
-                        "label": "Break Out",
-                        "time": time_str
-                    })
-                elif s_lower in ['breakin', 'break in']:
-                    break_popover_list.append({
-                        "label": "Break In",
-                        "time": time_str
-                    })
-                    if pending_break_out:
-                        break_pairs.append((pending_break_out, dt))
-                        pending_break_out = None
+                    matched_logout = None
+                    for j in range(idx + 1, len(logs)):
+                        if logs[j]["status"].lower() == 'logout' and logs[j]["id"] not in used_logouts:
+                            matched_logout = logs[j]
+                            used_logouts.add(logs[j]["id"])
+                            break
 
-            if raw_logs:
-                latest_status_raw = raw_logs[-1]["status"].strip()
-                latest_lower = latest_status_raw.lower()
+                    if matched_logout:
+                        logout_dt = matched_logout["dt"]
+                        logout_str = logout_dt.strftime('%I:%M %p')
+                        diff = max(0, int((logout_dt - login_dt).total_seconds()))
+                        spend_str = f"{diff // 3600:02}:{(diff % 3600) // 60:02} Hrs"
 
-                if latest_lower in ['breakout', 'break out'] or pending_break_out:
-                    current_status = "On Break"
-                elif latest_lower in ['logout']:
-                    current_status = "Logged Out"
-                elif latest_lower in ['login', 'present', 'breakin', 'break in']:
-                    current_status = "Present"
-                else:
-                    current_status = latest_status_raw
+                        metric = {
+                            "login_time": login_str,
+                            "logout_time": logout_str,
+                            "break_in": "-",
+                            "break_out": "-",
+                            "total_spend": spend_str
+                        }
+                        log_metrics[log["id"]] = metric
+                        log_metrics[matched_logout["id"]] = metric
+                    else:
+                        logout_str = "-"
+                        if d_key == today_ist:
+                            diff = max(0, int((now_ist - login_dt).total_seconds()))
+                            spend_str = f"{diff // 3600:02}:{(diff % 3600) // 60:02} Hrs"
+                        else:
+                            spend_str = "00:00 Hrs"
+
+                        log_metrics[log["id"]] = {
+                            "login_time": login_str,
+                            "logout_time": logout_str,
+                            "break_in": "-",
+                            "break_out": "-",
+                            "total_spend": spend_str
+                        }
+
+            # ---------------- 2. BREAK SESSIONS (BREAK OUT -> BREAK IN) ----------------
+            used_break_ins = set()
+            for idx, log in enumerate(logs):
+                s_lower = log["status"].lower()
+                if s_lower in ['breakout', 'break out']:
+                    b_out_dt = log["dt"]
+                    b_out_str = b_out_dt.strftime('%I:%M %p')
+
+                    matched_b_in = None
+                    for j in range(idx + 1, len(logs)):
+                        if logs[j]["status"].lower() in ['breakin', 'break in'] and logs[j]["id"] not in used_break_ins:
+                            matched_b_in = logs[j]
+                            used_break_ins.add(logs[j]["id"])
+                            break
+
+                    if matched_b_in:
+                        b_in_dt = matched_b_in["dt"]
+                        b_in_str = b_in_dt.strftime('%I:%M %p')
+                        diff = max(0, int((b_in_dt - b_out_dt).total_seconds()))
+                        spend_str = f"{diff // 3600:02}:{(diff % 3600) // 60:02} Hrs"
+
+                        metric = {
+                            "login_time": "-",
+                            "logout_time": "-",
+                            "break_in": b_in_str,
+                            "break_out": b_out_str,
+                            "total_spend": spend_str
+                        }
+                        log_metrics[log["id"]] = metric
+                        log_metrics[matched_b_in["id"]] = metric
+                    else:
+                        b_in_str = "-"
+                        if d_key == today_ist:
+                            diff = max(0, int((now_ist - b_out_dt).total_seconds()))
+                            spend_str = f"{diff // 3600:02}:{(diff % 3600) // 60:02} Hrs"
+                        else:
+                            spend_str = "-"
+
+                        log_metrics[log["id"]] = {
+                            "login_time": "-",
+                            "logout_time": "-",
+                            "break_in": b_in_str,
+                            "break_out": b_out_str,
+                            "total_spend": spend_str
+                        }
+
+        data_list = []
+        for idx, att in enumerate(attendance_qs.order_by('-date'), start=1):
+            att_dt = get_ist_datetime(att.date)
+            metrics = log_metrics.get(att.id, {
+                "login_time": "-",
+                "logout_time": "-",
+                "break_in": "-",
+                "break_out": "-",
+                "total_spend": "-"
+            })
+
+            batch_title = "-"
+            if att.new_batch:
+                batch_title = att.new_batch.title
+            elif att.batch:
+                batch_title = getattr(att.batch, 'batch_name', None) or getattr(att.batch, 'title', "-")
+
+            course_title = att.course.course_name if att.course else "-"
+
+            s_raw = (att.status or "").strip()
+            s_lower = s_raw.lower()
+            if s_lower in ['login', 'present']:
+                status_label = 'Login'
+            elif s_lower in ['breakout', 'break out']:
+                status_label = 'Break Out'
+            elif s_lower in ['breakin', 'break in']:
+                status_label = 'Break In'
+            elif s_lower in ['logout']:
+                status_label = 'Logout'
             else:
-                current_status = "Absent"
+                status_label = s_raw
 
-            total_break_seconds = 0
-            for b_out, b_in in break_pairs:
-                diff = (b_in - b_out).total_seconds()
-                if diff > 0:
-                    total_break_seconds += int(diff)
-
-            if pending_break_out and not logout_dt and d_key == today_ist:
-                diff = (now_ist - pending_break_out).total_seconds()
-                if diff > 0:
-                    total_break_seconds += int(diff)
-
-            gross_time_str = "-"
-            net_time_str = "-"
-            break_duration_str = "00:00:00 (0)"
-
-            if login_dt:
-                end_calc_dt = logout_dt if logout_dt else (now_ist if d_key == today_ist else login_dt)
-                if end_calc_dt < login_dt:
-                    end_calc_dt = login_dt
-
-                gross_seconds = max(0, int((end_calc_dt - login_dt).total_seconds()))
-                net_seconds = max(0, gross_seconds - total_break_seconds)
-
-                g_h = gross_seconds // 3600
-                g_m = (gross_seconds % 3600) // 60
-                g_s = gross_seconds % 60
-                gross_time_str = f"{g_h:02}:{g_m:02}:{g_s:02}"
-
-                n_h = net_seconds // 3600
-                n_m = (net_seconds % 3600) // 60
-                n_s = net_seconds % 60
-                net_time_str = f"{n_h:02}:{n_m:02}:{n_s:02}"
-
-                b_h = total_break_seconds // 3600
-                b_m = (total_break_seconds % 3600) // 60
-                b_s = total_break_seconds % 60
-                break_count = len(break_pairs) + (1 if pending_break_out else 0)
-                break_duration_str = f"{b_h:02}:{b_m:02}:{b_s:02} ({break_count})"
-
-            formatted_list.append({
+            data_list.append({
                 "s_no": idx,
-                "date": row["date"],
-                "day": row["day"],
-                "date_formatted": row["date_formatted"],
-                "attendance_status": current_status,
-                "status": current_status,
-                "batch": row["batch"],
-                "course": row["course"],
-                "first_login": login_dt.strftime("%H:%M:%S") if login_dt else "-",
-                "last_logout": logout_dt.strftime("%H:%M:%S") if logout_dt else "-",
-                "first_break": break_pairs[0][0].strftime("%H:%M:%S") if break_pairs else "-",
-                "break_duration": break_duration_str,
-                "break_logs": break_popover_list,
-                "gross_hours": gross_time_str,
-                "net_hours": net_time_str,
-                "total_spend": net_time_str,
-                "login_time": login_dt.strftime("%I:%M %p") if login_dt else "-",
-                "logout_time": logout_dt.strftime("%I:%M %p") if logout_dt else "-",
+                "id": att.id,
+                "batch": batch_title,
+                "course": course_title,
+                "date_time": att_dt.strftime('%d/%m/%Y %I:%M:%S %p'),
+                "status": status_label,
+                "login_time": metrics["login_time"],
+                "break_in": metrics["break_in"],
+                "break_out": metrics["break_out"],
+                "logout_time": metrics["logout_time"],
+                "total_spend": metrics["total_spend"],
+                "marked_by_admin": att.marked_by_admin,
             })
 
         old_batches = Batch.objects.filter(
@@ -4922,7 +4932,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
         return Response({
             "success": True,
-            "data": formatted_list,
+            "data": data_list,
             "batches": batch_data
         }, status=200)
 
@@ -5911,7 +5921,7 @@ def generate_secure_password(length=8):
     return "".join(pwd_list)
 
 
-PORTAL_URL = getattr(settings, "PORTAL_URL", "https://portal.aryuacademy.com/")
+PORTAL_URL = getattr(settings, "PORTAL_URL", "https://aylms.aryuprojects.com/")
 
 def send_student_welcome_email(student, raw_password: str):
     """
@@ -7930,139 +7940,233 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         if not employee_id:
             return Response({"success": False, "message": "employee_id is required"}, status=200)
 
-        trainer = Trainer.objects.filter(employee_id=employee_id).first()
-        if not trainer:
+        # Get trainer with proper error handling
+        try:
+            trainer = Trainer.objects.get(employee_id=employee_id)
+        except Trainer.DoesNotExist:
             return Response({"success": False, "message": "Trainer not found"}, status=200)
 
         full_name = trainer.full_name
 
-        # Base queryset
+        # Set timezone to IST
+        ist = pytz.timezone("Asia/Kolkata")
+
+        # Base queryset with proper timezone handling
         queryset = TrainerAttendance.objects.filter(
             trainer__employee_id=employee_id
-        ).order_by("-date")
+        ).select_related('trainer', 'new_batch', 'batch', 'course').order_by("-date")
 
         # Filter monthly logs only if both provided
         monthly_filter = False
         if month and year:
             monthly_filter = True
+            # Convert month and year to datetime range in IST
+            try:
+                year_int = int(year)
+                month_int = int(month)
+                
+                # First day of month in IST
+                start_date_ist = ist.localize(datetime(year_int, month_int, 1, 0, 0, 0))
+                # Last day of month
+                if month_int == 12:
+                    end_date_ist = ist.localize(datetime(year_int + 1, 1, 1, 0, 0, 0)) - timedelta(seconds=1)
+                else:
+                    end_date_ist = ist.localize(datetime(year_int, month_int + 1, 1, 0, 0, 0)) - timedelta(seconds=1)
+                
+                # Convert to UTC
+                start_utc = start_date_ist.astimezone(pytz.utc)
+                end_utc = end_date_ist.astimezone(pytz.utc)
+                
+                queryset = queryset.filter(
+                    date__gte=start_utc,
+                    date__lte=end_utc
+                )
+            except ValueError:
+                return Response({"success": False, "message": "Invalid month or year format"}, status=200)
+
+        # If no month/year provided, default to today's attendance (like list function)
+        else:
+            # Get today in IST
+            today_ist = timezone.now().astimezone(ist).date()
+            
+            # Create datetime range for today in IST
+            start_ist = ist.localize(datetime.combine(today_ist, datetime.min.time()))
+            end_ist = ist.localize(datetime.combine(today_ist, datetime.max.time()))
+            
+            # Convert to UTC
+            start_utc = start_ist.astimezone(pytz.utc)
+            end_utc = end_ist.astimezone(pytz.utc)
+            
             queryset = queryset.filter(
-                date__month=int(month),
-                date__year=int(year)
+                date__gte=start_utc,
+                date__lte=end_utc
             )
 
-        serializer = self.get_serializer(queryset, many=True)
-        logs = serializer.data
+        # Process attendance data similar to list function
+        sessions = {}
+        trainer_info = None
 
-        from collections import defaultdict
-        grouped_logs = defaultdict(list)
+        for att in queryset:
+            if not trainer_info:
+                trainer_info = {
+                    "trainer": att.trainer.employee_id,
+                    "trainer_name": att.trainer.full_name
+                }
 
-        for log in logs:
-            log_date = log["date"].split(" ")[0]
-            grouped_logs[log_date].append(log)
+            batch_id = att.new_batch.batch_id if att.new_batch else (att.batch.batch_id if att.batch else None)
+            course_id = att.course.course_id if att.course else None
+            course_name = att.course.course_name if att.course else None
+            session_key = f"{batch_id}_{course_id}_{att.date.strftime('%Y-%m-%d')}"  # Add date to session key for daily grouping
 
+            if session_key not in sessions:
+                sessions[session_key] = {
+                    "date": att.date.strftime("%Y-%m-%d"),
+                    "login": None,
+                    "logout": None,
+                    "batch_id": batch_id,
+                    "batch_title": att.new_batch.title if att.new_batch else (att.batch.title if att.batch else None),
+                    "course_id": course_id,
+                    "course_name": course_name,
+                    "trainer_full_name": trainer_info["trainer_name"],
+                    "logs": []  # Store all logs for this session
+                }
+
+            # Store individual log
+            sessions[session_key]["logs"].append({
+                "date": att.date.strftime("%Y-%m-%d %H:%M:%S"),
+                "status": att.status,
+                "date_obj": att.date
+            })
+
+            if att.status == "Login":
+                sessions[session_key]["login"] = att.date
+            elif att.status == "Logout":
+                sessions[session_key]["logout"] = att.date
+
+        # Build final logs
         final_logs = []
         monthly_total_seconds = 0
 
-        # Process each day's logs
-        for log_date, day_logs in grouped_logs.items():
-            work_start = None
-            break_start = None
-            break_seconds = 0
+        for session_key, session in sessions.items():
+            # Calculate working hours for this session
             total_seconds = 0
             first_login = None
             last_logout = None
 
-            # sort logs of the day
-            day_logs = sorted(day_logs, key=lambda x: x["date"], reverse=True)
-
-            for log in day_logs:
-                status = log["status"].lower()
-                log_time = datetime.strptime(log["date"], "%Y-%m-%d %H:%M:%S")
-
-                if status == "login":
+            # Sort logs by time
+            session_logs = sorted(session["logs"], key=lambda x: x["date_obj"])
+            
+            # Process login/logout pairs
+            login_time = None
+            for log in session_logs:
+                log_time = log["date_obj"]
+                if log["status"] == "Login":
                     if not first_login:
                         first_login = log_time
-                    work_start = log_time
+                    login_time = log_time
+                elif log["status"] == "Logout" and login_time:
+                    logout_time = log_time
+                    if not last_logout or logout_time > last_logout:
+                        last_logout = logout_time
+                    total_seconds += (logout_time - login_time).total_seconds()
+                    login_time = None
 
-                elif status == "logout":
-                    last_logout = log_time
-                    if work_start:
-                        total_seconds += (log_time - work_start).total_seconds() - break_seconds
-                        work_start = None
-                        break_seconds = 0
+            # If login exists but no logout, consider it active session
+            if login_time and not last_logout:
+                last_logout = None  # No logout yet
+                # Still count it with partial time
+                if first_login:
+                    total_seconds = max(total_seconds, 0)
 
-                elif status == "break out" and work_start:
-                    break_start = log_time
+            # Convert to IST for display
+            login_ist = first_login.astimezone(ist) if first_login else None
+            logout_ist = last_logout.astimezone(ist) if last_logout else None
 
-                elif status == "break in" and break_start:
-                    break_seconds += (log_time - break_start).total_seconds()
-                    break_start = None
-
-            # Daily total
             total_seconds = max(total_seconds, 0)
             total_time_str = self.format_hhmmss(total_seconds)
 
-            # Add to monthly total
             if monthly_filter:
                 monthly_total_seconds += total_seconds
 
-            # EXTRA WORKING HOURS (sum of schedule extra time)
-            schedules = ClassSchedule.objects.filter(
-                trainer=trainer,
-                scheduled_date=log_date,
-                is_archived=False,
-                is_class_cancelled=False
-            )
+            # Get extra working hours (similar to original logic)
+            if session["date"]:
+                log_date = datetime.strptime(session["date"], "%Y-%m-%d").date()
+                schedules = ClassSchedule.objects.filter(
+                    trainer=trainer,
+                    scheduled_date=log_date,
+                    is_archived=False,
+                    is_class_cancelled=False
+                )
 
-            extra_time = timedelta(0)
-            for s in schedules:
-                extra_time += s.get_extra_time()
+                extra_time = timedelta(0)
+                for s in schedules:
+                    extra_time += s.get_extra_time()
+                extra_str = str(extra_time)
+            else:
+                extra_str = "0:00:00"
 
-            extra_str = str(extra_time)
+            # Add to final logs
+            final_log = {
+                "trainer_full_name": trainer_info["trainer_name"],
+                "batch_id": session["batch_id"],
+                "batch_name": session["batch_title"],
+                "course_id": session["course_id"],
+                "course_name": session["course_name"],
+                "login_time": login_ist.strftime("%Y-%m-%d %I:%M:%S %p") if login_ist else None,
+                "logout_time": logout_ist.strftime("%Y-%m-%d %I:%M:%S %p") if logout_ist else None,
+                "working_hours": total_time_str,
+                "extra_working_hours": extra_str,
+                "date": session["date"],
+                "first_login_time": login_ist.strftime("%I:%M:%S %p") if login_ist else None,
+                "last_logout_time": logout_ist.strftime("%I:%M:%S %p") if logout_ist else None,
+                "status": "Active" if login_ist and not logout_ist else "Completed" if login_ist and logout_ist else "Unknown"
+            }
+            final_logs.append(final_log)
 
-            # Assign full_name, daily totals, extra hours
-            for log in day_logs:
-                log["trainer_full_name"] = full_name
-                log["working_hours"] = total_time_str
-                log["extra_working_hours"] = extra_str
-                log["first_login_time"] = first_login.strftime("%I:%M:%S %p") if first_login else None
-                log["last_logout_time"] = last_logout.strftime("%I:%M:%S %p") if last_logout else None
-                final_logs.append(log)
-
-        # COURSES (unchanged)
+        # Get courses (optimized)
         course = Course.objects.filter(
             batchcoursetrainer__trainer__employee_id=employee_id,
             is_archived=False
         ).values("course_id", "course_name").distinct()
 
-        # OLD BATCHES (Batch)
-        old_batches = Batch.objects.filter(
-            batchcoursetrainer__trainer__employee_id=employee_id,
-            is_archived=False,
-            status=True
-        ).values("batch_id", "batch_name", "title").distinct()
-
-        # NEW BATCHES (NewBatch)
-        new_batches_qs = NewBatch.objects.filter(
-            trainer=trainer,
+        # Get batches (optimized like list function)
+        # New batches
+        new_batches = NewBatch.objects.filter(
+            trainers__trainer_id=trainer.trainer_id,
             is_archived=False,
             status=True
         ).select_related("course")
-
-        # Convert new batch into old-batch response format
-        new_batches = [
+        
+        new_batch_data = [
             {
-                "batch_id": nb.batch_id,
-                "batch_name": nb.title,      # Mapping -> Batch.batch_name
-                "title": nb.title,
+                "batch_id": batch.batch_id,
+                "batch_name": batch.title,
+                "title": batch.title,
+                "course": batch.course.course_id,
+                "course_name": batch.course.course_name
             }
-            for nb in new_batches_qs
+            for batch in new_batches
         ]
 
-        # COMBINE BOTH
-        all_batches = list(old_batches) + list(new_batches)
+        # Old batches
+        old_batch_ids = BatchCourseTrainer.objects.filter(trainer=trainer).values_list("batch_id", flat=True).distinct()
+        old_batches = Batch.objects.filter(batch_id__in=old_batch_ids, is_archived=False, status=True)
+        
+        old_batch_data = []
+        for batch in old_batches:
+            course_obj = BatchCourseTrainer.objects.filter(batch=batch, trainer=trainer).first()
+            old_batch_data.append({
+                "batch_id": batch.batch_id,
+                "batch_name": batch.batch_name or batch.batch_name,
+                "title": batch.title,
+                "course": course_obj.course.course_id if course_obj else None,
+                "course_name": course_obj.course.course_name if course_obj else None,
+            })
 
-        # Final response
+        # Combine batches
+        all_batches = new_batch_data + old_batch_data
+
+        # Response
         response = {
             "success": True,
             "message": f"Full attendance logs for {full_name}",
@@ -8076,7 +8180,7 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             response["monthly_total_working_hours"] = self.format_hhmmss(int(monthly_total_seconds))
 
         return Response(response, status=200)
-        
+
     from datetime import datetime, timedelta
     from django.utils.dateparse import parse_datetime
     from django.db.models import Q
