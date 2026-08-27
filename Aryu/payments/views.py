@@ -997,12 +997,12 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         trainer_details = None
         if trainer_id:
             try:
-                trainer_obj = Trainer.objects.get(employee_id=trainer_id)
+                trainer_obj = Trainer.objects.get(trainer_id=trainer_id)
                 trainer_details = TrainerHeaderSerializer(trainer_obj).data
             except Trainer.DoesNotExist:
                 trainer_details = None
         
-        # Fetch Active Courses (optimized)
+        # Fetch Active Courses (optimized) - these are for dropdown/selection
         active_courses = Course.objects.filter(
             is_archived=False
         ).exclude(status__iexact='inactive')
@@ -1032,15 +1032,36 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
             for course in active_courses_with_batches
         ]
         
-        # Convert course queryset to list if it exists
-        course_list = list(course) if course else []
+        # Fetch New Batches for the trainer (serialized properly)
+        new_batches_data = []
+        if trainer_id:
+            new_batches = NewBatch.objects.filter(
+                trainers__trainer_id=trainer_id,  # Assuming ManyToMany relationship
+                is_archived=False,
+                status=True
+            ).select_related('course')
+            
+            # Convert to list of dictionaries
+            new_batches_data = [
+                {
+                    "batch_id": batch.batch_id,
+                    "title": batch.title,
+                    "course_id": batch.course.course_id if batch.course else None,
+                    "course_name": batch.course.course_name if batch.course else None,
+                    "start_date": batch.start_date.strftime("%Y-%m-%d") if batch.start_date else None,
+                    "end_date": batch.end_date.strftime("%Y-%m-%d") if batch.end_date else None,
+                    "status": batch.status
+                }
+                for batch in new_batches
+            ]
         
         # Prepare response data
         response_data = {
             'trainer_details': trainer_details,
-            'courses': course_list,  # Now properly handles None case
+            'courses': course,  # Now includes fee as string
             'active_courses': courses_data,
-            'all_batches': batches_by_course,
+            # 'all_batches': batches_by_course,
+            'all_batches': new_batches_data  # Now properly serialized
         }
         
         # Paginated Response

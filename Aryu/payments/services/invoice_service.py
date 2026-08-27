@@ -629,41 +629,44 @@ class InvoiceService:
         # =========================================
 
         context = {
-
+            # Core Objects
             "transaction": transaction,
-
             "company": company,
-
             "billing": billing,
 
-            "description": description,
+            # Direct Identifiers & Header
+            "invoice_no": transaction.invoice_no,
+            "invoice_date": transaction.invoice_date,
+            "place_of_supply": transaction.place_of_supply or "Tamil Nadu",
 
-            "previous_transactions":
-                previous_transactions,
+            # Buyer / Student Info
+            "student_name": billing.get("name", "Customer"),
+            "student_address": billing.get("address", "-"),
+            "email": billing.get("email", "-"),
+            "phone": billing.get("phone", "-"),
+            "gst": billing.get("gst", "Unregistered"),
 
-            "previous_invoice_details":
-                previous_invoice_details,
+            # Line Item & Tax Breakdown
+            "course_name": description,
+            "hsn_sac": cls.HSN_CODE,
+            "rate": transaction.amount,
+            "taxable_value": transaction.taxable_amount,
+            "cgst": transaction.cgst_amount,
+            "sgst": transaction.sgst_amount,
+            "total_tax": transaction.total_tax_amount,
+            "total_amount": transaction.invoice_total,
 
-            "previous_paid_amount":
-                previous_paid_amount,
+            # Word Representations
+            "amount_in_words": invoice_total_words,
+            "tax_in_words": tax_amount_words,
 
-            "current_payment":
-                current_payment,
-
-            "total_received":
-                total_received,
-
-            "balance_due":
-                balance_due,
-
-            "context_amount_words":
-                invoice_total_words,
-
-            "tax_amount_words":
-                tax_amount_words,
-
-            "hsn_code":
-                cls.HSN_CODE,
+            # Ledger & Payment History
+            "previous_transactions": previous_transactions,
+            "previous_invoice_details": previous_invoice_details,
+            "previous_paid_amount": previous_paid_amount,
+            "current_payment": current_payment,
+            "total_received": total_received,
+            "balance_due": balance_due,
         }
 
         # =========================================

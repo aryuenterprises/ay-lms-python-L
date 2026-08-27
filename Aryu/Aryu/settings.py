@@ -89,7 +89,8 @@ INSTALLED_APPS = [
     "resources",
     "lead",
     "reports",
-    "lead.whatsapp"
+    "lead.whatsapp",
+    "code_assessment",
     
 ]
 
@@ -489,7 +490,6 @@ ALLOWED_HOSTS = [
     "portal.aryuacademy.com",
     "ayanew.aryuprojects.com",
     "portal.aryuacademy.com",
-    "portal.aryuacademy.com",
 ]  # Allow all hosts for development; change in production
 
 
@@ -700,6 +700,19 @@ else:
 #             }
 #         },
 #     }
+
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': 'aylms_live',
+#         'USER': 'aylms_live',
+#         'PASSWORD': 'KfdW543FDdfg',
+#         'HOST': '187.127.178.144',
+#         'PORT': '5432',
+#         'AUTOCOMMIT': True,
+#         'CONN_MAX_AGE': 60,
+#     },
+# }
 
 # DATABASES = {
 #     'default': {
