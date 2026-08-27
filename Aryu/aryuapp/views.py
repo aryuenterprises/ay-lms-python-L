@@ -5112,8 +5112,13 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
             )
             .prefetch_related(
                 "topic_statuses__topic__course",
-                "new_batches__course",
-                "new_batches__trainers",
+                Prefetch(
+                    "new_batches",
+                    queryset=NewBatch.objects.filter(
+                        is_archived=False,
+                        status=True
+                    ).select_related("course").prefetch_related("trainers"),
+                ),
                 "batchcoursetrainer_set__course",
                 "batchcoursetrainer_set__trainer",
                 Prefetch(
@@ -5131,7 +5136,7 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         if user_type in ['tutor', 'trainer']:
             trainer_student_ids = (
                 NewBatch.objects.filter(
-                    trainer__trainer_id=user.trainer_id,
+                    trainers__trainer_id=user.trainer_id,
                     is_archived=False
                 )
                 .values_list('students__student_id', flat=True)
@@ -8090,45 +8095,30 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         # If no month/year provided, queryset remains unfiltered (ALL data)
         # No else block needed - this shows ALL data when no params
 
-        # Helper function to get batch name from either batch model
+        # Helper function to get batch name
         def get_batch_display_name(batch_obj, is_new_batch=True):
-            """
-            Get the display name for a batch.
-            For NewBatch: Check if title is a code (like AYA-AKIRA-25A026) and map to actual name
-            For old Batch: Use batch_name directly
-            """
             if not batch_obj:
                 return None
             
             if is_new_batch:
-                # For NewBatch, title might be a code
                 title = batch_obj.title if hasattr(batch_obj, 'title') else None
                 
-                # Check if this title is a code (like AYA-AKIRA-25A026)
-                # If it looks like a code, try to find the actual batch name
+                # Check if title is a code
                 if title and title.startswith('AYA-AKIRA-'):
-                    # Try to find the actual batch name from Batch model
                     try:
-                        # Find the corresponding old batch using batch_id mapping
-                        # Or use the batch_id from the attendance record
                         old_batch = Batch.objects.filter(batch_id=batch_obj.batch_id).first()
-                        if old_batch and old_batch.batch_name:
-                            return old_batch.batch_name
-                        elif old_batch and old_batch.title:
-                            return old_batch.title
+                        if old_batch:
+                            return old_batch.batch_name or old_batch.title
                     except:
                         pass
-                    # If not found, return the title as is
                     return title
                 
-                # If title is not a code, return it
                 return title if title else batch_obj.batch_name if hasattr(batch_obj, 'batch_name') else None
             
             else:
-                # For old Batch model
                 return batch_obj.batch_name if hasattr(batch_obj, 'batch_name') and batch_obj.batch_name else batch_obj.title if hasattr(batch_obj, 'title') else None
 
-        # Process attendance data similar to list function
+        # Process attendance data
         sessions = {}
         trainer_info = None
 
@@ -8143,48 +8133,33 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             course_id = att.course.course_id if att.course else None
             course_name = att.course.course_name if att.course else None
             
-            # Get batch name using the enhanced helper function
+            # Get batch name
             batch_name = None
             if att.new_batch:
                 batch_name = get_batch_display_name(att.new_batch, is_new_batch=True)
             elif att.batch:
                 batch_name = get_batch_display_name(att.batch, is_new_batch=False)
             
-            # If batch_name is still None or starts with code, try to get from batch list mapping
-            if not batch_name or batch_name.startswith('AYA-AKIRA-'):
-                # Try to find the actual batch name from the batches list
+            # If batch_name is still a code, try to find actual name
+            if not batch_name or (batch_name and batch_name.startswith('AYA-AKIRA-')):
                 try:
-                    # Check if this batch exists in the combined batch list
-                    from django.core.cache import cache
-                    cache_key = f"batch_name_{batch_id}"
-                    cached_name = cache.get(cache_key)
-                    if cached_name:
-                        batch_name = cached_name
-                    else:
-                        # Find batch from database
-                        new_batch = NewBatch.objects.filter(batch_id=batch_id).first()
-                        if new_batch:
-                            # Check if it has a title that's not a code
-                            if new_batch.title and not new_batch.title.startswith('AYA-AKIRA-'):
-                                batch_name = new_batch.title
+                    new_batch = NewBatch.objects.filter(batch_id=batch_id).first()
+                    if new_batch:
+                        if new_batch.title and not new_batch.title.startswith('AYA-AKIRA-'):
+                            batch_name = new_batch.title
+                        else:
+                            old_batch = Batch.objects.filter(batch_id=batch_id).first()
+                            if old_batch:
+                                batch_name = old_batch.batch_name or old_batch.title
                             else:
-                                # Try to find matching old batch
-                                old_batch = Batch.objects.filter(batch_id=batch_id).first()
-                                if old_batch and old_batch.batch_name:
-                                    batch_name = old_batch.batch_name
-                                elif old_batch and old_batch.title:
-                                    batch_name = old_batch.title
-                                else:
-                                    batch_name = new_batch.title
-                            cache.set(cache_key, batch_name, 3600)  # Cache for 1 hour
-                except Exception as e:
-                    # Fallback to using the title if available
+                                batch_name = new_batch.title
+                except:
                     if att.new_batch and att.new_batch.title:
                         batch_name = att.new_batch.title
                     elif att.batch and att.batch.batch_name:
                         batch_name = att.batch.batch_name
             
-            # If still no batch_name, use the title as fallback
+            # Final fallback
             if not batch_name:
                 if att.new_batch and hasattr(att.new_batch, 'title'):
                     batch_name = att.new_batch.title
@@ -8359,7 +8334,6 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             response["message"] = f"All attendance logs for {full_name}"
 
         return Response(response, status=200)
-    
     from datetime import datetime, timedelta
     from django.utils.dateparse import parse_datetime
     from django.db.models import Q
