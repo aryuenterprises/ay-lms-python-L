@@ -2,10 +2,12 @@
 Regression test suite for Resume application:
 1. Rich-text HTML preservation & XSS sanitization
 2. Resume refresh token authentication, rotation, and concurrent refresh lifecycle
+3. Resume registration email verification flow (token generation, validation, idempotency, redirects, error handling)
 """
 from django.test import TestCase
 from django.contrib.auth.hashers import make_password
 from django.core.cache import cache
+from django.core import signing
 from rest_framework.test import APIClient
 from rest_framework import status
 from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
@@ -17,12 +19,19 @@ from .models import (
     ResumeTemplate,
     UserResume,
 )
-from .views import RESUME_REFRESH_COOKIE_NAME
+from .views import (
+    RESUME_REFRESH_COOKIE_NAME,
+    SIGNING_SALT,
+    build_portal_verify_link,
+    LOGIN_SUCCESS_REDIRECT,
+    LOGIN_ERROR_REDIRECT,
+)
 
 
 class ResumeHTMLAndAuthTestCase(TestCase):
     """
-    Validates rich-text description preservation, XSS security, and refresh-token mechanics.
+    Validates rich-text description preservation, XSS security, refresh-token mechanics,
+    and email verification lifecycle.
     """
 
     def setUp(self):
@@ -446,3 +455,188 @@ class ResumeHTMLAndAuthTestCase(TestCase):
             format="json",
         )
         self.assertEqual(logout_resp.status_code, status.HTTP_200_OK)
+
+    # =========================================================================
+    # PART 3: RESUME REGISTRATION EMAIL VERIFICATION LIFECYCLE TESTS
+    # =========================================================================
+
+    def test_resume_signup_creates_unverified_account_and_generates_token(self):
+        """
+        Verify signup creates user with is_verified=False and builds valid verification token.
+        """
+        signup_payload = {
+            "first_name": "Alice",
+            "last_name": "Smith",
+            "email": "alice.smith@example.com",
+            "phone": "9876543222",
+            "password": "SecurePassword123!",
+            "city": "Austin",
+            "state": "TX",
+            "country": "USA",
+        }
+
+        resp = self.client.post("/api/resume/auth/signup/", data=signup_payload, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+
+        user = ResumeRegistration.objects.get(email="alice.smith@example.com")
+        self.assertFalse(user.is_verified)
+
+        # Generate verification token as done in signup
+        token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
+        self.assertIsNotNone(token)
+
+    def test_valid_token_verifies_account_via_api(self):
+        """
+        Verify that a valid token marks user account is_verified=True and returns 200 OK.
+        """
+        unverified_user = ResumeRegistration.objects.create(
+            first_name="Bob",
+            last_name="Johnson",
+            email="bob.johnson@example.com",
+            phone="9876543233",
+            password=make_password(self.password),
+            city="Seattle",
+            state="WA",
+            country="USA",
+            is_verified=False,
+            status=True,
+        )
+
+        token = signing.dumps({"user_id": unverified_user.id, "email": unverified_user.email}, salt=SIGNING_SALT)
+
+        # JSON API verification call
+        verify_resp = self.client.get(
+            f"/api/resume/auth/verify-email/?token={token}",
+            HTTP_ACCEPT="application/json",
+        )
+        self.assertEqual(verify_resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(verify_resp.data.get("success"))
+
+        unverified_user.refresh_from_db()
+        self.assertTrue(unverified_user.is_verified)
+
+    def test_browser_verification_redirects_to_login(self):
+        """
+        Verify that verification from a browser (Accept: text/html) redirects to login page.
+        """
+        unverified_user = ResumeRegistration.objects.create(
+            first_name="Charlie",
+            last_name="Brown",
+            email="charlie.brown@example.com",
+            phone="9876543244",
+            password=make_password(self.password),
+            city="Chicago",
+            state="IL",
+            country="USA",
+            is_verified=False,
+            status=True,
+        )
+
+        token = signing.dumps({"user_id": unverified_user.id, "email": unverified_user.email}, salt=SIGNING_SALT)
+
+        # Browser GET verification request
+        verify_resp = self.client.get(
+            f"/api/resume/auth/verify-email/?token={token}",
+            HTTP_ACCEPT="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        self.assertEqual(verify_resp.status_code, status.HTTP_302_FOUND)
+        self.assertTrue(verify_resp.url.startswith("https://passats.aryuacademy.com/login?verified=true"))
+
+        unverified_user.refresh_from_db()
+        self.assertTrue(unverified_user.is_verified)
+
+    def test_verification_is_idempotent(self):
+        """
+        Verify that clicking the verification link a second time succeeds gracefully without error.
+        """
+        user = ResumeRegistration.objects.create(
+            first_name="David",
+            last_name="Miller",
+            email="david.miller@example.com",
+            phone="9876543255",
+            password=make_password(self.password),
+            city="Miami",
+            state="FL",
+            country="USA",
+            is_verified=True,  # Already verified
+            status=True,
+        )
+
+        token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
+
+        verify_resp = self.client.get(
+            f"/api/resume/auth/verify-email/?token={token}",
+            HTTP_ACCEPT="application/json",
+        )
+        self.assertEqual(verify_resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(verify_resp.data.get("success"))
+        self.assertIn("already verified", verify_resp.data.get("message", "").lower())
+
+    def test_invalid_and_corrupt_verification_tokens_rejected(self):
+        """
+        Verify that invalid or forged verification tokens return 400 Bad Request.
+        """
+        # 1. Random corrupted string
+        resp1 = self.client.get(
+            "/api/resume/auth/verify-email/?token=invalid_forged_token_string",
+            HTTP_ACCEPT="application/json",
+        )
+        self.assertEqual(resp1.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(resp1.data.get("success"))
+
+        # 2. Tampered signature
+        valid_token = signing.dumps({"user_id": self.user.id, "email": self.user.email}, salt=SIGNING_SALT)
+        tampered_token = valid_token[:-4] + "xxxx"
+        resp2 = self.client.get(
+            f"/api/resume/auth/verify-email/?token={tampered_token}",
+            HTTP_ACCEPT="application/json",
+        )
+        self.assertEqual(resp2.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_missing_verification_token_returns_400(self):
+        """
+        Verify that calling verify-email without a token returns 400 Bad Request.
+        """
+        resp = self.client.get(
+            "/api/resume/auth/verify-email/",
+            HTTP_ACCEPT="application/json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(resp.data.get("success"))
+
+    def test_resend_verification_email_flow(self):
+        """
+        Verify resend-verification-email endpoint handles unverified and already verified accounts.
+        """
+        unverified_user = ResumeRegistration.objects.create(
+            first_name="Eva",
+            last_name="Green",
+            email="eva.green@example.com",
+            phone="9876543266",
+            password=make_password(self.password),
+            city="Denver",
+            state="CO",
+            country="USA",
+            is_verified=False,
+            status=True,
+        )
+
+        # 1. Resend for unverified user
+        resp1 = self.client.post(
+            "/api/resume/auth/resend-verification-email/",
+            data={"email": "eva.green@example.com"},
+            format="json",
+        )
+        self.assertEqual(resp1.status_code, status.HTTP_200_OK)
+
+        # 2. Resend for already verified user
+        unverified_user.is_verified = True
+        unverified_user.save()
+
+        resp2 = self.client.post(
+            "/api/resume/auth/resend-verification-email/",
+            data={"email": "eva.green@example.com"},
+            format="json",
+        )
+        self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp2.data.get("message"), "Account already verified")

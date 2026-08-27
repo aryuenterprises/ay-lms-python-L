@@ -209,33 +209,6 @@ def decode_verification_token(raw_token):
             except Exception as e:
                 last_error = str(e)
 
-        # 3. Fallback: Direct Base64 extraction if unsigning failed due to salt mismatch
-        if ":" in t_variant:
-            try:
-                first_part = t_variant.split(":")[0]
-                padding = len(first_part) % 4
-                if padding:
-                    first_part += "=" * (4 - padding)
-                
-                decoded_bytes = None
-                try:
-                    decoded_bytes = base64.urlsafe_b64decode(first_part)
-                except Exception:
-                    try:
-                        decoded_bytes = base64.b64decode(first_part)
-                    except Exception:
-                        pass
-                        
-                if decoded_bytes:
-                    decoded_str = decoded_bytes.decode('utf-8', errors='ignore')
-                    if decoded_str.startswith('{') and decoded_str.endswith('}'):
-                        payload_data = json.loads(decoded_str)
-                        if isinstance(payload_data, dict) and ('user_id' in payload_data or 'email' in payload_data):
-                            logger.info(f"[decode_verification_token] Successfully recovered payload via Base64 fallback: {payload_data}")
-                            return payload_data, None
-            except Exception as b64_err:
-                logger.debug(f"[decode_verification_token b64 fallback error]: {b64_err}")
-
     if last_error == "expired":
         return None, "Verification link has expired. Please request a new verification email."
     return None, "Invalid or corrupted verification token."
@@ -292,6 +265,21 @@ def verify_email(request):
 
         if not user:
             return handle_error('User associated with this token was not found.', status.HTTP_404_NOT_FOUND)
+
+        # Idempotency check: handle multiple clicks gracefully
+        if getattr(user, 'is_verified', False) or getattr(user, 'is_email_verified', False):
+            logger.info(f"[verify_email Idempotent] User ID {user.id} is already verified.")
+            if is_browser:
+                msg = quote('Email already verified')
+                return HttpResponseRedirect(f"{LOGIN_SUCCESS_REDIRECT}&message={msg}")
+            return Response({
+                'success': True,
+                'message': 'Account is already verified. You can now log in.',
+                'data': {
+                    'user_id': user.id,
+                    'email': getattr(user, 'email', '')
+                }
+            }, status=status.HTTP_200_OK)
 
         # Safely update user verification attributes with dynamic field validation
         try:
