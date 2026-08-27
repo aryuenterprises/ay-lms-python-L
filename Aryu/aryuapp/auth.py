@@ -20,6 +20,9 @@ class CustomJWTAuthentication(BaseAuthentication):
             raise AuthenticationFailed('Token expired')
         except jwt.InvalidTokenError:
             raise AuthenticationFailed('Invalid token')
+
+        if payload.get("token_type") == "refresh":
+            raise AuthenticationFailed('Cannot use refresh token as access token')
         # create a simple user-like object
         class JWTUser:
             def __init__(self, payload):
