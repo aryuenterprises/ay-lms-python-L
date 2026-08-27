@@ -99,7 +99,7 @@ class CourseCategorySerializer(serializers.ModelSerializer):
         return instance
 class Student(models.Model):
     course = models.ForeignKey(
-        Course,
+        Course, 
         on_delete=models.CASCADE
     )
 
@@ -118,6 +118,10 @@ class CourseListSerializer(serializers.ModelSerializer):
     duration_list = serializers.SerializerMethodField()
     student_list = serializers.SerializerMethodField()
     batches = serializers.SerializerMethodField()
+    
+    # ✅ Added direct start_date and end_date fields
+    start_date = serializers.SerializerMethodField()
+    end_date = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
@@ -137,10 +141,40 @@ class CourseListSerializer(serializers.ModelSerializer):
             "status",
             "is_archived",
             "is_featured",
+            "start_date",     # ✅ ADDED
+            "end_date",       # ✅ ADDED
             "student_list",
-            "batches",  # ✅ ADDED: Provides batch start_date, end_date, etc.
+            "batches",
             "video_url"
         ]
+
+    def _get_relevant_batch(self, obj):
+        """
+        Helper method to get the single relevant batch (cached per instance)
+        to avoid redundant database queries.
+        """
+        if not hasattr(obj, "_relevant_batch_cache"):
+            student = self.context.get("student")
+            batches = NewBatch.objects.filter(
+                course=obj,
+                is_archived=False,
+                status=True
+            )
+            if student:
+                batches = batches.filter(students=student)
+            
+            # Orders by upcoming/earliest batch; adjust order as needed
+            obj._relevant_batch_cache = batches.order_by("start_date").first()
+
+        return obj._relevant_batch_cache
+
+    def get_start_date(self, obj):
+        batch = self._get_relevant_batch(obj)
+        return batch.start_date if batch else None
+
+    def get_end_date(self, obj):
+        batch = self._get_relevant_batch(obj)
+        return batch.end_date if batch else None
 
     def get_course_pic_url(self, obj):
         if obj.course_pic:
@@ -162,22 +196,15 @@ class CourseListSerializer(serializers.ModelSerializer):
 
     def get_batches(self, obj):
         """
-        Returns ONLY the batch assigned to the student if viewing in a student context.
-        Otherwise returns all active non-archived batches.
+        Returns ONLY the single relevant batch (the one used for start_date and end_date) 
+        as a list to maintain the array structure for the frontend.
         """
-        student = self.context.get("student")
-
-        batches = NewBatch.objects.filter(
-            course=obj,
-            is_archived=False,
-            status=True
-        )
-
-        # Filter specifically for the context student if available
-        if student:
-            batches = batches.filter(students=student)
-
-        return NewBatchSerializer(batches.distinct(), many=True, context=self.context).data
+        batch = self._get_relevant_batch(obj)
+        
+        if batch:
+            return [NewBatchSerializer(batch, context=self.context).data]
+            
+        return []
 
     def get_student_list(self, obj):
         """
@@ -204,6 +231,8 @@ class CourseListSerializer(serializers.ModelSerializer):
                     })
 
         return student_data
+
+
 class CaseInsensitiveSlugRelatedField(serializers.SlugRelatedField):
     def to_internal_value(self, data):
         try:

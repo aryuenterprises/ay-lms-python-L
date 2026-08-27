@@ -1293,14 +1293,16 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         ]
 
     def _get_active_new_batches(self, obj):
-        return NewBatch.objects.filter(
-            students=obj,
+        if hasattr(obj, "_prefetched_objects_cache") and "new_batches" in obj._prefetched_objects_cache:
+            return [b for b in obj.new_batches.all() if not getattr(b, "is_archived", False) and getattr(b, "status", True)]
+        return obj.new_batches.filter(
             is_archived=False,
             status=True
-        ).select_related("course")
+        ).select_related("course").prefetch_related("trainers")
 
     def get_course_id(self, obj):
-        batch = self._get_active_new_batches(obj).first()
+        batches = self._get_active_new_batches(obj)
+        batch = batches[0] if isinstance(batches, list) and batches else (batches.first() if hasattr(batches, 'first') and batches.first() else None)
         return batch.course.course_id if batch and batch.course else None
 
     def get_studenttopicstatus(self, obj):
@@ -1317,10 +1319,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         result = []
         seen = set()
 
-        batches = obj.new_batches.filter(
-            is_archived=False,
-            status=True
-        ).prefetch_related("trainers")
+        batches = self._get_active_new_batches(obj)
 
         for batch in batches:
             for trainer in batch.trainers.all():
@@ -1358,10 +1357,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         final_batches = []
         seen = set()
 
-        new_batches = obj.new_batches.filter(
-            is_archived=False,
-            status=True
-        ).select_related("course").prefetch_related("trainers")
+        new_batches = self._get_active_new_batches(obj)
 
         for nb in new_batches:
             if nb.batch_id in seen:
@@ -1380,23 +1376,31 @@ class StudentProfileSerializer(serializers.ModelSerializer):
                 "batch_id": nb.batch_id,
                 "batch_name": nb.title,
                 "title": nb.title,
+                "start_date": str(nb.start_date) if nb.start_date else None,
+                "end_date": str(nb.end_date) if nb.end_date else None,
+                "start_time": str(nb.start_time) if nb.start_time else None,
+                "end_time": str(nb.end_time) if nb.end_time else None,
+                "status": nb.status,
                 "course_id": nb.course.course_id if nb.course else None,
                 "course_name": nb.course.course_name if nb.course else None,
                 "trainers": trainers,
                 "type": "new",
             })
 
-        old_batch_links = obj.batchcoursetrainer_set.select_related(
-            "batch", "course", "trainer"
-        ).filter(
-            batch__is_archived=False,
-            batch__status=True,
-        )
+        if hasattr(obj, "_prefetched_objects_cache") and "batchcoursetrainer_set" in obj._prefetched_objects_cache:
+            old_batch_links = obj.batchcoursetrainer_set.all()
+        else:
+            old_batch_links = obj.batchcoursetrainer_set.select_related(
+                "batch", "course", "trainer"
+            ).filter(
+                batch__is_archived=False,
+                batch__status=True,
+            )
 
         for bct in old_batch_links:
             batch = bct.batch
 
-            if not batch or batch.batch_id in seen:
+            if not batch or getattr(batch, 'is_archived', False) or not getattr(batch, 'status', True) or batch.batch_id in seen:
                 continue
             seen.add(batch.batch_id)
 
@@ -1404,10 +1408,15 @@ class StudentProfileSerializer(serializers.ModelSerializer):
                 "batch_id": batch.batch_id,
                 "batch_name": batch.batch_name,
                 "title": batch.title,
-                "course_id": bct.course.course_id,
-                "course_name": bct.course.course_name,
-                "trainer_id": bct.trainer.employee_id,
-                "trainer_name": bct.trainer.full_name,
+                "start_date": str(batch.scheduled_date) if getattr(batch, 'scheduled_date', None) else None,
+                "end_date": str(batch.end_date) if getattr(batch, 'end_date', None) else None,
+                "start_time": None,
+                "end_time": None,
+                "status": batch.status,
+                "course_id": bct.course.course_id if bct.course else None,
+                "course_name": bct.course.course_name if bct.course else None,
+                "trainer_id": bct.trainer.employee_id if bct.trainer else None,
+                "trainer_name": bct.trainer.full_name if bct.trainer else None,
                 "type": "old",
             })
 
