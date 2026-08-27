@@ -3664,7 +3664,7 @@ class SubscriptionViewSet(viewsets.ViewSet):
         )
 
     @secure_throttle(rate_limit=10, period=60)
-    @action(detail=False, methods=["patch"], url_path=r"delete-plan/(?P<plan_id>[^/.]+)")
+    @action(detail=False, methods=["delete"], url_path=r"delete-plan/(?P<plan_id>[^/.]+)")
     def delete_plan(self, request, plan_id=None):
         if not self._is_admin(request):
             return Response(
@@ -3676,20 +3676,15 @@ class SubscriptionViewSet(viewsets.ViewSet):
             )
 
         subscription = get_object_or_404(Subscription, id=plan_id)
-
-        # Soft delete: update status flag
-        subscription.is_active = False
-        subscription.save(update_fields=["is_active"])
+        subscription.delete()
 
         return Response(
             {
                 "success": True,
-                "message": "Subscription deactivated successfully"
+                "message": "Subscription plan deleted successfully"
             },
             status=status.HTTP_200_OK
-        )
-
-        
+        )  
 import requests
 
 class ResumeGateway(APIView):
