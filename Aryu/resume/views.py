@@ -1217,6 +1217,7 @@ class AuthViewSet(viewsets.ViewSet):
             {
                 "message": "Login successful",
                 "access_token": str(refresh.access_token),
+                "refresh_token": str(refresh),
                 "user": {
                     "id": user.id,
                     "first_name": user.first_name,
@@ -1885,12 +1886,19 @@ class CustomTokenRefreshView(APIView):
 
     def post(self, request, *args, **kwargs):
         # 1. Extract the token from request payload (body / headers) or cookie
-        refresh_token = (
-            request.data.get("refresh")
-            or request.data.get("refresh_token")
-            or request.COOKIES.get(RESUME_REFRESH_COOKIE_NAME)
-            or request.headers.get("X-Refresh-Token")
-        )
+        refresh_token = None
+        if isinstance(request.data, dict):
+            refresh_token = request.data.get("refresh") or request.data.get("refresh_token")
+
+        if not refresh_token and request.COOKIES:
+            refresh_token = request.COOKIES.get(RESUME_REFRESH_COOKIE_NAME)
+
+        if not refresh_token:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                refresh_token = auth_header.split(" ")[1]
+            else:
+                refresh_token = request.headers.get("X-Refresh-Token")
 
         if not refresh_token:
             return Response(
@@ -1914,11 +1922,12 @@ class CustomTokenRefreshView(APIView):
         response = Response(response_data, status=status.HTTP_200_OK)
 
         # 2. Bake the newly rotated refresh token back into cookie
-        cookie_domain, cookie_secure, cookie_samesite = get_resume_cookie_settings(request)
-        if new_refresh_obj:
+        cookie_val = str(new_refresh_obj or new_refresh_str or "")
+        if cookie_val:
+            cookie_domain, cookie_secure, cookie_samesite = get_resume_cookie_settings(request)
             response.set_cookie(
                 key=RESUME_REFRESH_COOKIE_NAME,
-                value=str(new_refresh_obj),
+                value=cookie_val,
                 max_age=30 * 24 * 60 * 60,  # 30 Days
                 expires=None,
                 path=RESUME_REFRESH_COOKIE_PATH,

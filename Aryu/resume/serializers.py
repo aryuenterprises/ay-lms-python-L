@@ -60,9 +60,10 @@ class ContactSerializers(serializers.ModelSerializer):
 
 class CustomTokenRefreshSerializer(serializers.Serializer):
     refresh = serializers.CharField(required=False, allow_null=True)
+    refresh_token = serializers.CharField(required=False, allow_null=True)
 
     def validate(self, attrs):
-        refresh_token_string = attrs.get("refresh")
+        refresh_token_string = attrs.get("refresh") or attrs.get("refresh_token")
 
         if not refresh_token_string:
             raise AuthenticationFailed("Refresh token is required.")
@@ -93,9 +94,6 @@ class CustomTokenRefreshSerializer(serializers.Serializer):
             if not user.is_verified:
                 raise AuthenticationFailed("User email is not verified.")
 
-            # Create new access token
-            access_token = str(refresh.access_token)
-
             # ROTATE REFRESH TOKEN (Security Best Practice)
             new_refresh = RefreshToken()
             new_refresh["user_id"] = user.id
@@ -106,6 +104,7 @@ class CustomTokenRefreshSerializer(serializers.Serializer):
             new_refresh["last_name"] = user.last_name
 
             new_refresh_str = str(new_refresh)
+            access_token = str(new_refresh.access_token)
 
             response_data = {
                 "access_token": access_token,
@@ -121,7 +120,10 @@ class CustomTokenRefreshSerializer(serializers.Serializer):
                 pass
 
             # Cache the rotation result for 15 seconds to gracefully handle concurrent frontend requests
-            cache.set(cache_key, response_data, timeout=15)
+            cache.set(cache_key, {
+                "access_token": access_token,
+                "refresh_token": new_refresh_str,
+            }, timeout=15)
 
             return response_data
 

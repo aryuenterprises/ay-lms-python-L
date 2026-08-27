@@ -26,6 +26,8 @@ class CustomJWTAuthentication(BaseAuthentication):
 
         token_type = payload.get("token_type")
         if token_type and token_type != "access":
+            if request.path.rstrip("/").endswith("token/refresh"):
+                return None
             raise AuthenticationFailed("Invalid token type: access token required")
 
         # create a simple user-like object
