@@ -1468,8 +1468,14 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                     "course_name": first_assignment.course.course_name if first_assignment and first_assignment.course else None
                 } if first_assignment else None
 
-                # Get schedules
-                schedules = ClassSchedule.objects.filter(batch=batch).values(
+                # Get schedules — old batches use the `batch` FK on ClassSchedule.
+                # FIX: also filter by trainer, so this batch's schedule list only
+                # shows sessions taught by THIS trainer, not every trainer who's
+                # ever run a class in this batch.
+                schedules = ClassSchedule.objects.filter(
+                    batch=batch,
+                    trainer__trainer_id=trainer_id
+                ).order_by("scheduled_date", "start_time").values(
                     "schedule_id",
                     "course_id",
                     "course__course_name",
@@ -1538,13 +1544,17 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                 ]
                 all_students.extend(students_data)
 
-                # Get schedules
+                # Get schedules — new batches use the `new_batch` FK on ClassSchedule.
+                # FIX: also filter by trainer, same reasoning as above — this
+                # endpoint is scoped to one trainer, so schedules from other
+                # trainers assigned to the same batch shouldn't appear here.
                 schedules = ClassSchedule.objects.filter(
-                    batch__batch_id=batch.batch_id
+                    new_batch=batch,
+                    trainer__trainer_id=trainer_id
                 ).annotate(
                     course_name=F("course__course_name"),
                     trainer_name=F("trainer__full_name")
-                ).values(
+                ).order_by("scheduled_date", "start_time").values(
                     "schedule_id",
                     "course_id",
                     "course__course_name",
@@ -1656,6 +1666,8 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                 "message": str(e)
             }, status=200)
     @action(detail=False, methods=['get'], url_path='student/(?P<student_id>[^/.]+)')
+
+
     def student_batches(self, request, student_id):
         try:
             student_id = str(student_id)
