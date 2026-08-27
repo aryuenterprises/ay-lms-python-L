@@ -351,9 +351,9 @@ TELECRM_API = "https://next-api.telecrm.in"
 
 
 
-# SERVER_ROOT = Path("/var/www/ay-lms-python-L") if Path("/var/www/ay-lms-python-L/logs").exists() else BASE_DIR.parent
-SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L") if Path("/home/aryu_user/Arun/ay-lms-python-L/logs").exists() else BASE_DIR.parent
-SERVER_ROOT = Path("/var/www/python-staging") if Path("/var/www/python-staging/logs").exists() else BASE_DIR.parent
+SERVER_ROOT = Path("/var/www/ay-lms-python-L") if Path("/var/www/ay-lms-python-L/logs").exists() else BASE_DIR.parent
+# SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L") if Path("/home/aryu_user/Arun/ay-lms-python-L/logs").exists() else BASE_DIR.parent
+# SERVER_ROOT = Path("/var/www/python-staging") if Path("/var/www/python-staging/logs").exists() else BASE_DIR.parent
 
 LOGGING = {
     "version": 1,
