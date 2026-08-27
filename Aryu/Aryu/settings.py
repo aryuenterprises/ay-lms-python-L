@@ -32,7 +32,7 @@ pip install channels-redis paypalrestsdk reportlab pyclamd pytesseract Pillow dj
 SECRET_KEY = 'django-insecure-e-ar=#hq&(q0ujnwofc!%8#in(2z1osso65+(8i+&elo=cn4$k'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -460,9 +460,9 @@ CORS_ALLOWED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -473,9 +473,9 @@ CSRF_TRUSTED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
 
 ]
 
@@ -487,9 +487,9 @@ ALLOWED_HOSTS = [
     "passats.aryuacademy.com",
     "aryuacademy.com",
     "127.0.0.1",
-    "portal.aryuacademy.com",
+    "aylms.aryuprojects.com",
     "ayanew.aryuprojects.com",
-    "portal.aryuacademy.com",
+    "aylms.aryuprojects.com",
 ]  # Allow all hosts for development; change in production
 
 
@@ -602,7 +602,7 @@ TWILIO_PHONE_NUMBER = "+15075854260"
 MEDIA_URL = 'media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'api/media')
 
-MEDIA_BASE_URL = "https://portal.aryuacademy.com/api"
+MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api"
 
 # class DisableMigrations:
 #     def __getitem__(self, item):
@@ -789,7 +789,7 @@ LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'Asia/Kolkata'
 
-FRONTEND_URL = 'https://portal.aryuacademy.com'
+FRONTEND_URL = 'https://aylms.aryuprojects.com'
 PORTAL_FRONTEND_URL = FRONTEND_URL
 SITE_URL = FRONTEND_URL
 
