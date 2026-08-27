@@ -461,9 +461,9 @@ CORS_ALLOWED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -474,9 +474,9 @@ CSRF_TRUSTED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
 
 ]
 
@@ -603,54 +603,54 @@ TWILIO_PHONE_NUMBER = "+15075854260"
 MEDIA_URL = 'media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'api/media')
 
-MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api"
+MEDIA_BASE_URL = "https://portal.aryuacademy.com/api"
 
-# class DisableMigrations:
-#     def __getitem__(self, item):
-#         return None
-#     def __contains__(self, item):
-#         return True
+class DisableMigrations:
+    def __getitem__(self, item):
+        return None
+    def __contains__(self, item):
+        return True
 
-# if 'test' in sys.argv:
-#     import django.contrib.postgres.fields
-#     import django.db.models
-#     from django.db.backends.sqlite3.schema import DatabaseSchemaEditor
+if 'test' in sys.argv:
+    import django.contrib.postgres.fields
+    import django.db.models
+    from django.db.backends.sqlite3.schema import DatabaseSchemaEditor
 
-#     class DummyArrayField(django.db.models.JSONField):
-#         def __init__(self, *args, **kwargs):
-#             kwargs.pop('base_field', None)
-#             kwargs.pop('size', None)
-#             super().__init__(*args, **kwargs)
+    class DummyArrayField(django.db.models.JSONField):
+        def __init__(self, *args, **kwargs):
+            kwargs.pop('base_field', None)
+            kwargs.pop('size', None)
+            super().__init__(*args, **kwargs)
 
-#     django.contrib.postgres.fields.ArrayField = DummyArrayField
+    django.contrib.postgres.fields.ArrayField = DummyArrayField
 
-#     orig_quote_name = DatabaseSchemaEditor.quote_name
-#     def safe_quote_name(self, name):
-#         if "." in name:
-#             name = name.split(".")[-1].strip('"')
-#         return orig_quote_name(self, name)
-#     DatabaseSchemaEditor.quote_name = safe_quote_name
+    orig_quote_name = DatabaseSchemaEditor.quote_name
+    def safe_quote_name(self, name):
+        if "." in name:
+            name = name.split(".")[-1].strip('"')
+        return orig_quote_name(self, name)
+    DatabaseSchemaEditor.quote_name = safe_quote_name
 
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.sqlite3',
-#             'NAME': ':memory:',
-#         }
-#     }
-#     MIGRATION_MODULES = DisableMigrations()
-# else:
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.postgresql',
-#             'NAME': 'aylms_live',  
-#             'USER': 'aylms_live',
-#             'PASSWORD':'KfdW543FDdfg',
-#             'HOST': '187.127.178.144',   
-#             'PORT': '5432',  
-#             'AUTOCOMMIT': True,
-#             'CONN_MAX_AGE': 60,
-#         },
-#     }
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': ':memory:',
+        }
+    }
+    MIGRATION_MODULES = DisableMigrations()
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': 'aylms_live',  
+            'USER': 'aylms_live',
+            'PASSWORD':'KfdW543FDdfg',
+            'HOST': '187.127.178.144',   
+            'PORT': '5432',  
+            'AUTOCOMMIT': True,
+            'CONN_MAX_AGE': 60,
+        },
+    }
 
 # class DisableMigrations:
 #     def __getitem__(self, item):
@@ -702,55 +702,55 @@ MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api"
 #         },
 #     }
 
-class DisableMigrations:
-    def __getitem__(self, item):
-        return None
-    def __contains__(self, item):
-        return True
+# class DisableMigrations:
+#     def __getitem__(self, item):
+#         return None
+#     def __contains__(self, item):
+#         return True
 
-if 'test' in sys.argv:
-    import django.contrib.postgres.fields
-    import django.db.models
-    from django.db.backends.sqlite3.schema import DatabaseSchemaEditor
+# if 'test' in sys.argv:
+#     import django.contrib.postgres.fields
+#     import django.db.models
+#     from django.db.backends.sqlite3.schema import DatabaseSchemaEditor
 
-    class DummyArrayField(django.db.models.JSONField):
-        def __init__(self, *args, **kwargs):
-            kwargs.pop('base_field', None)
-            kwargs.pop('size', None)
-            super().__init__(*args, **kwargs)
+#     class DummyArrayField(django.db.models.JSONField):
+#         def __init__(self, *args, **kwargs):
+#             kwargs.pop('base_field', None)
+#             kwargs.pop('size', None)
+#             super().__init__(*args, **kwargs)
 
-    django.contrib.postgres.fields.ArrayField = DummyArrayField
+#     django.contrib.postgres.fields.ArrayField = DummyArrayField
 
-    orig_quote_name = DatabaseSchemaEditor.quote_name
-    def safe_quote_name(self, name):
-        if "." in name:
-            name = name.split(".")[-1].strip('"')
-        return orig_quote_name(self, name)
-    DatabaseSchemaEditor.quote_name = safe_quote_name
+#     orig_quote_name = DatabaseSchemaEditor.quote_name
+#     def safe_quote_name(self, name):
+#         if "." in name:
+#             name = name.split(".")[-1].strip('"')
+#         return orig_quote_name(self, name)
+#     DatabaseSchemaEditor.quote_name = safe_quote_name
 
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': ':memory:',
-        }
-    }
-    MIGRATION_MODULES = DisableMigrations()
-else:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': 'aylms_staging',
-            'USER': 'aryu_user',
-            'PASSWORD':'YUra@2025',
-            'HOST': '49.207.178.161',
-            'PORT': '5432',
-            'AUTOCOMMIT': True,
-            'CONN_MAX_AGE': 60,
-            'OPTIONS': {
-                'options': '-c search_path=livequiz,public'
-            }
-        },
-    }
+#     DATABASES = {
+#         'default': {
+#             'ENGINE': 'django.db.backends.sqlite3',
+#             'NAME': ':memory:',
+#         }
+#     }
+#     MIGRATION_MODULES = DisableMigrations()
+# else:
+#     DATABASES = {
+#         'default': {
+#             'ENGINE': 'django.db.backends.postgresql',
+#             'NAME': 'aylms_staging',
+#             'USER': 'aryu_user',
+#             'PASSWORD':'YUra@2025',
+#             'HOST': '49.207.178.161',
+#             'PORT': '5432',
+#             'AUTOCOMMIT': True,
+#             'CONN_MAX_AGE': 60,
+#             'OPTIONS': {
+#                 'options': '-c search_path=livequiz,public'
+#             }
+#         },
+#     }
 
 # DATABASES = {
 #     'default': {
@@ -853,7 +853,7 @@ LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'Asia/Kolkata'
 
-FRONTEND_URL = 'https://aylms.aryuprojects.com'
+FRONTEND_URL = 'https://portal.aryuacademy.com'
 PORTAL_FRONTEND_URL = FRONTEND_URL
 SITE_URL = FRONTEND_URL
 
