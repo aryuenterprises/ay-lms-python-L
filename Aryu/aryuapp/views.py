@@ -5112,8 +5112,13 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
             )
             .prefetch_related(
                 "topic_statuses__topic__course",
-                "new_batches__course",
-                "new_batches__trainers",
+                Prefetch(
+                    "new_batches",
+                    queryset=NewBatch.objects.filter(
+                        is_archived=False,
+                        status=True
+                    ).select_related("course").prefetch_related("trainers"),
+                ),
                 "batchcoursetrainer_set__course",
                 "batchcoursetrainer_set__trainer",
                 Prefetch(
@@ -5131,7 +5136,7 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         if user_type in ['tutor', 'trainer']:
             trainer_student_ids = (
                 NewBatch.objects.filter(
-                    trainer__trainer_id=user.trainer_id,
+                    trainers__trainer_id=user.trainer_id,
                     is_archived=False
                 )
                 .values_list('students__student_id', flat=True)
