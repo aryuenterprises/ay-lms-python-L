@@ -1,3 +1,6 @@
+import hashlib
+from django.conf import settings
+from django.core.cache import cache
 from rest_framework import serializers
 from django.utils import timezone
 import re
@@ -55,40 +58,45 @@ class ContactSerializers(serializers.ModelSerializer):
         model = Contact
         fields ="__all__"
 
-class CustomTokenRefreshSerializer(TokenRefreshSerializer):
-    # Make the default input requirement optional since we read from cookies
+class CustomTokenRefreshSerializer(serializers.Serializer):
     refresh = serializers.CharField(required=False, allow_null=True)
 
     def validate(self, attrs):
-        # 1. Grab the token string passed manually from the view
         refresh_token_string = attrs.get("refresh")
 
         if not refresh_token_string:
             raise AuthenticationFailed("Refresh token is required.")
 
+        # Cache key for concurrent refresh request handling
+        token_hash = hashlib.sha256(refresh_token_string.encode("utf-8")).hexdigest()
+        cache_key = f"resume_token_refresh_{token_hash}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            return cached_result
+
         try:
-            # Decode refresh token
             refresh = RefreshToken(refresh_token_string)
             user_id = refresh.get("user_id")
 
             if not user_id:
-                raise AuthenticationFailed("Invalid token payload.")
+                raise AuthenticationFailed("Invalid token payload: user_id missing.")
 
             # Validate user
             user = ResumeRegistration.objects.get(
                 id=user_id,
-                status=True,
                 is_deleted=False
             )
+
+            if not user.status:
+                raise AuthenticationFailed("User account is inactive.")
+
+            if not user.is_verified:
+                raise AuthenticationFailed("User email is not verified.")
 
             # Create new access token
             access_token = str(refresh.access_token)
 
-            response_data = {
-                "access_token": access_token,
-            }
-
-            # ROTATE REFRESH TOKEN (Highly Recommended for Security)
+            # ROTATE REFRESH TOKEN (Security Best Practice)
             new_refresh = RefreshToken()
             new_refresh["user_id"] = user.id
             new_refresh["id"] = user.id
@@ -97,15 +105,30 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
             new_refresh["first_name"] = user.first_name
             new_refresh["last_name"] = user.last_name
 
-            # Pass the raw token object along so the view can extract it into a cookie
-            response_data["refresh_token_obj"] = new_refresh
+            new_refresh_str = str(new_refresh)
+
+            response_data = {
+                "access_token": access_token,
+                "refresh_token": new_refresh_str,
+                "refresh_token_obj": new_refresh,
+            }
+
+            # Blacklist old refresh token if rotation blacklisting is configured
+            try:
+                if getattr(settings, "SIMPLE_JWT", {}).get("BLACKLIST_AFTER_ROTATION", True):
+                    refresh.blacklist()
+            except Exception:
+                pass
+
+            # Cache the rotation result for 15 seconds to gracefully handle concurrent frontend requests
+            cache.set(cache_key, response_data, timeout=15)
 
             return response_data
 
         except ResumeRegistration.DoesNotExist:
-            raise AuthenticationFailed("User inactive or deleted.")
+            raise AuthenticationFailed("User does not exist or has been deleted.")
         except (TokenError, InvalidToken):
-            raise InvalidToken({"detail": "Token invalid or expired."})
+            raise InvalidToken({"detail": "Token is invalid or expired."})
 
 class SubscriptionSerializer(serializers.ModelSerializer):
 
