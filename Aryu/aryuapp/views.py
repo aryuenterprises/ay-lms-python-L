@@ -5921,7 +5921,7 @@ def generate_secure_password(length=8):
     return "".join(pwd_list)
 
 
-PORTAL_URL = getattr(settings, "PORTAL_URL", "https://aylms.aryuprojects.com/")
+PORTAL_URL = getattr(settings, "PORTAL_URL", "https://portal.aryuacademy.com/")
 
 def send_student_welcome_email(student, raw_password: str):
     """

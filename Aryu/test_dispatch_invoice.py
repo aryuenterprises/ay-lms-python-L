@@ -122,13 +122,13 @@ def run_test():
             
             <div class="cred-box">
                 <h4 style="margin: 0 0 10px 0; color: #6B21A8;">Your Portal Access Credentials</h4>
-                <div class="cred-item"><strong>Portal Link:</strong> <a href="https://aylms.aryuprojects.com">https://aylms.aryuprojects.com</a></div>
+                <div class="cred-item"><strong>Portal Link:</strong> <a href="https://portal.aryuacademy.com">https://portal.aryuacademy.com</a></div>
                 <div class="cred-item"><strong>Username:</strong> {test_email}</div>
                 <div class="cred-item"><strong>Password:</strong> <code style="background: #E2E8F0; padding: 2px 6px; border-radius: 4px; color: #0F172A;">{raw_password}</code></div>
             </div>
 
             <div style="text-align: center; margin: 25px 0;">
-                <a href="https://aylms.aryuprojects.com" class="btn">Access Learning Portal</a>
+                <a href="https://portal.aryuacademy.com" class="btn">Access Learning Portal</a>
             </div>
 
             <p style="font-size: 13px; color: #64748B;">
@@ -147,7 +147,7 @@ def run_test():
     # 6. Dispatch Email
     email_msg = EmailMultiAlternatives(
         subject=f"Welcome to ARYU Academy - Login Credentials & Tax Invoice ({invoice_no})",
-        body=f"Hello {student_name},\n\nYour login credentials:\nPortal: https://aylms.aryuprojects.com\nUsername: {test_email}\nPassword: {raw_password}\n\nInvoice attached.",
+        body=f"Hello {student_name},\n\nYour login credentials:\nPortal: https://portal.aryuacademy.com\nUsername: {test_email}\nPassword: {raw_password}\n\nInvoice attached.",
         from_email=settings.DEFAULT_FROM_EMAIL,
         to=[test_email]
     )

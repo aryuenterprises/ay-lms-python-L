@@ -174,7 +174,7 @@ def main():
 Welcome to ARYU Academy!
 
 Your account details:
-• Learning Portal: https://aylms.aryuprojects.com
+• Learning Portal: https://portal.aryuacademy.com
 • Username: {test_email}
 • Password: TemporaryPassword123!
 
