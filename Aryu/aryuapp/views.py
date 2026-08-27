@@ -7717,42 +7717,42 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         employee_id = self.kwargs.get('employee_id')
-
+        
         if not employee_id:
             return Response({"success": False, "message": "Trainer employee_id is required."}, status=200)
-
+        
         # ----------------- Today's Attendance -----------------
         ist = pytz.timezone("Asia/Kolkata")
-
+        
         # Get now in IST
         today_ist = timezone.now().astimezone(ist).date()
-
+        
         # Create datetime range for today in IST
         start_ist = ist.localize(datetime.combine(today_ist, datetime.min.time()))
         end_ist = ist.localize(datetime.combine(today_ist, datetime.max.time()))
-
+        
         # Convert to UTC
         start_utc = start_ist.astimezone(pytz.utc)
         end_utc = end_ist.astimezone(pytz.utc)
-
-        # Final queryset
+        
+        # Final queryset with select_related for optimization
         queryset = TrainerAttendance.objects.filter(
             trainer__employee_id=employee_id,
             date__gte=start_utc,
             date__lte=end_utc
-        ).order_by('-date')
-
+        ).select_related('trainer', 'new_batch', 'batch', 'course').order_by('-date')
+        
         # ------------------- Process Attendance Data -------------------
         trainer_info = None
         sessions = {}
-
+        
         for att in queryset:
             if not trainer_info:
                 trainer_info = {
                     "trainer": att.trainer.employee_id,
                     "trainer_name": att.trainer.full_name
                 }
-
+            
             batch_id = att.new_batch.batch_id if att.new_batch else (att.batch.batch_id if att.batch else None)
             course_id = att.course.course_id if att.course else None
             course_name = att.course.course_name if att.course else None
@@ -7786,11 +7786,11 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 sessions[session_key]["login"] = att.date
             elif att.status == "Logout":
                 sessions[session_key]["logout"] = att.date
-
+        
         attendance_data = []
         total_seconds = 0
-
-        # MODIFIED: Include sessions even if only login exists
+        
+        # Process sessions with proper login/logout pairing
         for session in sessions.values():
             # Sort logs by time
             session_logs = sorted(session["logs"], key=lambda x: x["date_obj"])
@@ -7873,14 +7873,15 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     "status": "Active" if login_ist and not logout_ist else "Completed" if login_ist and logout_ist else "Unknown",
                     "attendance_dates": sorted(list(session["all_dates"]))
                 })
-
+        
+        # Calculate total spent time
         if total_seconds > 0:
             total_hours = int(total_seconds // 3600)
             total_minutes = int((total_seconds % 3600) // 60)
             total_spent_time = f"{total_hours}h {total_minutes}m"
         else:
             total_spent_time = "0m"
-
+        
         # ------------------- Trainer Info -------------------
         try:
             trainer = Trainer.objects.get(employee_id=employee_id)
@@ -8032,7 +8033,8 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             trainers__trainer_id=trainer.trainer_id,
             is_archived=False,
             status=True
-        )
+        ).select_related('course')
+        
         new_batch_data = [
             {
                 "batch_id": batch.batch_id,
@@ -8047,13 +8049,13 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         # Old Batches
         old_batch_ids = BatchCourseTrainer.objects.filter(trainer=trainer).values_list("batch_id", flat=True).distinct()
         old_batches = Batch.objects.filter(batch_id__in=old_batch_ids, is_archived=False, status=True)
-
+        
         old_batch_data = []
         for batch in old_batches:
             course_obj = BatchCourseTrainer.objects.filter(batch=batch, trainer=trainer).first()
             old_batch_data.append({
                 "batch_id": batch.batch_id,
-                "batch_name": batch.batch_name,
+                "batch_name": batch.batch_name or batch.title,
                 "title": batch.title,
                 "course": course_obj.course.course_id if course_obj else None,
                 "course_name": course_obj.course.course_name if course_obj else None,
@@ -8626,356 +8628,6 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         return Response(response, status=200)
 
 
-    from datetime import datetime, timedelta
-    from django.utils.dateparse import parse_datetime
-    from django.db.models import Q
-
-    @action(detail=False, methods=['post'], url_path='<str:employee_id>/adumneoie')
-    def admin_mark_attendance(self, request, employee_id=None):
-        try:
-            employee_id = request.data.get("trainer")
-            course_id = request.data.get("course")
-            batch_id = request.data.get("batch")
-            date_str = request.data.get("date")
-            status_val = request.data.get("status", "Login")
-
-            if not all([employee_id, course_id, batch_id, date_str]):
-                return Response({
-                    "success": False,
-                    "message": "Trainer, course, batch, and date are required."
-                }, status=200)
-
-            # ---------- Trainer & Course ----------
-            try:
-                trainer = Trainer.objects.get(employee_id=employee_id)
-            except Trainer.DoesNotExist:
-                return Response({"success": False, "message": "Trainer not found"}, status=200)
-
-            try:
-                course = Course.objects.get(pk=course_id)
-            except Course.DoesNotExist:
-                return Response({"success": False, "message": "Course not found"}, status=200)
-
-            # ---------- Handle Both Batch & NewBatch ----------
-            batch = None
-            new_batch = None
-
-            # Try NewBatch first
-            new_batch = NewBatch.objects.filter(batch_id=batch_id, is_archived=False).first()
-
-            if new_batch:
-                batch_obj = new_batch  # use new batch object
-            else:
-                # fallback to old batch
-                batch = Batch.objects.filter(pk=batch_id, is_archived=False).first()
-                if not batch:
-                    return Response({"success": False, "message": "Batch not found"}, status=200)
-                batch_obj = batch
-
-            # ---------- Date Parsing ----------
-            scheduled_date = parse_datetime(date_str)
-            if not scheduled_date:
-                return Response({
-                    "success": False,
-                    "message": "Invalid datetime format. Use ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."
-                }, status=200)
-            status = request.data.get("status")
-            # ---------- Prevent Duplicate Attendance ----------
-            if TrainerAttendance.objects.filter(
-                trainer=trainer,
-                batch_id=batch_id,
-                course=course,
-                date__date=scheduled_date.date(),
-                status=status
-            ).exists():
-                return Response({"success": False, "message": "Attendance already marked."}, status=200)
-
-            # ---------- Create Attendance ----------
-            attendance = TrainerAttendance.objects.create(
-                trainer=trainer,
-                course=course,
-                batch_id=batch_id,  # works for both batch & new batch
-                date=scheduled_date,
-                status=status_val,
-                marked_by_admin=True
-            )
-
-            return Response({
-                "success": True,
-                "message": f"Admin marked attendance as {status_val}",
-                "data": TrainerAttendanceSerializer(attendance).data,
-            }, status=201)
-
-        except Exception as e:
-            return Response({
-                "success": False,
-                "message": str(e)
-            }, status=200)
-
-
-    def create(self, request, employee_id=None):
-        try:
-            employee_id = request.data.get("trainer")
-            course_id = request.data.get("course")
-            batch_id = request.data.get("batch")
-            status_val = request.data.get("status", "Login")
-            # Get date from request or use current date
-            date_str = request.data.get("date")  # Add this
-
-            if not all([employee_id, course_id, batch_id]):
-                return Response({
-                    "success": False,
-                    "message": "Trainer, course, and batch are required."
-                }, status=200)
-
-            # ---------- Trainer & Course ----------
-            try:
-                trainer = Trainer.objects.get(employee_id=employee_id)
-            except Trainer.DoesNotExist:
-                return Response({"success": False, "message": "Trainer not found"}, status=200)
-
-            try:
-                course = Course.objects.get(pk=course_id)
-            except Course.DoesNotExist:
-                return Response({"success": False, "message": "Course not found"}, status=200)
-
-            # ---------- Handle Both Batch & NewBatch ----------
-            batch = None
-            new_batch = None
-
-            # Try NewBatch first
-            new_batch = NewBatch.objects.filter(batch_id=batch_id, is_archived=False).first()
-
-            if new_batch:
-                batch_obj = new_batch  # use new batch object
-            else:
-                # fallback to old batch
-                batch = Batch.objects.filter(pk=batch_id, is_archived=False).first()
-                if not batch:
-                    return Response({"success": False, "message": "Batch not found"}, status=200)
-                batch_obj = batch
-
-            # ---------- Date Parsing ----------
-            # Use provided date or current date
-            if date_str:
-                scheduled_date = parse_datetime(date_str)
-                if not scheduled_date:
-                    return Response({
-                        "success": False,
-                        "message": "Invalid datetime format. Use ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."
-                    }, status=200)
-                attendance_date = scheduled_date
-            else:
-                attendance_date = timezone.now()
-
-            # ---------- Prevent Duplicate Attendance ----------
-            # Check for existing attendance on the SAME date
-            if TrainerAttendance.objects.filter(
-                trainer=trainer,
-                batch_id=batch_id,
-                course=course,
-                date__date=attendance_date.date(),  # Check same date
-                status=status_val
-            ).exists():
-                return Response({"success": False, "message": "Attendance already marked for this date."}, status=200)
-
-            # ---------- Create Attendance ----------
-            attendance = TrainerAttendance.objects.create(
-                trainer=trainer,
-                course=course,
-                batch_id=batch_id,
-                date=attendance_date,  # Use the parsed date
-                status=status_val,
-                marked_by_admin=False
-            )
-
-            return Response({
-                "success": True,
-                "message": f"marked attendance as {status_val}",
-                "data": TrainerAttendanceSerializer(attendance).data,
-            }, status=201)
-
-        except Exception as e:
-            return Response({
-                "success": False,
-                "message": str(e)
-            }, status=200)
-    
-    from datetime import datetime, timedelta
-    from django.utils.dateparse import parse_datetime
-    from django.db.models import Q
-
-    @action(detail=False, methods=['post'], url_path='<str:employee_id>/adumneoie')
-    def admin_mark_attendance(self, request, employee_id=None):
-        try:
-            employee_id = request.data.get("trainer")
-            course_id = request.data.get("course")
-            batch_id = request.data.get("batch")
-            date_str = request.data.get("date")
-            status_val = request.data.get("status", "Login")
-
-            if not all([employee_id, course_id, batch_id, date_str]):
-                return Response({
-                    "success": False,
-                    "message": "Trainer, course, batch, and date are required."
-                }, status=200)
-
-            # ---------- Trainer & Course ----------
-            try:
-                trainer = Trainer.objects.get(employee_id=employee_id)
-            except Trainer.DoesNotExist:
-                return Response({"success": False, "message": "Trainer not found"}, status=200)
-
-            try:
-                course = Course.objects.get(pk=course_id)
-            except Course.DoesNotExist:
-                return Response({"success": False, "message": "Course not found"}, status=200)
-
-            # ---------- Handle Both Batch & NewBatch ----------
-            batch = None
-            new_batch = None
-
-            # Try NewBatch first
-            new_batch = NewBatch.objects.filter(batch_id=batch_id, is_archived=False).first()
-
-            if new_batch:
-                batch_obj = new_batch  # use new batch object
-            else:
-                # fallback to old batch
-                batch = Batch.objects.filter(pk=batch_id, is_archived=False).first()
-                if not batch:
-                    return Response({"success": False, "message": "Batch not found"}, status=200)
-                batch_obj = batch
-
-            # ---------- Date Parsing ----------
-            scheduled_date = parse_datetime(date_str)
-            if not scheduled_date:
-                return Response({
-                    "success": False,
-                    "message": "Invalid datetime format. Use ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."
-                }, status=200)
-            status = request.data.get("status")
-            # ---------- Prevent Duplicate Attendance ----------
-            if TrainerAttendance.objects.filter(
-                trainer=trainer,
-                batch_id=batch_id,
-                course=course,
-                date__date=scheduled_date.date(),
-                status=status
-            ).exists():
-                return Response({"success": False, "message": "Attendance already marked."}, status=200)
-
-            # ---------- Create Attendance ----------
-            attendance = TrainerAttendance.objects.create(
-                trainer=trainer,
-                course=course,
-                batch_id=batch_id,  # works for both batch & new batch
-                date=scheduled_date,
-                status=status_val,
-                marked_by_admin=True
-            )
-
-            return Response({
-                "success": True,
-                "message": f"Admin marked attendance as {status_val}",
-                "data": TrainerAttendanceSerializer(attendance).data,
-            }, status=201)
-
-        except Exception as e:
-            return Response({
-                "success": False,
-                "message": str(e)
-            }, status=200)
-
-
-    def create(self, request, employee_id=None):
-        try:
-            employee_id = request.data.get("trainer")
-            course_id = request.data.get("course")
-            batch_id = request.data.get("batch")
-            status_val = request.data.get("status", "Login")
-            # Get date from request or use current date
-            date_str = request.data.get("date")  # Add this
-
-            if not all([employee_id, course_id, batch_id]):
-                return Response({
-                    "success": False,
-                    "message": "Trainer, course, and batch are required."
-                }, status=200)
-
-            # ---------- Trainer & Course ----------
-            try:
-                trainer = Trainer.objects.get(employee_id=employee_id)
-            except Trainer.DoesNotExist:
-                return Response({"success": False, "message": "Trainer not found"}, status=200)
-
-            try:
-                course = Course.objects.get(pk=course_id)
-            except Course.DoesNotExist:
-                return Response({"success": False, "message": "Course not found"}, status=200)
-
-            # ---------- Handle Both Batch & NewBatch ----------
-            batch = None
-            new_batch = None
-
-            # Try NewBatch first
-            new_batch = NewBatch.objects.filter(batch_id=batch_id, is_archived=False).first()
-
-            if new_batch:
-                batch_obj = new_batch  # use new batch object
-            else:
-                # fallback to old batch
-                batch = Batch.objects.filter(pk=batch_id, is_archived=False).first()
-                if not batch:
-                    return Response({"success": False, "message": "Batch not found"}, status=200)
-                batch_obj = batch
-
-            # ---------- Date Parsing ----------
-            # Use provided date or current date
-            if date_str:
-                scheduled_date = parse_datetime(date_str)
-                if not scheduled_date:
-                    return Response({
-                        "success": False,
-                        "message": "Invalid datetime format. Use ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."
-                    }, status=200)
-                attendance_date = scheduled_date
-            else:
-                attendance_date = timezone.now()
-
-            # ---------- Prevent Duplicate Attendance ----------
-            # Check for existing attendance on the SAME date
-            if TrainerAttendance.objects.filter(
-                trainer=trainer,
-                batch_id=batch_id,
-                course=course,
-                date__date=attendance_date.date(),  # Check same date
-                status=status_val
-            ).exists():
-                return Response({"success": False, "message": "Attendance already marked for this date."}, status=200)
-
-            # ---------- Create Attendance ----------
-            attendance = TrainerAttendance.objects.create(
-                trainer=trainer,
-                course=course,
-                batch_id=batch_id,
-                date=attendance_date,  # Use the parsed date
-                status=status_val,
-                marked_by_admin=False
-            )
-
-            return Response({
-                "success": True,
-                "message": f"marked attendance as {status_val}",
-                "data": TrainerAttendanceSerializer(attendance).data,
-            }, status=201)
-
-        except Exception as e:
-            return Response({
-                "success": False,
-                "message": str(e)
-            }, status=200)
-    
     from datetime import datetime, timedelta
     from django.utils.dateparse import parse_datetime
     from django.db.models import Q
