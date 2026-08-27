@@ -1,3 +1,5 @@
+import io
+import logging
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
@@ -7,10 +9,29 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 from django.db.models import Sum
 from num2words import num2words
-# from weasyprint import HTML
 
 from aryuapp.models import Settings
 from payments.models import PaymentTransaction
+
+logger = logging.getLogger(__name__)
+
+
+def render_pdf(html_string, base_url=None):
+    try:
+        from weasyprint import HTML
+        return HTML(string=html_string, base_url=base_url or settings.BASE_DIR).write_pdf()
+    except Exception as e:
+        logger.warning(f"WeasyPrint PDF rendering failed, attempting xhtml2pdf fallback: {e}")
+        try:
+            from xhtml2pdf import pisa
+            result = io.BytesIO()
+            pisa_status = pisa.CreatePDF(io.BytesIO(html_string.encode("UTF-8")), dest=result)
+            if pisa_status.err:
+                raise Exception(f"xhtml2pdf error code: {pisa_status.err}")
+            return result.getvalue()
+        except Exception as fallback_err:
+            logger.error(f"Both WeasyPrint and xhtml2pdf failed: {fallback_err}")
+            raise fallback_err
 
 
 class InvoiceService:
@@ -608,41 +629,44 @@ class InvoiceService:
         # =========================================
 
         context = {
-
+            # Core Objects
             "transaction": transaction,
-
             "company": company,
-
             "billing": billing,
 
-            "description": description,
+            # Direct Identifiers & Header
+            "invoice_no": transaction.invoice_no,
+            "invoice_date": transaction.invoice_date,
+            "place_of_supply": transaction.place_of_supply or "Tamil Nadu",
 
-            "previous_transactions":
-                previous_transactions,
+            # Buyer / Student Info
+            "student_name": billing.get("name", "Customer"),
+            "student_address": billing.get("address", "-"),
+            "email": billing.get("email", "-"),
+            "phone": billing.get("phone", "-"),
+            "gst": billing.get("gst", "Unregistered"),
 
-            "previous_invoice_details":
-                previous_invoice_details,
+            # Line Item & Tax Breakdown
+            "course_name": description,
+            "hsn_sac": cls.HSN_CODE,
+            "rate": transaction.amount,
+            "taxable_value": transaction.taxable_amount,
+            "cgst": transaction.cgst_amount,
+            "sgst": transaction.sgst_amount,
+            "total_tax": transaction.total_tax_amount,
+            "total_amount": transaction.invoice_total,
 
-            "previous_paid_amount":
-                previous_paid_amount,
+            # Word Representations
+            "amount_in_words": invoice_total_words,
+            "tax_in_words": tax_amount_words,
 
-            "current_payment":
-                current_payment,
-
-            "total_received":
-                total_received,
-
-            "balance_due":
-                balance_due,
-
-            "context_amount_words":
-                invoice_total_words,
-
-            "tax_amount_words":
-                tax_amount_words,
-
-            "hsn_code":
-                cls.HSN_CODE,
+            # Ledger & Payment History
+            "previous_transactions": previous_transactions,
+            "previous_invoice_details": previous_invoice_details,
+            "previous_paid_amount": previous_paid_amount,
+            "current_payment": current_payment,
+            "total_received": total_received,
+            "balance_due": balance_due,
         }
 
         # =========================================
@@ -658,12 +682,10 @@ class InvoiceService:
         # GENERATE PDF
         # =========================================
 
-        # html = HTML(
-        #     string=html_string,
-        #     base_url=settings.BASE_DIR
-        # )
-
-        # pdf_file = html.write_pdf()
+        pdf_bytes = render_pdf(
+            html_string,
+            base_url=settings.BASE_DIR
+        )
 
         # =========================================
         # SAVE PDF
@@ -678,11 +700,11 @@ class InvoiceService:
                 save=False
             )
 
-        # transaction.invoice.save(
-        #     file_name,
-        #     ContentFile(pdf_file),
-        #     save=True
-        # )
+        transaction.invoice.save(
+            file_name,
+            ContentFile(pdf_bytes),
+            save=True
+        )
 
         return transaction
     
