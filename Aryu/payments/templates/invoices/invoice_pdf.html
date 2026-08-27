@@ -48,55 +48,86 @@
         font-weight: bold;
         color: #6B21A8;
     }
+    .logo, .logo-container {
+        max-width: 160px;
+        max-height: 50px;
+        margin-bottom: 10px;
+    }
+    .logo img, .logo-container img, img.logo-img {
+        max-width: 160px !important;
+        max-height: 50px !important;
+        width: auto !important;
+        height: auto !important;
+        object-fit: contain;
+    }
 </style>
 </head>
 <body>
 <div class="outer-border">
     <div class="title-banner">TAX INVOICE</div>
     
-    <!-- Top Section -->
+    <!-- HEADER CONTENT -->
     <table>
         <tr>
-            <td width="55%" class="b-bottom b-right" style="padding: 6px;" valign="top">
-                <table class="no-border">
-                    <tr>
-                        <td width="26" valign="middle">
-                            <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAGXRFWHRTb2Z0d2FyZQB3d3cuaW5rc2NhcGUub3Jnm+48GgAABExJREFUeNrtm1uoTV8Uxz8z5yZ3vE0eLpIL5T3E1YtQEl7kHh4oyYMieXB4IA8UykOEvCgPQl4k4kFeXEhJ8pDkIknmzn28zZ3J/G3m//7OOcd+z9p77/NfVf3W3mefffa817/2Ouv6r28Vq1evrq2qqiq4gGvgPnAYuA28A87h2o57HjgPnAFmAZOBy0C157F3A5XATWAx8Azo31q+eA68AY4B64BLwEpgKzAI2Af8BCb0AOA28ACYAeT7IeA5sBRYCWwDvgFDeQCwC1jS1wIqgWfALGA18NkDgGpgN1DfgwW8BiYD7YB2wP/bQAVwaR8F7AeO9wP/L4H/zYALwJ5eCjgAfO4H/jcDHs83ARnAgF4IaAeu9AP/m4FLwOSeCjgHvOsl/kbgK+AVsK+HABh3XvUS/yPgc78wUAI86UX+R8BHoLgfGPgBPNtL/LeAT/3CQAq404v8twDf+oWBn8DNXuT/H/B0v7AQAj4D9T0EuA887yf+G8Bf/cJCEfgJ/OhBALwL/t3P/L8Bdf3GQhD4jbtP/g+47+1LwBHgJ/AcGAgM6sO413B39xHgb278L00p9UeAj4G1PZzvR8Dqvgq/BHgP/N4D2S4CG/sy7j8BN4B7gL+f7N8Bv/uF/x/AfuBCb2S7CPzsq/A/Ag8AN4BnvZDtPvCt3/gfAm8BN4D3vZDte+BVv/GvAXcBN4GnvZDtB+B1v/HXAJ8BN4AHvZDte+Blv/HXB4BPwANgcy9k2w486zf+W8A7wA1gXy9k2w487Tf+S8A7wFXgUS9kewJ41m/8ZcBzwBVgXy9k2w487Tf+48DrXuR/AfgEfO2n8CsBP4FvgIHA7x7IdgP40m/8JcBdwHXgQS9kewJ41m/8ZcBzwBVgfS9kewFY3W/8ZcBzwBVgeS9kWw487zf+csAN4HsvkL8fvOk3/sPAzV4gfwd40+/8z4HPAQ3qBf41wH+A10D/fgnwAegH9AMGAP1x57/n7v886H4Q8BfXD9c/2eG44bhh2+4+5g3G/f5m4543+vT/B23i3UfgPvA1cAvY2wf5HwFeAk8An/e19kOAB4A/4P7/r8At3PH8f26/APgA3McdP/0F4Cq6+z/0Q4A33L363Y7vV7h+tD6/n87+77gP6C76k8D1w4CtwNte8D8BPAOuAc96kP8r4DvgB7q2/7n9c+B99yZ/919wH4D9B+wD7gO3gR/dRP8G8Ab4BHzp+P4a14+2W4/jbuV4H/s07v72+3E3PdyNu+9u4e59f23v4B5N6w9cBzbgtj7fAJeBm7h9/5vdfbB7G+p/E/8jYCVu+7KzE+4Cbh9wGrgDXMUtgS8C53DL4EvAKeA8brv+FXATN7z0LdC02fQ/8009yW6WkLwAAAAASUVORK5CYII=" class="logo-img" />
-                        </td>
-                        <td valign="middle">
-                            <span style="font-size: 11px; font-weight: bold; color: #6B21A8;">
-                                ARYU Academy Private Limited
-                            </span>
-                        </td>
-                    </tr>
-                </table>
-                <div style="margin-top: 3px; font-size: 8.5px;">
-                    No 33/14, Ground floor, Jayammal St,<br/>
-                    Ayyavoo Colony, Aminjikarai,<br/>
-                    Chennai, Tamil Nadu 600029<br/>
-                    <strong>GSTIN/UIN:</strong> 45879933<br/>
-                    <strong>Email:</strong> raj@aryuacademy.com / <strong>PH:</strong> 7502149013
-                </div>
-            </td>
-            <td width="45%" class="b-bottom" style="padding: 6px;" valign="top">
-                <table class="no-border">
-                    <tr><td width="45%" class="bold">Invoice No</td><td>: {{ invoice_no }}</td></tr>
-                    <tr><td class="bold">Invoice Date</td><td>: {{ invoice_date }}</td></tr>
-                    <tr><td class="bold">Place of Supply</td><td>: {{ place_of_supply|default:"Tamil Nadu" }}</td></tr>
-                </table>
-                <div class="b-top" style="margin-top: 4px; padding-top: 4px;">
-                    <div class="bold" style="text-decoration: underline;">Buyer (Bill to)</div>
-                    <strong>{{ student_name }}</strong><br/>
-                    Chennai, Tamil Nadu<br/>
-                    <strong>GSTIN/UIN:</strong> Unregistered<br/>
-                    <strong>Email:</strong> {{ email }} / <strong>PH:</strong> {{ phone }}
-                </div>
-            </td>
+          <!-- LEFT -->
+          <td width="55%" class="b-bottom b-right" style="padding: 6px;" valign="top">
+            <div class="logo-container" style="text-align: left; margin-bottom: 10px;">
+              {% if company.logo and company.logo.path %}
+              <img
+                src="{{ company.logo.path }}"
+                alt="Logo"
+                style="max-width: 160px; max-height: 50px; width: auto; height: auto; object-fit: contain;" />
+              {% else %}
+              <img
+                src="https://portal.aryuacademy.com/api/media/logos/aryu_logo.png"
+                alt="Logo"
+                style="max-width: 160px; max-height: 50px; width: auto; height: auto; object-fit: contain;" />
+              {% endif %}
+            </div>
+            <div class="section-divider"></div>
+            <div class="company-details">
+              <strong>{{ company.company_name|default:"ARYU Academy Private Limited" }}</strong><br />
+              {{ company.company_address|default:"No 33/14, Ground floor, Jayammal St, Ayyavoo Colony, Aminjikarai, Chennai, Tamil Nadu 600029"|linebreaksbr }}<br />
+              <span class="bold">GSTIN/UIN</span> : {{ company.gst_number|default:"45879933" }}<br />
+              <span class="bold">Email -</span> {{ company.company_email|default:"raj@aryuacademy.com" }} /
+              <span class="bold">PH -</span> {{ company.company_contact|default:"7502149013" }}
+            </div>
+          </td>
+
+          <!-- RIGHT -->
+          <td width="45%" class="b-bottom" style="padding: 6px;" valign="top">
+            <table class="no-border">
+              <tr>
+                <td width="40%" class="bold">Invoice No</td>
+                <td>: {{ transaction.invoice_no|default:invoice_no }}</td>
+              </tr>
+              <tr>
+                <td class="bold">Invoice Date</td>
+                <td>: {{ transaction.invoice_date|default:invoice_date }}</td>
+              </tr>
+              <tr>
+                <td class="bold">Place of Supply</td>
+                <td>: {{ transaction.place_of_supply|default:place_of_supply|default:"Tamil Nadu" }}</td>
+              </tr>
+            </table>
+            <div class="b-top" style="margin-top: 4px; padding-top: 4px;">
+              <div class="bold" style="text-decoration: underline;">Buyer (Bill to)</div>
+              <strong>{{ billing.name|default:student_name }}</strong><br />
+              {% if billing.address %}
+              {{ billing.address|linebreaksbr }}<br />
+              {% else %}
+              Chennai, Tamil Nadu<br />
+              {% endif %}
+              <span class="bold">GSTIN/UIN:</span> {{ billing.gst|default:"Unregistered" }}<br />
+              <span class="bold">Email:</span> {{ billing.email|default:email }} / <span class="bold">PH:</span> {{ billing.phone|default:phone }}
+            </div>
+          </td>
         </tr>
     </table>
 
-    <!-- Line Items Table -->
-    <table class="bordered">
+      <!-- SERVICE TABLE -->
+
+      <table class="service-table">
         <thead>
             <tr style="background-color: #FAFAFA;">
                 <th width="7%" class="text-center">SI NO</th>

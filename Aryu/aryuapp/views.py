@@ -4646,57 +4646,50 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
 
+    # Determine which batch to use (new_batch preferred)
     def get_active_batch(self, obj):
         return obj.new_batch if obj.new_batch else obj.batch
 
+    # Determine course for new_batch or old
     def get_active_course(self, obj):
         if obj.new_batch:
             return obj.new_batch.course
         return obj.course
 
+    # 1) DAILY ATTENDANCE FETCH
     def get_queryset(self):
         student_id = self.request.query_params.get('student')
         if not student_id:
             return Attendance.objects.none()
 
-        today_ist = timezone.now().astimezone(IST).date()
-        start_dt = IST.localize(datetime.combine(today_ist, time.min))
-        end_dt = IST.localize(datetime.combine(today_ist, time.max))
+        today = timezone.localtime().date()
 
         return Attendance.objects.filter(
             student__student_id=student_id,
-            date__range=(start_dt, end_dt)
+            date__date=today
         ).order_by('-date')
 
+    # LIST API → Today's attendance + batches
     def list(self, request, student_id=None):
         if not student_id:
             student_id = request.query_params.get('student_id') or request.query_params.get('student')
 
-        if not student_id:
-            return Response({'success': False, 'message': 'student_id is required.', 'data': []}, status=200)
+        ist = pytz.timezone("Asia/Kolkata")
+        today = timezone.localtime().date()
 
         student = Student.objects.filter(student_id=student_id).first()
         if not student:
-            return Response({"success": False, "message": "Student not found.", "data": []}, status=200)
+            return Response({"success": False, "message": "Student not found.", "data": {}}, status=200)
+        # --------------- FETCH TODAY ATTENDANCE -----------------
+        ist = pytz.timezone("Asia/Kolkata")
+        today = timezone.now().astimezone(ist).date()
+        start_datetime = datetime.combine(today, time.min)
+        end_datetime = datetime.combine(today, time.max)
 
-        now_ist = timezone.now().astimezone(IST)
-        today_ist = now_ist.date()
-
-        start_date_str = request.query_params.get('start_date')
-        end_date_str = request.query_params.get('end_date')
-
-        if start_date_str and end_date_str:
-            try:
-                start_d = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-                end_d = datetime.strptime(end_date_str, "%Y-%m-%d").date()
-            except ValueError:
-                start_d, end_d = today_ist, today_ist
-        else:
-            start_d, end_d = today_ist, today_ist
-
-        start_datetime = IST.localize(datetime.combine(start_d, time.min))
-        end_datetime = IST.localize(datetime.combine(end_d, time.max))
-
+        # Make them timezone-aware in IST
+        start_datetime = ist.localize(start_datetime)
+        end_datetime = ist.localize(end_datetime)
+        
         attendance_qs = Attendance.objects.filter(
             student=student,
             date__range=(start_datetime, end_datetime)
@@ -8050,179 +8043,21 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         monthly_filter = False
         if month and year:
             monthly_filter = True
-            # Convert month and year to datetime range in IST
-            try:
-                year_int = int(year)
-                month_int = int(month)
-                
-                # First day of month in IST
-                start_date_ist = ist.localize(datetime(year_int, month_int, 1, 0, 0, 0))
-                # Last day of month
-                if month_int == 12:
-                    end_date_ist = ist.localize(datetime(year_int + 1, 1, 1, 0, 0, 0)) - timedelta(seconds=1)
-                else:
-                    end_date_ist = ist.localize(datetime(year_int, month_int + 1, 1, 0, 0, 0)) - timedelta(seconds=1)
-                
-                # Convert to UTC
-                start_utc = start_date_ist.astimezone(pytz.utc)
-                end_utc = end_date_ist.astimezone(pytz.utc)
-                
-                queryset = queryset.filter(
-                    date__gte=start_utc,
-                    date__lte=end_utc
-                )
-            except ValueError:
-                return Response({"success": False, "message": "Invalid month or year format"}, status=200)
-
-        # If no month/year provided, default to today's attendance (like list function)
-        else:
-            # Get today in IST
-            today_ist = timezone.now().astimezone(ist).date()
-            
-            # Create datetime range for today in IST
-            start_ist = ist.localize(datetime.combine(today_ist, datetime.min.time()))
-            end_ist = ist.localize(datetime.combine(today_ist, datetime.max.time()))
-            
-            # Convert to UTC
-            start_utc = start_ist.astimezone(pytz.utc)
-            end_utc = end_ist.astimezone(pytz.utc)
-            
             queryset = queryset.filter(
-                date__gte=start_utc,
-                date__lte=end_utc
+                date__month=int(month),
+                date__year=int(year)
             )
 
-        # Helper function to get batch name from either batch model
-        def get_batch_display_name(batch_obj, is_new_batch=True):
-            """
-            Get the display name for a batch.
-            For NewBatch: Check if title is a code (like AYA-AKIRA-25A026) and map to actual name
-            For old Batch: Use batch_name directly
-            """
-            if not batch_obj:
-                return None
-            
-            if is_new_batch:
-                # For NewBatch, title might be a code
-                title = batch_obj.title if hasattr(batch_obj, 'title') else None
-                
-                # Check if this title is a code (like AYA-AKIRA-25A026)
-                # If it looks like a code, try to find the actual batch name
-                if title and title.startswith('AYA-AKIRA-'):
-                    # Try to find the actual batch name from Batch model
-                    try:
-                        # Find the corresponding old batch using batch_id mapping
-                        # Or use the batch_id from the attendance record
-                        old_batch = Batch.objects.filter(batch_id=batch_obj.batch_id).first()
-                        if old_batch and old_batch.batch_name:
-                            return old_batch.batch_name
-                        elif old_batch and old_batch.title:
-                            return old_batch.title
-                    except:
-                        pass
-                    # If not found, return the title as is
-                    return title
-                
-                # If title is not a code, return it
-                return title if title else batch_obj.batch_name if hasattr(batch_obj, 'batch_name') else None
-            
-            else:
-                # For old Batch model
-                return batch_obj.batch_name if hasattr(batch_obj, 'batch_name') and batch_obj.batch_name else batch_obj.title if hasattr(batch_obj, 'title') else None
+        serializer = self.get_serializer(queryset, many=True)
+        logs = serializer.data
 
-        # Process attendance data similar to list function
-        sessions = {}
-        trainer_info = None
+        from collections import defaultdict
+        grouped_logs = defaultdict(list)
 
-        for att in queryset:
-            if not trainer_info:
-                trainer_info = {
-                    "trainer": att.trainer.employee_id,
-                    "trainer_name": att.trainer.full_name
-                }
+        for log in logs:
+            log_date = log["date"].split(" ")[0]
+            grouped_logs[log_date].append(log)
 
-            batch_id = att.new_batch.batch_id if att.new_batch else (att.batch.batch_id if att.batch else None)
-            course_id = att.course.course_id if att.course else None
-            course_name = att.course.course_name if att.course else None
-            
-            # Get batch name using the enhanced helper function
-            batch_name = None
-            if att.new_batch:
-                batch_name = get_batch_display_name(att.new_batch, is_new_batch=True)
-            elif att.batch:
-                batch_name = get_batch_display_name(att.batch, is_new_batch=False)
-            
-            # If batch_name is still None or starts with code, try to get from batch list mapping
-            if not batch_name or batch_name.startswith('AYA-AKIRA-'):
-                # Try to find the actual batch name from the batches list
-                try:
-                    # Check if this batch exists in the combined batch list
-                    from django.core.cache import cache
-                    cache_key = f"batch_name_{batch_id}"
-                    cached_name = cache.get(cache_key)
-                    if cached_name:
-                        batch_name = cached_name
-                    else:
-                        # Find batch from database
-                        new_batch = NewBatch.objects.filter(batch_id=batch_id).first()
-                        if new_batch:
-                            # Check if it has a title that's not a code
-                            if new_batch.title and not new_batch.title.startswith('AYA-AKIRA-'):
-                                batch_name = new_batch.title
-                            else:
-                                # Try to find matching old batch
-                                old_batch = Batch.objects.filter(batch_id=batch_id).first()
-                                if old_batch and old_batch.batch_name:
-                                    batch_name = old_batch.batch_name
-                                elif old_batch and old_batch.title:
-                                    batch_name = old_batch.title
-                                else:
-                                    batch_name = new_batch.title
-                            cache.set(cache_key, batch_name, 3600)  # Cache for 1 hour
-                except Exception as e:
-                    # Fallback to using the title if available
-                    if att.new_batch and att.new_batch.title:
-                        batch_name = att.new_batch.title
-                    elif att.batch and att.batch.batch_name:
-                        batch_name = att.batch.batch_name
-            
-            # If still no batch_name, use the title as fallback
-            if not batch_name:
-                if att.new_batch and hasattr(att.new_batch, 'title'):
-                    batch_name = att.new_batch.title
-                elif att.batch and hasattr(att.batch, 'batch_name'):
-                    batch_name = att.batch.batch_name
-                elif att.batch and hasattr(att.batch, 'title'):
-                    batch_name = att.batch.title
-            
-            session_key = f"{batch_id}_{course_id}_{att.date.strftime('%Y-%m-%d')}"
-
-            if session_key not in sessions:
-                sessions[session_key] = {
-                    "date": att.date.strftime("%Y-%m-%d"),
-                    "login": None,
-                    "logout": None,
-                    "batch_id": batch_id,
-                    "batch_title": batch_name,
-                    "course_id": course_id,
-                    "course_name": course_name,
-                    "trainer_full_name": trainer_info["trainer_name"],
-                    "logs": []
-                }
-
-            # Store individual log
-            sessions[session_key]["logs"].append({
-                "date": att.date.strftime("%Y-%m-%d %H:%M:%S"),
-                "status": att.status,
-                "date_obj": att.date
-            })
-
-            if att.status == "Login":
-                sessions[session_key]["login"] = att.date
-            elif att.status == "Logout":
-                sessions[session_key]["logout"] = att.date
-
-        # Build final logs
         final_logs = []
         monthly_total_seconds = 0
 
@@ -8242,39 +8077,36 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 if log["status"] == "Login":
                     if not first_login:
                         first_login = log_time
-                    login_time = log_time
-                elif log["status"] == "Logout" and login_time:
-                    logout_time = log_time
-                    if not last_logout or logout_time > last_logout:
-                        last_logout = logout_time
-                    total_seconds += (logout_time - login_time).total_seconds()
-                    login_time = None
+                    work_start = log_time
 
-            # If login exists but no logout, consider it active session
-            if login_time and not last_logout:
-                last_logout = None
-                if first_login:
-                    total_seconds = max(total_seconds, 0)
+                elif status == "logout":
+                    last_logout = log_time
+                    if work_start:
+                        total_seconds += (log_time - work_start).total_seconds() - break_seconds
+                        work_start = None
+                        break_seconds = 0
 
-            # Convert to IST for display
-            login_ist = first_login.astimezone(ist) if first_login else None
-            logout_ist = last_logout.astimezone(ist) if last_logout else None
+                elif status == "break out" and work_start:
+                    break_start = log_time
 
+                elif status == "break in" and break_start:
+                    break_seconds += (log_time - break_start).total_seconds()
+                    break_start = None
+
+            # Daily total
             total_seconds = max(total_seconds, 0)
             total_time_str = self.format_hhmmss(total_seconds)
 
             if monthly_filter:
                 monthly_total_seconds += total_seconds
 
-            # Get extra working hours
-            if session["date"]:
-                log_date = datetime.strptime(session["date"], "%Y-%m-%d").date()
-                schedules = ClassSchedule.objects.filter(
-                    trainer=trainer,
-                    scheduled_date=log_date,
-                    is_archived=False,
-                    is_class_cancelled=False
-                )
+            # EXTRA WORKING HOURS (sum of schedule extra time)
+            schedules = ClassSchedule.objects.filter(
+                trainer=trainer,
+                scheduled_date=log_date,
+                is_archived=False,
+                is_class_cancelled=False
+            )
 
                 extra_time = timedelta(0)
                 for s in schedules:
@@ -8314,37 +8146,21 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             is_archived=False,
             status=True
         ).select_related("course")
-        
-        new_batch_data = [
+
+        # Convert new batch into old-batch response format
+        new_batches = [
             {
-                "batch_id": batch.batch_id,
-                "batch_name": batch.title,
-                "title": batch.title,
-                "course": batch.course.course_id,
-                "course_name": batch.course.course_name
+                "batch_id": nb.batch_id,
+                "batch_name": nb.title,      # Mapping -> Batch.batch_name
+                "title": nb.title,
             }
-            for batch in new_batches
+            for nb in new_batches_qs
         ]
 
-        # Old batches
-        old_batch_ids = BatchCourseTrainer.objects.filter(trainer=trainer).values_list("batch_id", flat=True).distinct()
-        old_batches = Batch.objects.filter(batch_id__in=old_batch_ids, is_archived=False, status=True)
-        
-        old_batch_data = []
-        for batch in old_batches:
-            course_obj = BatchCourseTrainer.objects.filter(batch=batch, trainer=trainer).first()
-            old_batch_data.append({
-                "batch_id": batch.batch_id,
-                "batch_name": batch.batch_name or batch.title,
-                "title": batch.title,
-                "course": course_obj.course.course_id if course_obj else None,
-                "course_name": course_obj.course.course_name if course_obj else None,
-            })
+        # COMBINE BOTH
+        all_batches = list(old_batches) + list(new_batches)
 
-        # Combine batches
-        all_batches = new_batch_data + old_batch_data
-
-        # Response
+        # Final response
         response = {
             "success": True,
             "message": f"Full attendance logs for {full_name}",
@@ -8358,7 +8174,7 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             response["monthly_total_working_hours"] = self.format_hhmmss(int(monthly_total_seconds))
 
         return Response(response, status=200)
-    
+        
     from datetime import datetime, timedelta
     from django.utils.dateparse import parse_datetime
     from django.db.models import Q

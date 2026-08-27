@@ -1170,16 +1170,27 @@ class StudentPublicSignupSerializer(serializers.ModelSerializer):
 
         return student
     
+IST = pytz.timezone("Asia/Kolkata")
+
+
+def get_ist_datetime(dt):
+    """Safely converts any datetime (aware UTC, aware IST, or naive) directly to accurate IST."""
+    if not dt:
+        return None
+    if timezone.is_naive(dt):
+        # If naive, treat as UTC first then convert to IST
+        dt = pytz.UTC.localize(dt)
+    return dt.astimezone(IST)
+
+
 class AttendanceSerializer(serializers.ModelSerializer):
     ip_address = serializers.CharField(write_only=True, required=False)
 
-    # -------- OLD BATCH FIELDS (READ-ONLY) ----------
     batch = serializers.PrimaryKeyRelatedField(read_only=True)
     batch_id = serializers.IntegerField(source='batch.batch_id', read_only=True)
     batch_name = serializers.CharField(source='batch.batch_name', read_only=True)
     title = serializers.CharField(source='batch.title', read_only=True)
 
-    # -------- NEW BATCH FIELDS (WRITE + READ) --------
     new_batch = serializers.PrimaryKeyRelatedField(queryset=NewBatch.objects.all(), required=False)
     new_batch_title = serializers.CharField(source='new_batch.title', read_only=True)
 
@@ -1192,76 +1203,35 @@ class AttendanceSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'student', 'schedule_id', 'status', 'student_name',
             'course',
-
-            # Old batch fields (read/write old data only)
             'batch', 'batch_id', 'batch_name', 'title',
-
-            # New batch fields (required for new data)
             'new_batch', 'new_batch_title',
-
             'date', 'ip_address', 'course_name', 'course_id', 'marked_by_admin',
         ]
         read_only_fields = ['date', 'ip_address', 'batch_id', 'batch_name', 'title', 'new_batch_title']
 
     def get_student_name(self, obj):
-        return f"{obj.student.first_name}"
+        return f"{obj.student.first_name}" if obj.student else ""
 
-    # def validate_status(self, value):
-
-    #     allowed_statuses = [
-    #         "Login",
-    #         "Logout",
-    #         "BreakIn",
-    #         "BreakOut",
-    #         "Present",
-    #         "Absent",
-    #         "Late",
-    #         "Holiday"
-    #     ]
-
-    #     if value not in allowed_statuses:
-    #         raise serializers.ValidationError(
-    #             "Invalid attendance status."
-    #         )
-
-    #     return value
-    def validate_status(self,value):
+    def validate_status(self, value):
         return value
 
-    # Format date to IST
     def to_representation(self, instance):
-
         data = super().to_representation(instance)
+        dt = get_ist_datetime(instance.date)
 
-        dt = instance.date
-
-        ist = pytz.timezone("Asia/Kolkata")
-
-        # HANDLE NAIVE DATETIME
-
-        if timezone.is_naive(dt):
-
-            dt = make_aware(
-                dt,
-                timezone=pytz.UTC
-            )
-
-        # CONVERT TO IST
-
-        dt = dt.astimezone(ist)
-
-        # FORMAT
-
-        data['date'] = dt.strftime(
-            '%Y-%m-%d %I:%M:%S %p'
-        )
+        if dt:
+            data['date'] = dt.strftime('%d/%m/%Y')
+            data['time'] = dt.strftime('%I:%M:%S %p')
+            data['datetime'] = dt.strftime('%d/%m/%Y %I:%M:%S %p')
+        else:
+            data['date'] = None
+            data['time'] = None
+            data['datetime'] = None
 
         return data
 
-    # ---------------- VALIDATION -----------------
     def validate(self, data):
         student = data.get('student')
-        old_batch = data.get('batch')
         new_batch = data.get('new_batch')
         course = data.get('course')
 
@@ -1270,9 +1240,7 @@ class AttendanceSerializer(serializers.ModelSerializer):
         if not course:
             raise serializers.ValidationError("Course is required.")
 
-        # ------------- NEW BATCH (PREFERRED FOR NEW DATA) ---------------
         if new_batch:
-            # ensure student is present in new batch
             if not new_batch.students.filter(student_id=student.student_id).exists():
                 raise serializers.ValidationError("Student is not assigned to this Batch.")
             return data
@@ -1286,7 +1254,6 @@ class AttendanceSerializer(serializers.ModelSerializer):
             validated_data['date'] = timezone.now()
 
         instance = Attendance(**validated_data)
-
         if ip_address:
             instance.ip_address = ip_address
 

@@ -345,15 +345,15 @@ SOCIALACCOUNT_PROVIDERS = {
 
 FASTAPI_URL="https://ai.aryuacademy.com"
 
-TELECRM_TOKEN="9f35bc20-8932-44f2-95ea-9918a63a9e8e1787650302139:a5302d6e-11f7-4a0b-8167-ffc206b19c63"
+TELECRM_TOKEN="2b5fa0b5-b45c-4150-ab6f-09a001575ca01779800797507:0d16d31d-e820-45fa-aafc-869ef640917d"
 TELECRM_ID="6a13da730fbcb752673e080c"
 TELECRM_API = "https://next-api.telecrm.in"
 
 
 
-SERVER_ROOT = Path("/var/www/ay-lms-python-L") if Path("/var/www/ay-lms-python-L/logs").exists() else BASE_DIR.parent
-# SERVER_ROOT = Path("/var/www/python-staging") if Path("/var/www/python-staging/logs").exists() else BASE_DIR.parent
-# SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L") if Path("/home/aryu_user/Arun/ay-lms-python-L/logs").exists() else BASE_DIR.parent
+# SERVER_ROOT = Path("/var/www/ay-lms-python-L") if Path("/var/www/ay-lms-python-L/logs").exists() else BASE_DIR.parent
+SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L") if Path("/home/aryu_user/Arun/ay-lms-python-L/logs").exists() else BASE_DIR.parent
+SERVER_ROOT = Path("/var/www/python-staging") if Path("/var/www/python-staging/logs").exists() else BASE_DIR.parent
 
 LOGGING = {
     "version": 1,
@@ -389,12 +389,6 @@ LOGGING = {
             "filename": SERVER_ROOT / "logs" / "whatsapp.log",
             "formatter": "verbose",
         },
-        "telecrm_file": {
-            "level": "DEBUG",
-            "class": "logging.FileHandler",
-            "filename": SERVER_ROOT / "logs" / "telecrm.log",
-            "formatter": "verbose",
-        },
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "simple",
@@ -418,12 +412,6 @@ LOGGING = {
         "whatsapp": {
             "handlers": ["whatsapp_file", "console"],  # Logs to file AND terminal
             "level": "DEBUG",                          # Ensures logger.debug() writes to the file
-            "propagate": False,
-        },
-
-        "telecrm": {
-            "handlers": ["telecrm_file", "console"],  # Logs to file AND terminal
-            "level": "DEBUG",
             "propagate": False,
         },
 
@@ -471,9 +459,9 @@ CORS_ALLOWED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -484,9 +472,10 @@ CSRF_TRUSTED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
+
 ]
 
 ALLOWED_HOSTS = [
@@ -497,10 +486,10 @@ ALLOWED_HOSTS = [
     "passats.aryuacademy.com",
     "aryuacademy.com",
     "127.0.0.1",
-    "portal.aryuacademy.com",
+    "aylms.aryuprojects.com",
     "ayanew.aryuprojects.com",
-    "portal.aryuacademy.com",
-    "portal.aryuacademy.com",
+    "aylms.aryuprojects.com",
+    "aylms.aryuprojects.com",
 ]  # Allow all hosts for development; change in production
 
 
@@ -613,7 +602,54 @@ TWILIO_PHONE_NUMBER = "+15075854260"
 MEDIA_URL = 'media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'api/media')
 
-MEDIA_BASE_URL = "https://portal.aryuacademy.com/api"
+MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api"
+
+# class DisableMigrations:
+#     def __getitem__(self, item):
+#         return None
+#     def __contains__(self, item):
+#         return True
+
+# if 'test' in sys.argv:
+#     import django.contrib.postgres.fields
+#     import django.db.models
+#     from django.db.backends.sqlite3.schema import DatabaseSchemaEditor
+
+#     class DummyArrayField(django.db.models.JSONField):
+#         def __init__(self, *args, **kwargs):
+#             kwargs.pop('base_field', None)
+#             kwargs.pop('size', None)
+#             super().__init__(*args, **kwargs)
+
+#     django.contrib.postgres.fields.ArrayField = DummyArrayField
+
+#     orig_quote_name = DatabaseSchemaEditor.quote_name
+#     def safe_quote_name(self, name):
+#         if "." in name:
+#             name = name.split(".")[-1].strip('"')
+#         return orig_quote_name(self, name)
+#     DatabaseSchemaEditor.quote_name = safe_quote_name
+
+#     DATABASES = {
+#         'default': {
+#             'ENGINE': 'django.db.backends.sqlite3',
+#             'NAME': ':memory:',
+#         }
+#     }
+#     MIGRATION_MODULES = DisableMigrations()
+# else:
+#     DATABASES = {
+#         'default': {
+#             'ENGINE': 'django.db.backends.postgresql',
+#             'NAME': 'aylms_live',  
+#             'USER': 'aylms_live',
+#             'PASSWORD':'KfdW543FDdfg',
+#             'HOST': '187.127.178.144',   
+#             'PORT': '5432',  
+#             'AUTOCOMMIT': True,
+#             'CONN_MAX_AGE': 60,
+#         },
+#     }
 
 class DisableMigrations:
     def __getitem__(self, item):
@@ -652,28 +688,18 @@ else:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
-            'NAME': 'aylms_live',  
-            'USER': 'aylms_live',
-            'PASSWORD':'KfdW543FDdfg',
-            'HOST': '187.127.178.144',   
-            'PORT': '5432',  
+            'NAME': 'aylms_staging',
+            'USER': 'aryu_user',
+            'PASSWORD':'YUra@2025',
+            'HOST': '49.207.178.161',
+            'PORT': '5432',
             'AUTOCOMMIT': True,
             'CONN_MAX_AGE': 60,
+            'OPTIONS': {
+                'options': '-c search_path=livequiz,public'
+            }
         },
     }
-
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': 'aylms_live',
-#         'USER': 'aylms_live',
-#         'PASSWORD': 'KfdW543FDdfg',
-#         'HOST': '187.127.178.144',
-#         'PORT': '5432',
-#         'AUTOCOMMIT': True,
-#         'CONN_MAX_AGE': 60,
-#     },
-# }
 
 # DATABASES = {
 #     'default': {

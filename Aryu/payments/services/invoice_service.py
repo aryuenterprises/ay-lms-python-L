@@ -1,3 +1,5 @@
+import io
+import logging
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
@@ -7,10 +9,29 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 from django.db.models import Sum
 from num2words import num2words
-# from weasyprint import HTML
 
 from aryuapp.models import Settings
 from payments.models import PaymentTransaction
+
+logger = logging.getLogger(__name__)
+
+
+def render_pdf(html_string, base_url=None):
+    try:
+        from weasyprint import HTML
+        return HTML(string=html_string, base_url=base_url or settings.BASE_DIR).write_pdf()
+    except Exception as e:
+        logger.warning(f"WeasyPrint PDF rendering failed, attempting xhtml2pdf fallback: {e}")
+        try:
+            from xhtml2pdf import pisa
+            result = io.BytesIO()
+            pisa_status = pisa.CreatePDF(io.BytesIO(html_string.encode("UTF-8")), dest=result)
+            if pisa_status.err:
+                raise Exception(f"xhtml2pdf error code: {pisa_status.err}")
+            return result.getvalue()
+        except Exception as fallback_err:
+            logger.error(f"Both WeasyPrint and xhtml2pdf failed: {fallback_err}")
+            raise fallback_err
 
 
 class InvoiceService:
@@ -658,12 +679,10 @@ class InvoiceService:
         # GENERATE PDF
         # =========================================
 
-        # html = HTML(
-        #     string=html_string,
-        #     base_url=settings.BASE_DIR
-        # )
-
-        # pdf_file = html.write_pdf()
+        pdf_bytes = render_pdf(
+            html_string,
+            base_url=settings.BASE_DIR
+        )
 
         # =========================================
         # SAVE PDF
@@ -678,11 +697,11 @@ class InvoiceService:
                 save=False
             )
 
-        # transaction.invoice.save(
-        #     file_name,
-        #     ContentFile(pdf_file),
-        #     save=True
-        # )
+        transaction.invoice.save(
+            file_name,
+            ContentFile(pdf_bytes),
+            save=True
+        )
 
         return transaction
     

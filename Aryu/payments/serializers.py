@@ -224,6 +224,7 @@ class GenerateInvoiceSerializer(serializers.Serializer):
 
         return value
 
+
 class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
 
     emi_installment_id = serializers.IntegerField(

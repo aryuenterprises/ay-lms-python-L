@@ -73,11 +73,11 @@ def send_webinar_registration_email(registration):
 
                 <p style="font-size:12px; color:#777777; line-height:1.5;">
                   By participating in this webinar, you agree to our
-                  <a href="https://portal.aryuacademy.com/terms-and-conditions" style="color:#0d6efd; text-decoration:none;">
+                  <a href="https://aylms.aryuprojects.com/terms-and-conditions" style="color:#0d6efd; text-decoration:none;">
                     Terms & Conditions
                   </a>
                   and
-                  <a href="https://portal.aryuacademy.com/privacy-policy" style="color:#0d6efd; text-decoration:none;">
+                  <a href="https://aylms.aryuprojects.com/privacy-policy" style="color:#0d6efd; text-decoration:none;">
                     Privacy Policy
                   </a>.
                 </p>
@@ -166,11 +166,11 @@ Aryu Academy
 
                   <p style="font-size:12px; color:#777777; line-height:1.5;">
                     By accepting this certificate, you agree to our
-                    <a href="https://portal.aryuacademy.com/terms-and-conditions" style="color:#781b0d; text-decoration:none;">
+                    <a href="https://aylms.aryuprojects.com/terms-and-conditions" style="color:#781b0d; text-decoration:none;">
                       Terms & Conditions
                     </a>
                     and
-                    <a href="https://portal.aryuacademy.com/privacy-policy" style="color:#781b0d; text-decoration:none;">
+                    <a href="https://aylms.aryuprojects.com/privacy-policy" style="color:#781b0d; text-decoration:none;">
                       Privacy Policy
                     </a>.
                   </p>
@@ -384,9 +384,9 @@ def send_student_credentials_email(student, password=None, transaction_id=None):
     from_email = settings.DEFAULT_FROM_EMAIL
     to = [student.email]
     
-    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://portal.aryuacademy.com')
-    if not frontend_url or "portal.aryuacademy.com" in frontend_url:
-        frontend_url = "https://portal.aryuacademy.com"
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://aylms.aryuprojects.com')
+    if not frontend_url or "aylms.aryuprojects.com" in frontend_url:
+        frontend_url = "https://aylms.aryuprojects.com"
         
     login_url = frontend_url
     password_str = password if password else "[Your Existing Password]"
