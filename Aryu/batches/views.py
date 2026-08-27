@@ -426,15 +426,28 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
     @action(detail=False, methods=['get'], url_path='schedules')
     def schedules(self, request, employee_id=None):
         from datetime import datetime, timedelta, time as dtime
+
         try:
             user = self.request.user
-            now = timezone.now()
+
+            # ------------------ VALIDATE TRAINER EXISTS ------------------
+            if not employee_id:
+                return Response({
+                    "success": False,
+                    "message": "employee_id is required"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            if not Trainer.objects.filter(employee_id=employee_id).exists():
+                return Response({
+                    "success": False,
+                    "message": f"No trainer found with employee_id {employee_id}"
+                }, status=status.HTTP_404_NOT_FOUND)
 
             # ------------------ BASE QUERYSET ------------------
             qs = ClassSchedule.objects.filter(
                 trainer__employee_id=employee_id,
                 is_archived=False
-            ).all().select_related(
+            ).select_related(
                 "batch",
                 "new_batch",
                 "course",
@@ -461,26 +474,18 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                         "message": "Invalid month or year"
                     }, status=400)
 
-            # Materialize schedules to list to avoid re-evaluating queryset
             schedules = list(qs)
-
-            # If no schedules return quickly (but still return batches/courses/trainers below)
-            if not schedules:
-                # compute batches/courses/trainer lists below from trainer id
-                pass
 
             # For each schedule we will check attendance within [start-5min, end+5min]
             window_starts = []
             window_ends = []
             for sched in schedules:
                 start_time = getattr(sched, "start_time", None) or dtime(9, 0)
-                # class start dt
                 class_start_dt = timezone.make_aware(
                     datetime.combine(sched.scheduled_date, start_time),
                     timezone.get_current_timezone()
                 )
 
-                # compute class end
                 class_end_dt = class_start_dt + timedelta(hours=1)
                 try:
                     if getattr(sched, "end_time", None):
@@ -501,16 +506,13 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 global_start = min(window_starts)
                 global_end = max(window_ends)
             else:
-                # no schedules: fallback to today window
                 global_start = timezone.now() - timedelta(days=1)
                 global_end = timezone.now() + timedelta(days=1)
 
-            # ------------------ BULK FETCH ATTENDANCE for all relevant trainers/batches/courses ------------------
-            trainer_obj = None
-            if schedules:
-                trainer_obj = schedules[0].trainer  # all schedules are for same trainer.employee_id
+            # ------------------ BULK FETCH ATTENDANCE ------------------
+            trainer_obj = schedules[0].trainer if schedules else None
 
-            attendance_map = defaultdict(list)  # key => list of attendance rows
+            attendance_map = defaultdict(list)
             if trainer_obj:
                 attendance_qs = TrainerAttendance.objects.filter(
                     trainer=trainer_obj,
@@ -519,14 +521,12 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                     status__in=["Login", "Logout", "Present"]
                 ).select_related("batch", "course", "trainer").order_by("-date")
 
-                # Group attendance by (batch_id, course_id)
                 for att in attendance_qs:
                     key = (getattr(att.batch, "batch_id", None), getattr(att.course, "course_id", None))
                     attendance_map[key].append(att)
 
-            # ------------------ PRELOAD OLD-BATCH ASSIGNMENTS (BatchCourseTrainer) ------------------
-            old_batch_ids = [sched.batch.batch_id for sched in schedules if getattr(sched, "batch", None)]
-            old_batch_ids = list(set(old_batch_ids))
+            # ------------------ PRELOAD OLD-BATCH ASSIGNMENTS ------------------
+            old_batch_ids = list({sched.batch.batch_id for sched in schedules if getattr(sched, "batch", None)})
 
             bct_map = defaultdict(list)
             if old_batch_ids:
@@ -540,16 +540,17 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                     bct_map[bid].append(bct)
 
             # ------------------ PRELOAD NEW-BATCH STUDENTS ------------------
-            new_batch_ids = [sched.new_batch.batch_id for sched in schedules if getattr(sched, "new_batch", None)]
-            new_batch_ids = list(set(new_batch_ids))
+            new_batch_ids = list({sched.new_batch.batch_id for sched in schedules if getattr(sched, "new_batch", None)})
 
             newbatch_students_map = {}
             if new_batch_ids:
                 nb_qs = NewBatch.objects.filter(batch_id__in=new_batch_ids).prefetch_related("students")
                 for nb in nb_qs:
-                    newbatch_students_map[nb.batch_id] = list(nb.students.all().values("registration_id", "first_name"))
+                    newbatch_students_map[nb.batch_id] = list(
+                        nb.students.all().values("registration_id", "first_name")
+                    )
 
-            # ------------------ BUILD schedule_data (single loop, no DB hits inside) ------------------
+            # ------------------ BUILD schedule_data ------------------
             schedule_data = []
             current_time = timezone.now()
 
@@ -560,7 +561,6 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                     timezone.get_current_timezone()
                 )
 
-                # compute class end as above
                 class_end_dt = class_start_dt + timedelta(hours=1)
                 try:
                     if getattr(sched, 'end_time', None):
@@ -580,7 +580,6 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 key = (getattr(sched.batch, "batch_id", None), getattr(sched.course, "course_id", None))
                 attendance_for_key = attendance_map.get(key, [])
 
-                # Determine status_info
                 if sched.is_class_cancelled:
                     status_info = 'cancelled'
                 elif current_time < class_start_dt:
@@ -588,9 +587,9 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 elif class_start_dt <= current_time <= class_end_dt:
                     status_info = "ongoing"
                 else:
-                    # completed if any attendance exists in window, else missed
-                    # attendance_for_key already contains attendances in global window; filter by schedule window
-                    exists_in_window = any((a.date >= window_start and a.date <= window_end) for a in attendance_for_key)
+                    exists_in_window = any(
+                        (a.date >= window_start and a.date <= window_end) for a in attendance_for_key
+                    )
                     status_info = "completed" if exists_in_window else "missed"
 
                 old_batch = getattr(sched, "batch", None)
@@ -598,11 +597,9 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 batch_obj = old_batch if old_batch else new_batch
                 batch_name = old_batch.batch_name if old_batch else (new_batch.title if new_batch else None)
 
-                # ------------------ ASSIGNMENTS: old_batch -> from bct_map, new_batch -> from newbatch_students_map
+                assignments_list = []
                 if old_batch:
-                    assignments_list = []
-                    bct_list = bct_map.get(old_batch.batch_id, [])
-                    for a in bct_list:
+                    for a in bct_map.get(old_batch.batch_id, []):
                         student = a.student
                         assignments_list.append({
                             "course_id": a.course.course_id if a.course else None,
@@ -610,25 +607,19 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                             "employee_id": a.trainer.employee_id if a.trainer else None,
                             "trainer_name": a.trainer.full_name if a.trainer else None,
                             "registration_id": student.registration_id if student else None,
-                            "student_name": f"{getattr(student,'first_name','')}".strip()
+                            "student_name": f"{getattr(student, 'first_name', '')}".strip()
                         })
                 elif new_batch:
-                    assignments_list = []
-                    students_vals = newbatch_students_map.get(new_batch.batch_id, [])
-                    for s in students_vals:
+                    for s in newbatch_students_map.get(new_batch.batch_id, []):
                         assignments_list.append({
                             "course_id": getattr(sched.course, "course_id", None),
                             "course_name": getattr(sched.course, "course_name", None),
                             "employee_id": sched.trainer.employee_id if sched.trainer else None,
                             "trainer_name": sched.trainer.full_name if sched.trainer else None,
                             "registration_id": s.get("registration_id"),
-                            "student_name": f"{s.get('first_name','')}".strip()
+                            "student_name": f"{s.get('first_name', '')}".strip()
                         })
-                else:
-                    assignments_list = []
 
-                # latest_log and attendance_status
-                # filter attendance_for_key to schedule window and pick latest by date
                 in_window_att = [a for a in attendance_for_key if a.date >= window_start and a.date <= window_end]
                 in_window_att.sort(key=lambda x: x.date, reverse=True)
                 latest_log = in_window_att[0] if in_window_att else None
@@ -654,14 +645,12 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 })
 
             # ------------------ HIERARCHY FILTERED BATCHES ------------------
-            # New system batches for this trainer only
             new_batch_qs = NewBatch.objects.filter(
                 trainers__employee_id=employee_id,
                 is_archived=False,
                 status=True
             ).select_related("course").prefetch_related("trainers").order_by("batch_id")
 
-            # Old batches where trainer is linked via BatchCourseTrainer
             old_batch_ids_for_trainer = BatchCourseTrainer.objects.filter(
                 trainer__employee_id=employee_id
             ).values_list("batch__batch_id", flat=True).distinct()
@@ -671,13 +660,9 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 is_archived=False
             )
 
-
-            # Combine: ensure same structure as before
             batch_data = []
             for b in new_batch_qs:
-
                 trainer = b.trainers.first()
-
                 batch_data.append({
                     "batch_id": b.batch_id,
                     "title": b.title,
@@ -685,42 +670,32 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                     "end_date": b.end_date,
                     "start_time": b.start_time,
                     "end_time": b.end_time,
-
                     "employee_id": trainer.employee_id if trainer else None,
                     "trainer_name": trainer.full_name if trainer else None,
                     "trainer_id": trainer.trainer_id if trainer else None,
-
                     "course_id": b.course.course_id if b.course else None,
                     "course_name": b.course.course_name if b.course else None,
                 })
 
             for b in old_batch_qs:
-
-                # get the course used by old batch
                 bct_course = BatchCourseTrainer.objects.filter(batch=b).select_related("course").first()
                 course_obj = bct_course.course if bct_course else None
 
-                # get trainer (through batchcoursetrainer)
                 bct_trainer = BatchCourseTrainer.objects.filter(batch=b).select_related("trainer").first()
-                trainer_obj = bct_trainer.trainer if bct_trainer else None
+                trainer_obj_b = bct_trainer.trainer if bct_trainer else None
 
-                # time comes only from schedules, not from batch table
-                sched = ClassSchedule.objects.filter(batch=b).order_by("start_time").first()
+                sched_b = ClassSchedule.objects.filter(batch=b).order_by("start_time").first()
 
                 batch_data.append({
                     "batch_id": b.batch_id,
                     "title": b.title,
                     "start_date": b.scheduled_date,
                     "end_date": b.end_date,
-
-                    # old batch does NOT have time → take from schedule if exists
-                    "start_time": sched.start_time if sched else None,
-                    "end_time": sched.end_time if sched else None,
-
-                    "employee_id": trainer_obj.employee_id if trainer_obj else None,
-                    "trainer_name": trainer_obj.full_name if trainer_obj else None,
-                    "trainer_id": trainer_obj.trainer_id if trainer_obj else None,
-
+                    "start_time": sched_b.start_time if sched_b else None,
+                    "end_time": sched_b.end_time if sched_b else None,
+                    "employee_id": trainer_obj_b.employee_id if trainer_obj_b else None,
+                    "trainer_name": trainer_obj_b.full_name if trainer_obj_b else None,
+                    "trainer_id": trainer_obj_b.trainer_id if trainer_obj_b else None,
                     "course_id": course_obj.course_id if course_obj else None,
                     "course_name": course_obj.course_name if course_obj else None,
                 })
@@ -745,10 +720,9 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
 
             # ------------------ HIERARCHY FILTERED TRAINERS ------------------
             user_type = user.user_type.lower() if getattr(user, "user_type", None) else ""
-            user_id = str(getattr(user, "user_id", ""))  # safe fallback
+            user_id = str(getattr(user, "user_id", ""))
             trainer_id = str(getattr(user, "trainer_id", ""))
 
-            batch_for_hierarchy = NewBatch.objects.filter(is_archived=False, status=True)
             trainer_queryset = Trainer.objects.filter(is_archived=False, status__iexact='Active')
 
             if user_type == "super_admin":
@@ -766,22 +740,11 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                         is_archived=False
                     ).values_list("trainer_id", flat=True)
                 )
-                allowed_creators = [user_id] + admin_ids
-
-                batch_for_hierarchy = batch_for_hierarchy.filter(
-                    created_by__in=allowed_creators,
-                    created_by_type__in=["super_admin", "admin"]
-                )
-                
                 trainer_queryset = trainer_queryset.filter(
                     trainer_id__in=trainer_ids + admin_ids
                 )
 
             elif user_type == "admin" and trainer_id:
-                super_admin_id = Trainer.objects.filter(
-                    trainer_id=trainer_id
-                ).values_list("created_by", flat=True).first()
-
                 trainer_ids = list(
                     Trainer.objects.filter(
                         created_by=trainer_id,
@@ -789,12 +752,6 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                         is_archived=False
                     ).values_list("trainer_id", flat=True)
                 )
-
-                batch_for_hierarchy = batch_for_hierarchy.filter(
-                    Q(created_by=trainer_id, created_by_type="admin") |
-                    Q(created_by=super_admin_id, created_by_type="super_admin")
-                )
-                
                 trainer_queryset = trainer_queryset.filter(trainer_id__in=trainer_ids)
 
             trainer_data = list(trainer_queryset.order_by('employee_id').values(
@@ -802,27 +759,77 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
             ))
 
             # ------------------ FINAL RESPONSE ------------------
-            return Response({
+            response = Response({
                 "success": True,
-                "message": f"Class schedules for employee {employee_id}" if employee_id else "Class schedules",
+                "message": f"Class schedules for employee {employee_id}",
                 "Class_Schedule": schedule_data,
-                "Batches": list(batch_data),
+                "Batches": batch_data,
                 "Trainers": trainer_data,
                 "Courses": list(course_data),
             }, status=status.HTTP_200_OK)
+
+            # Prevent any client/proxy from caching this response
+            response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            return response
 
         except Exception as e:
             return Response({
                 "success": False,
                 "message": f"{str(e)}"
             }, status=status.HTTP_200_OK)
+        
+    class RecurringScheduleView(viewsets.ModelViewSet, LoggingMixin):
+        queryset = RecurringSchedule.objects.all().order_by('-recurring_id')
+        permission_classes = [IsAuthenticated]
+        authentication_classes = [CustomJWTAuthentication]
+        serializer_class = RecurringScheduleSerializer
+        
+        def create(self, request, *args, **kwargs):
+            try:
+                serializer = self.get_serializer(data=request.data)
+                serializer.is_valid(raise_exception=True)
+
+                recurring_schedule = serializer.save()
+                return Response({
+                    "success": True,
+                    "message": "Recurring schedule created successfully.",
+                    "data": self.get_serializer(recurring_schedule).data
+                }, status=201)
+
+            except ValidationError as ve:
+                # Extract first error string from dict
+                detail = ve.detail
+                message = ""
+                if isinstance(detail, dict):
+                    # Get first key's first error message
+                    first_key = list(detail.keys())[0]
+                    first_error = detail[first_key]
+                    if isinstance(first_error, list):
+                        message = first_error[0]
+                    else:
+                        message = str(first_error)
+                elif isinstance(detail, list):
+                    message = detail[0]
+                else:
+                    message = str(detail)
+
+                return Response({
+                    "success": False,
+                    "message": message
+                }, status=200)
+
+            except Exception as e:
+                return Response({
+                    "success": False,
+                    "message": f"Something went wrong: {str(e)}"
+                }, status=200)
 
 class RecurringScheduleView(viewsets.ModelViewSet, LoggingMixin):
     queryset = RecurringSchedule.objects.all().order_by('-recurring_id')
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
     serializer_class = RecurringScheduleSerializer
-    
+
     def create(self, request, *args, **kwargs):
         try:
             serializer = self.get_serializer(data=request.data)
@@ -836,17 +843,10 @@ class RecurringScheduleView(viewsets.ModelViewSet, LoggingMixin):
             }, status=201)
 
         except ValidationError as ve:
-            # Extract first error string from dict
             detail = ve.detail
-            message = ""
             if isinstance(detail, dict):
-                # Get first key's first error message
-                first_key = list(detail.keys())[0]
-                first_error = detail[first_key]
-                if isinstance(first_error, list):
-                    message = first_error[0]
-                else:
-                    message = str(first_error)
+                first_error = next(iter(detail.values()))
+                message = first_error[0] if isinstance(first_error, list) else str(first_error)
             elif isinstance(detail, list):
                 message = detail[0]
             else:
@@ -862,6 +862,7 @@ class RecurringScheduleView(viewsets.ModelViewSet, LoggingMixin):
                 "success": False,
                 "message": f"Something went wrong: {str(e)}"
             }, status=200)
+
 
 class BatchViewSet(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
     queryset = Batch.objects.all()
