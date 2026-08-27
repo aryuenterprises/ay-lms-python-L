@@ -67,6 +67,31 @@ User = get_user_model()
 
 SIGNING_SALT = "resume-email-verification"
 
+RESUME_REFRESH_COOKIE_NAME = "refresh_token"
+RESUME_REFRESH_COOKIE_PATH = "/api/resume/token/refresh/"
+
+def get_resume_cookie_settings(request):
+    """
+    Returns (domain, secure, samesite) for resume auth cookies.
+    """
+    origin = request.headers.get("Origin", "") if request else ""
+    LOCAL_ORIGINS = {
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://192.168.0.139:8081",
+    }
+    if origin in LOCAL_ORIGINS or (getattr(settings, "DEBUG", False) and not origin):
+        cookie_domain = None
+        cookie_secure = False
+        cookie_samesite = "Lax"
+    else:
+        cookie_domain = ".aryuacademy.com"
+        cookie_secure = True
+        cookie_samesite = "None"
+
+    return cookie_domain, cookie_secure, cookie_samesite
+
 BASE_PORTAL_URL = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
 PASSATS_FRONTEND_URL = getattr(settings, 'PASSATS_FRONTEND_URL', 'https://passats.aryuacademy.com').rstrip('/')
 VERIFY_ENDPOINT = f"{BASE_PORTAL_URL}/api/resume/auth/verify-email/"
@@ -1204,46 +1229,39 @@ class AuthViewSet(viewsets.ViewSet):
         )
 
         # 1. Dynamically configure cookie settings for Local vs Production environments
-        if settings.DEBUG:
-            cookie_domain = None       # Localhost requires None to bind directly to 'localhost'
-            cookie_samesite = "None"    # Lax works perfectly for local dev environments
-            cookie_secure = True      # Set to False if testing on http://localhost without SSL
-        else:
-            cookie_domain = ".aryuacademy.com"  # Production parent domain rule
-            cookie_samesite = "None"             # Can be "Lax" or "Strict" once the CNAME is live
-            cookie_secure = True                # Enforce HTTPS in production
+        cookie_domain, cookie_secure, cookie_samesite = get_resume_cookie_settings(request)
 
         # 2. Apply the dynamic settings to the cookie
         response.set_cookie(
-            key="refresh_token",
+            key=RESUME_REFRESH_COOKIE_NAME,
             value=str(refresh),
             max_age=30 * 24 * 60 * 60,   # 30 Days
             expires=None,
-            path="/api/resume/token/refresh/",                    
-            domain=cookie_domain,        # <--- Dynamic domain variable
-            secure=cookie_secure,        # <--- Dynamic secure variable
+            path=RESUME_REFRESH_COOKIE_PATH,
+            domain=cookie_domain,
+            secure=cookie_secure,
             httponly=True,               # Always keep True to block XSS script theft
-            samesite=cookie_samesite,    # <--- Dynamic samesite variable
+            samesite=cookie_samesite,
         )
 
         return response
     
+    @action(detail=False, methods=["post"], url_path="logout")
     @secure_throttle(rate_limit=5, period=60)
-    def logout(request):
+    def logout(self, request):
+        refresh_token = (
+            request.COOKIES.get(RESUME_REFRESH_COOKIE_NAME)
+            or request.data.get("refresh")
+            or request.data.get("refresh_token")
+        )
+        if refresh_token:
+            try:
+                token = RefreshToken(refresh_token)
+                token.blacklist()
+            except Exception:
+                pass
 
-        origin = request.headers.get("Origin", "")
-
-        LOCAL_ORIGINS = {
-            "http://localhost:3000",
-            "http://localhost:8000",
-            "http://127.0.0.1:8000",
-            "http://192.168.0.139:8081",
-        }
-
-        if origin in LOCAL_ORIGINS:
-            cookie_domain = None
-        else:
-            cookie_domain = ".aryuacademy.com"
+        cookie_domain, cookie_secure, cookie_samesite = get_resume_cookie_settings(request)
 
         response = Response(
             {"message": "Logged out successfully"},
@@ -1251,10 +1269,10 @@ class AuthViewSet(viewsets.ViewSet):
         )
 
         response.delete_cookie(
-            key="refresh_token",
-            path="/api/token/refresh/",
+            key=RESUME_REFRESH_COOKIE_NAME,
+            path=RESUME_REFRESH_COOKIE_PATH,
             domain=cookie_domain,
-            samesite="None" if cookie_domain else "Lax",
+            samesite=cookie_samesite,
         )
 
         return response
@@ -1314,6 +1332,24 @@ class AuthViewSet(viewsets.ViewSet):
                         "message": "No account found with this email address."
                     },
                     status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Require email verification before allowing password reset
+            is_verified = (
+                getattr(user, 'is_verified', False) or
+                getattr(user, 'is_email_verified', False)
+            )
+            if not hasattr(user, 'is_verified') and not hasattr(user, 'is_email_verified'):
+                is_verified = getattr(user, 'is_active', True)
+
+            if not is_verified:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Email is not verified. Please verify your email first.",
+                        "error": "Email is not verified. Please verify your email first."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
                 )
 
             otp = self.generate_secure_otp()
@@ -1866,51 +1902,44 @@ class CustomTokenRefreshView(APIView):
     serializer_class = CustomTokenRefreshSerializer
 
     def post(self, request, *args, **kwargs):
-        # 1. Extract the token directly from the HTTP secure cookie container
-        refresh_token = request.COOKIES.get("refresh_token")
-
-        # 2. Hand it off to the serializer mapping dictionary explicitly
-        serializer = self.serializer_class(data={"refresh": refresh_token})
-        serializer.is_valid(raise_exception=True)
-        
-        validated_data = serializer.validated_data
-        new_refresh_obj = validated_data.get("refresh_token_obj")
-
-        # 3. Create clean baseline response containing ONLY the access token in the body
-        response = Response(
-            {
-                "access_token": validated_data["access_token"]
-            },
-            status=status.HTTP_200_OK
+        # 1. Extract the token from request payload (body / headers) or cookie
+        refresh_token = (
+            request.data.get("refresh")
+            or request.data.get("refresh_token")
+            or request.COOKIES.get(RESUME_REFRESH_COOKIE_NAME)
+            or request.headers.get("X-Refresh-Token")
         )
 
-        origin = request.headers.get("Origin", "")
+        if not refresh_token:
+            return Response(
+                {"error": "Refresh token is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        LOCAL_ORIGINS = {
-            "http://localhost:3000",
-            "http://localhost:8000",
-            "http://127.0.0.1:8000",
-            "http://192.168.0.139:8081",
+        serializer = self.serializer_class(data={"refresh": refresh_token})
+        serializer.is_valid(raise_exception=True)
+
+        validated_data = serializer.validated_data
+        new_refresh_obj = validated_data.get("refresh_token_obj")
+        new_refresh_str = validated_data.get("refresh_token")
+
+        response_data = {
+            "access_token": validated_data["access_token"],
         }
+        if new_refresh_str:
+            response_data["refresh_token"] = new_refresh_str
 
-        if origin in LOCAL_ORIGINS:
-            cookie_domain = None
-            cookie_secure = False
-            cookie_samesite = "None"
+        response = Response(response_data, status=status.HTTP_200_OK)
 
-        else:
-            cookie_domain = ".aryuacademy.com"
-            cookie_samesite = "Lax"  # Matches your custom API CNAME architecture setup
-            cookie_secure = True
-
-        # 5. Bake the newly rotated refresh token back into the user's browser cookie storage
+        # 2. Bake the newly rotated refresh token back into cookie
+        cookie_domain, cookie_secure, cookie_samesite = get_resume_cookie_settings(request)
         if new_refresh_obj:
             response.set_cookie(
-                key="refresh_token",
+                key=RESUME_REFRESH_COOKIE_NAME,
                 value=str(new_refresh_obj),
                 max_age=30 * 24 * 60 * 60,  # 30 Days
                 expires=None,
-                path="/api/token/refresh/",
+                path=RESUME_REFRESH_COOKIE_PATH,
                 domain=cookie_domain,
                 secure=cookie_secure,
                 httponly=True,              # Keeps XSS defense completely locked down

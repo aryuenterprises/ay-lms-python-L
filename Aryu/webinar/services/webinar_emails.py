@@ -384,9 +384,9 @@ def send_student_credentials_email(student, password=None, transaction_id=None):
     from_email = settings.DEFAULT_FROM_EMAIL
     to = [student.email]
     
-    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://aylms.aryuprojects.com')
-    if not frontend_url or "aylms.aryuprojects.com" in frontend_url:
-        frontend_url = "https://aylms.aryuprojects.com"
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://portal.aryuacademy.com')
+    if not frontend_url or "portal.aryuacademy.com" in frontend_url:
+        frontend_url = "https://portal.aryuacademy.com"
         
     login_url = frontend_url
     password_str = password if password else "[Your Existing Password]"

@@ -27,7 +27,8 @@ class EbookWebhookTestCase(TransactionTestCase):
         self.ebook = Ebook.objects.create(
             title="Test Ebook",
             price=299.00,
-            is_paid=True
+            is_paid=True,
+            rating=5
         )
 
         self.registration = EbookRegistration.objects.create(
@@ -99,7 +100,7 @@ class EbookWebhookTestCase(TransactionTestCase):
         self.assertEqual(response.status_code, 200)
 
         self.txn.refresh_from_db()
-        self.assertEqual(self.txn.payment_status, "done")
+        self.assertEqual(self.txn.payment_status, "captured")
         self.assertEqual((self.txn.metadata or {}).get("razorpay_payment_id"), "pay_ebook_pay_999")
 
         self.registration.refresh_from_db()
@@ -115,13 +116,15 @@ class EbookRegistrationFlowTestCase(TransactionTestCase):
             title="Python Mastery",
             slug="python-mastery",
             price=0.00,
-            is_paid=False
+            is_paid=False,
+            rating=5
         )
         self.ebook_b = Ebook.objects.create(
             title="Django Advanced",
             slug="django-advanced",
             price=499.00,
-            is_paid=True
+            is_paid=True,
+            rating=5
         )
         PaymentGateway.objects.filter(gatway_name__icontains="razorpay").delete()
         PaymentGateway.objects.create(

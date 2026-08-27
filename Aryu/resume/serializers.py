@@ -1,3 +1,6 @@
+import hashlib
+from django.conf import settings
+from django.core.cache import cache
 from rest_framework import serializers
 from django.utils import timezone
 import re
@@ -134,7 +137,7 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
         except ResumeRegistration.DoesNotExist:
             raise AuthenticationFailed("User does not exist, is inactive, unverified, or deleted.")
         except (TokenError, InvalidToken):
-            raise InvalidToken({"detail": "Token invalid or expired."})
+            raise InvalidToken({"detail": "Token is invalid or expired."})
 
 class SubscriptionSerializer(serializers.ModelSerializer):
 
