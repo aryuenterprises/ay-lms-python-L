@@ -7717,42 +7717,42 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         employee_id = self.kwargs.get('employee_id')
-
+        
         if not employee_id:
             return Response({"success": False, "message": "Trainer employee_id is required."}, status=200)
-
+        
         # ----------------- Today's Attendance -----------------
         ist = pytz.timezone("Asia/Kolkata")
-
+        
         # Get now in IST
         today_ist = timezone.now().astimezone(ist).date()
-
+        
         # Create datetime range for today in IST
         start_ist = ist.localize(datetime.combine(today_ist, datetime.min.time()))
         end_ist = ist.localize(datetime.combine(today_ist, datetime.max.time()))
-
+        
         # Convert to UTC
         start_utc = start_ist.astimezone(pytz.utc)
         end_utc = end_ist.astimezone(pytz.utc)
-
-        # Final queryset
+        
+        # Final queryset with select_related for optimization
         queryset = TrainerAttendance.objects.filter(
             trainer__employee_id=employee_id,
             date__gte=start_utc,
             date__lte=end_utc
-        ).order_by('-date')
-
+        ).select_related('trainer', 'new_batch', 'batch', 'course').order_by('-date')
+        
         # ------------------- Process Attendance Data -------------------
         trainer_info = None
         sessions = {}
-
+        
         for att in queryset:
             if not trainer_info:
                 trainer_info = {
                     "trainer": att.trainer.employee_id,
                     "trainer_name": att.trainer.full_name
                 }
-
+            
             batch_id = att.new_batch.batch_id if att.new_batch else (att.batch.batch_id if att.batch else None)
             course_id = att.course.course_id if att.course else None
             course_name = att.course.course_name if att.course else None
@@ -7786,11 +7786,11 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 sessions[session_key]["login"] = att.date
             elif att.status == "Logout":
                 sessions[session_key]["logout"] = att.date
-
+        
         attendance_data = []
         total_seconds = 0
-
-        # MODIFIED: Include sessions even if only login exists
+        
+        # Process sessions with proper login/logout pairing
         for session in sessions.values():
             # Sort logs by time
             session_logs = sorted(session["logs"], key=lambda x: x["date_obj"])
@@ -7873,14 +7873,15 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     "status": "Active" if login_ist and not logout_ist else "Completed" if login_ist and logout_ist else "Unknown",
                     "attendance_dates": sorted(list(session["all_dates"]))
                 })
-
+        
+        # Calculate total spent time
         if total_seconds > 0:
             total_hours = int(total_seconds // 3600)
             total_minutes = int((total_seconds % 3600) // 60)
             total_spent_time = f"{total_hours}h {total_minutes}m"
         else:
             total_spent_time = "0m"
-
+        
         # ------------------- Trainer Info -------------------
         try:
             trainer = Trainer.objects.get(employee_id=employee_id)
@@ -8032,7 +8033,8 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             trainers__trainer_id=trainer.trainer_id,
             is_archived=False,
             status=True
-        )
+        ).select_related('course')
+        
         new_batch_data = [
             {
                 "batch_id": batch.batch_id,
@@ -8047,13 +8049,13 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         # Old Batches
         old_batch_ids = BatchCourseTrainer.objects.filter(trainer=trainer).values_list("batch_id", flat=True).distinct()
         old_batches = Batch.objects.filter(batch_id__in=old_batch_ids, is_archived=False, status=True)
-
+        
         old_batch_data = []
         for batch in old_batches:
             course_obj = BatchCourseTrainer.objects.filter(batch=batch, trainer=trainer).first()
             old_batch_data.append({
                 "batch_id": batch.batch_id,
-                "batch_name": batch.batch_name,
+                "batch_name": batch.batch_name or batch.title,
                 "title": batch.title,
                 "course": course_obj.course.course_id if course_obj else None,
                 "course_name": course_obj.course.course_name if course_obj else None,
@@ -8203,29 +8205,42 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         monthly_filter = False
         if month and year:
             monthly_filter = True
-            # Convert month and year to datetime range in IST
             try:
                 year_int = int(year)
                 month_int = int(month)
                 
-                # First day of month in IST
-                start_date_ist = ist.localize(datetime(year_int, month_int, 1, 0, 0, 0))
-                # Last day of month
-                if month_int == 12:
-                    end_date_ist = ist.localize(datetime(year_int + 1, 1, 1, 0, 0, 0)) - timedelta(seconds=1)
-                else:
-                    end_date_ist = ist.localize(datetime(year_int, month_int + 1, 1, 0, 0, 0)) - timedelta(seconds=1)
+                # Create start and end dates for the month
+                start_date = datetime(year_int, month_int, 1, 0, 0, 0)
                 
-                # Convert to UTC
+                if month_int == 12:
+                    end_date = datetime(year_int + 1, 1, 1, 0, 0, 0)
+                else:
+                    end_date = datetime(year_int, month_int + 1, 1, 0, 0, 0)
+                
+                # Make timezone aware in IST
+                start_date_ist = ist.localize(start_date)
+                end_date_ist = ist.localize(end_date)
+                
+                # Convert to UTC for database query
                 start_utc = start_date_ist.astimezone(pytz.utc)
                 end_utc = end_date_ist.astimezone(pytz.utc)
                 
+                # Apply date filter
                 queryset = queryset.filter(
                     date__gte=start_utc,
-                    date__lte=end_utc
+                    date__lt=end_utc
                 )
+                
             except ValueError:
-                return Response({"success": False, "message": "Invalid month or year format"}, status=200)
+                return Response({
+                    "success": False, 
+                    "message": "Invalid month or year format. Please use valid numbers."
+                }, status=200)
+            except Exception as e:
+                return Response({
+                    "success": False, 
+                    "message": f"Error processing date: {str(e)}"
+                }, status=200)
 
         # Helper function to get batch name
         def get_batch_display_name(batch_obj, is_new_batch=True):
@@ -8245,7 +8260,30 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 date__lte=end_utc
             )
 
-        # Process attendance data similar to list function
+        # Helper function to get batch name
+        def get_batch_display_name(batch_obj, is_new_batch=True):
+            if not batch_obj:
+                return None
+            
+            if is_new_batch:
+                title = batch_obj.title if hasattr(batch_obj, 'title') else None
+                
+                # Check if title is a code
+                if title and title.startswith('AYA-AKIRA-'):
+                    try:
+                        old_batch = Batch.objects.filter(batch_id=batch_obj.batch_id).first()
+                        if old_batch:
+                            return old_batch.batch_name or old_batch.title
+                    except:
+                        pass
+                    return title
+                
+                return title if title else batch_obj.batch_name if hasattr(batch_obj, 'batch_name') else None
+            
+            else:
+                return batch_obj.batch_name if hasattr(batch_obj, 'batch_name') and batch_obj.batch_name else batch_obj.title if hasattr(batch_obj, 'title') else None
+
+        # Process attendance data
         sessions = {}
         trainer_info = None
 
@@ -8259,7 +8297,43 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             batch_id = att.new_batch.batch_id if att.new_batch else (att.batch.batch_id if att.batch else None)
             course_id = att.course.course_id if att.course else None
             course_name = att.course.course_name if att.course else None
-            session_key = f"{batch_id}_{course_id}_{att.date.strftime('%Y-%m-%d')}"  # Add date to session key for daily grouping
+            
+            # Get batch name
+            batch_name = None
+            if att.new_batch:
+                batch_name = get_batch_display_name(att.new_batch, is_new_batch=True)
+            elif att.batch:
+                batch_name = get_batch_display_name(att.batch, is_new_batch=False)
+            
+            # If batch_name is still a code, try to find actual name
+            if not batch_name or (batch_name and batch_name.startswith('AYA-AKIRA-')):
+                try:
+                    new_batch = NewBatch.objects.filter(batch_id=batch_id).first()
+                    if new_batch:
+                        if new_batch.title and not new_batch.title.startswith('AYA-AKIRA-'):
+                            batch_name = new_batch.title
+                        else:
+                            old_batch = Batch.objects.filter(batch_id=batch_id).first()
+                            if old_batch:
+                                batch_name = old_batch.batch_name or old_batch.title
+                            else:
+                                batch_name = new_batch.title
+                except:
+                    if att.new_batch and att.new_batch.title:
+                        batch_name = att.new_batch.title
+                    elif att.batch and att.batch.batch_name:
+                        batch_name = att.batch.batch_name
+            
+            # Final fallback
+            if not batch_name:
+                if att.new_batch and hasattr(att.new_batch, 'title'):
+                    batch_name = att.new_batch.title
+                elif att.batch and hasattr(att.batch, 'batch_name'):
+                    batch_name = att.batch.batch_name
+                elif att.batch and hasattr(att.batch, 'title'):
+                    batch_name = att.batch.title
+            
+            session_key = f"{batch_id}_{course_id}_{att.date.strftime('%Y-%m-%d')}"
 
             if session_key not in sessions:
                 sessions[session_key] = {
@@ -8267,11 +8341,11 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     "login": None,
                     "logout": None,
                     "batch_id": batch_id,
-                    "batch_title": att.new_batch.title if att.new_batch else (att.batch.title if att.batch else None),
+                    "batch_title": batch_name,
                     "course_id": course_id,
                     "course_name": course_name,
                     "trainer_full_name": trainer_info["trainer_name"],
-                    "logs": []  # Store all logs for this session
+                    "logs": []
                 }
 
             # Store individual log
@@ -8314,10 +8388,9 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     total_seconds += (logout_time - login_time).total_seconds()
                     login_time = None
 
-            # If login exists but no logout, consider it active session
+            # If login exists but no logout
             if login_time and not last_logout:
-                last_logout = None  # No logout yet
-                # Still count it with partial time
+                last_logout = None
                 if first_login:
                     total_seconds = max(total_seconds, 0)
 
@@ -8331,7 +8404,7 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             if monthly_filter:
                 monthly_total_seconds += total_seconds
 
-            # Get extra working hours (similar to original logic)
+            # Get extra working hours
             if session["date"]:
                 log_date = datetime.strptime(session["date"], "%Y-%m-%d").date()
                 schedules = ClassSchedule.objects.filter(
@@ -8538,7 +8611,7 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             course_obj = BatchCourseTrainer.objects.filter(batch=batch, trainer=trainer).first()
             old_batch_data.append({
                 "batch_id": batch.batch_id,
-                "batch_name": batch.batch_name or batch.batch_name,
+                "batch_name": batch.batch_name or batch.title,
                 "title": batch.title,
                 "course": course_obj.course.course_id if course_obj else None,
                 "course_name": course_obj.course.course_name if course_obj else None,
@@ -8570,7 +8643,6 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             response["message"] = f"All attendance logs for {full_name}"
 
         return Response(response, status=200)
-
     from datetime import datetime, timedelta
     from django.utils.dateparse import parse_datetime
     from django.db.models import Q
