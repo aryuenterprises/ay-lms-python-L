@@ -12,7 +12,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Standard allowed tags for rich-text descriptions (e.g. Resume descriptions, summaries)
+# Standard allowed tags for rich-text descriptions (e.g. Resume descriptions, summaries, Quill lists)
 RICH_TEXT_ALLOWED_TAGS = [
     "p", "br", "strong", "b", "em", "i", "u", "s", "strike",
     "ul", "ol", "li",
@@ -24,12 +24,13 @@ RICH_TEXT_ALLOWED_TAGS = [
 
 RICH_TEXT_ALLOWED_ATTRIBUTES = {
     "a": ["href", "title", "target", "rel"],
-    "span": ["class"],
+    "span": ["class", "contenteditable"],
+    "li": ["class", "data-list"],
     "p": ["class"],
     "div": ["class"],
     "td": ["colspan", "rowspan"],
     "th": ["colspan", "rowspan"],
-    "*": ["class"],
+    "*": ["class", "data-list", "contenteditable"],
 }
 
 RICH_TEXT_ALLOWED_PROTOCOLS = ["http", "https", "mailto"]
@@ -86,8 +87,14 @@ class InputSanitizationMiddleware(MiddlewareMixin):
                     if not request.body:
                         return None
 
+                    is_resume_request = (
+                        request.path.startswith("/api/resume/user-resumes") or
+                        request.path.startswith("/api/resume/templates") or
+                        request.path.startswith("/api/resumes")
+                    )
+
                     raw_data = json.loads(request.body)
-                    sanitized_data = self.sanitize_data(raw_data)
+                    sanitized_data = self.sanitize_data(raw_data, is_rich_text=is_resume_request)
                     encoded_data = json.dumps(sanitized_data).encode("utf-8")
                     request._body = encoded_data
 

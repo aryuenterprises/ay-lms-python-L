@@ -115,6 +115,8 @@ class CourseListSerializer(serializers.ModelSerializer):
     )
 
     course_pic_url = serializers.SerializerMethodField()
+    syllabus_url = serializers.SerializerMethodField()
+    syllabus_thumbnail_url = serializers.SerializerMethodField()
     duration_list = serializers.SerializerMethodField()
     student_list = serializers.SerializerMethodField()
     batches = serializers.SerializerMethodField()
@@ -128,6 +130,10 @@ class CourseListSerializer(serializers.ModelSerializer):
             "category_details",
             "course_pic",
             "course_pic_url",
+            "syllabus",
+            "syllabus_url",
+            "syllabus_thumbnail",
+            "syllabus_thumbnail_url",
             "notes",
             "currency_type",
             "fee_type",
@@ -204,6 +210,18 @@ class CourseListSerializer(serializers.ModelSerializer):
                     })
 
         return student_data
+
+    def get_syllabus_url(self, obj):
+        if obj.syllabus and hasattr(obj.syllabus, 'url'):
+            return settings.MEDIA_BASE_URL + obj.syllabus.url
+        return None
+
+    def get_syllabus_thumbnail_url(self, obj):
+        if obj.syllabus_thumbnail and hasattr(obj.syllabus_thumbnail, 'url'):
+            return settings.MEDIA_BASE_URL + obj.syllabus_thumbnail.url
+        return None
+
+
 class CaseInsensitiveSlugRelatedField(serializers.SlugRelatedField):
     def to_internal_value(self, data):
         try:
@@ -219,6 +237,8 @@ class CourseSerializer(serializers.ModelSerializer):
     category_details = CourseCategorySerializer(source='course_category', read_only=True)
     syllabus_info = serializers.SerializerMethodField()
     syllabus_url = serializers.SerializerMethodField()
+    syllabus_thumbnail = serializers.ImageField(required=False, allow_null=True)
+    syllabus_thumbnail_url = serializers.SerializerMethodField()
     course_pic = serializers.ImageField(required=False, allow_null=True)
     course_pic_url = serializers.SerializerMethodField()
     batches = serializers.SerializerMethodField()
@@ -238,7 +258,7 @@ class CourseSerializer(serializers.ModelSerializer):
         fields = [
             'course_id', 'course_name', 'course_category', 'category_details',
             'course_pic', 'course_pic_url', 'notes', 'currency_type', 'fee_type',
-            'topic', 'syllabus', 'syllabus_url','syllabus_info', 'assignment', 'batches',
+            'topic', 'syllabus', 'syllabus_url', 'syllabus_thumbnail', 'syllabus_thumbnail_url', 'syllabus_info', 'assignment', 'batches',
             'duration_list','mode_of_delivery', 'fee', 'status', 'is_archived', 'is_featured', 'created_by', 'created_at',
             'video_url',
         ]
@@ -336,6 +356,11 @@ class CourseSerializer(serializers.ModelSerializer):
     def get_syllabus_url(self, obj):
         if obj.syllabus and hasattr(obj.syllabus, 'url'):
             return settings.MEDIA_BASE_URL + obj.syllabus.url
+        return None
+
+    def get_syllabus_thumbnail_url(self, obj):
+        if obj.syllabus_thumbnail and hasattr(obj.syllabus_thumbnail, 'url'):
+            return settings.MEDIA_BASE_URL + obj.syllabus_thumbnail.url
         return None
     def get_syllabus_info(self, obj):
         request = self.context.get("request")
