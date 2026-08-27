@@ -115,6 +115,7 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
 
             new_access_token = str(new_refresh.access_token)
             new_refresh_str = str(new_refresh)
+            access_token = str(new_refresh.access_token)
 
             response_data = {
                 "access_token": new_access_token,
