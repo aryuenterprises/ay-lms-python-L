@@ -24,8 +24,12 @@ class CustomJWTAuthentication(BaseAuthentication):
         except jwt.InvalidTokenError:
             raise AuthenticationFailed('Invalid token')
 
-        if payload.get("token_type") == "refresh":
-            raise AuthenticationFailed('Cannot use refresh token as access token')
+        token_type = payload.get("token_type")
+        if token_type and token_type != "access":
+            if request.path.rstrip("/").endswith("token/refresh"):
+                return None
+            raise AuthenticationFailed("Invalid token type: access token required")
+
         # create a simple user-like object
         class JWTUser:
             def __init__(self, payload):

@@ -60,31 +60,26 @@ class ContactSerializers(serializers.ModelSerializer):
         model = Contact
         fields ="__all__"
 
-class CustomTokenRefreshSerializer(TokenRefreshSerializer):
-    # Make the default input requirement optional since we read from cookies or body
+class CustomTokenRefreshSerializer(serializers.Serializer):
     refresh = serializers.CharField(required=False, allow_null=True)
+    refresh_token = serializers.CharField(required=False, allow_null=True)
 
     def validate(self, attrs):
-        # 1. Grab the token string passed from the view
-        refresh_token_string = attrs.get("refresh")
+        refresh_token_string = attrs.get("refresh") or attrs.get("refresh_token")
 
         if not refresh_token_string:
             raise AuthenticationFailed("Refresh token is required.")
 
-        token_str = str(refresh_token_string).strip()
-        token_hash = hashlib.sha256(token_str.encode("utf-8")).hexdigest()
-        cache_key = f"resume_refreshed_token_{token_hash}"
-
-        # Resilient concurrency grace period:
-        # If parallel frontend requests fire simultaneously with the same valid refresh token,
-        # return the freshly rotated tokens from the short-lived cache without erroring.
-        cached_response = cache.get(cache_key)
-        if cached_response:
-            return cached_response
+        # Cache key for concurrent refresh request handling
+        token_hash = hashlib.sha256(refresh_token_string.encode("utf-8")).hexdigest()
+        cache_key = f"resume_token_refresh_{token_hash}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            return cached_result
 
         try:
-            # Decode and validate refresh token structure/cryptography
-            refresh = RefreshToken(token_str)
+            refresh = RefreshToken(refresh_token_string)
+            user_id = refresh.get("user_id")
 
             # Strictly ensure this is a refresh token and NOT an access token
             token_type = refresh.get("token_type") or refresh.payload.get("token_type")
@@ -93,17 +88,21 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
 
             user_id = refresh.get("user_id") or refresh.get("id")
             if not user_id:
-                raise AuthenticationFailed("Invalid token payload: missing user ID.")
+                raise AuthenticationFailed("Invalid token payload: user_id missing.")
 
             # Validate active, verified, non-deleted user
             user = ResumeRegistration.objects.get(
                 id=user_id,
-                status=True,
-                is_deleted=False,
-                is_verified=True,
+                is_deleted=False
             )
 
-            # ROTATE REFRESH TOKEN: Issue fresh refresh token with all claims
+            if not user.status:
+                raise AuthenticationFailed("User account is inactive.")
+
+            if not user.is_verified:
+                raise AuthenticationFailed("User email is not verified.")
+
+            # ROTATE REFRESH TOKEN (Security Best Practice)
             new_refresh = RefreshToken()
             new_refresh["user_id"] = user.id
             new_refresh["id"] = user.id
@@ -112,30 +111,32 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
             new_refresh["first_name"] = user.first_name
             new_refresh["last_name"] = user.last_name
 
-            new_access_token = str(new_refresh.access_token)
             new_refresh_str = str(new_refresh)
+            access_token = str(new_refresh.access_token)
 
             response_data = {
-                "access_token": new_access_token,
-                "access": new_access_token,
+                "access_token": access_token,
                 "refresh_token": new_refresh_str,
-                "refresh": new_refresh_str,
                 "refresh_token_obj": new_refresh,
             }
 
-            # Blacklist old refresh token safely if rotation/blacklisting is supported
+            # Blacklist old refresh token if rotation blacklisting is configured
             try:
-                refresh.blacklist()
+                if getattr(settings, "SIMPLE_JWT", {}).get("BLACKLIST_AFTER_ROTATION", True):
+                    refresh.blacklist()
             except Exception:
                 pass
 
-            # Cache the response for 30 seconds for concurrent request tolerance
-            cache.set(cache_key, response_data, timeout=30)
+            # Cache the rotation result for 15 seconds to gracefully handle concurrent frontend requests
+            cache.set(cache_key, {
+                "access_token": access_token,
+                "refresh_token": new_refresh_str,
+            }, timeout=15)
 
             return response_data
 
         except ResumeRegistration.DoesNotExist:
-            raise AuthenticationFailed("User does not exist, is inactive, unverified, or deleted.")
+            raise AuthenticationFailed("User does not exist or has been deleted.")
         except (TokenError, InvalidToken):
             raise InvalidToken({"detail": "Token is invalid or expired."})
 
