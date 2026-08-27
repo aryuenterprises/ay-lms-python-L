@@ -1323,6 +1323,24 @@ class AuthViewSet(viewsets.ViewSet):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
+            # Require email verification before allowing password reset
+            is_verified = (
+                getattr(user, 'is_verified', False) or
+                getattr(user, 'is_email_verified', False)
+            )
+            if not hasattr(user, 'is_verified') and not hasattr(user, 'is_email_verified'):
+                is_verified = getattr(user, 'is_active', True)
+
+            if not is_verified:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Email is not verified. Please verify your email first.",
+                        "error": "Email is not verified. Please verify your email first."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             otp = self.generate_secure_otp()
             if hasattr(user, 'reset_otp_hash'):
                 user.reset_otp_hash = make_password(otp)
