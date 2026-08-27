@@ -6640,14 +6640,14 @@ class PublicTrainerRegisterAPIView(APIView):
     
  
 class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
-    serializer_class        = TrainerSerializer
-    parser_classes          = [JSONParser, MultiPartParser, FormParser]
-    permission_classes      = [IsAuthenticated, IsAdminOrSuperAdmin]
-    authentication_classes  = [CustomJWTAuthentication]
-    lookup_field            = "employee_id"
- 
+    serializer_class = TrainerSerializer
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
+    permission_classes = [IsAuthenticated, IsAdminOrSuperAdmin]
+    authentication_classes = [CustomJWTAuthentication]
+    lookup_field = "employee_id"
+
     # ── Base queryset — used by list, retrieve, update, destroy ──────────
- 
+
     def get_queryset(self):
         queryset = (
             Trainer.objects
@@ -6655,17 +6655,17 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
             .select_related("role")              # eliminates role N+1
             # .prefetch_related(*_trainer_prefetches())
         )
- 
+
         employee_id = self.request.query_params.get("employee_id")
-        user_type   = self.request.query_params.get("user_type")
- 
+        user_type = self.request.query_params.get("user_type")
+
         if employee_id:
             queryset = queryset.filter(employee_id=employee_id)
         if user_type:
             queryset = queryset.filter(user_type=user_type)
- 
+
         return queryset.order_by("employee_id")
-  
+
     def retrieve(self, request, *args, **kwargs):
         try:
             trainer = self.get_object()   # uses optimised get_queryset above
@@ -6674,20 +6674,28 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
                 {"success": False, "message": "Trainer not found."},
                 status=status.HTTP_200_OK,
             )
- 
+
+        # ── Get courses from BOTH old and new batch systems ────────────────
+        old_course_ids = Course.objects.filter(
+            batchcoursetrainer__trainer=trainer,
+            is_archived=False,
+            status__iexact="Active",
+        ).values_list("course_id", flat=True)
+
+        new_course_ids = Course.objects.filter(
+            new_batches__trainers=trainer,
+            is_archived=False,
+            status__iexact="Active",
+        ).values_list("course_id", flat=True)
+
+        course_ids = set(old_course_ids) | set(new_course_ids)
+
+        courses = Course.objects.filter(course_id__in=course_ids).distinct()
+
+        # Serialize courses with full CourseSerializer
+        course_serializer = CourseSerializer(courses, many=True, context={'request': request})
+
         # ── Old-batch data (kept for backward compatibility) ──────────────
-        # Two queries, both use covering indexes — no further optimisation needed
-        courses = (
-            Course.objects
-            .filter(
-                batchcoursetrainer__trainer=trainer,
-                is_archived=False,
-                status__iexact="Active",
-            )
-            .distinct()
-            .values("course_id", "course_name")      # only 2 cols — fast
-        )
- 
         old_batches = (
             Batch.objects
             .filter(
@@ -6698,20 +6706,20 @@ class TrainerViewSet(NotesMixin, LoggingMixin, viewsets.ModelViewSet):
             .distinct()
             .values("batch_id", "batch_name", "title")  # only needed cols
         )
- 
-        serializer = self.get_serializer(trainer)
+
+        # Serialize trainer
+        trainer_serializer = self.get_serializer(trainer)
+
         return Response(
             {
                 "success": True,
                 "message": "Trainer profile retrieved successfully.",
-                "data":    serializer.data,
-                "course":  list(courses),
-                "batch":   list(old_batches),
+                "data": trainer_serializer.data,
+                "courses": course_serializer.data,  # Full course details
+                "batch": list(old_batches),
             },
             status=status.HTTP_200_OK,
         )
-    
- 
     # ── Create ───────────────────────────────────────────────────────────
  
     def create(self, request, *args, **kwargs):
