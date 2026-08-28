@@ -76,6 +76,7 @@ INSTALLED_APPS = [
     "axes",
     "mock_interview",
     "webinar",
+    "webinar_bonus",
     "announcements",
     "chats",
     "tests",
