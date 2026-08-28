@@ -27,7 +27,8 @@ class EbookWebhookTestCase(TransactionTestCase):
         self.ebook = Ebook.objects.create(
             title="Test Ebook",
             price=299.00,
-            is_paid=True
+            is_paid=True,
+            rating=5
         )
 
         self.registration = EbookRegistration.objects.create(
@@ -99,7 +100,7 @@ class EbookWebhookTestCase(TransactionTestCase):
         self.assertEqual(response.status_code, 200)
 
         self.txn.refresh_from_db()
-        self.assertEqual(self.txn.payment_status, "done")
+        self.assertEqual(self.txn.payment_status, "captured")
         self.assertEqual((self.txn.metadata or {}).get("razorpay_payment_id"), "pay_ebook_pay_999")
 
         self.registration.refresh_from_db()
@@ -115,13 +116,15 @@ class EbookRegistrationFlowTestCase(TransactionTestCase):
             title="Python Mastery",
             slug="python-mastery",
             price=0.00,
-            is_paid=False
+            is_paid=False,
+            rating=5
         )
         self.ebook_b = Ebook.objects.create(
             title="Django Advanced",
             slug="django-advanced",
             price=499.00,
-            is_paid=True
+            is_paid=True,
+            rating=5
         )
         PaymentGateway.objects.filter(gatway_name__icontains="razorpay").delete()
         PaymentGateway.objects.create(
@@ -266,3 +269,73 @@ class EbookRegistrationFlowTestCase(TransactionTestCase):
         self.assertEqual(resp1.status_code, 200)
         self.assertEqual(resp2.status_code, 400)
         self.assertEqual(EbookRegistration.objects.filter(email="ivy@example.com", ebook=self.ebook_a).count(), 1)
+
+    def test_10_ebook_registration_email_design_for_new_user_with_credentials(self):
+        """
+        Verify Ebook registration success email uses Resume-style template with credentials.
+        """
+        from django.core import mail
+        from ebook.ebook_emails import send_ebook_registration_email
+
+        reg = EbookRegistration.objects.create(
+            ebook=self.ebook_a,
+            name="Julia Roberts",
+            email="julia@example.com",
+            phone="9777777777",
+            is_paid=True,
+        )
+
+        send_ebook_registration_email(reg, password="JuliaSecurePass123!")
+
+        self.assertEqual(len(mail.outbox), 1)
+        sent_email = mail.outbox[0]
+
+        self.assertIn("Ebook Registration Successful", sent_email.subject)
+        self.assertEqual(sent_email.to, ["julia@example.com"])
+
+        # Check HTML alternative
+        self.assertEqual(len(sent_email.alternatives), 1)
+        html_content, mimetype = sent_email.alternatives[0]
+        self.assertEqual(mimetype, "text/html")
+
+        # Verify brand design matches Resume registration design
+        self.assertIn("background-color: #f5f3ff;", html_content)
+        self.assertIn("Ebook Registration Successful", html_content)
+        self.assertIn("Julia Roberts", html_content)
+        self.assertIn("JuliaSecurePass123!", html_content)
+        self.assertIn("Your Account Login Credentials", html_content)
+        self.assertIn(self.ebook_a.title, html_content)
+        self.assertIn("Product of", html_content)
+        self.assertIn("Aryu Academy Pvt.", html_content)
+
+        # Verify no Resume-specific text leaked
+        self.assertNotIn("PassATS account", html_content)
+        self.assertNotIn("Verify Email Address", html_content)
+
+    def test_11_ebook_registration_email_design_for_existing_user(self):
+        """
+        Verify Ebook registration success email uses Resume-style template for existing user without password.
+        """
+        from django.core import mail
+        from ebook.ebook_emails import send_ebook_registration_email
+
+        reg = EbookRegistration.objects.create(
+            ebook=self.ebook_b,
+            name="Kevin Bacon",
+            email="kevin@example.com",
+            phone="9888888888",
+            is_paid=True,
+        )
+
+        send_ebook_registration_email(reg, password=None)
+
+        self.assertEqual(len(mail.outbox), 1)
+        sent_email = mail.outbox[0]
+
+        html_content, mimetype = sent_email.alternatives[0]
+        self.assertIn("Ebook Registration Successful", html_content)
+        self.assertIn("Kevin Bacon", html_content)
+        self.assertIn("Registration Details", html_content)
+        self.assertNotIn("Your Account Login Credentials", html_content)
+        self.assertIn(self.ebook_b.title, html_content)
+

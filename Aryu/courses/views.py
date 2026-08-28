@@ -335,6 +335,7 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
                 "message": f"An error occurred while fetching courses: {str(e)}"
             }, status=status.HTTP_200_OK)
 
+
     # ------------------------------------------------------------------
     # CREATE
     # ------------------------------------------------------------------

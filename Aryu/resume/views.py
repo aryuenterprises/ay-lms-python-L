@@ -67,7 +67,32 @@ User = get_user_model()
 
 SIGNING_SALT = "resume-email-verification"
 
-BASE_PORTAL_URL = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
+RESUME_REFRESH_COOKIE_NAME = "refresh_token"
+RESUME_REFRESH_COOKIE_PATH = "/api/resume/token/refresh/"
+
+def get_resume_cookie_settings(request):
+    """
+    Returns (domain, secure, samesite) for resume auth cookies.
+    """
+    origin = request.headers.get("Origin", "") if request else ""
+    LOCAL_ORIGINS = {
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://192.168.0.139:8081",
+    }
+    if origin in LOCAL_ORIGINS or (getattr(settings, "DEBUG", False) and not origin):
+        cookie_domain = None
+        cookie_secure = False
+        cookie_samesite = "Lax"
+    else:
+        cookie_domain = ".aryuacademy.com"
+        cookie_secure = True
+        cookie_samesite = "None"
+
+    return cookie_domain, cookie_secure, cookie_samesite
+
+BASE_PORTAL_URL = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://aylms.aryuprojects.com').rstrip('/')
 PASSATS_FRONTEND_URL = getattr(settings, 'PASSATS_FRONTEND_URL', 'https://passats.aryuacademy.com').rstrip('/')
 VERIFY_ENDPOINT = f"{BASE_PORTAL_URL}/api/resume/auth/verify-email/"
 LOGIN_SUCCESS_REDIRECT = f"{PASSATS_FRONTEND_URL}/login?verified=true"
@@ -88,7 +113,7 @@ def build_portal_verify_link(request, token):
     if getattr(settings, 'DEBUG', False):
         return f"http://localhost:8000/api/resume/auth/verify-email/?token={token}"
 
-    base_portal = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
+    base_portal = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://aylms.aryuprojects.com').rstrip('/')
     return f"{base_portal}/api/resume/auth/verify-email/?token={token}"
 
 def decode_verification_token(raw_token):
@@ -184,33 +209,6 @@ def decode_verification_token(raw_token):
             except Exception as e:
                 last_error = str(e)
 
-        # 3. Fallback: Direct Base64 extraction if unsigning failed due to salt mismatch
-        if ":" in t_variant:
-            try:
-                first_part = t_variant.split(":")[0]
-                padding = len(first_part) % 4
-                if padding:
-                    first_part += "=" * (4 - padding)
-                
-                decoded_bytes = None
-                try:
-                    decoded_bytes = base64.urlsafe_b64decode(first_part)
-                except Exception:
-                    try:
-                        decoded_bytes = base64.b64decode(first_part)
-                    except Exception:
-                        pass
-                        
-                if decoded_bytes:
-                    decoded_str = decoded_bytes.decode('utf-8', errors='ignore')
-                    if decoded_str.startswith('{') and decoded_str.endswith('}'):
-                        payload_data = json.loads(decoded_str)
-                        if isinstance(payload_data, dict) and ('user_id' in payload_data or 'email' in payload_data):
-                            logger.info(f"[decode_verification_token] Successfully recovered payload via Base64 fallback: {payload_data}")
-                            return payload_data, None
-            except Exception as b64_err:
-                logger.debug(f"[decode_verification_token b64 fallback error]: {b64_err}")
-
     if last_error == "expired":
         return None, "Verification link has expired. Please request a new verification email."
     return None, "Invalid or corrupted verification token."
@@ -267,6 +265,21 @@ def verify_email(request):
 
         if not user:
             return handle_error('User associated with this token was not found.', status.HTTP_404_NOT_FOUND)
+
+        # Idempotency check: handle multiple clicks gracefully
+        if getattr(user, 'is_verified', False) or getattr(user, 'is_email_verified', False):
+            logger.info(f"[verify_email Idempotent] User ID {user.id} is already verified.")
+            if is_browser:
+                msg = quote('Email already verified')
+                return HttpResponseRedirect(f"{LOGIN_SUCCESS_REDIRECT}&message={msg}")
+            return Response({
+                'success': True,
+                'message': 'Account is already verified. You can now log in.',
+                'data': {
+                    'user_id': user.id,
+                    'email': getattr(user, 'email', '')
+                }
+            }, status=status.HTTP_200_OK)
 
         # Safely update user verification attributes with dynamic field validation
         try:
@@ -1051,7 +1064,7 @@ class AuthViewSet(viewsets.ViewSet):
             # SEND EMAIL
             email_message = EmailMultiAlternatives(
                 subject=f"{first_name}, complete your Pass ATS registration",
-                body=f"Hello {first_name},\n\nPlease verify your PassATS account:\n\n{verification_link}\n\nWebsite:\nhttps://portal.aryuacademy.com\n",
+                body=f"Hello {first_name},\n\nPlease verify your PassATS account:\n\n{verification_link}\n\nWebsite:\nhttps://aylms.aryuprojects.com\n",
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 to=[user.email],
             )
@@ -1192,6 +1205,7 @@ class AuthViewSet(viewsets.ViewSet):
             {
                 "message": "Login successful",
                 "access_token": str(refresh.access_token),
+                "refresh_token": str(refresh),
                 "user": {
                     "id": user.id,
                     "first_name": user.first_name,
@@ -1204,46 +1218,39 @@ class AuthViewSet(viewsets.ViewSet):
         )
 
         # 1. Dynamically configure cookie settings for Local vs Production environments
-        if settings.DEBUG:
-            cookie_domain = None       # Localhost requires None to bind directly to 'localhost'
-            cookie_samesite = "None"    # Lax works perfectly for local dev environments
-            cookie_secure = True      # Set to False if testing on http://localhost without SSL
-        else:
-            cookie_domain = ".aryuacademy.com"  # Production parent domain rule
-            cookie_samesite = "None"             # Can be "Lax" or "Strict" once the CNAME is live
-            cookie_secure = True                # Enforce HTTPS in production
+        cookie_domain, cookie_secure, cookie_samesite = get_resume_cookie_settings(request)
 
         # 2. Apply the dynamic settings to the cookie
         response.set_cookie(
-            key="refresh_token",
+            key=RESUME_REFRESH_COOKIE_NAME,
             value=str(refresh),
             max_age=30 * 24 * 60 * 60,   # 30 Days
             expires=None,
-            path="/api/resume/token/refresh/",                    
-            domain=cookie_domain,        # <--- Dynamic domain variable
-            secure=cookie_secure,        # <--- Dynamic secure variable
+            path=RESUME_REFRESH_COOKIE_PATH,
+            domain=cookie_domain,
+            secure=cookie_secure,
             httponly=True,               # Always keep True to block XSS script theft
-            samesite=cookie_samesite,    # <--- Dynamic samesite variable
+            samesite=cookie_samesite,
         )
 
         return response
     
+    @action(detail=False, methods=["post"], url_path="logout")
     @secure_throttle(rate_limit=5, period=60)
-    def logout(request):
+    def logout(self, request):
+        refresh_token = (
+            request.COOKIES.get(RESUME_REFRESH_COOKIE_NAME)
+            or request.data.get("refresh")
+            or request.data.get("refresh_token")
+        )
+        if refresh_token:
+            try:
+                token = RefreshToken(refresh_token)
+                token.blacklist()
+            except Exception:
+                pass
 
-        origin = request.headers.get("Origin", "")
-
-        LOCAL_ORIGINS = {
-            "http://localhost:3000",
-            "http://localhost:8000",
-            "http://127.0.0.1:8000",
-            "http://192.168.0.139:8081",
-        }
-
-        if origin in LOCAL_ORIGINS:
-            cookie_domain = None
-        else:
-            cookie_domain = ".aryuacademy.com"
+        cookie_domain, cookie_secure, cookie_samesite = get_resume_cookie_settings(request)
 
         response = Response(
             {"message": "Logged out successfully"},
@@ -1251,10 +1258,10 @@ class AuthViewSet(viewsets.ViewSet):
         )
 
         response.delete_cookie(
-            key="refresh_token",
-            path="/api/token/refresh/",
+            key=RESUME_REFRESH_COOKIE_NAME,
+            path=RESUME_REFRESH_COOKIE_PATH,
             domain=cookie_domain,
-            samesite="None" if cookie_domain else "Lax",
+            samesite=cookie_samesite,
         )
 
         return response
@@ -1314,6 +1321,24 @@ class AuthViewSet(viewsets.ViewSet):
                         "message": "No account found with this email address."
                     },
                     status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Require email verification before allowing password reset
+            is_verified = (
+                getattr(user, 'is_verified', False) or
+                getattr(user, 'is_email_verified', False)
+            )
+            if not hasattr(user, 'is_verified') and not hasattr(user, 'is_email_verified'):
+                is_verified = getattr(user, 'is_active', True)
+
+            if not is_verified:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Email is not verified. Please verify your email first.",
+                        "error": "Email is not verified. Please verify your email first."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
                 )
 
             otp = self.generate_secure_otp()
@@ -1547,7 +1572,7 @@ class AuthViewSet(viewsets.ViewSet):
                   Product of
 
                   <a
-                    href="https://portal.aryuacademy.com"
+                    href="https://aylms.aryuprojects.com"
                     style="
                       color: #005aef;
                       text-decoration: none;
@@ -1866,51 +1891,52 @@ class CustomTokenRefreshView(APIView):
     serializer_class = CustomTokenRefreshSerializer
 
     def post(self, request, *args, **kwargs):
-        # 1. Extract the token directly from the HTTP secure cookie container
-        refresh_token = request.COOKIES.get("refresh_token")
+        # 1. Extract the token from request payload (body / headers) or cookie
+        refresh_token = None
+        if isinstance(request.data, dict):
+            refresh_token = request.data.get("refresh") or request.data.get("refresh_token")
 
-        # 2. Hand it off to the serializer mapping dictionary explicitly
+        if not refresh_token and request.COOKIES:
+            refresh_token = request.COOKIES.get(RESUME_REFRESH_COOKIE_NAME)
+
+        if not refresh_token:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                refresh_token = auth_header.split(" ")[1]
+            else:
+                refresh_token = request.headers.get("X-Refresh-Token")
+
+        if not refresh_token:
+            return Response(
+                {"error": "Refresh token is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         serializer = self.serializer_class(data={"refresh": refresh_token})
         serializer.is_valid(raise_exception=True)
-        
+
         validated_data = serializer.validated_data
         new_refresh_obj = validated_data.get("refresh_token_obj")
+        new_refresh_str = validated_data.get("refresh_token")
 
-        # 3. Create clean baseline response containing ONLY the access token in the body
-        response = Response(
-            {
-                "access_token": validated_data["access_token"]
-            },
-            status=status.HTTP_200_OK
-        )
-
-        origin = request.headers.get("Origin", "")
-
-        LOCAL_ORIGINS = {
-            "http://localhost:3000",
-            "http://localhost:8000",
-            "http://127.0.0.1:8000",
-            "http://192.168.0.139:8081",
+        response_data = {
+            "access_token": validated_data["access_token"],
         }
+        if new_refresh_str:
+            response_data["refresh_token"] = new_refresh_str
 
-        if origin in LOCAL_ORIGINS:
-            cookie_domain = None
-            cookie_secure = False
-            cookie_samesite = "None"
+        response = Response(response_data, status=status.HTTP_200_OK)
 
-        else:
-            cookie_domain = ".aryuacademy.com"
-            cookie_samesite = "Lax"  # Matches your custom API CNAME architecture setup
-            cookie_secure = True
-
-        # 5. Bake the newly rotated refresh token back into the user's browser cookie storage
-        if new_refresh_obj:
+        # 2. Bake the newly rotated refresh token back into cookie
+        cookie_val = str(new_refresh_obj or new_refresh_str or "")
+        if cookie_val:
+            cookie_domain, cookie_secure, cookie_samesite = get_resume_cookie_settings(request)
             response.set_cookie(
-                key="refresh_token",
-                value=str(new_refresh_obj),
+                key=RESUME_REFRESH_COOKIE_NAME,
+                value=cookie_val,
                 max_age=30 * 24 * 60 * 60,  # 30 Days
                 expires=None,
-                path="/api/token/refresh/",
+                path=RESUME_REFRESH_COOKIE_PATH,
                 domain=cookie_domain,
                 secure=cookie_secure,
                 httponly=True,              # Keeps XSS defense completely locked down
@@ -2046,7 +2072,7 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
                 )
 
             expected_hostnames = [
-                "portal.aryuacademy.com",
+                "aylms.aryuprojects.com",
                 "localhost",
                 "yourdomain.com"
             ]
@@ -3656,7 +3682,7 @@ class SubscriptionViewSet(viewsets.ViewSet):
         )
 
     @secure_throttle(rate_limit=10, period=60)
-    @action(detail=False, methods=["patch"], url_path=r"delete-plan/(?P<plan_id>[^/.]+)")
+    @action(detail=False, methods=["delete"], url_path=r"delete-plan/(?P<plan_id>[^/.]+)")
     def delete_plan(self, request, plan_id=None):
         if not self._is_admin(request):
             return Response(
@@ -3668,20 +3694,15 @@ class SubscriptionViewSet(viewsets.ViewSet):
             )
 
         subscription = get_object_or_404(Subscription, id=plan_id)
-
-        # Soft delete: update status flag
-        subscription.is_active = False
-        subscription.save(update_fields=["is_active"])
+        subscription.delete()
 
         return Response(
             {
                 "success": True,
-                "message": "Subscription deactivated successfully"
+                "message": "Subscription plan deleted successfully"
             },
             status=status.HTTP_200_OK
-        )
-
-        
+        )  
 import requests
 
 class ResumeGateway(APIView):

@@ -8,6 +8,9 @@ from django.conf import settings
 SECRET_KEY = settings.SECRET_KEY
 
 class CustomJWTAuthentication(BaseAuthentication):
+    def authenticate_header(self, request):
+        return 'Bearer realm="api"'
+
     def authenticate(self, request):
         auth_header = request.headers.get('Authorization')
         if not auth_header or not auth_header.startswith('Bearer '):
@@ -20,6 +23,13 @@ class CustomJWTAuthentication(BaseAuthentication):
             raise AuthenticationFailed('Token expired')
         except jwt.InvalidTokenError:
             raise AuthenticationFailed('Invalid token')
+
+        token_type = payload.get("token_type")
+        if token_type and token_type != "access":
+            if request.path.rstrip("/").endswith("token/refresh"):
+                return None
+            raise AuthenticationFailed("Invalid token type: access token required")
+
         # create a simple user-like object
         class JWTUser:
             def __init__(self, payload):
