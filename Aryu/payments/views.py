@@ -239,6 +239,8 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         if user_type == "super_admin":
             user_created_id = getattr(user, "user_id", None)
 
+        all_students = Student.objects.filter(is_archived=False)
+
         # -------------------------------------------------------------
         # 1. Global Metadata Queries
         # -------------------------------------------------------------
@@ -252,29 +254,19 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             "stripe_enabled", "paypal_enabled", "razorpay_enabled"
         ).order_by("-created_at").first()
 
-        # -------------------------------------------------------------
-        # 2. Base Queryset Filtering
-        # -------------------------------------------------------------
-        all_students = Student.objects.filter(is_archived=False)
+        # Filter to only students who have at least one course associated with them
+        all_students = all_students.filter(
+            Q(student_courses__isnull=False) |
+            Q(new_batches__course__isnull=False, new_batches__is_archived=False) |
+            Q(batchcoursetrainer__course__isnull=False) |
+            Q(transactions__course__isnull=False, transactions__is_archived=False)
+        ).distinct()
 
-        if user_type == "admin" and user_created_id:
-            all_students = all_students.filter(created_by=user_created_id)
-        elif user_type == "super_admin" and user_created_id:
-            admin_ids = list(
-                Trainer.objects.filter(
-                    created_by=user_created_id,
-                    created_by_type="super_admin",
-                    is_archived=False
-                ).values_list("trainer_id", flat=True)
-            )
-            all_students = all_students.filter(
-                Q(created_by_type="super_admin", created_by=user_created_id) |
-                Q(created_by_type="admin", created_by__in=admin_ids)
-            )
-
-        # Prefetch transactions with invoices & gateways for ALL active students
+        # Prefetch transactions with invoices & gateways for students with courses
         students_qs = all_students.distinct().prefetch_related(
             "new_batches__course",
+            "student_courses__course",
+            "batchcoursetrainer_set__course",
             Prefetch(
                 "transactions",
                 queryset=PaymentTransaction.objects.filter(
@@ -332,10 +324,18 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 if tx.course:
                     course_map[tx.course].append(tx_history_entry)
 
-            # Include batch courses with zero transactions if present
+            # Include batch & student courses even if zero transactions exist yet
             for batch in student.new_batches.all():
                 if batch.course and batch.course not in course_map:
                     course_map[batch.course] = []
+
+            for sc in student.student_courses.all():
+                if sc.course and sc.course not in course_map:
+                    course_map[sc.course] = []
+
+            for bct in student.batchcoursetrainer_set.all():
+                if bct.course and bct.course not in course_map:
+                    course_map[bct.course] = []
 
             courses_summary = []
             for course_obj, tx_logs in course_map.items():
@@ -364,6 +364,9 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                     "due_amount": due_amount,
                     "transactions": txs_sorted
                 })
+
+            if not courses_summary:
+                continue
 
             students_response_data.append({
                 "student_id": student.student_id,
