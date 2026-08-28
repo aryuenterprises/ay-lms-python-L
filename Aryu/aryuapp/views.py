@@ -5926,7 +5926,7 @@ def generate_secure_password(length=8):
     return "".join(pwd_list)
 
 
-PORTAL_URL = getattr(settings, "PORTAL_URL", "https://portal.aryuacademy.com/")
+PORTAL_URL = getattr(settings, "PORTAL_URL", "https://aylms.aryuprojects.com/")
 
 def send_student_welcome_email(student, raw_password: str):
     """
@@ -8325,13 +8325,19 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         # Combine batches
         all_batches = new_batch_data + old_batch_data
 
+        # --- Trainers ---
+        trainer_qs = Trainer.objects.filter(is_archived=False)
+       
+        trainer = trainer_qs.values('full_name', 'employee_id')
+
         # Response
         response = {
             "success": True,
             "message": f"Full attendance logs for {full_name}",
             "data": final_logs,
             "course": list(course),
-            "batch": all_batches
+            "batch": all_batches,
+            "trainers_list": trainer,
         }
 
         # Add monthly total if filtered
