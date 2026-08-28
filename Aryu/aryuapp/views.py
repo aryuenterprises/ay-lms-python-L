@@ -8604,18 +8604,17 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
 
         # --- Trainers ---
         trainer_qs = Trainer.objects.filter(is_archived=False)
-    
-        trainer_list = trainer_qs.values('full_name', 'employee_id')
+       
+        trainer = trainer_qs.values('full_name', 'employee_id')
 
         # Response
         response = {
             "success": True,
             "message": f"Full attendance logs for {full_name}",
             "data": final_logs,
-            "courses_with_batches": courses_with_batches,  # New structure
-            "course": list(course),  # Legacy support
-            "batch": all_batches,  # Legacy support
-            "trainers_list": trainer_list,
+            "course": list(course),
+            "batch": all_batches,
+            "trainers_list": trainer,
         }
 
         # Add monthly total if filtered
