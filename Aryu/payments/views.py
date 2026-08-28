@@ -295,9 +295,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                     except Exception as e:
                         logger.error(f"[Payment List] Lazy invoice generation failed for transaction {tx.id}: {str(e)}")
 
-                invoice_url = None
-                if tx.invoice and hasattr(tx.invoice, "url"):
-                    invoice_url = request.build_absolute_uri(tx.invoice.url)
+                invoice_url = InvoiceService.get_invoice_url(tx, request=request)
 
                 payment_mode = tx.payment_mode or (tx.metadata.get("mode") if tx.metadata else "Cash")
                 course_name = tx.course.course_name if tx.course else (tx.description or "General Payment")
@@ -668,9 +666,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 except Exception as e:
                     logger.error(f"Lazy invoice generation failed for transaction {tx.id}: {str(e)}")
 
-            invoice_url = None
-            if tx.invoice and hasattr(tx.invoice, "url"):
-                invoice_url = request.build_absolute_uri(tx.invoice.url)
+            invoice_url = InvoiceService.get_invoice_url(tx, request=request)
 
             payment_logs.append({
                 "course_name": tx.course.course_name if tx.course else (tx.description or "N/A"),
@@ -721,20 +717,13 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
         try:
             # 1. Generate the invoice
-            transaction = InvoiceService.generate_invoice(transaction.id, regenerate=regenerate)
+            transaction = InvoiceService.generate_invoice(transaction.id, regenerate=regenerate, request=request)
             
             # 2. Reload latest DB values into the transaction instance
             transaction.refresh_from_db()
 
-            # 3. Resolve the URL safely for both FileField and CharField/URLField
-            invoice_url = None
-            if transaction.invoice:
-                if hasattr(transaction.invoice, "url"):
-                    # Case: Django FileField / FieldFile
-                    invoice_url = request.build_absolute_uri(transaction.invoice.url)
-                elif isinstance(transaction.invoice, str):
-                    # Case: Saved as a string/relative path
-                    invoice_url = request.build_absolute_uri(transaction.invoice) if not transaction.invoice.startswith("http") else transaction.invoice
+            # 3. Resolve the URL safely via InvoiceService.get_invoice_url
+            invoice_url = InvoiceService.get_invoice_url(transaction, request=request)
 
             return Response({
                 "success": True,

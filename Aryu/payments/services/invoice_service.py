@@ -39,6 +39,44 @@ class InvoiceService:
     HSN_CODE = "999293"
 
     @classmethod
+    def get_invoice_url(cls, transaction_or_file, request=None):
+        if not transaction_or_file:
+            return None
+
+        file_obj = getattr(transaction_or_file, "invoice", transaction_or_file)
+        invoice_no = getattr(transaction_or_file, "invoice_no", "")
+
+        if file_obj and hasattr(file_obj, "url") and file_obj.url:
+            if hasattr(file_obj, "name") and not file_obj.name:
+                return None
+            invoice_path = file_obj.url
+        elif isinstance(file_obj, str) and file_obj:
+            if file_obj.startswith("http://") or file_obj.startswith("https://"):
+                return file_obj
+            invoice_path = file_obj
+        elif invoice_no:
+            invoice_path = f"/media/invoices/{invoice_no}.pdf"
+        else:
+            return None
+
+        if not invoice_path.startswith("/"):
+            invoice_path = f"/{invoice_path}"
+
+        base_url = (
+            getattr(settings, "MEDIA_BASE_URL", "").rstrip("/")
+            or getattr(settings, "FRONTEND_URL", "").rstrip("/")
+            or getattr(settings, "BACKEND_URL", "").rstrip("/")
+        )
+
+        if base_url:
+            return f"{base_url}{invoice_path}"
+
+        if request:
+            return request.build_absolute_uri(invoice_path)
+
+        return invoice_path
+
+    @classmethod
     def round_amount(cls, value):
         return Decimal(value).quantize(
             Decimal("0.01"),
@@ -501,7 +539,8 @@ class InvoiceService:
     def generate_invoice(
         cls,
         transaction_id,
-        regenerate=False
+        regenerate=False,
+        request=None
     ):
 
         transaction = (
@@ -524,6 +563,7 @@ class InvoiceService:
             transaction.invoice
             and not regenerate
         ):
+            transaction.invoice_url = cls.get_invoice_url(transaction, request=request)
             return transaction
 
         # =========================================
@@ -706,5 +746,6 @@ class InvoiceService:
             save=True
         )
 
+        transaction.invoice_url = cls.get_invoice_url(transaction, request=request)
         return transaction
     
