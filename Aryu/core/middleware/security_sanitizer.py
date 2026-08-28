@@ -90,14 +90,10 @@ class InputSanitizationMiddleware(MiddlewareMixin):
                     if not request.body:
                         return None
 
-                    is_resume_request = (
-                        request.path.startswith("/api/resume/user-resumes") or
-                        request.path.startswith("/api/resume/templates") or
-                        request.path.startswith("/api/resumes")
-                    )
+                    is_resume_context = self.is_resume_builder_request(request)
 
                     raw_data = json.loads(request.body)
-                    sanitized_data = self.sanitize_data(raw_data, is_rich_text=is_resume_request)
+                    sanitized_data = self.sanitize_data(raw_data, is_resume_context=is_resume_context)
                     encoded_data = json.dumps(sanitized_data).encode("utf-8")
                     request._body = encoded_data
 
