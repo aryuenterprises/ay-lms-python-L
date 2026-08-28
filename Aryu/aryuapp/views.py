@@ -7756,8 +7756,11 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             batch_id = att.new_batch.batch_id if att.new_batch else (att.batch.batch_id if att.batch else None)
             course_id = att.course.course_id if att.course else None
             course_name = att.course.course_name if att.course else None
-            session_key = f"{batch_id}_{course_id}_{att.date.strftime('%Y-%m-%d')}"  # Added date for daily grouping
-        
+            
+            # FIX: Group by batch only (not by course and date combined)
+            # Each batch will have its own session regardless of course or date
+            session_key = f"batch_{batch_id}" if batch_id else f"course_{course_id}"
+            
             if session_key not in sessions:
                 sessions[session_key] = {
                     "login": None,
@@ -7767,7 +7770,8 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     "course_id": course_id,
                     "course_name": course_name,
                     "date": att.date.strftime("%Y-%m-%d"),
-                    "logs": []  # Store all logs for this session
+                    "logs": [],  # Store all logs for this session
+                    "all_dates": set()  # Track all dates for this batch
                 }
             
             # Store individual log
@@ -7776,6 +7780,7 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 "status": att.status,
                 "date_obj": att.date
             })
+            sessions[session_key]["all_dates"].add(att.date.strftime("%Y-%m-%d"))
             
             if att.status == "Login":
                 sessions[session_key]["login"] = att.date
@@ -7824,24 +7829,31 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 hours = int(session_seconds // 3600) if session_seconds > 0 else 0
                 minutes = int((session_seconds % 3600) // 60) if session_seconds > 0 else 0
                 
-                # Get extra working hours (similar to full_logs)
+                # Get extra working hours for this batch
                 extra_time_str = "0:00:00"
-                if session["date"]:
+                if session["batch_id"]:
                     try:
-                        log_date = datetime.strptime(session["date"], "%Y-%m-%d").date()
-                        schedules = ClassSchedule.objects.filter(
-                            trainer__employee_id=employee_id,
-                            scheduled_date=log_date,
-                            is_archived=False,
-                            is_class_cancelled=False
-                        )
-                        
-                        extra_time = timedelta(0)
-                        for s in schedules:
-                            extra_time += s.get_extra_time()
-                        extra_time_str = str(extra_time)
+                        # Get all dates for this batch
+                        for date_str in session["all_dates"]:
+                            log_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                            schedules = ClassSchedule.objects.filter(
+                                trainer__employee_id=employee_id,
+                                new_batch_id=session["batch_id"],
+                                scheduled_date=log_date,
+                                is_archived=False,
+                                is_class_cancelled=False
+                            )
+                            extra_time = timedelta(0)
+                            for s in schedules:
+                                extra_time += s.get_extra_time()
+                            extra_time_str = str(extra_time)
+                            break  # Only need first date's extra time
                     except:
                         extra_time_str = "0:00:00"
+                
+                # Get the date range for this batch
+                date_range = sorted(list(session["all_dates"]))
+                date_display = f"{date_range[0]} to {date_range[-1]}" if len(date_range) > 1 else date_range[0] if date_range else session["date"]
                 
                 attendance_data.append({
                     "trainer": trainer_info["trainer"],
@@ -7855,10 +7867,11 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                     "spent_time": f"{hours}h {minutes}m" if session_seconds > 0 else "0m",
                     "total_seconds": session_seconds,
                     "extra_working_hours": extra_time_str,
-                    "date": session["date"],
+                    "date": date_display,
                     "first_login_time": login_ist.strftime("%I:%M:%S %p") if login_ist else None,
                     "last_logout_time": logout_ist.strftime("%I:%M:%S %p") if logout_ist else None,
-                    "status": "Active" if login_ist and not logout_ist else "Completed" if login_ist and logout_ist else "Unknown"
+                    "status": "Active" if login_ist and not logout_ist else "Completed" if login_ist and logout_ist else "Unknown",
+                    "attendance_dates": sorted(list(session["all_dates"]))
                 })
         
         # Calculate total spent time
@@ -7875,7 +7888,147 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         except Trainer.DoesNotExist:
             return Response({"success": False, "message": "Trainer not found."}, status=200)
         
-        # ------------------- New Batches -------------------
+        # ------------------- Get Courses with Batches (Like Payment API) -------------------
+        from django.db import connection
+        
+        # Get direct course assignments for this trainer
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT course_id FROM public.aryuapp_trainer_courses WHERE trainer_id = %s",
+                [trainer.trainer_id]
+            )
+            course_ids_direct = [row[0] for row in cursor.fetchall()]
+        
+        # Get courses with their fees and batches
+        courses_with_batches = []
+        
+        # 1. Get courses from direct assignment
+        if course_ids_direct:
+            direct_courses = Course.objects.filter(
+                course_id__in=course_ids_direct,
+                is_archived=False
+            )
+            
+            for course in direct_courses:
+                # Get batches for this course assigned to this trainer
+                batches = NewBatch.objects.filter(
+                    course=course,
+                    trainers__trainer_id=trainer.trainer_id,
+                    status=True,
+                    is_archived=False
+                ).values("batch_id", "title")
+                
+                # Also check for old batches (Batch model)
+                old_batch_ids = BatchCourseTrainer.objects.filter(
+                    trainer=trainer,
+                    course=course
+                ).values_list("batch_id", flat=True)
+                
+                old_batches = Batch.objects.filter(
+                    batch_id__in=old_batch_ids,
+                    is_archived=False,
+                    status=True
+                ).values("batch_id", "title")
+                
+                # Combine both new and old batches
+                all_batches = []
+                for batch in batches:
+                    all_batches.append({
+                        "batch_id": batch["batch_id"],
+                        "batch_name": batch["title"],
+                        "title": batch["title"]
+                    })
+                
+                for batch in old_batches:
+                    all_batches.append({
+                        "batch_id": batch["batch_id"],
+                        "batch_name": batch["title"],
+                        "title": batch["title"]
+                    })
+                
+                courses_with_batches.append({
+                    "course_id": course.course_id,
+                    "course_name": course.course_name,
+                    "fee": str(course.fee) if course.fee is not None else "0.0",
+                    "batches": all_batches
+                })
+        
+        # 2. Get courses from new batches (if not already added)
+        new_batch_courses = NewBatch.objects.filter(
+            trainers__trainer_id=trainer.trainer_id,
+            is_archived=False,
+            status=True
+        ).select_related('course').values('course_id', 'course__course_name', 'course__fee').distinct()
+        
+        for item in new_batch_courses:
+            # Check if this course is already added
+            if not any(c["course_id"] == item["course_id"] for c in courses_with_batches):
+                course_id = item["course_id"]
+                course_name = item["course__course_name"]
+                fee = item["course__fee"]
+                
+                # Get batches for this course
+                batches = NewBatch.objects.filter(
+                    course_id=course_id,
+                    trainers__trainer_id=trainer.trainer_id,
+                    status=True,
+                    is_archived=False
+                ).values("batch_id", "title")
+                
+                courses_with_batches.append({
+                    "course_id": course_id,
+                    "course_name": course_name,
+                    "fee": str(fee) if fee is not None else "0.0",
+                    "batches": [
+                        {
+                            "batch_id": batch["batch_id"],
+                            "batch_name": batch["title"],
+                            "title": batch["title"]
+                        }
+                        for batch in batches
+                    ]
+                })
+        
+        # 3. Get courses from old batches (if not already added)
+        old_batch_courses = BatchCourseTrainer.objects.filter(
+            trainer=trainer
+        ).select_related('course').values('course_id', 'course__course_name', 'course__fee').distinct()
+        
+        for item in old_batch_courses:
+            # Check if this course is already added
+            if not any(c["course_id"] == item["course_id"] for c in courses_with_batches):
+                course_id = item["course_id"]
+                course_name = item["course__course_name"]
+                fee = item["course__fee"]
+                
+                # Get batches for this course
+                batch_ids = BatchCourseTrainer.objects.filter(
+                    trainer=trainer,
+                    course_id=course_id
+                ).values_list("batch_id", flat=True)
+                
+                batches = Batch.objects.filter(
+                    batch_id__in=batch_ids,
+                    is_archived=False,
+                    status=True
+                ).values("batch_id", "title")
+                
+                courses_with_batches.append({
+                    "course_id": course_id,
+                    "course_name": course_name,
+                    "fee": str(fee) if fee is not None else "0.0",
+                    "batches": [
+                        {
+                            "batch_id": batch["batch_id"],
+                            "batch_name": batch["title"],
+                            "title": batch["title"]
+                        }
+                        for batch in batches
+                    ]
+                })
+        
+        # ------------------- Legacy Support (Keep for backward compatibility) -------------------
+        # New Batches
         new_batches = NewBatch.objects.filter(
             trainers__trainer_id=trainer.trainer_id,
             is_archived=False,
@@ -7893,7 +8046,7 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             for batch in new_batches
         ]
         
-        # ------------------- Old Batches -------------------
+        # Old Batches
         old_batch_ids = BatchCourseTrainer.objects.filter(trainer=trainer).values_list("batch_id", flat=True).distinct()
         old_batches = Batch.objects.filter(batch_id__in=old_batch_ids, is_archived=False, status=True)
         
@@ -7908,20 +8061,9 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 "course_name": course_obj.course.course_name if course_obj else None,
             })
         
-        # ------------------- Combine -------------------
         final_batches = new_batch_data + old_batch_data
         
-        # ------------------- Get Courses from Direct Assignment -------------------
-        from django.db import connection
-        
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT course_id FROM public.aryuapp_trainer_courses WHERE trainer_id = %s",
-                [trainer.trainer_id]
-            )
-            course_ids_direct = [row[0] for row in cursor.fetchall()]
-        
-        # Get course details
+        # Direct courses (for backward compatibility)
         direct_courses = Course.objects.filter(
             course_id__in=course_ids_direct,
             is_archived=False
@@ -7932,10 +8074,10 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             "message": "Trainer today's attendance and batches fetched.",
             "data": attendance_data,
             "total_spent_time": total_spent_time,
-            "batches": final_batches,
-            "direct_courses": list(direct_courses)  # Added for completeness
+            "courses_with_batches": courses_with_batches,  # New structure like payment API
+            "batches": final_batches,  # Keep for backward compatibility
+            "direct_courses": list(direct_courses)  # Keep for backward compatibility
         }, status=200)
-
 
     # def create(self, request, *args, **kwargs):
     #     serializer = self.get_serializer(data=request.data)
