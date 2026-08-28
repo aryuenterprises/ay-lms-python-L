@@ -109,18 +109,19 @@ def process_razorpay_webhook_event(data: dict) -> dict:
                 logger.warning("Razorpay Webhook: No PaymentTransaction found for order_id %s", order_id)
                 return {"status": "success", "message": "Transaction not found, safe acknowledge", "processed": False}
 
-            # Idempotency check: if transaction is already marked as done/paid, skip re-processing
-            if txn.payment_status in ["done", "paid", "success", "captured"]:
+            # Idempotency check: if transaction is already marked as done/paid/success, skip re-processing
+            if txn.payment_status in ["done", "paid", "success"]:
                 logger.info("Razorpay Webhook: Transaction %s already processed (status=%s). Skipping.",
                             order_id, txn.payment_status)
                 return {"status": "success", "message": "Already processed", "processed": True}
 
-            # Update PaymentTransaction status safely
-            txn.payment_status = "captured"
+            # Update PaymentTransaction status explicitly to "done"
+            txn.payment_status = "done"
             if payment_id:
                 if not isinstance(txn.metadata, dict):
                     txn.metadata = {}
                 txn.metadata["razorpay_payment_id"] = payment_id
+                txn.transaction_id = payment_id
             txn.save()
 
             # 1. Handle Webinar Registration Payment Flow & Student Creation

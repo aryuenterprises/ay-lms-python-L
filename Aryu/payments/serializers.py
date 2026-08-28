@@ -684,10 +684,20 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
             if tx.course:
                 course_map[tx.course].append(tx)
 
-        # 2. Add courses from batches even if no transactions exist yet
+        # 2. Add courses from batches, student_courses, & batchcoursetrainer even if no transactions exist yet
         for batch in obj.new_batches.all():
             if batch.course and batch.course not in course_map:
                 course_map[batch.course] = []
+
+        if hasattr(obj, "student_courses"):
+            for sc in obj.student_courses.all():
+                if sc.course and sc.course not in course_map:
+                    course_map[sc.course] = []
+
+        if hasattr(obj, "batchcoursetrainer_set"):
+            for bct in obj.batchcoursetrainer_set.all():
+                if bct.course and bct.course not in course_map:
+                    course_map[bct.course] = []
 
         courses_data = []
         total_course_fee = 0.0
