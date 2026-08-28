@@ -145,9 +145,108 @@ class ResumeHTMLAndAuthTestCase(TestCase):
         retrieved_desc = get_resp.data["resume_data"]["experience"][0]["description"]
         self.assertEqual(retrieved_desc, html_description)
 
+    def test_resume_experiences_text_quill_html_preserved(self):
+        """
+        Test 1 & 2: Verify Quill-generated rich text with data-list and ql-ui in experiences[].text
+        is preserved exactly as received, while normal fields like employer/jobTitle/resume_title are cleaned.
+        """
+        access_token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+
+        quill_text = (
+            '<ol>'
+            '<li data-list="bullet">'
+            '<span class="ql-ui" contenteditable="false"></span>'
+            'Managed daily operational workflows to ensure alignment with organizational goals and improve overall team productivity through streamlined process implementation.'
+            '</li>'
+            '<li data-list="bullet">'
+            '<span class="ql-ui" contenteditable="false"></span>'
+            'Collaborated with cross-functional teams to identify operational bottlenecks and execute strategic solutions that enhanced service delivery and efficiency.'
+            '</li>'
+            '</ol>'
+        )
+
+        create_payload = {
+            "template": self.template.id,
+            "resume_title": "<b>Senior Staff Resume</b>",
+            "resume_data": {
+                "experiences": [
+                    {
+                        "id": 1787805503208,
+                        "employer": "<b>Possimus eos ut par</b>",
+                        "jobTitle": "<i>Obecati molestiae</i>",
+                        "location": "<span>Et eos qui molestiae</span>",
+                        "startDate": "1988-08",
+                        "endDate": "2000-05",
+                        "year": 2026,
+                        "isOpen": True,
+                        "showPicker": False,
+                        "text": quill_text,
+                    }
+                ]
+            }
+        }
+
+        create_resp = self.client.post("/api/resume/user-resumes", data=create_payload, format="json")
+        self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED)
+
+        resume_id = create_resp.data["id"]
+        exp_item = create_resp.data["resume_data"]["experiences"][0]
+
+        # Rich text preserved
+        self.assertEqual(exp_item["text"], quill_text)
+        self.assertIn('data-list="bullet"', exp_item["text"])
+        self.assertIn('class="ql-ui"', exp_item["text"])
+
+        # Normal text cleaned
+        self.assertEqual(create_resp.data["resume_title"], "Senior Staff Resume")
+        self.assertEqual(exp_item["employer"], "Possimus eos ut par")
+        self.assertEqual(exp_item["jobTitle"], "Obecati molestiae")
+        self.assertEqual(exp_item["location"], "Et eos qui molestiae")
+
+        # GET request retrieval check
+        get_resp = self.client.get(f"/api/resume/user-resumes/{resume_id}")
+        self.assertEqual(get_resp.status_code, status.HTTP_200_OK)
+        get_exp_item = get_resp.data["resume_data"]["experiences"][0]
+        self.assertEqual(get_exp_item["text"], quill_text)
+        self.assertEqual(get_exp_item["employer"], "Possimus eos ut par")
+
+    def test_resume_multiple_nested_experience_objects(self):
+        """
+        Test 3: Nested experience objects preserve HTML for multiple records.
+        """
+        access_token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+
+        create_payload = {
+            "template": self.template.id,
+            "resume_title": "Multi Experience Resume",
+            "resume_data": {
+                "experiences": [
+                    {
+                        "employer": "<b>Employer 1</b>",
+                        "text": "<p>Experience 1</p>",
+                    },
+                    {
+                        "employer": "<i>Employer 2</i>",
+                        "text": "<p>Experience 2</p>",
+                    }
+                ]
+            }
+        }
+
+        create_resp = self.client.post("/api/resume/user-resumes", data=create_payload, format="json")
+        self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED)
+
+        exps = create_resp.data["resume_data"]["experiences"]
+        self.assertEqual(exps[0]["text"], "<p>Experience 1</p>")
+        self.assertEqual(exps[0]["employer"], "Employer 1")
+        self.assertEqual(exps[1]["text"], "<p>Experience 2</p>")
+        self.assertEqual(exps[1]["employer"], "Employer 2")
+
     def test_resume_incremental_section_update_preserves_html(self):
         """
-        Verify that PATCH /api/resume/user-resumes/{id} preserves rich-text HTML.
+        Verify that PATCH /api/resume/user-resumes/{id} preserves rich-text HTML in section_payload.
         """
         access_token = self._get_auth_token()
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
@@ -169,7 +268,7 @@ class ResumeHTMLAndAuthTestCase(TestCase):
             "section_name": "projects",
             "section_payload": [
                 {
-                    "title": "Cloud Platform",
+                    "title": "<b>Cloud Platform</b>",
                     "description": section_html,
                 }
             ],
@@ -182,8 +281,9 @@ class ResumeHTMLAndAuthTestCase(TestCase):
             format="json",
         )
         self.assertEqual(patch_resp.status_code, status.HTTP_200_OK)
-        saved_section = patch_resp.data["resume_data"]["projects"][0]["description"]
-        self.assertEqual(saved_section, section_html)
+        saved_section = patch_resp.data["resume_data"]["projects"][0]
+        self.assertEqual(saved_section["description"], section_html)
+        self.assertEqual(saved_section["title"], "Cloud Platform")
 
     def test_xss_script_tags_are_sanitized(self):
         """
@@ -236,17 +336,17 @@ class ResumeHTMLAndAuthTestCase(TestCase):
                 "template": self.template.id,
                 "resume_title": "Link Resume",
                 "resume_data": {
-                    "links": xss_payload,
+                    "summary": xss_payload,
                 },
             },
             format="json",
         )
         self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED)
-        links_data = create_resp.data["resume_data"]["links"]
+        summary_data = create_resp.data["resume_data"]["summary"]
 
-        self.assertNotIn("onerror", links_data)
-        self.assertNotIn("javascript:", links_data)
-        self.assertIn('<a href="https://validlink.com" target="_blank">Valid Link</a>', links_data)
+        self.assertNotIn("onerror", summary_data)
+        self.assertNotIn("javascript:", summary_data)
+        self.assertIn('<a href="https://validlink.com" target="_blank">Valid Link</a>', summary_data)
 
     # =========================================================================
     # PART 2: RESUME REFRESH TOKEN AUTHENTICATION & ROTATION TESTS
