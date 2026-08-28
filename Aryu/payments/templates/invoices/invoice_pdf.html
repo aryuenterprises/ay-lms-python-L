@@ -2,40 +2,50 @@
 <html>
 <head>
 <meta charset="utf-8">
+<title>Tax Invoice</title>
 <style>
     @page {
         size: A4 portrait;
         margin: 0.8cm 1cm;
     }
     body {
-        font-family: Helvetica, Arial, sans-serif;
-        font-size: 8.5px;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 11px;
         color: #000000;
-        line-height: 1.2;
+        line-height: 1.3;
+        margin: 0;
+        padding: 0;
     }
     .outer-border {
         border: 1.5px solid #000000;
         width: 100%;
+        box-sizing: border-box;
     }
     .title-banner {
         text-align: center;
         font-weight: bold;
         font-size: 13px;
-        padding: 4px;
+        padding: 5px;
         border-bottom: 1.5px solid #000000;
         letter-spacing: 1px;
+        background-color: #F8F9FA;
     }
     table {
         width: 100%;
         border-collapse: collapse;
+        margin: 0;
+        padding: 0;
     }
-    .bordered td, .bordered th {
+    th, td {
+        border-collapse: collapse;
+    }
+    .bordered th, .bordered td {
         border: 1px solid #000000;
-        padding: 3px 5px;
+        padding: 4px 6px;
     }
     .no-border td {
         border: none;
-        padding: 1px 3px;
+        padding: 2px 4px;
     }
     .b-bottom { border-bottom: 1px solid #000000; }
     .b-right { border-right: 1px solid #000000; }
@@ -43,30 +53,37 @@
     .bold { font-weight: bold; }
     .text-center { text-align: center; }
     .text-right { text-align: right; }
-    .brand-box {
-        font-size: 13px;
-        font-weight: bold;
-        color: #6B21A8;
+    
+    .logo-container {
+        text-align: left;
+        margin-bottom: 8px;
     }
-    .logo, .logo-container {
+    .logo-container img {
         max-width: 160px;
         max-height: 50px;
-        margin-bottom: 10px;
-    }
-    .logo img, .logo-container img, img.logo-img {
-        max-width: 160px !important;
-        max-height: 50px !important;
-        width: auto !important;
-        height: auto !important;
+        width: auto;
+        height: auto;
         object-fit: contain;
+    }
+    .company-details {
+        font-size: 10.5px;
+        line-height: 1.35;
+    }
+    .buyer-details {
+        font-size: 10.5px;
+        line-height: 1.35;
+    }
+    .table-header-bg {
+        background-color: #F2F4F7;
     }
 </style>
 </head>
 <body>
 <div class="outer-border">
+    <!-- Top Header Bar -->
     <div class="title-banner">TAX INVOICE</div>
     
-    <!-- HEADER CONTENT -->
+    <!-- Upper Block (Company & Customer Info) -->
     <table>
         <tr>
           <!-- LEFT -->
@@ -94,42 +111,43 @@
             </div>
           </td>
 
-          <!-- RIGHT -->
-          <td width="45%" class="b-bottom" style="padding: 6px;" valign="top">
-            <table class="no-border">
-              <tr>
-                <td width="40%" class="bold">Invoice No</td>
-                <td>: {{ transaction.invoice_no|default:invoice_no }}</td>
-              </tr>
-              <tr>
-                <td class="bold">Invoice Date</td>
-                <td>: {{ transaction.invoice_date|default:invoice_date }}</td>
-              </tr>
-              <tr>
-                <td class="bold">Place of Supply</td>
-                <td>: {{ transaction.place_of_supply|default:place_of_supply|default:"Tamil Nadu" }}</td>
-              </tr>
-            </table>
-            <div class="b-top" style="margin-top: 4px; padding-top: 4px;">
-              <div class="bold" style="text-decoration: underline;">Buyer (Bill to)</div>
-              <strong>{{ billing.name|default:student_name }}</strong><br />
-              {% if billing.address %}
-              {{ billing.address|linebreaksbr }}<br />
-              {% else %}
-              Chennai, Tamil Nadu<br />
-              {% endif %}
-              <span class="bold">GSTIN/UIN:</span> {{ billing.gst|default:"Unregistered" }}<br />
-              <span class="bold">Email:</span> {{ billing.email|default:email }} / <span class="bold">PH:</span> {{ billing.phone|default:phone }}
-            </div>
-          </td>
+            <!-- Right Side (45% width) -->
+            <td width="45%" class="b-bottom" style="padding: 6px;" valign="top">
+                <table class="no-border" style="font-size: 10.5px;">
+                    <tr>
+                        <td width="40%" class="bold">Invoice No</td>
+                        <td>: {{ invoice_no|default:transaction.invoice_no }}</td>
+                    </tr>
+                    <tr>
+                        <td class="bold">Invoice Date</td>
+                        <td>: {{ invoice_date|default:transaction.invoice_date }}</td>
+                    </tr>
+                    <tr>
+                        <td class="bold">Place of Supply</td>
+                        <td>: {{ place_of_supply|default:transaction.place_of_supply|default:"Tamil Nadu" }}</td>
+                    </tr>
+                </table>
+                <div class="b-top buyer-details" style="margin-top: 6px; padding-top: 6px;">
+                    <div class="bold" style="text-decoration: underline; margin-bottom: 3px;">Buyer (Bill to)</div>
+                    <strong>{{ student_name|default:billing.name }}</strong><br />
+                    {% if student_address and student_address != "-" %}
+                    {{ student_address|linebreaksbr }}<br />
+                    {% elif billing.address %}
+                    {{ billing.address|linebreaksbr }}<br />
+                    {% else %}
+                    Chennai, Tamil Nadu<br />
+                    {% endif %}
+                    <span class="bold">GSTIN/UIN:</span> {{ gst|default:billing.gst|default:"Unregistered" }}<br />
+                    <span class="bold">Email:</span> {{ student_email|default:email|default:billing.email }} / <span class="bold">PH:</span> {{ student_phone|default:phone|default:billing.phone }}
+                </div>
+            </td>
         </tr>
     </table>
 
-      <!-- SERVICE TABLE -->
-
-      <table class="service-table">
+    <!-- Items & Services Table -->
+    <table class="bordered">
         <thead>
-            <tr style="background-color: #FAFAFA;">
+            <tr class="table-header-bg">
                 <th width="7%" class="text-center">SI NO</th>
                 <th width="43%">Description of service</th>
                 <th width="14%" class="text-center">HSN/SAC</th>
@@ -140,87 +158,88 @@
         </thead>
         <tbody>
             <tr>
-                <td class="text-center" height="28" valign="top">1</td>
+                <td class="text-center" height="30" valign="top">1</td>
                 <td valign="top"><strong>{{ course_name }}</strong></td>
                 <td class="text-center" valign="top">{{ hsn_sac|default:"999293" }}</td>
-                <td class="text-right" valign="top">{{ rate }}</td>
+                <td class="text-right" valign="top">₹{{ rate }}</td>
                 <td class="text-center" valign="top">18%</td>
-                <td class="text-right" valign="top">{{ taxable_value }}</td>
+                <td class="text-right" valign="top">₹{{ taxable_value }}</td>
             </tr>
             <tr>
                 <td colspan="5" class="text-right bold">Taxable Value</td>
-                <td class="text-right bold">{{ taxable_value }}</td>
+                <td class="text-right bold">₹{{ taxable_value }}</td>
             </tr>
             <tr>
                 <td colspan="5" class="text-right">Output CGST 9%</td>
-                <td class="text-right">{{ cgst }}</td>
+                <td class="text-right">₹{{ cgst_amount|default:cgst }}</td>
             </tr>
             <tr>
                 <td colspan="5" class="text-right">Output SGST 9%</td>
-                <td class="text-right">{{ sgst }}</td>
+                <td class="text-right">₹{{ sgst_amount|default:sgst }}</td>
             </tr>
-            <tr style="background-color: #FAFAFA;">
+            <tr class="table-header-bg">
                 <td colspan="5" class="text-right bold">Invoice Value</td>
-                <td class="text-right bold">{{ total_amount }}</td>
+                <td class="text-right bold">₹{{ invoice_value|default:total_amount }}</td>
             </tr>
         </tbody>
     </table>
 
     <!-- Amount Chargeable -->
-    <div class="b-bottom" style="padding: 3px 5px;">
-        <span class="bold">Amount Chargeable (in Words):</span> {{ amount_in_words|default:"Four Hundred And Ninety-Nine Only" }}
+    <div class="b-bottom" style="padding: 4px 6px;">
+        <span class="bold">Amount Chargeable (in Words):</span> {{ amount_in_words|default:"Only" }}
     </div>
 
-    <!-- GST Table -->
+    <!-- GST Tax Breakdown Table -->
     <table class="bordered">
         <thead>
-            <tr style="background-color: #FAFAFA;">
+            <tr class="table-header-bg">
                 <th width="16%">HSN/SAC</th>
                 <th width="20%">Taxable Value</th>
-                <th width="16%">Rate of %</th>
-                <th width="16%">IGST</th>
-                <th width="16%">CGST</th>
-                <th width="16%">SGST</th>
-                <th width="16%">Total Tax amount</th>
+                <th width="14%">Rate of %</th>
+                <th width="12%">IGST</th>
+                <th width="12%">CGST</th>
+                <th width="12%">SGST</th>
+                <th width="14%">Total Tax amount</th>
             </tr>
         </thead>
         <tbody>
             <tr>
                 <td class="text-center">{{ hsn_sac|default:"999293" }}</td>
-                <td class="text-right">{{ taxable_value }}</td>
+                <td class="text-right">₹{{ taxable_value }}</td>
                 <td class="text-center">9%</td>
                 <td class="text-center">-</td>
-                <td class="text-right">{{ cgst }}</td>
-                <td class="text-right">{{ sgst }}</td>
-                <td class="text-right">{{ total_tax }}</td>
+                <td class="text-right">₹{{ cgst_amount|default:cgst }}</td>
+                <td class="text-right">₹{{ sgst_amount|default:sgst }}</td>
+                <td class="text-right">₹{{ total_tax }}</td>
             </tr>
-            <tr class="bold" style="background-color: #FAFAFA;">
+            <tr class="bold table-header-bg">
                 <td class="text-center">Total</td>
-                <td class="text-right">{{ taxable_value }}</td>
+                <td class="text-right">₹{{ taxable_value }}</td>
                 <td class="text-center">-</td>
                 <td class="text-center">-</td>
-                <td class="text-right">{{ cgst }}</td>
-                <td class="text-right">{{ sgst }}</td>
-                <td class="text-right">{{ total_tax }}</td>
+                <td class="text-right">₹{{ cgst_amount|default:cgst }}</td>
+                <td class="text-right">₹{{ sgst_amount|default:sgst }}</td>
+                <td class="text-right">₹{{ total_tax }}</td>
             </tr>
         </tbody>
     </table>
 
-    <div class="b-bottom" style="padding: 2.5px 5px; font-size: 8px;">
-        <span class="bold">Tax amount (in words):</span> {{ tax_in_words|default:"Seventy-Six Point One Two Only." }}
+    <div class="b-bottom" style="padding: 3px 6px; font-size: 10px;">
+        <span class="bold">Tax amount (in words):</span> {{ tax_in_words|default:"Only" }}
     </div>
     
-    <div class="b-bottom" style="padding: 2.5px 5px; font-size: 8px;">
+    <div class="b-bottom" style="padding: 3px 6px; font-size: 10px;">
         <span class="bold">Company's PAN No:</span> ABECA6801B1
     </div>
 
-    <!-- Bottom Section with Ledger Note Table & Bank Details -->
+    <!-- Lower Section (Bank Details & Previous Transactions Note) -->
     <table>
         <tr>
-            <td width="50%" class="b-right" style="padding: 4px;" valign="top">
-                <div class="bold" style="text-decoration: underline; margin-bottom: 2px;">Company's Bank Details</div>
-                <table class="no-border" style="font-size: 8px;">
-                    <tr><td width="30%" class="bold">Ac Name</td><td>: ARYU ACADEMY PVT LTD</td></tr>
+            <!-- Left Half (Bank Details) -->
+            <td width="50%" class="b-right" style="padding: 6px;" valign="top">
+                <div class="bold" style="text-decoration: underline; margin-bottom: 4px;">Company's Bank Details</div>
+                <table class="no-border" style="font-size: 10px;">
+                    <tr><td width="32%" class="bold">Ac Name</td><td>: ARYU ACADEMY PVT LTD</td></tr>
                     <tr><td class="bold">Bank Name</td><td>: Federal Bank</td></tr>
                     <tr><td class="bold">A/c No</td><td>: 12330200034467</td></tr>
                     <tr><td class="bold">IFSC / BR</td><td>: FDRL0001233</td></tr>
@@ -228,43 +247,56 @@
                 </table>
             </td>
             
-            <td width="50%" style="padding: 4px;" valign="top">
-                <div class="bold" style="text-decoration: underline; margin-bottom: 2px;">Note</div>
-                <table class="bordered" style="font-size: 7.5px;">
+            <!-- Right Half (Note & Ledger) -->
+            <td width="50%" style="padding: 6px;" valign="top">
+                <div class="bold" style="text-decoration: underline; margin-bottom: 4px;">Note</div>
+                <table class="bordered" style="font-size: 9.5px;">
                     <thead>
-                        <tr style="background-color: #FAFAFA;">
+                        <tr class="table-header-bg">
                             <th width="12%">SNo</th>
-                            <th width="35%">Invoice No</th>
-                            <th width="28%">Date</th>
-                            <th width="25%">Amount</th>
+                            <th width="36%">Invoice No</th>
+                            <th width="26%">Date</th>
+                            <th width="26%">Amount</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <tr>
-                            <td class="text-center">1</td>
-                            <td>{{ transaction.invoice_no|default:invoice_no }}</td>
-                            <td>{{ transaction.invoice_date|default:invoice_date }}</td>
-                            <td class="text-right">{{ transaction.amount|default:total_amount }}</td>
-                        </tr>
-                        <tr class="bold" style="background-color: #FAFAFA;">
+                        {% if previous_invoice_details %}
+                            {% for item in previous_invoice_details %}
+                            <tr>
+                                <td class="text-center">{{ forloop.counter }}</td>
+                                <td>{{ item.invoice_no }}</td>
+                                <td>{{ item.invoice_date }}</td>
+                                <td class="text-right">₹{{ item.amount }}</td>
+                            </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td class="text-center">1</td>
+                                <td>{{ invoice_no|default:transaction.invoice_no }}</td>
+                                <td>{{ invoice_date|default:transaction.invoice_date }}</td>
+                                <td class="text-right">₹{{ total_amount|default:transaction.invoice_total }}</td>
+                            </tr>
+                        {% endif %}
+                        <tr class="bold table-header-bg">
                             <td colspan="3" class="text-right">Total Received</td>
-                            <td class="text-right">{{ total_amount }}</td>
+                            <td class="text-right">₹{{ total_received|default:total_amount }}</td>
                         </tr>
                         <tr class="bold">
                             <td colspan="3" class="text-right">Balance Due</td>
-                            <td class="text-right">0.00</td>
+                            <td class="text-right">₹{{ balance_due|default:"0.00" }}</td>
                         </tr>
                     </tbody>
                 </table>
-                <div style="font-size: 7.5px; margin-top: 4px; text-align: right;">
-                    <strong>for ARYU ACADEMY PRIVATE LIMITED</strong><br/>
+                <div style="font-size: 9.5px; margin-top: 10px; text-align: right;">
+                    <strong>for ARYU ACADEMY PRIVATE LIMITED</strong><br/><br/>
                     <em>Computer Generated Invoice - Signature Not Required</em>
                 </div>
             </td>
         </tr>
     </table>
 
-    <div class="b-top" style="padding: 3px 5px; font-size: 7.5px;">
+    <!-- Footer Declaration -->
+    <div class="b-top" style="padding: 4px 6px; font-size: 9.5px; background-color: #F8F9FA;">
         <strong>Declaration:</strong> We declare that this invoice shows the actual price of the service described and that all particulars are true and correct.
     </div>
 </div>
