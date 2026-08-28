@@ -216,13 +216,18 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 "razorpay_signature": signature
             })
 
+            # Synchronize and update PaymentTransaction status explicitly to "done"
+            transaction = PaymentTransaction.objects.filter(order_id=order_id).first()
+            if transaction:
+                transaction.payment_status = "done"
+                transaction.transaction_id = payment_id
+                transaction.save()
+
         except razorpay.errors.SignatureVerificationError:
             return Response(
                 {"success": False, "message": "Invalid payment signature"},
                 status=400
             )
-
-        # Let webhook handle final status
 
         return Response({"success": True})
 
@@ -1548,7 +1553,7 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
 
                 # Link student directly to transaction
                 txn.student = student
-                txn.payment_status = "captured"
+                txn.payment_status = "done"
                 
                 # Retrieve payment ID
                 razorpay_payment_id = meta.get("razorpay_payment_id")
