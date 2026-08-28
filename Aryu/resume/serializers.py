@@ -4,8 +4,6 @@ from django.core.cache import cache
 from rest_framework import serializers
 from django.utils import timezone
 import re
-import hashlib
-from django.core.cache import cache
 from payments.models import PaymentTransaction
 from .models import ResumeRegistration,Contact,Subscription,PaymentHistory, UserSubscription, UserResume, ResumeTemplate
 from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
@@ -87,16 +85,10 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
             # Decode and validate refresh token structure/cryptography
             refresh = RefreshToken(token_str)
 
-            # Strictly ensure this is a refresh token and NOT an access token
-            token_type = refresh.get("token_type") or refresh.payload.get("token_type")
-            if token_type and token_type != "refresh":
-                raise InvalidToken({"detail": "Token is not a valid refresh token."})
-
-            user_id = refresh.get("user_id") or refresh.get("id")
             if not user_id:
                 raise AuthenticationFailed("Invalid token payload: missing user ID.")
 
-            # Validate active, verified, non-deleted user
+            # Validate user
             user = ResumeRegistration.objects.get(
                 id=user_id,
                 status=True,
