@@ -933,40 +933,70 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         payment_status = request.query_params.get('payment_status')
         search_query = request.query_params.get('search')
         
-        # Fetch courses for the specific trainer with fee as string
+        # Fetch courses for the specific trainer with fee as string AND their batches
         course = None
         if trainer_id:
-            # Get courses from trainer_courses table with fee
+            # Get courses with their batches
             course_qs = Course.objects.filter(
                 trainer_courses__trainer_id=trainer_id,
                 is_archived=False
-            ).values("course_id", "course_name", "fee").distinct()
+            ).distinct()
             
-            # Convert fee to string for each course
             course = []
             for c in course_qs:
+                # Get all batches for this course assigned to this trainer
+                batch_qs = NewBatch.objects.filter(
+                    course=c,
+                    trainers__trainer_id=trainer_id,
+                    status=True,
+                    is_archived=False
+                ).values("batch_id", "title")
+                
                 course_dict = {
-                    "course_id": c["course_id"],
-                    "course_name": c["course_name"],
-                    "fee": str(c["fee"]) if c["fee"] is not None else "0.0"
+                    "course_id": c.course_id,
+                    "course_name": c.course_name,
+                    "fee": str(c.fee) if c.fee is not None else "0.0",
+                    "batches": [
+                        {
+                            "batch_id": batch["batch_id"],
+                            "batch_name": batch["title"],
+                            "title": batch["title"]
+                        }
+                        for batch in batch_qs
+                    ]
                 }
                 course.append(course_dict)
         else:
-            # If no trainer_id, get all active courses with fee as string
+            # If no trainer_id, get all active courses with their batches
             course_qs = Course.objects.filter(
                 is_archived=False
-            ).values("course_id", "course_name", "fee").distinct()
+            ).distinct()
             
             course = []
             for c in course_qs:
+                # Get all active batches for this course
+                batch_qs = NewBatch.objects.filter(
+                    course=c,
+                    status=True,
+                    is_archived=False
+                ).values("batch_id", "title")
+                
                 course_dict = {
-                    "course_id": c["course_id"],
-                    "course_name": c["course_name"],
-                    "fee": str(c["fee"]) if c["fee"] is not None else "0.0"
+                    "course_id": c.course_id,
+                    "course_name": c.course_name,
+                    "fee": str(c.fee) if c.fee is not None else "0.0",
+                    "batches": [
+                        {
+                            "batch_id": batch["batch_id"],
+                            "batch_name": batch["title"],
+                            "title": batch["title"]
+                        }
+                        for batch in batch_qs
+                    ]
                 }
                 course.append(course_dict)
         
-        # Apply filters
+        # Apply filters to the main queryset
         if trainer_id:
             queryset = queryset.filter(tutor_id=trainer_id)
         
@@ -1002,13 +1032,13 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
             except Trainer.DoesNotExist:
                 trainer_details = None
         
-        # Fetch Active Courses (optimized)
+        # Fetch Active Courses for dropdown (optimized)
         active_courses = Course.objects.filter(
             is_archived=False
         ).exclude(status__iexact='inactive')
         courses_data = CourseOptionSerializer(active_courses, many=True).data
         
-        # Build Course-Grouped Batches (optimized with Prefetch)
+        # Build Course-Grouped Batches for dropdown
         active_courses_with_batches = active_courses.prefetch_related(
             Prefetch(
                 'batches',
@@ -1032,15 +1062,12 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
             for course in active_courses_with_batches
         ]
         
-        # Convert course queryset to list if it exists
-        course_list = list(course) if course else []
-        
         # Prepare response data
         response_data = {
             'trainer_details': trainer_details,
-            'courses': course_list,  # Now properly handles None case
-            'active_courses': courses_data,
-            'all_batches': batches_by_course,
+            'courses_with_batches': course,  # Now contains courses with their batches
+            'active_courses': courses_data,  # For dropdown filters
+            'all_batches': batches_by_course,  # For batch dropdown filters
         }
         
         # Paginated Response
@@ -1056,6 +1083,7 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         response_data['results'] = serializer.data
         return Response(response_data, status=status.HTTP_200_OK)
+    
 class StripePaymentViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['post'])
