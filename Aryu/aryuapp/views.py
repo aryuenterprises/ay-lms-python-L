@@ -8544,10 +8544,49 @@ def to_ist(dt):
     return dt.astimezone(IST_TZ)
 
 
+class AdminLogPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+    def get_paginated_response(self, data, extra_meta=None):
+        response_dict = {
+            "success": True,
+            "total_records": self.page.paginator.count,
+            "total_pages": self.page.paginator.num_pages,
+            "current_page": self.page.number,
+            "page_size": self.get_page_size(self.request),
+            "next": self.get_next_link(),
+            "previous": self.get_previous_link(),
+            "logs": data,
+        }
+        if extra_meta:
+            response_dict.update(extra_meta)
+        return Response(response_dict, status=status.HTTP_200_OK)
+
+
 class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
-    pagination_class = AttendanceCursorPagination
+    pagination_class = AdminLogPagination
+
+    @property
+    def paginator(self):
+        if not hasattr(self, "_paginator"):
+            if self.pagination_class is None:
+                self._paginator = None
+            else:
+                self._paginator = self.pagination_class()
+        return self._paginator
+
+    def paginate_queryset(self, queryset):
+        if self.paginator is None:
+            return None
+        return self.paginator.paginate_queryset(queryset, self.request, view=self)
+
+    def get_paginated_response(self, data, extra_meta=None):
+        assert self.paginator is not None
+        return self.paginator.get_paginated_response(data, extra_meta=extra_meta)
 
     @secure_throttle(rate_limit=15, period=60)
     def list(self, request):
@@ -8560,10 +8599,40 @@ class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
                 user_created_id = getattr(user, "user_id", None)
 
             # ---------------------------------------------
-            # 1. Precise Timezone-Aware Date Range Filtering
+            # 1. Query Params Extraction & Validation
             # ---------------------------------------------
+            page_param = request.query_params.get("page", "1")
+            page_size_param = request.query_params.get("page_size")
+
+            # Validate pagination query parameters
+            try:
+                page_number = int(page_param)
+                if page_number < 1:
+                    raise ValueError
+            except ValueError:
+                return Response(
+                    {"success": False, "message": "Invalid 'page' parameter. Must be a positive integer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if page_size_param:
+                try:
+                    page_size_val = int(page_size_param)
+                    if page_size_val < 1:
+                        raise ValueError
+                except ValueError:
+                    return Response(
+                        {"success": False, "message": "Invalid 'page_size' parameter. Must be a positive integer."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
             from_date_param = request.query_params.get("from_date")
             to_date_param = request.query_params.get("to_date")
+            course_id_param = request.query_params.get("course_id")
+            batch_id_param = request.query_params.get("batch_id")
+            student_id_param = request.query_params.get("student_id")
+            trainer_id_param = request.query_params.get("trainer_id")
+            selected_user_type = request.query_params.get("user_type", "").lower()
 
             date_filter = Q()
             parsed_from = None
@@ -8572,7 +8641,6 @@ class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
             if from_date_param:
                 try:
                     parsed_from = datetime.strptime(from_date_param.strip(), "%Y-%m-%d").date()
-                    # Start of day in IST: YYYY-MM-DD 00:00:00
                     start_dt = IST_TZ.localize(datetime.combine(parsed_from, time.min))
                     date_filter &= Q(date__gte=start_dt)
                 except ValueError:
@@ -8584,7 +8652,6 @@ class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
             if to_date_param:
                 try:
                     parsed_to = datetime.strptime(to_date_param.strip(), "%Y-%m-%d").date()
-                    # End of day in IST: YYYY-MM-DD 23:59:59.999999
                     end_dt = IST_TZ.localize(datetime.combine(parsed_to, time.max))
                     date_filter &= Q(date__lte=end_dt)
                 except ValueError:
@@ -8598,6 +8665,13 @@ class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
                     {"success": False, "message": "'from_date' cannot be later than 'to_date'."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+            # Common dimensional filters for Course & Batch
+            common_log_filter = Q()
+            if course_id_param:
+                common_log_filter &= Q(course__course_id=course_id_param.strip())
+            if batch_id_param:
+                common_log_filter &= Q(new_batch__batch_id=batch_id_param.strip())
 
             # ---------------------------------------------
             # 2. Tenant Isolation
@@ -8644,156 +8718,175 @@ class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
                     created_by__in=Subquery(admin_ids),
                 )
 
-            # Combine Tenant Filters with Date Filter
-            final_student_filter = student_attendance_filter & date_filter
-            final_trainer_filter = trainer_attendance_filter & date_filter
+            # Apply student/trainer-specific entity filtering
+            final_student_filter = (
+                student_attendance_filter
+                & date_filter
+                & common_log_filter
+            )
+            if student_id_param:
+                final_student_filter &= Q(student__student_id=student_id_param.strip())
+
+            final_trainer_filter = (
+                trainer_attendance_filter
+                & date_filter
+                & common_log_filter
+            )
+            if trainer_id_param:
+                final_trainer_filter &= Q(trainer__employee_id=trainer_id_param.strip())
+
+            consolidated_logs = []
 
             # ---------------------------------------------
             # 3. STUDENT CONSOLIDATED LOGS
             # ---------------------------------------------
-            student_logs_raw = (
-                Attendance.objects.filter(final_student_filter)
-                .annotate(log_date=TruncDate("date", tzinfo=IST_TZ))
-                .values(
-                    "student__student_id",
-                    "student__first_name",
-                    "student__last_name",
-                    "course__course_id",
-                    "course__course_name",
-                    "new_batch__batch_id",
-                    "new_batch__title",
-                    "log_date",
-                )
-                .annotate(
-                    first_login=Min("date", filter=Q(status__iexact="login")),
-                    first_any=Min("date"),
-                    actual_logout=Max("date", filter=Q(status__iexact="logout")),
-                    last_activity=Max("date"),
-                )
-                .order_by("-log_date", "course__course_id", "new_batch__batch_id")
-            )
+            include_students = selected_user_type in ["", "student"] and not trainer_id_param
 
-            consolidated_logs = []
-
-            for row in student_logs_raw:
-                login_dt = to_ist(row["first_login"] or row["first_any"])
-                logout_dt = to_ist(row["actual_logout"])
-                last_act_dt = to_ist(row["last_activity"])
-
-                has_actual_logout = (
-                    logout_dt is not None
-                    and login_dt is not None
-                    and logout_dt > login_dt
+            if include_students:
+                student_logs_raw = (
+                    Attendance.objects.filter(final_student_filter)
+                    .annotate(log_date=TruncDate("date", tzinfo=IST_TZ))
+                    .values(
+                        "student__student_id",
+                        "student__first_name",
+                        "student__last_name",
+                        "course__course_id",
+                        "course__course_name",
+                        "new_batch__batch_id",
+                        "new_batch__title",
+                        "log_date",
+                    )
+                    .annotate(
+                        first_login=Min("date", filter=Q(status__iexact="login")),
+                        first_any=Min("date"),
+                        actual_logout=Max("date", filter=Q(status__iexact="logout")),
+                        last_activity=Max("date"),
+                    )
+                    .order_by("-log_date", "course__course_id", "new_batch__batch_id")
                 )
 
-                spend_time_str = "-"
-                if last_act_dt and login_dt and last_act_dt > login_dt:
-                    total_duration = last_act_dt - login_dt
-                    total_minutes = int(total_duration.total_seconds() // 60)
-                    hours, minutes = divmod(total_minutes, 60)
-                    spend_time_str = f"{hours}h {minutes}m"
+                for row in student_logs_raw:
+                    login_dt = to_ist(row["first_login"] or row["first_any"])
+                    logout_dt = to_ist(row["actual_logout"])
+                    last_act_dt = to_ist(row["last_activity"])
 
-                full_name = f"{row['student__first_name'] or ''} {row['student__last_name'] or ''}".strip()
+                    has_actual_logout = (
+                        logout_dt is not None
+                        and login_dt is not None
+                        and logout_dt > login_dt
+                    )
 
-                consolidated_logs.append(
-                    {
-                        "id": row["student__student_id"],
-                        "name": full_name,
-                        "user_type": "student",
-                        "batch": row["new_batch__title"] or "-",
-                        "batch_id": row["new_batch__batch_id"],
-                        "course": row["course__course_name"] or "-",
-                        "course_id": row["course__course_id"],
-                        "login_time": (
-                            login_dt.strftime("%Y-%m-%d %I:%M %p")
-                            if login_dt
-                            else "-"
-                        ),
-                        "logout_time": (
-                            logout_dt.strftime("%Y-%m-%d %I:%M %p")
-                            if has_actual_logout
-                            else "-"
-                        ),
-                        "spend_time": spend_time_str,
-                        "date_time": (
-                            login_dt.isoformat()
-                            if login_dt
-                            else str(row["log_date"])
-                        ),
-                    }
-                )
+                    spend_time_str = "-"
+                    if last_act_dt and login_dt and last_act_dt > login_dt:
+                        total_duration = last_act_dt - login_dt
+                        total_minutes = int(total_duration.total_seconds() // 60)
+                        hours, minutes = divmod(total_minutes, 60)
+                        spend_time_str = f"{hours}h {minutes}m"
+
+                    full_name = f"{row['student__first_name'] or ''} {row['student__last_name'] or ''}".strip()
+
+                    consolidated_logs.append(
+                        {
+                            "id": row["student__student_id"],
+                            "name": full_name,
+                            "user_type": "student",
+                            "batch": row["new_batch__title"] or "-",
+                            "batch_id": row["new_batch__batch_id"],
+                            "course": row["course__course_name"] or "-",
+                            "course_id": row["course__course_id"],
+                            "login_time": (
+                                login_dt.strftime("%Y-%m-%d %I:%M %p")
+                                if login_dt
+                                else "-"
+                            ),
+                            "logout_time": (
+                                logout_dt.strftime("%Y-%m-%d %I:%M %p")
+                                if has_actual_logout
+                                else "-"
+                            ),
+                            "spend_time": spend_time_str,
+                            "date_time": (
+                                login_dt.isoformat()
+                                if login_dt
+                                else str(row["log_date"])
+                            ),
+                        }
+                    )
 
             # ---------------------------------------------
             # 4. TRAINER CONSOLIDATED LOGS
             # ---------------------------------------------
-            trainer_logs_raw = (
-                TrainerAttendance.objects.filter(final_trainer_filter)
-                .annotate(log_date=TruncDate("date", tzinfo=IST_TZ))
-                .values(
-                    "trainer__employee_id",
-                    "trainer__full_name",
-                    "course__course_id",
-                    "course__course_name",
-                    "new_batch__batch_id",
-                    "new_batch__title",
-                    "log_date",
-                )
-                .annotate(
-                    first_login=Min("date", filter=Q(status__iexact="login")),
-                    first_any=Min("date"),
-                    actual_logout=Max("date", filter=Q(status__iexact="logout")),
-                    last_activity=Max("date"),
-                )
-                .order_by("-log_date", "course__course_id", "new_batch__batch_id")
-            )
+            include_trainers = selected_user_type in ["", "trainer"] and not student_id_param
 
-            for row in trainer_logs_raw:
-                login_dt = to_ist(row["first_login"] or row["first_any"])
-                logout_dt = to_ist(row["actual_logout"])
-                last_act_dt = to_ist(row["last_activity"])
-
-                has_actual_logout = (
-                    logout_dt is not None
-                    and login_dt is not None
-                    and logout_dt > login_dt
+            if include_trainers:
+                trainer_logs_raw = (
+                    TrainerAttendance.objects.filter(final_trainer_filter)
+                    .annotate(log_date=TruncDate("date", tzinfo=IST_TZ))
+                    .values(
+                        "trainer__employee_id",
+                        "trainer__full_name",
+                        "course__course_id",
+                        "course__course_name",
+                        "new_batch__batch_id",
+                        "new_batch__title",
+                        "log_date",
+                    )
+                    .annotate(
+                        first_login=Min("date", filter=Q(status__iexact="login")),
+                        first_any=Min("date"),
+                        actual_logout=Max("date", filter=Q(status__iexact="logout")),
+                        last_activity=Max("date"),
+                    )
+                    .order_by("-log_date", "course__course_id", "new_batch__batch_id")
                 )
 
-                spend_time_str = "-"
-                if last_act_dt and login_dt and last_act_dt > login_dt:
-                    total_duration = last_act_dt - login_dt
-                    total_minutes = int(total_duration.total_seconds() // 60)
-                    hours, minutes = divmod(total_minutes, 60)
-                    spend_time_str = f"{hours}h {minutes}m"
+                for row in trainer_logs_raw:
+                    login_dt = to_ist(row["first_login"] or row["first_any"])
+                    logout_dt = to_ist(row["actual_logout"])
+                    last_act_dt = to_ist(row["last_activity"])
 
-                consolidated_logs.append(
-                    {
-                        "id": row["trainer__employee_id"],
-                        "name": row["trainer__full_name"],
-                        "user_type": "trainer",
-                        "batch": row["new_batch__title"] or "-",
-                        "batch_id": row["new_batch__batch_id"],
-                        "course": row["course__course_name"] or "-",
-                        "course_id": row["course__course_id"],
-                        "login_time": (
-                            login_dt.strftime("%Y-%m-%d %I:%M %p")
-                            if login_dt
-                            else "-"
-                        ),
-                        "logout_time": (
-                            logout_dt.strftime("%Y-%m-%d %I:%M %p")
-                            if has_actual_logout
-                            else "-"
-                        ),
-                        "spend_time": spend_time_str,
-                        "date_time": (
-                            login_dt.isoformat()
-                            if login_dt
-                            else str(row["log_date"])
-                        ),
-                    }
-                )
+                    has_actual_logout = (
+                        logout_dt is not None
+                        and login_dt is not None
+                        and logout_dt > login_dt
+                    )
 
-            # Sort merged logs by IST datetime descending
+                    spend_time_str = "-"
+                    if last_act_dt and login_dt and last_act_dt > login_dt:
+                        total_duration = last_act_dt - login_dt
+                        total_minutes = int(total_duration.total_seconds() // 60)
+                        hours, minutes = divmod(total_minutes, 60)
+                        spend_time_str = f"{hours}h {minutes}m"
+
+                    consolidated_logs.append(
+                        {
+                            "id": row["trainer__employee_id"],
+                            "name": row["trainer__full_name"],
+                            "user_type": "trainer",
+                            "batch": row["new_batch__title"] or "-",
+                            "batch_id": row["new_batch__batch_id"],
+                            "course": row["course__course_name"] or "-",
+                            "course_id": row["course__course_id"],
+                            "login_time": (
+                                login_dt.strftime("%Y-%m-%d %I:%M %p")
+                                if login_dt
+                                else "-"
+                            ),
+                            "logout_time": (
+                                logout_dt.strftime("%Y-%m-%d %I:%M %p")
+                                if has_actual_logout
+                                else "-"
+                            ),
+                            "spend_time": spend_time_str,
+                            "date_time": (
+                                login_dt.isoformat()
+                                if login_dt
+                                else str(row["log_date"])
+                            ),
+                        }
+                    )
+
+            # Sort combined logs chronologically descending
             consolidated_logs.sort(key=lambda x: x["date_time"], reverse=True)
 
             # ---------------------------------------------
@@ -8808,6 +8901,9 @@ class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
             elif user_type == "admin":
                 courses_qs = courses_qs.filter(created_by=user_created_id)
 
+            if course_id_param:
+                courses_qs = courses_qs.filter(course_id=course_id_param.strip())
+
             courses = list(courses_qs.values("course_id", "course_name"))
 
             # ---------------------------------------------
@@ -8815,11 +8911,16 @@ class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
             # ---------------------------------------------
             batches_by_course = defaultdict(list)
 
-            active_batches = NewBatch.objects.filter(
+            active_batches_qs = NewBatch.objects.filter(
                 is_archived=False,
                 status=True,
                 course_id__in=Subquery(courses_qs.values("course_id")),
-            ).values("batch_id", "title", "course_id")
+            )
+
+            if batch_id_param:
+                active_batches_qs = active_batches_qs.filter(batch_id=batch_id_param.strip())
+
+            active_batches = active_batches_qs.values("batch_id", "title", "course_id")
 
             for batch in active_batches:
                 batches_by_course[batch["course_id"]].append(
@@ -8843,15 +8944,23 @@ class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
             # ---------------------------------------------
             # 7. STUDENTS METADATA
             # ---------------------------------------------
+            student_meta_conditions = (
+                student_meta_filter
+                & Q(is_archived=False)
+                & Q(status=True)
+                & Q(new_batches__is_archived=False)
+                & Q(new_batches__status=True)
+                & Q(new_batches__course_id__in=Subquery(courses_qs.values("course_id")))
+            )
+
+            if batch_id_param:
+                student_meta_conditions &= Q(new_batches__batch_id=batch_id_param.strip())
+
+            if student_id_param:
+                student_meta_conditions &= Q(student_id=student_id_param.strip())
+
             student_qs = (
-                Student.objects.filter(
-                    student_meta_filter,
-                    is_archived=False,
-                    status=True,
-                    new_batches__is_archived=False,
-                    new_batches__status=True,
-                    new_batches__course_id__in=Subquery(courses_qs.values("course_id")),
-                )
+                Student.objects.filter(student_meta_conditions)
                 .annotate(
                     full_name=Concat(
                         Coalesce(F("first_name"), Value("")),
@@ -8880,14 +8989,25 @@ class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
                 if st["student_id"] is not None
             ]
 
+            # ---------------------------------------------
+            # 8. APPLY PAGINATION
+            # ---------------------------------------------
+            extra_meta = {
+                "course": courses,
+                "batches": batches_metadata,
+                "students": students_metadata,
+            }
+
+            paginated_logs = self.paginate_queryset(consolidated_logs)
+            if paginated_logs is not None:
+                return self.get_paginated_response(paginated_logs, extra_meta=extra_meta)
+
             return Response(
                 {
                     "success": True,
                     "total_records": len(consolidated_logs),
                     "logs": consolidated_logs,
-                    "course": courses,
-                    "batches": batches_metadata,
-                    "students": students_metadata,
+                    **extra_meta,
                 },
                 status=status.HTTP_200_OK,
             )
@@ -8902,6 +9022,7 @@ class AdminLogViewSet(LoggingMixin, viewsets.ViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+            
 
 def get_ist_now():
     ist = pytz.timezone('Asia/Kolkata')
