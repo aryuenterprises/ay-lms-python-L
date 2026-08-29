@@ -15,14 +15,14 @@ class AryuReportView(APIView):
 
     def get(self, request):
         try:
-
             search = request.GET.get("search", "").strip()
             tutor_id = request.GET.get("tutor_id", "").strip()
             course_id = request.GET.get("course_id", "").strip()
 
+            # Ordered descending by creation date (-created_at)
             students = Student.objects.filter(
                 is_archived=False
-            ).distinct()
+            ).order_by("-created_at").distinct()
 
             if search:
                 students = students.filter(
@@ -37,6 +37,7 @@ class AryuReportView(APIView):
                 students = students.filter(
                     new_batches__trainer__trainer_id=tutor_id
                 ).distinct()
+
             if course_id:
                 students = students.filter(
                     new_batches__course__course_id=course_id,
@@ -44,7 +45,7 @@ class AryuReportView(APIView):
                     new_batches__status=True,
                 ).distinct()
 
-            courses = (
+            courses = list(
                 Course.objects.filter(is_archived=False)
                 .values("course_id", "course_name")
                 .order_by("course_name")
@@ -53,7 +54,6 @@ class AryuReportView(APIView):
             data = []
 
             for student in students:
-
                 full_name = (
                     f"{student.first_name or ''} "
                     f"{student.last_name or ''}"
@@ -67,7 +67,7 @@ class AryuReportView(APIView):
                     "email": student.email,
                     "converter": student.converter,
                     "student_type": student.student_type,
-                    "created_at":student.created_at,
+                    "created_at": student.created_at,
                     "courses": []
                 }
 
@@ -79,14 +79,10 @@ class AryuReportView(APIView):
                     )
                     .select_related("course")
                     .prefetch_related("trainers")
+                    .distinct()
                 )
 
-               
-
-                batches = batches.distinct()
-
                 for batch in batches:
-
                     course = batch.course
 
                     transactions = (
@@ -95,10 +91,7 @@ class AryuReportView(APIView):
                             course=course,
                             is_archived=False
                         )
-                        .order_by(
-                            "-invoice_date",
-                            "-created_at"
-                        )
+                        .order_by("-invoice_date", "-created_at")
                     )
 
                     totals = transactions.aggregate(
@@ -112,18 +105,13 @@ class AryuReportView(APIView):
                     trainer = batch.trainers.first()
 
                     for payment in transactions:
-
                         payment_history.append({
                             "id": payment.id,
                             "transaction_id": payment.transaction_id,
                             "invoice_date": payment.invoice_date,
                             "amount": float(payment.amount or 0),
-                            "amount_received": float(
-                                payment.amount_received or 0
-                            ),
-                            "balance_due": float(
-                                payment.balance_due or 0
-                            ),
+                            "amount_received": float(payment.amount_received or 0),
+                            "balance_due": float(payment.balance_due or 0),
                             "payment_status": payment.payment_status,
                             "payment_mode": (
                                 payment.metadata.get("mode")
@@ -131,55 +119,32 @@ class AryuReportView(APIView):
                                 else None
                             ),
                             "invoice_url": (
-                                request.build_absolute_uri(
-                                    payment.invoice.url
-                                )
+                                request.build_absolute_uri(payment.invoice.url)
                                 if payment.invoice
                                 else None
                             )
                         })
 
                     student_data["courses"].append({
-                        "course_id": (
-                            course.course_id
-                            if course else None
-                        ),
-                        "course_name": (
-                            course.course_name
-                            if course else None
-                        ),
-                        "course_type": (
-                            course.mode_of_delivery
-                            if course else None
-                        ),
-                        "course_fee":course.fee,
+                        "course_id": course.course_id if course else None,
+                        "course_name": course.course_name if course else None,
+                        "course_type": course.mode_of_delivery if course else None,
+                        "course_fee": course.fee,
                         "batch_id": batch.batch_id,
                         "batch_name": batch.title,
-                        "duration":course.duration,
+                        "duration": course.duration,
+                        "duration_type": course.duration_type,
                         "batch_start_date": batch.start_date,
                         "batch_end_date": batch.end_date,
-                        "trainer_name": (
-                            trainer.full_name
-                            if trainer
-                            else "N/A"
-                        ),
-                        "total_amount": float(
-                            totals["total_amount"] or 0
-                        ),
-                        "paid_amount": float(
-                            totals["paid_amount"] or 0
-                        ),
-                        "balance_amount": float(
-                            totals["balance_amount"] or 0
-                        ),
-                        "discount_amount": float(
-                            totals["discount_amount"] or 0
-                        ),
+                        "trainer_name": trainer.full_name if trainer else "N/A",
+                        "total_amount": float(totals["total_amount"] or 0),
+                        "paid_amount": float(totals["paid_amount"] or 0),
+                        "balance_amount": float(totals["balance_amount"] or 0),
+                        "discount_amount": float(totals["discount_amount"] or 0),
                         "payment_history": payment_history
                     })
 
                 if not student_data["courses"]:
-
                     transactions = (
                         PaymentTransaction.objects.filter(
                             student__student_id=student.student_id,
@@ -196,29 +161,20 @@ class AryuReportView(APIView):
                             "transaction_id": payment.transaction_id,
                             "invoice_date": payment.invoice_date,
                             "amount": float(payment.amount or 0),
-                            "amount_received": float(
-                                payment.amount_received or 0
-                            ),
-                            "balance_due": float(
-                                payment.balance_due or 0
-                            ),
+                            "amount_received": float(payment.amount_received or 0),
+                            "balance_due": float(payment.balance_due or 0),
                             "payment_status": payment.payment_status
                         })
 
                     student_data["payment_history"] = payment_history
 
                 data.append(student_data)
-                courses = (
-                    Course.objects.filter(is_archived=False)
-                    .values("course_id", "course_name")
-                    .order_by("course_name")
-                )
 
             return Response({
                 "success": True,
                 "total_records": students.count(),
                 "data": data,
-                "courses": list(courses),
+                "courses": courses,
             })
 
         except Exception as e:
@@ -232,3 +188,5 @@ class AryuReportView(APIView):
                 },
                 status=500
             )
+
+            
