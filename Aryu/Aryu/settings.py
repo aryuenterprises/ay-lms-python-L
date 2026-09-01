@@ -21,7 +21,7 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 
 
 """
-pip install channels-redis paypalrestsdk reportlab pyclamd pytesseract Pillow django_countries django_filter dj_rest_auth django-cors-headers django-allauth channels psycopg2-binary pytz stripe twilio holidays razorpay num2words djangorestframework Django qrcode django_redis django-axes captcha django_crontab 
+pip install channels-redis paypalrestsdk reportlab pyclamd pytesseract Pillow django_countries django_filter dj_rest_auth django-cors-headers django-allauth channels psycopg2-binary pytz stripe twilio holidays razorpay num2words djangorestframework Django qrcode django_redis django-axes captcha django_crontab celery python-dotenv djangorestframework-simplejwt django_celery_beat drf_spectacular confluent_kafka pandas phonenumbers playwright openpyxl
 """
 
 

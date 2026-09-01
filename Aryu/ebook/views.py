@@ -528,8 +528,8 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 # ─────────────────────────────────────────────────────────────────────────────
 @method_decorator(csrf_exempt, name='dispatch')
 class EbookRegistrationViewSet(viewsets.ViewSet):
-    authentication_classes = []
-    permission_classes = [AllowAny]
+    # authentication_classes = []
+    # permission_classes = [AllowAny]
 
     def _is_first_time_user(self, email, phone, current_registration_id=None):
         q_filter = Q()
