@@ -653,52 +653,52 @@ else:
         },
     }
 
-class DisableMigrations:
-    def __getitem__(self, item):
-        return None
-    def __contains__(self, item):
-        return True
+# class DisableMigrations:
+#     def __getitem__(self, item):
+#         return None
+#     def __contains__(self, item):
+#         return True
 
-if 'test' in sys.argv:
-    import django.contrib.postgres.fields
-    import django.db.models
-    from django.db.backends.sqlite3.schema import DatabaseSchemaEditor
+# if 'test' in sys.argv:
+#     import django.contrib.postgres.fields
+#     import django.db.models
+#     from django.db.backends.sqlite3.schema import DatabaseSchemaEditor
 
-    class DummyArrayField(django.db.models.JSONField):
-        def __init__(self, *args, **kwargs):
-            kwargs.pop('base_field', None)
-            kwargs.pop('size', None)
-            super().__init__(*args, **kwargs)
+#     class DummyArrayField(django.db.models.JSONField):
+#         def __init__(self, *args, **kwargs):
+#             kwargs.pop('base_field', None)
+#             kwargs.pop('size', None)
+#             super().__init__(*args, **kwargs)
 
-    django.contrib.postgres.fields.ArrayField = DummyArrayField
+#     django.contrib.postgres.fields.ArrayField = DummyArrayField
 
-    orig_quote_name = DatabaseSchemaEditor.quote_name
-    def safe_quote_name(self, name):
-        if "." in name:
-            name = name.split(".")[-1].strip('"')
-        return orig_quote_name(self, name)
-    DatabaseSchemaEditor.quote_name = safe_quote_name
+#     orig_quote_name = DatabaseSchemaEditor.quote_name
+#     def safe_quote_name(self, name):
+#         if "." in name:
+#             name = name.split(".")[-1].strip('"')
+#         return orig_quote_name(self, name)
+#     DatabaseSchemaEditor.quote_name = safe_quote_name
 
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': ':memory:',
-        }
-    }
-    MIGRATION_MODULES = DisableMigrations()
-else:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': 'aylms_live',  
-            'USER': 'aylms_live',
-            'PASSWORD':'KfdW543FDdfg',
-            'HOST': '187.127.178.144',   
-            'PORT': '5432',  
-            'AUTOCOMMIT': True,
-            'CONN_MAX_AGE': 60,
-        },
-    }
+#     DATABASES = {
+#         'default': {
+#             'ENGINE': 'django.db.backends.sqlite3',
+#             'NAME': ':memory:',
+#         }
+#     }
+#     MIGRATION_MODULES = DisableMigrations()
+# else:
+#     DATABASES = {
+#         'default': {
+#             'ENGINE': 'django.db.backends.postgresql',
+#             'NAME': 'aylms_live',  
+#             'USER': 'aylms_live',
+#             'PASSWORD':'KfdW543FDdfg',
+#             'HOST': '187.127.178.144',   
+#             'PORT': '5432',  
+#             'AUTOCOMMIT': True,
+#             'CONN_MAX_AGE': 60,
+#         },
+#     }
 
 # class DisableMigrations:
 #     def __getitem__(self, item):
