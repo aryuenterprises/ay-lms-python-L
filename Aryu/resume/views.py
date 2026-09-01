@@ -3236,7 +3236,7 @@ def resume_razorpay_webhook(request):
 
         with transaction.atomic():
 
-            txn = PaymentTransaction.objects.select_for_update().filter(
+            txn = PaymentTransaction.objects.select_for_update(of=('self',)).filter(
                 order_id=order_id
             ).first()
 

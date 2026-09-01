@@ -5,7 +5,8 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
 from django.core.files.base import ContentFile
-from django.db import models
+from django.core.files.storage import default_storage
+from django.db import models, transaction as db_transaction
 from django.template.loader import render_to_string
 from django.utils import timezone
 from django.db.models import Sum
@@ -393,17 +394,21 @@ class InvoiceService:
         invoice_list = []
 
         for index, txn in enumerate(previous_transactions, start=1):
+            txn_date = txn.invoice_date or (txn.created_at.strftime("%Y-%m-%d") if hasattr(txn, "created_at") and txn.created_at else "")
             invoice_list.append({
                 "sno": index,
                 "invoice_no": txn.invoice_no,
-                "date": txn.invoice_date,
+                "date": txn_date,
+                "invoice_date": txn_date,
                 "amount": cls.round_amount(txn.amount),
             })
 
+        curr_date = current_transaction.invoice_date or (current_transaction.created_at.strftime("%Y-%m-%d") if hasattr(current_transaction, "created_at") and current_transaction.created_at else "")
         invoice_list.append({
             "sno": len(invoice_list) + 1,
             "invoice_no": current_transaction.invoice_no,
-            "date": current_transaction.invoice_date,
+            "date": curr_date,
+            "invoice_date": curr_date,
             "amount": cls.round_amount(current_transaction.amount),
         })
 
@@ -558,6 +563,8 @@ class InvoiceService:
             ]
         )
 
+    ELIGIBLE_STATUSES = ["success", "done", "paid", "complete", "advanced"]
+
     @classmethod
     def generate_invoice(
         cls,
@@ -565,42 +572,47 @@ class InvoiceService:
         regenerate=False,
         request=None
     ):
-
-        transaction = (
-            PaymentTransaction.objects
-            .select_related(
-                "student",
-                "course",
-                "employer",
-                "webinar_registration",
-                "webinar_registration__webinar"
+        with db_transaction.atomic():
+            transaction = (
+                PaymentTransaction.objects
+                .select_for_update(of=('self',))
+                .select_related(
+                    "student",
+                    "course",
+                    "employer",
+                    "webinar_registration",
+                    "webinar_registration__webinar"
+                )
+                .get(id=transaction_id)
             )
-            .get(id=transaction_id)
-        )
 
-        # =========================================
-        # PREVENT DUPLICATE (VERIFY DISK FILE EXISTENCE)
-        # =========================================
+            # Check status eligibility unless manually triggered with regenerate
+            status_str = str(transaction.payment_status or "").strip().lower()
+            if status_str not in cls.ELIGIBLE_STATUSES and not regenerate:
+                logger.warning(
+                    f"Transaction {transaction_id} status '{transaction.payment_status}' is not eligible for invoice generation."
+                )
 
-        file_exists = False
-        if transaction.invoice:
-            try:
-                if hasattr(transaction.invoice, "path") and transaction.invoice.path:
-                    file_exists = os.path.exists(transaction.invoice.path)
-                elif isinstance(transaction.invoice, str):
-                    rel_path = transaction.invoice.lstrip("/")
-                    if rel_path.startswith("media/"):
-                        rel_path = rel_path[6:]
-                    file_path = os.path.join(settings.MEDIA_ROOT, rel_path)
-                    file_exists = os.path.exists(file_path)
-            except Exception as check_err:
-                logger.warning(f"Error checking invoice file existence for transaction {transaction_id}: {check_err}")
-                file_exists = False
+            # =========================================
+            # PREVENT DUPLICATE (VERIFY PHYSICAL DISK EXISTENCE)
+            # =========================================
 
-        if transaction.invoice and file_exists and not regenerate:
-            logger.info(f"Invoice already exists for transaction {transaction_id} at {transaction.invoice}")
-            transaction.invoice_url = cls.get_invoice_url(transaction, request=request)
-            return transaction
+            file_exists = False
+            if transaction.invoice:
+                try:
+                    file_name = str(transaction.invoice)
+                    if default_storage.exists(file_name):
+                        file_exists = True
+                    elif hasattr(transaction.invoice, "path") and transaction.invoice.path:
+                        file_exists = os.path.exists(transaction.invoice.path)
+                except Exception as check_err:
+                    logger.warning(f"Error checking invoice storage existence for transaction {transaction_id}: {check_err}")
+                    file_exists = False
+
+            if transaction.invoice and file_exists and not regenerate:
+                logger.info(f"Invoice already exists for transaction {transaction_id} at {transaction.invoice}")
+                transaction.invoice_url = cls.get_invoice_url(transaction, request=request)
+                return transaction
 
         if not transaction.invoice_no:
             transaction.invoice_no = transaction.generate_invoice_no()
