@@ -72,6 +72,7 @@ def get_or_create_student_from_bootcamp(name: str, email: str, phone: str, profe
             city="N/A",
             state="N/A",
             country="India",
+        )
         student.save()
 
         # Create corresponding auth User record to prevent invalid login credentials
@@ -93,15 +94,30 @@ def get_or_create_student_from_bootcamp(name: str, email: str, phone: str, profe
 
 
         # Create profession-specific subprofile
-        prof_lower = profession.lower()
-        if "school" in prof_lower:
-            School_Student.objects.get_or_create(student=student)
-        elif "college" in prof_lower or "student" in prof_lower:
-            College_Student.objects.get_or_create(student=student)
-        elif "working" in prof_lower or "employee" in prof_lower or "professional" in prof_lower:
-            Employee.objects.get_or_create(student=student)
-        else:
-            JobSeeker.objects.get_or_create(student=student)
+        try:
+            prof_lower = profession.lower()
+            if "school" in prof_lower:
+                School_Student.objects.get_or_create(
+                    student=student,
+                    defaults={"school_name": "N/A", "school_class": "N/A"}
+                )
+            elif "college" in prof_lower or "student" in prof_lower:
+                College_Student.objects.get_or_create(
+                    student=student,
+                    defaults={"college_name": "N/A", "degree": "N/A", "year_of_study": 1}
+                )
+            elif "working" in prof_lower or "employee" in prof_lower or "professional" in prof_lower or "developer" in prof_lower:
+                Employee.objects.get_or_create(
+                    student=student,
+                    defaults={"company_name": "N/A", "designation": profession or "Developer", "experience": "0", "skills": "N/A"}
+                )
+            else:
+                JobSeeker.objects.get_or_create(
+                    student=student,
+                    defaults={"passed_out_year": 2024, "current_qualification": "Graduate", "preferred_job_role": profession or "Developer"}
+                )
+        except Exception as e:
+            logger.warning("Error creating subprofile for student %s: %s", student.student_id, e)
     else:
         # If student exists, update status and contact info to ensure visibility
         updated_fields = []
