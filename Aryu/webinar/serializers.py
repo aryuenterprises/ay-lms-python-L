@@ -8,7 +8,7 @@ from django.utils import timezone
 import re
 import json
 from aryuapp.models import StudentTicket, TicketAttachment, TicketReply, Certificate
-from lead.models import Lead
+from lead.models import Lead, LeadStatusHistory
 from lead.telecrm import sync_lead_to_telecrm
 from django.utils.text import slugify
 import requests
@@ -37,6 +37,11 @@ class WebinarAttendanceLogSerializer(serializers.ModelSerializer):
         return obj.duration_seconds // 60
 
 class WebinarRegistrationSerializer(serializers.ModelSerializer):
+    lead_id = serializers.IntegerField(
+        source="lead.id",
+        read_only=True,
+        allow_null=True
+    )
     logs = serializers.SerializerMethodField()
     total_duration_minutes = serializers.SerializerMethodField()
     total_hours_participated = serializers.SerializerMethodField()
@@ -59,6 +64,7 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "uuid",
+            "lead_id",
             "email",
             "name",
             "phone",
@@ -141,25 +147,68 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
         phone = validated_data.get('phone')
         email = validated_data.get('email')
         name = validated_data.get('name')
-        
+        course = validated_data.get('course') or getattr(webinar, 'title', None)
+        profession = validated_data.get('profession')
+        source = validated_data.get('source') or 'webinar'
 
-        # Create or fetch Lead
-        lead, created = Lead.objects.get_or_create(
-            phone=phone,
-            defaults={
-                'name': validated_data.get('name'),
-                'email': email,
-                'course': validated_data.get('course'),
-                'source': 'webinar',
-            }
-        )
+        # 1. Determine whether a Lead already exists (matching by phone)
+        lead = Lead.objects.filter(phone=phone).first()
 
-        registration = WebinarRegistration.objects.create(
-            webinar=webinar,   # explicitly assign
-            lead=lead,
-            is_paid=False,
-            **validated_data
-        )
+        if not lead:
+            lead = Lead.objects.create(
+                phone=phone,
+                name=name,
+                email=email,
+                course=course,
+                profession=profession,
+                source=source,
+                status="fresh",
+                is_converted=False,
+                created_by_type="public",
+            )
+            LeadStatusHistory.objects.create(
+                lead=lead,
+                old_status=None,
+                new_status=lead.status,
+                remarks="Lead Created"
+            )
+        else:
+            update_fields = []
+            if not lead.name and name:
+                lead.name = name
+                update_fields.append("name")
+            if not lead.email and email:
+                lead.email = email
+                update_fields.append("email")
+            if not lead.course and course:
+                lead.course = course
+                update_fields.append("course")
+            if not lead.profession and profession:
+                lead.profession = profession
+                update_fields.append("profession")
+            if update_fields:
+                update_fields.append("updated_at")
+                lead.save(update_fields=update_fields)
+
+        # 2. Fetch or create WebinarRegistration idempotently
+        registration = WebinarRegistration.objects.filter(
+            webinar=webinar,
+            phone=phone
+        ).first()
+
+        if registration:
+            registration.lead = lead
+            for key, val in validated_data.items():
+                setattr(registration, key, val)
+            registration.save()
+        else:
+            registration = WebinarRegistration.objects.create(
+                webinar=webinar,
+                lead=lead,
+                is_paid=False,
+                **validated_data
+            )
+
         # -----------------------------
         # TELECRM LEAD SYNC
         # -----------------------------
@@ -168,8 +217,8 @@ class WebinarRegistrationSerializer(serializers.ModelSerializer):
             action_type="ACTION_1001",
             action_note=f"Webinar registration: {getattr(webinar, 'title', 'Webinar')}",
             extra_fields={
-                "source": validated_data.get("source") or "webinar",
-                "course": validated_data.get("course"),
+                "source": source,
+                "course": course,
             }
         )
 
