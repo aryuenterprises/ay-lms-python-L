@@ -5,14 +5,14 @@
 <title>Tax Invoice</title>
 <style>
     @page {
-        size: a4 portrait;
-        margin: 10mm 12mm 10mm 12mm;
+        size: A4 portrait;
+        margin: 0.8cm 1cm;
     }
     body {
         font-family: Arial, Helvetica, sans-serif;
         font-size: 11px;
         color: #000000;
-        line-height: 1.35;
+        line-height: 1.3;
         margin: 0;
         padding: 0;
     }
@@ -20,13 +20,12 @@
         border: 1.5px solid #000000;
         width: 100%;
         box-sizing: border-box;
-        page-break-inside: avoid;
     }
     .title-banner {
         text-align: center;
         font-weight: bold;
         font-size: 13px;
-        padding: 6px;
+        padding: 5px;
         border-bottom: 1.5px solid #000000;
         letter-spacing: 1px;
         background-color: #F8F9FA;
@@ -42,11 +41,11 @@
     }
     .bordered th, .bordered td {
         border: 1px solid #000000;
-        padding: 6px 8px;
+        padding: 4px 6px;
     }
     .no-border td {
         border: none;
-        padding: 3px 6px;
+        padding: 2px 4px;
     }
     .b-bottom { border-bottom: 1px solid #000000; }
     .b-right { border-right: 1px solid #000000; }
@@ -68,19 +67,14 @@
     }
     .company-details {
         font-size: 10.5px;
-        line-height: 1.4;
+        line-height: 1.35;
     }
     .buyer-details {
         font-size: 10.5px;
-        line-height: 1.4;
+        line-height: 1.35;
     }
     .table-header-bg {
         background-color: #F2F4F7;
-    }
-    .item-row td {
-        height: 190px;
-        vertical-align: top;
-        padding: 8px;
     }
 </style>
 </head>
@@ -92,25 +86,25 @@
     <!-- Upper Block (Company & Customer Info) -->
     <table>
         <tr>
-            <!-- LEFT (55%) -->
-            <td width="55%" class="b-bottom b-right" style="padding: 8px;" valign="top">
-                <div class="logo-container" style="text-align: left; margin-bottom: 10px;">
+            <!-- Left Side (55% width) -->
+            <td width="55%" class="b-bottom b-right" style="padding: 6px;" valign="top">
+                <div class="logo-container">
                     {% if company.logo and company.logo.path %}
-                    <img src="{{ company.logo.path }}" alt="Logo" style="max-width: 160px; max-height: 50px; width: auto; height: auto; object-fit: contain;" />
+                    <img src="{{ company.logo.path }}" alt="Logo" />
                     {% else %}
-                    <img src="https://portal.aryuacademy.com/api/media/logos/aryu_logo.png" alt="Logo" style="max-width: 160px; max-height: 50px; width: auto; height: auto; object-fit: contain;" />
+                    <img src="https://portal.aryuacademy.com/api/media/logos/aryu_logo.png" alt="Logo" />
                     {% endif %}
                 </div>
                 <div class="company-details">
-                    <strong style="font-size: 11.5px;">{{ company.company_name|default:"ARYU Academy Private Limited" }}</strong><br />
-                    {{ company.company_address|default:"No 33/14, Ground floor, Jayammal St, Ayyavoo Colony, Aminjikarai, Chennai, Tamil Nadu 600029"|linebreaksbr }}<br />
-                    <span class="bold">GSTIN/UIN</span> : {{ company.gst_number|default:"45879933" }}<br />
+                    <strong style="font-size: 11.5px;">{{ company.company_name|default:"Aryu Academy Private Limited" }}</strong><br />
+                    {{ company.company_address|default:"No 33/14, Ground floor, Jayammal St, Ayyavoo Colony, Aminjikarai, Chennai, Tamil Nadu 600106"|linebreaksbr }}<br />
+                    <span class="bold">GSTIN/UIN</span> : {{ company.gst_number|default:"33ABECA6801B1ZC" }}<br />
                     <span class="bold">Email -</span> {{ company.company_email|default:"raj@aryuacademy.com" }} / <span class="bold">PH -</span> {{ company.company_contact|default:"7502149013" }}
                 </div>
             </td>
 
-            <!-- RIGHT (45%) -->
-            <td width="45%" class="b-bottom" style="padding: 8px;" valign="top">
+            <!-- Right Side (45% width) -->
+            <td width="45%" class="b-bottom" style="padding: 6px;" valign="top">
                 <table class="no-border" style="font-size: 10.5px;">
                     <tr>
                         <td width="40%" class="bold">Invoice No</td>
@@ -125,8 +119,8 @@
                         <td>: {{ place_of_supply|default:transaction.place_of_supply|default:"Tamil Nadu" }}</td>
                     </tr>
                 </table>
-                <div class="b-top buyer-details" style="margin-top: 8px; padding-top: 8px;">
-                    <div class="bold" style="text-decoration: underline; margin-bottom: 4px;">Buyer (Bill to)</div>
+                <div class="b-top buyer-details" style="margin-top: 6px; padding-top: 6px;">
+                    <div class="bold" style="text-decoration: underline; margin-bottom: 3px;">Buyer (Bill to)</div>
                     <strong>{{ student_name|default:billing.name }}</strong><br />
                     {% if student_address and student_address != "-" %}
                     {{ student_address|linebreaksbr }}<br />
@@ -155,8 +149,8 @@
             </tr>
         </thead>
         <tbody>
-            <tr class="item-row">
-                <td class="text-center" valign="top">1</td>
+            <tr>
+                <td class="text-center" height="30" valign="top">1</td>
                 <td valign="top"><strong>{{ course_name }}</strong></td>
                 <td class="text-center" valign="top">{{ hsn_sac|default:"999293" }}</td>
                 <td class="text-right" valign="top">₹{{ rate }}</td>
@@ -183,7 +177,7 @@
     </table>
 
     <!-- Amount Chargeable -->
-    <div class="b-bottom" style="padding: 6px 8px;">
+    <div class="b-bottom" style="padding: 4px 6px;">
         <span class="bold">Amount Chargeable (in Words):</span> {{ amount_in_words|default:"Only" }}
     </div>
 
@@ -222,11 +216,11 @@
         </tbody>
     </table>
 
-    <div class="b-bottom" style="padding: 5px 8px; font-size: 10.5px;">
+    <div class="b-bottom" style="padding: 3px 6px; font-size: 10px;">
         <span class="bold">Tax amount (in words):</span> {{ tax_in_words|default:"Only" }}
     </div>
     
-    <div class="b-bottom" style="padding: 5px 8px; font-size: 10.5px;">
+    <div class="b-bottom" style="padding: 3px 6px; font-size: 10px;">
         <span class="bold">Company's PAN No:</span> ABECA6801B1
     </div>
 
@@ -234,21 +228,21 @@
     <table>
         <tr>
             <!-- Left Half (Bank Details) -->
-            <td width="50%" class="b-right" style="padding: 8px;" valign="top">
-                <div class="bold" style="text-decoration: underline; margin-bottom: 6px;">Company's Bank Details</div>
-                <table class="no-border" style="font-size: 10.5px;">
-                    <tr><td width="34%" class="bold" style="padding: 3px 0;">Ac Name</td><td>: ARYU ACADEMY PVT LTD</td></tr>
-                    <tr><td class="bold" style="padding: 3px 0;">Bank Name</td><td>: Federal Bank</td></tr>
-                    <tr><td class="bold" style="padding: 3px 0;">A/c No</td><td>: 12330200034467</td></tr>
-                    <tr><td class="bold" style="padding: 3px 0;">IFSC / BR</td><td>: FDRL0001233</td></tr>
-                    <tr><td class="bold" style="padding: 3px 0;">UPI ID</td><td>: aryuacademy8299@fbl</td></tr>
+            <td width="50%" class="b-right" style="padding: 6px;" valign="top">
+                <div class="bold" style="text-decoration: underline; margin-bottom: 4px;">Company's Bank Details</div>
+                <table class="no-border" style="font-size: 10px;">
+                    <tr><td width="32%" class="bold">Ac Name</td><td>: ARYU ACADEMY PVT LTD</td></tr>
+                    <tr><td class="bold">Bank Name</td><td>: Federal Bank</td></tr>
+                    <tr><td class="bold">A/c No</td><td>: 12330200034467</td></tr>
+                    <tr><td class="bold">IFSC / BR</td><td>: FDRL0001233</td></tr>
+                    <tr><td class="bold">UPI ID</td><td>: aryuacademy8299@fbl</td></tr>
                 </table>
             </td>
             
             <!-- Right Half (Note & Ledger) -->
-            <td width="50%" style="padding: 8px;" valign="top">
-                <div class="bold" style="text-decoration: underline; margin-bottom: 6px;">Note</div>
-                <table class="bordered" style="font-size: 10px;">
+            <td width="50%" style="padding: 6px;" valign="top">
+                <div class="bold" style="text-decoration: underline; margin-bottom: 4px;">Note</div>
+                <table class="bordered" style="font-size: 9.5px;">
                     <thead>
                         <tr class="table-header-bg">
                             <th width="12%">SNo</th>
@@ -285,7 +279,7 @@
                         </tr>
                     </tbody>
                 </table>
-                <div style="font-size: 10px; margin-top: 14px; text-align: right;">
+                <div style="font-size: 9.5px; margin-top: 10px; text-align: right;">
                     <strong>for ARYU ACADEMY PRIVATE LIMITED</strong><br/><br/>
                     <em>Computer Generated Invoice - Signature Not Required</em>
                 </div>
@@ -294,7 +288,7 @@
     </table>
 
     <!-- Footer Declaration -->
-    <div class="b-top" style="padding: 6px 8px; font-size: 10px; background-color: #F8F9FA;">
+    <div class="b-top" style="padding: 4px 6px; font-size: 9.5px; background-color: #F8F9FA;">
         <strong>Declaration:</strong> We declare that this invoice shows the actual price of the service described and that all particulars are true and correct.
     </div>
 </div>
