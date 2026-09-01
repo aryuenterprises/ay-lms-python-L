@@ -50,7 +50,7 @@ class ResourcesSerializer(serializers.ModelSerializer):
     class Meta:
         model = Resources
         fields = [
-            "id", "title", "slug", "image", "file", "video_url"
+            "id", "title", "slug", "image", "file", "video_url",
             "image_url", "file_url", "status", "form", "created_at"
         ]
         
