@@ -45,6 +45,11 @@ class Resources(models.Model):
     status = models.CharField(max_length=100)
     form = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+    video_url = models.URLField(
+        blank=True,
+        null=True,
+        help_text="YouTube/Vimeo embed URL"
+    )
 
     def __str__(self):
 
