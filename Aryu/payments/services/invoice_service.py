@@ -1,4 +1,5 @@
 import io
+import os
 import logging
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -46,21 +47,46 @@ class InvoiceService:
         file_obj = getattr(transaction_or_file, "invoice", transaction_or_file)
         invoice_no = getattr(transaction_or_file, "invoice_no", "")
 
-        if file_obj and hasattr(file_obj, "url") and file_obj.url:
-            if hasattr(file_obj, "name") and not file_obj.name:
-                return None
-            invoice_path = file_obj.url
+        file_path = None
+        url_path = None
+
+        if file_obj and hasattr(file_obj, "path") and file_obj.path:
+            file_path = file_obj.path
+            url_path = file_obj.url if hasattr(file_obj, "url") else None
         elif isinstance(file_obj, str) and file_obj:
             if file_obj.startswith("http://") or file_obj.startswith("https://"):
                 return file_obj
-            invoice_path = file_obj
+            rel_path = file_obj.lstrip("/")
+            if rel_path.startswith("media/"):
+                rel_path = rel_path[6:]
+            file_path = os.path.join(settings.MEDIA_ROOT, rel_path)
+            url_path = f"/media/{rel_path}"
         elif invoice_no:
-            invoice_path = f"/media/invoices/{invoice_no}.pdf"
-        else:
+            file_path = os.path.join(settings.MEDIA_ROOT, "invoices", f"{invoice_no}.pdf")
+            url_path = f"/media/invoices/{invoice_no}.pdf"
+
+        # Verify physical existence on disk
+        if not file_path or not os.path.exists(file_path):
             return None
 
-        if not invoice_path.startswith("/"):
-            invoice_path = f"/{invoice_path}"
+        if not url_path:
+            url_path = f"/media/invoices/{invoice_no}.pdf" if invoice_no else None
+
+        if not url_path:
+            return None
+
+        if not url_path.startswith("/"):
+            url_path = f"/{url_path}"
+
+        if url_path.startswith("/media/"):
+            api_url_path = "/api" + url_path
+        elif url_path.startswith("/api/media/"):
+            api_url_path = url_path
+        else:
+            api_url_path = "/api/media/" + url_path.lstrip("/")
+
+        if request:
+            return request.build_absolute_uri(api_url_path)
 
         base_url = (
             getattr(settings, "MEDIA_BASE_URL", "").rstrip("/")
@@ -69,12 +95,9 @@ class InvoiceService:
         )
 
         if base_url:
-            return f"{base_url}{invoice_path}"
+            return f"{base_url}{api_url_path}"
 
-        if request:
-            return request.build_absolute_uri(invoice_path)
-
-        return invoice_path
+        return api_url_path
 
     @classmethod
     def round_amount(cls, value):
@@ -556,15 +579,32 @@ class InvoiceService:
         )
 
         # =========================================
-        # PREVENT DUPLICATE
+        # PREVENT DUPLICATE (VERIFY DISK FILE EXISTENCE)
         # =========================================
 
-        if (
-            transaction.invoice
-            and not regenerate
-        ):
+        file_exists = False
+        if transaction.invoice:
+            try:
+                if hasattr(transaction.invoice, "path") and transaction.invoice.path:
+                    file_exists = os.path.exists(transaction.invoice.path)
+                elif isinstance(transaction.invoice, str):
+                    rel_path = transaction.invoice.lstrip("/")
+                    if rel_path.startswith("media/"):
+                        rel_path = rel_path[6:]
+                    file_path = os.path.join(settings.MEDIA_ROOT, rel_path)
+                    file_exists = os.path.exists(file_path)
+            except Exception as check_err:
+                logger.warning(f"Error checking invoice file existence for transaction {transaction_id}: {check_err}")
+                file_exists = False
+
+        if transaction.invoice and file_exists and not regenerate:
+            logger.info(f"Invoice already exists for transaction {transaction_id} at {transaction.invoice}")
             transaction.invoice_url = cls.get_invoice_url(transaction, request=request)
             return transaction
+
+        if not transaction.invoice_no:
+            transaction.invoice_no = transaction.generate_invoice_no()
+            transaction.save(update_fields=["invoice_no"])
 
         # =========================================
         # COMPANY SETTINGS
@@ -713,38 +753,65 @@ class InvoiceService:
         # RENDER HTML
         # =========================================
 
-        html_string = render_to_string(
-            "invoices/invoice_pdf.html",
-            context
-        )
+        try:
+            html_string = render_to_string(
+                "invoices/invoice_pdf.html",
+                context
+            )
+        except Exception as tpl_err:
+            logger.error(f"Invoice template rendering failed for transaction {transaction_id}: {tpl_err}", exc_info=True)
+            raise Exception(f"Failed to render invoice template: {tpl_err}")
 
         # =========================================
         # GENERATE PDF
         # =========================================
 
-        pdf_bytes = render_pdf(
-            html_string,
-            base_url=settings.BASE_DIR
-        )
+        try:
+            pdf_bytes = render_pdf(
+                html_string,
+                base_url=settings.BASE_DIR
+            )
+        except Exception as pdf_err:
+            logger.error(f"PDF rendering failed for transaction {transaction_id}: {pdf_err}", exc_info=True)
+            raise Exception(f"Failed to render PDF: {pdf_err}")
+
+        if not pdf_bytes:
+            raise Exception("Generated PDF output is empty.")
 
         # =========================================
-        # SAVE PDF
+        # ENSURE TARGET DIRECTORY & SAVE PDF
         # =========================================
 
-        file_name = (
-            f"{transaction.invoice_no}.pdf"
-        )
+        try:
+            invoices_dir = os.path.join(settings.MEDIA_ROOT, "invoices")
+            os.makedirs(invoices_dir, exist_ok=True)
 
-        if transaction.invoice:
-            transaction.invoice.delete(
+            file_name = f"{transaction.invoice_no}.pdf"
+            relative_path = f"invoices/{file_name}"
+
+            if transaction.invoice:
+                try:
+                    transaction.invoice.delete(save=False)
+                except Exception as del_err:
+                    logger.warning(f"Could not delete old invoice file for transaction {transaction_id}: {del_err}")
+
+            transaction.invoice.save(
+                file_name,
+                ContentFile(pdf_bytes),
                 save=False
             )
+            transaction.save(update_fields=["invoice"])
 
-        transaction.invoice.save(
-            file_name,
-            ContentFile(pdf_bytes),
-            save=True
-        )
+            full_file_path = os.path.join(invoices_dir, file_name)
+            if not os.path.exists(full_file_path):
+                with open(full_file_path, "wb") as f:
+                    f.write(pdf_bytes)
+
+            logger.info(f"Successfully generated and saved invoice for transaction {transaction_id} at {relative_path}")
+
+        except Exception as save_err:
+            logger.error(f"Saving invoice PDF failed for transaction {transaction_id}: {save_err}", exc_info=True)
+            raise Exception(f"Failed to save invoice PDF: {save_err}")
 
         transaction.invoice_url = cls.get_invoice_url(transaction, request=request)
         return transaction

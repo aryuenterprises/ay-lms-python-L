@@ -736,6 +736,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 }
             }, status=status.HTTP_200_OK)
         except Exception as e:
+            logger.exception(f"Invoice generation failed for transaction {getattr(transaction, 'id', 'unknown')}: {str(e)}")
             return Response({"success": False, "message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         
             
