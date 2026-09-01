@@ -154,10 +154,10 @@ class PaymentTransaction(models.Model):
         return f"{self.student} - {self.amount} {self.currency} ({self.payment_status})"
         
 class TutorPayment(models.Model):
-    PAYMENT_TYPE_CHOICES = [
-        ('batch_payment', 'Batch Payment'),
-        ('percentage_from_course_fee', '% from Course Fee'),
-    ]
+    # PAYMENT_TYPE_CHOICES = [
+    #     ('batch_payment', 'Batch Payment'),
+    #     ('percentage_from_course_fee', '% from Course Fee'),
+    # ]
 
     PAYMENT_STATUS_CHOICES = [
         ('pending', 'Pending'),
@@ -181,7 +181,7 @@ class TutorPayment(models.Model):
         related_name="tutor_payments"
     )
     course_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    payment_type = models.CharField(max_length=50, choices=PAYMENT_TYPE_CHOICES)
+    payment_type = models.CharField(max_length=50)
     tutor_payment = models.DecimalField(max_digits=10, decimal_places=2)  # Amount/Value entered
     payment_status = models.CharField(max_length=50, choices=PAYMENT_STATUS_CHOICES, default='pending')
     payment_date = models.DateField()
