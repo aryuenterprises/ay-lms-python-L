@@ -1,3 +1,4 @@
+from datetime import time, datetime
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -5,9 +6,122 @@ from rest_framework import status
 from django.contrib.auth.hashers import make_password
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from aryuapp.models import Student, StudentCourse
+from aryuapp.models import Student, StudentCourse, Attendance
 from courses.models import Course, CourseCategory
-from batches.models import NewBatch
+from batches.models import NewBatch, ClassSchedule
+
+
+class AttendanceReportTestCase(TestCase):
+    """
+    Unit tests for GET /api/v1/reports/attendance endpoint.
+    Tests pagination defaults, sorting, metric calculations (total_classes,
+    attended_classes, not_attended_classes, attendance_percentage), s_no, and student_id.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+
+        # Category, Course, Batch
+        self.category = CourseCategory.objects.create(category_name="Testing", is_archived=False)
+        self.course = Course.objects.create(course_name="Selenium", course_category=self.category, is_archived=False)
+        self.batch = NewBatch.objects.create(
+            title="BATCH_A",
+            course=self.course,
+            start_date=timezone.now().date(),
+            end_date=timezone.now().date(),
+            start_time="10:00:00",
+            end_time="12:00:00",
+            is_archived=False
+        )
+
+        # Student
+        self.student = Student.objects.create(
+            first_name="Ravi",
+            last_name="Teja",
+            email="ravi@example.com",
+            contact_no="9988776655",
+            registration_id="std_999",
+            username="raviteja",
+            password=make_password("password123"),
+            converter="campaign"
+        )
+        StudentCourse.objects.create(student=self.student, course=self.course, batch=self.batch)
+
+        # 2 Class Schedules conducted
+        self.sched1 = ClassSchedule.objects.create(
+            new_batch=self.batch,
+            course=self.course,
+            scheduled_date=timezone.now().date(),
+            start_time=time(10, 0, 0),
+            end_time=time(12, 0, 0),
+            is_archived=False,
+            is_class_cancelled=False
+        )
+        self.sched2 = ClassSchedule.objects.create(
+            new_batch=self.batch,
+            course=self.course,
+            scheduled_date=timezone.now().date(),
+            start_time=time(10, 0, 0),
+            end_time=time(12, 0, 0),
+            is_archived=False,
+            is_class_cancelled=False
+        )
+
+        # 1 Attendance record marked PRESENT
+        Attendance.objects.create(
+            student=self.student,
+            schedule_id=self.sched1,
+            course=self.course,
+            new_batch=self.batch,
+            date=timezone.now(),
+            status="PRESENT"
+        )
+
+        # Auth
+        token = RefreshToken()
+        token["user_id"] = self.student.student_id
+        token["user_type"] = "admin"
+        self.access_token = str(token.access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.access_token}")
+
+    def test_get_attendance_report_metrics(self):
+        url = "/api/v1/reports/attendance"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["success"])
+
+        data = response.data["data"]
+        self.assertGreaterEqual(len(data), 1)
+
+        ravi_record = next(item for item in data if item["student_name"] == "Ravi Teja")
+        self.assertEqual(ravi_record["s_no"], 1)
+        self.assertEqual(ravi_record["student_id"], "std_999")
+        self.assertEqual(ravi_record["total_classes"], 2)
+        self.assertEqual(ravi_record["attended_classes"], 1)
+        self.assertEqual(ravi_record["not_attended_classes"], 1)
+        self.assertEqual(ravi_record["attendance_percentage"], 50.0)
+
+    def test_attendance_report_search_filter(self):
+        url = "/api/v1/reports/attendance?search=ravi@example.com"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data["data"]
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["student_name"], "Ravi Teja")
+
+    def test_attendance_report_inclusive_date_filtering(self):
+        # Update student created_at timestamp to 2026-08-28 06:37:46 UTC
+        created_time = timezone.make_aware(datetime(2026, 8, 28, 6, 37, 46))
+        Student.objects.filter(pk=self.student.pk).update(created_at=created_time)
+
+        # Query to_date=2026-08-28
+        url = "/api/v1/reports/attendance?from_date=2026-08-24&to_date=2026-08-28"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data["data"]
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["student_name"], "Ravi Teja")
+
 
 
 class StudentEnrollmentReportTestCase(TestCase):

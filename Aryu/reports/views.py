@@ -1,16 +1,54 @@
 import math
-from datetime import datetime, date, time
+from datetime import datetime, date, time, timedelta
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
-from django.db.models import Q, Sum, Prefetch
+from django.db.models import Q, Sum, Prefetch, Count
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from aryuapp.auth import CustomJWTAuthentication
-from aryuapp.models import Student, StudentCourse
-from batches.models import NewBatch
+from aryuapp.models import Student, StudentCourse, Attendance
+from batches.models import NewBatch, ClassSchedule
 from payments.models import PaymentTransaction
 from courses.models import Course
+
+
+def parse_date_bound_from(date_str):
+    if not date_str:
+        return None
+    dt = parse_datetime(date_str)
+    if dt is None:
+        d = parse_date(date_str)
+        if d:
+            dt = datetime.combine(d, time.min)
+    if dt:
+        if timezone.is_naive(dt):
+            dt = timezone.make_aware(dt)
+        return dt
+    return None
+
+
+def parse_date_bound_to(date_str):
+    if not date_str:
+        return None, "lte"
+    dt = parse_datetime(date_str)
+    if dt is not None:
+        if dt.time() == time.min:
+            dt = datetime.combine(dt.date() + timedelta(days=1), time.min)
+            lookup = "lt"
+        else:
+            lookup = "lte"
+    else:
+        d = parse_date(date_str)
+        if d:
+            dt = datetime.combine(d + timedelta(days=1), time.min)
+            lookup = "lt"
+        else:
+            return None, "lte"
+
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt)
+    return dt, lookup
 
 class AryuReportView(APIView):
     permission_classes = [IsAuthenticated]
@@ -277,28 +315,17 @@ class StudentEnrollmentReportView(APIView):
 
             # Date Range Filter on student enrollment / created_at date
             if from_date_str:
-                try:
-                    parsed_from = parse_datetime(from_date_str) or parse_date(from_date_str)
-                    if parsed_from:
-                        if isinstance(parsed_from, date) and not isinstance(parsed_from, datetime):
-                            parsed_from = datetime.combine(parsed_from, time.min)
-                        if timezone.is_naive(parsed_from):
-                            parsed_from = timezone.make_aware(parsed_from)
-                        students_qs = students_qs.filter(created_at__gte=parsed_from)
-                except Exception:
-                    pass
+                parsed_from = parse_date_bound_from(from_date_str)
+                if parsed_from:
+                    students_qs = students_qs.filter(created_at__gte=parsed_from)
 
             if to_date_str:
-                try:
-                    parsed_to = parse_datetime(to_date_str) or parse_date(to_date_str)
-                    if parsed_to:
-                        if isinstance(parsed_to, date) and not isinstance(parsed_to, datetime):
-                            parsed_to = datetime.combine(parsed_to, time.max)
-                        if timezone.is_naive(parsed_to):
-                            parsed_to = timezone.make_aware(parsed_to)
+                parsed_to, lookup = parse_date_bound_to(to_date_str)
+                if parsed_to:
+                    if lookup == "lt":
+                        students_qs = students_qs.filter(created_at__lt=parsed_to)
+                    else:
                         students_qs = students_qs.filter(created_at__lte=parsed_to)
-                except Exception:
-                    pass
 
             # 3. Sorting Field Mapping
             sort_map = {
@@ -402,6 +429,310 @@ class StudentEnrollmentReportView(APIView):
                     "course_id": course_id_val,
                     "batch": batch_val,
                     "batch_id": batch_id_val,
+                    "created_at": created_at_iso,
+                    "enrolled_at": created_at_iso,
+                })
+
+            # 6. Fetch Active Filter Options for Dropdowns
+            active_courses = list(
+                Course.objects.filter(is_archived=False)
+                .exclude(status__iexact="Inactive")
+                .values("course_id", "course_name")
+                .order_by("course_name")
+            )
+            courses_options = [
+                {
+                    "id": c["course_id"],
+                    "course_id": c["course_id"],
+                    "name": c["course_name"],
+                    "course_name": c["course_name"]
+                }
+                for c in active_courses
+            ]
+
+            batches_qs = NewBatch.objects.filter(is_archived=False, status=True)
+            if course_id:
+                batches_qs = batches_qs.filter(course_id=course_id)
+
+            active_batches = list(
+                batches_qs.values("batch_id", "title", "course_id").order_by("title")
+            )
+            batches_options = [
+                {
+                    "id": b["batch_id"],
+                    "batch_id": b["batch_id"],
+                    "name": b["title"],
+                    "title": b["title"],
+                    "course_id": b["course_id"]
+                }
+                for b in active_batches
+            ]
+
+            filter_options = {
+                "courses": courses_options,
+                "batches": batches_options
+            }
+
+            total_pages = math.ceil(total_count / limit) if total_count > 0 else 0
+
+            return Response({
+                "success": True,
+                "data": data,
+                "pagination": {
+                    "total_count": total_count,
+                    "page": page,
+                    "limit": limit,
+                    "total_pages": total_pages
+                },
+                "filter_options": filter_options
+            }, status=200)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {
+                    "success": False,
+                    "message": str(e)
+                },
+                status=500
+            )
+
+
+class AttendanceReportView(APIView):
+    """
+    Production-grade Attendance Report API endpoint.
+    GET /api/v1/reports/attendance (or /api/reports/attendance)
+    Supports pagination (limit=50, page=1 default), sort (created_at DESC default),
+    search (fuzzy on student name/email/reg_id), course_id, batch_id, date range filtering,
+    dynamic S.No calculation, total_classes, attended_classes, not_attended_classes,
+    attendance_percentage, and filter_options.
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+
+    def get(self, request):
+        try:
+            # 1. Parse Pagination Parameters
+            try:
+                page = int(request.GET.get("page", 1))
+                if page < 1:
+                    page = 1
+            except (ValueError, TypeError):
+                page = 1
+
+            try:
+                limit = int(request.GET.get("limit", 50))
+                if limit < 1:
+                    limit = 50
+                elif limit > 500:
+                    limit = 500
+            except (ValueError, TypeError):
+                limit = 50
+
+            # 2. Parse Query Filters
+            search = request.GET.get("search", "").strip()
+            course_id = request.GET.get("course_id", "").strip()
+            batch_id = request.GET.get("batch_id", "").strip()
+            from_date_str = request.GET.get("from_date", "").strip()
+            to_date_str = request.GET.get("to_date", "").strip()
+            sort_by = request.GET.get("sort_by", "created_at").strip().lower()
+            sort_order = request.GET.get("sort_order", "desc").strip().lower()
+
+            # Batch validation & reset rule
+            if course_id and batch_id:
+                valid_batch_exists = NewBatch.objects.filter(
+                    batch_id=batch_id,
+                    course_id=course_id,
+                    is_archived=False
+                ).exists() or StudentCourse.objects.filter(
+                    batch_id=batch_id,
+                    course_id=course_id
+                ).exists()
+                if not valid_batch_exists:
+                    batch_id = ""
+
+            # Base Queryset: Active students
+            students_qs = Student.objects.filter(is_archived=False)
+
+            # Search filter (fuzzy on student name, email, reg_id)
+            if search:
+                students_qs = students_qs.filter(
+                    Q(first_name__icontains=search) |
+                    Q(last_name__icontains=search) |
+                    Q(email__icontains=search) |
+                    Q(registration_id__icontains=search)
+                )
+
+            # Course filter
+            if course_id:
+                students_qs = students_qs.filter(
+                    Q(student_courses__course_id=course_id) |
+                    Q(new_batches__course_id=course_id)
+                )
+
+            # Batch filter
+            if batch_id:
+                students_qs = students_qs.filter(
+                    Q(student_courses__batch_id=batch_id) |
+                    Q(new_batches__batch_id=batch_id)
+                )
+
+            # Date Range Filter on enrollment / created_at date
+            if from_date_str:
+                parsed_from = parse_date_bound_from(from_date_str)
+                if parsed_from:
+                    students_qs = students_qs.filter(created_at__gte=parsed_from)
+
+            if to_date_str:
+                parsed_to, lookup = parse_date_bound_to(to_date_str)
+                if parsed_to:
+                    if lookup == "lt":
+                        students_qs = students_qs.filter(created_at__lt=parsed_to)
+                    else:
+                        students_qs = students_qs.filter(created_at__lte=parsed_to)
+
+            # 3. Sorting Mapping
+            sort_map = {
+                "created_at": "created_at",
+                "enrolled_at": "created_at",
+                "student_name": "first_name",
+                "name": "first_name",
+                "first_name": "first_name",
+                "last_name": "last_name",
+                "registration_id": "registration_id",
+                "student_id": "registration_id",
+            }
+            db_sort_field = sort_map.get(sort_by, "created_at")
+            order_expr = db_sort_field if sort_order == "asc" else f"-{db_sort_field}"
+
+            students_qs = students_qs.distinct()
+            total_count = students_qs.count()
+
+            # 4. Paginate with Prefetching
+            offset = (page - 1) * limit
+            sliced_students = students_qs.order_by(order_expr, "-student_id").prefetch_related(
+                Prefetch(
+                    "student_courses",
+                    queryset=StudentCourse.objects.select_related("course", "batch")
+                ),
+                Prefetch(
+                    "new_batches",
+                    queryset=NewBatch.objects.select_related("course")
+                )
+            )[offset:offset + limit]
+
+            # 5. Bulk Aggregations for Attendance Metrics
+            student_pks = [s.student_id for s in sliced_students]
+
+            # Attendance PRESENT counts per student
+            attendance_counts = dict(
+                Attendance.objects.filter(student_id__in=student_pks, status__iexact="PRESENT")
+                .values("student_id")
+                .annotate(cnt=Count("id"))
+                .values_list("student_id", "cnt")
+            )
+
+            # ClassSchedule counts per batch
+            batch_class_counts = dict(
+                ClassSchedule.objects.filter(is_archived=False, is_class_cancelled=False)
+                .filter(Q(new_batch_id__isnull=False) | Q(batch_id__isnull=False))
+                .values("new_batch_id")
+                .annotate(cnt=Count("schedule_id"))
+                .values_list("new_batch_id", "cnt")
+            )
+
+            # ClassSchedule counts per course (as fallback)
+            course_class_counts = dict(
+                ClassSchedule.objects.filter(is_archived=False, is_class_cancelled=False)
+                .values("course_id")
+                .annotate(cnt=Count("schedule_id"))
+                .values_list("course_id", "cnt")
+            )
+
+            data = []
+            for idx, s in enumerate(sliced_students):
+                s_no = offset + idx + 1
+                full_name = f"{s.first_name or ''} {s.last_name or ''}".strip()
+
+                courses_map = {}
+                batches_map = {}
+
+                for sc in s.student_courses.all():
+                    if sc.course and sc.course.course_name:
+                        if not course_id or str(sc.course.course_id) == str(course_id):
+                            courses_map[sc.course.course_id] = sc.course.course_name
+                    if sc.batch:
+                        if not batch_id or str(sc.batch.batch_id) == str(batch_id):
+                            b_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
+                            if b_title:
+                                batches_map[sc.batch.batch_id] = b_title
+
+                for nb in s.new_batches.all():
+                    if nb.course and nb.course.course_name:
+                        if not course_id or str(nb.course.course_id) == str(course_id):
+                            courses_map[nb.course.course_id] = nb.course.course_name
+                    if nb.title:
+                        if not batch_id or str(nb.batch_id) == str(batch_id):
+                            batches_map[nb.batch_id] = nb.title
+
+                if not courses_map and not course_id:
+                    for sc in s.student_courses.all():
+                        if sc.course:
+                            courses_map[sc.course.course_id] = sc.course.course_name
+                    for nb in s.new_batches.all():
+                        if nb.course:
+                            courses_map[nb.course.course_id] = nb.course.course_name
+
+                if not batches_map and not batch_id:
+                    for sc in s.student_courses.all():
+                        if sc.batch:
+                            b_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
+                            if b_title:
+                                batches_map[sc.batch.batch_id] = b_title
+                    for nb in s.new_batches.all():
+                        if nb.title:
+                            batches_map[nb.batch_id] = nb.title
+
+                course_names = list(courses_map.values())
+                course_ids = list(courses_map.keys())
+                batch_names = list(batches_map.values())
+                batch_ids = list(batches_map.keys())
+
+                course_val = ", ".join(course_names) if course_names else "-"
+                course_id_val = course_ids[0] if course_ids else None
+                batch_val = ", ".join(batch_names) if batch_names else "-"
+                batch_id_val = batch_ids[0] if batch_ids else None
+
+                # Calculate total classes conducted for student's batches / courses
+                total_classes = 0
+                if batch_ids:
+                    for b_id in batch_ids:
+                        total_classes += batch_class_counts.get(b_id, 0)
+                elif course_ids:
+                    for c_id in course_ids:
+                        total_classes += course_class_counts.get(c_id, 0)
+
+                attended_classes = attendance_counts.get(s.student_id, 0)
+                not_attended_classes = max(0, total_classes - attended_classes)
+                attendance_percentage = round((attended_classes / total_classes) * 100, 2) if total_classes > 0 else 0.0
+
+                created_at_iso = s.created_at.isoformat() if s.created_at else None
+
+                data.append({
+                    "s_no": s_no,
+                    "id": str(s.student_id),
+                    "student_id": s.registration_id or f"std_{s.student_id}",
+                    "student_name": full_name,
+                    "email": s.email,
+                    "course": course_val,
+                    "course_id": course_id_val,
+                    "batch": batch_val,
+                    "batch_id": batch_id_val,
+                    "total_classes": total_classes,
+                    "attended_classes": attended_classes,
+                    "not_attended_classes": not_attended_classes,
+                    "attendance_percentage": attendance_percentage,
                     "created_at": created_at_iso,
                     "enrolled_at": created_at_iso,
                 })
