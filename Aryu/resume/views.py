@@ -1323,6 +1323,24 @@ class AuthViewSet(viewsets.ViewSet):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
+            # Require email verification before allowing password reset
+            is_verified = (
+                getattr(user, 'is_verified', False) or
+                getattr(user, 'is_email_verified', False)
+            )
+            if not hasattr(user, 'is_verified') and not hasattr(user, 'is_email_verified'):
+                is_verified = getattr(user, 'is_active', True)
+
+            if not is_verified:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Email is not verified. Please verify your email first.",
+                        "error": "Email is not verified. Please verify your email first."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             otp = self.generate_secure_otp()
             if hasattr(user, 'reset_otp_hash'):
                 user.reset_otp_hash = make_password(otp)
@@ -3664,7 +3682,7 @@ class SubscriptionViewSet(viewsets.ViewSet):
         )
 
     @secure_throttle(rate_limit=10, period=60)
-    @action(detail=False, methods=["patch"], url_path=r"delete-plan/(?P<plan_id>[^/.]+)")
+    @action(detail=False, methods=["delete"], url_path=r"delete-plan/(?P<plan_id>[^/.]+)")
     def delete_plan(self, request, plan_id=None):
         if not self._is_admin(request):
             return Response(
@@ -3676,20 +3694,15 @@ class SubscriptionViewSet(viewsets.ViewSet):
             )
 
         subscription = get_object_or_404(Subscription, id=plan_id)
-
-        # Soft delete: update status flag
-        subscription.is_active = False
-        subscription.save(update_fields=["is_active"])
+        subscription.delete()
 
         return Response(
             {
                 "success": True,
-                "message": "Subscription deactivated successfully"
+                "message": "Subscription plan deleted successfully"
             },
             status=status.HTTP_200_OK
-        )
-
-        
+        )  
 import requests
 
 class ResumeGateway(APIView):

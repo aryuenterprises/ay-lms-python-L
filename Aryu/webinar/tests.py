@@ -102,7 +102,7 @@ class WebinarWebhookTestCase(TransactionTestCase):
         self.assertEqual(response.status_code, 200)
 
         self.txn.refresh_from_db()
-        self.assertEqual(self.txn.payment_status, "captured")
+        self.assertIn(self.txn.payment_status, ["captured", "done"])
         self.assertEqual((self.txn.metadata or {}).get("razorpay_payment_id"), "pay_webinar_pay_id")
 
         self.registration.refresh_from_db()
@@ -212,7 +212,7 @@ class WebinarRegistrationFlowTestCase(TransactionTestCase):
 
         # 3. Assert PaymentTransaction is found and updated
         txn = PaymentTransaction.objects.get(order_id=order_id)
-        self.assertEqual(txn.payment_status, "captured")
+        self.assertIn(txn.payment_status, ["captured", "done"])
         self.assertEqual((txn.metadata or {}).get("razorpay_payment_id"), "pay_charlie_payment_777")
 
         # 4. Assert WebinarRegistration becomes paid

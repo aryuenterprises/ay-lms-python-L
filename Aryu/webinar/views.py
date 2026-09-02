@@ -25,7 +25,10 @@ from django.utils.timezone import make_aware, is_naive
 from .services.webinar_emails import send_webinar_registration_email
 from django.core.mail import EmailMultiAlternatives
 from django.shortcuts import get_object_or_404
-from django.utils.dateparse import parse_datetime
+from django.utils.dateparse import parse_datetime, parse_date
+from datetime import date
+from lead.models import Lead, LeadStatusHistory
+from lead.telecrm import sync_lead_to_telecrm
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import action
 from django.views.decorators.csrf import csrf_exempt
@@ -222,6 +225,11 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 transaction.payment_status = "done"
                 transaction.transaction_id = payment_id
                 transaction.save()
+
+                try:
+                    WebinarRegistrationViewSet.create_registration_from_transaction(transaction)
+                except Exception as e:
+                    logger.exception("Error processing WebinarRegistration via create_registration_from_transaction in verify_payment: %s", e)
 
         except razorpay.errors.SignatureVerificationError:
             return Response(
@@ -1470,11 +1478,11 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
             frontend_url = getattr(settings, "FRONTEND_URL", "https://aylms.aryuprojects.com")
             data["success_url"] = request.data.get(
                 "success_url",
-                "https://portal.aryuacademy.com/payment-success"
+                "https://aylms.aryuprojects.com/payment-success"
             )
             data["failure_url"] = request.data.get(
                 "failure_url",
-                "https://portal.aryuacademy.com/payment-failed"
+                "https://aylms.aryuprojects.com/payment-failed"
             )
 
             request._full_data = data
@@ -1504,33 +1512,160 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
         from datetime import date, time, timedelta
         from django.db import transaction as db_transaction
 
-        meta = txn.metadata or {}
+        meta = txn.metadata if isinstance(txn.metadata, dict) else {}
         phone = meta.get("phone", "")
         email = meta.get("email", "")
         name = meta.get("name", "")
         profession = meta.get("profession", "")
         source = meta.get("source", "webinar")
+        course_name = meta.get("course", "")
 
         with db_transaction.atomic():
-            webinar = Webinar.objects.get(uuid=meta["webinar_id"])
+            webinar = None
+            webinar_id_val = meta.get("webinar_id")
+            if webinar_id_val:
+                try:
+                    webinar = Webinar.objects.filter(uuid=webinar_id_val).first()
+                except Exception:
+                    pass
+                if not webinar and str(webinar_id_val).isdigit():
+                    webinar = Webinar.objects.filter(id=int(webinar_id_val)).first()
+            if not webinar and getattr(txn, "webinar_registration", None):
+                webinar = txn.webinar_registration.webinar
 
-            # 1. Fetch or create WebinarRegistration record
-            registration, created = WebinarRegistration.objects.get_or_create(
-                webinar=webinar,
-                phone=phone,
-                defaults={
-                    "name": name,
-                    "email": email,
-                    "profession": profession,
-                    "is_paid": True,
-                    "payment_transaction": txn
-                }
-            )
+            if not webinar:
+                logger.warning("No webinar found for transaction %s", txn.id)
+                return getattr(txn, "webinar_registration", None)
 
-            if not created:
-                registration.is_paid = True
+            # Determine whether payment is successful
+            payment_done = is_payment_successful(txn.payment_status) or str(txn.payment_status).lower() in ["done", "paid", "success", "captured", "completed"]
+
+            # Fallback to existing registration details if phone/email not in metadata
+            reg_existing = getattr(txn, "webinar_registration", None)
+            if not reg_existing and phone:
+                reg_existing = WebinarRegistration.objects.filter(webinar=webinar, phone=phone).first()
+
+            if reg_existing:
+                phone = phone or reg_existing.phone or ""
+                email = email or reg_existing.email or ""
+                name = name or reg_existing.name or ""
+                profession = profession or reg_existing.profession or ""
+                course_name = course_name or reg_existing.course or webinar.title
+
+            course_name = course_name or webinar.title
+
+            # 1. Lead Lookup or Creation
+            from lead.models import Lead, LeadStatusHistory
+            from lead.telecrm import sync_lead_to_telecrm
+
+            lead = None
+            if reg_existing and reg_existing.lead:
+                lead = reg_existing.lead
+            elif phone:
+                lead = Lead.objects.filter(phone=phone).first()
+            elif email:
+                lead = Lead.objects.filter(email__iexact=email).first()
+
+            if not lead and phone:
+                lead = Lead.objects.create(
+                    phone=phone,
+                    name=name,
+                    email=email,
+                    course=course_name,
+                    profession=profession,
+                    source=source,
+                    status="fresh",
+                    is_converted=False,
+                    created_by_type="public",
+                )
+                LeadStatusHistory.objects.create(
+                    lead=lead,
+                    old_status=None,
+                    new_status=lead.status,
+                    remarks="Lead Created"
+                )
+                sync_lead_to_telecrm(lead, action_note="Lead Created From Webinar")
+            elif lead:
+                update_fields = []
+                if not lead.name and name:
+                    lead.name = name
+                    update_fields.append("name")
+                if not lead.email and email:
+                    lead.email = email
+                    update_fields.append("email")
+                if not lead.course and course_name:
+                    lead.course = course_name
+                    update_fields.append("course")
+                if not lead.profession and profession:
+                    lead.profession = profession
+                    update_fields.append("profession")
+                if update_fields:
+                    update_fields.append("updated_at")
+                    lead.save(update_fields=update_fields)
+
+            # 2. Fetch or create WebinarRegistration record
+            registration = reg_existing
+            created = False
+            if not registration:
+                registration, created = WebinarRegistration.objects.get_or_create(
+                    webinar=webinar,
+                    phone=phone,
+                    defaults={
+                        "name": name,
+                        "email": email,
+                        "profession": profession,
+                        "course": course_name,
+                        "source": source,
+                        "is_paid": payment_done,
+                        "payment_transaction": txn,
+                        "lead": lead,
+                    }
+                )
+
+            reg_updates = []
+            if registration.lead_id != (lead.id if lead else None):
+                registration.lead = lead
+                reg_updates.append("lead")
+            if registration.payment_transaction_id != txn.id:
                 registration.payment_transaction = txn
-                registration.save(update_fields=["is_paid", "payment_transaction"])
+                reg_updates.append("payment_transaction")
+            if payment_done and not registration.is_paid:
+                registration.is_paid = True
+                reg_updates.append("is_paid")
+            elif not payment_done and registration.is_paid:
+                registration.is_paid = False
+                reg_updates.append("is_paid")
+            if not registration.course and course_name:
+                registration.course = course_name
+                reg_updates.append("course")
+            if reg_updates:
+                registration.save(update_fields=reg_updates)
+
+            if txn.webinar_registration_id != registration.id:
+                txn.webinar_registration = registration
+                txn.save(update_fields=["webinar_registration"])
+
+            # 3. Lead Conversion on Successful Payment
+            if lead and payment_done:
+                old_status = lead.status
+                lead.status = "converted"
+                lead.is_converted = True
+                if not lead.joined_at:
+                    lead.joined_at = timezone.now()
+                lead.save(update_fields=["status", "is_converted", "joined_at", "updated_at"])
+
+                if old_status != "converted":
+                    LeadStatusHistory.objects.create(
+                        lead=lead,
+                        old_status=old_status,
+                        new_status="converted",
+                        remarks="Webinar payment converted"
+                    )
+                    sync_lead_to_telecrm(
+                        lead,
+                        action_type="ACTION_1001",
+                        action_note=f"Lead Converted: Webinar {webinar.title} paid"
+                    )
 
             # 2. Resolve/Create Student & Course Linking
             student, student_created = get_or_create_student_from_bootcamp(
@@ -1722,17 +1857,63 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
         # -----------------------------------
         # PAID WEBINAR → PAYMENT ONLY
         # -----------------------------------
+        name = request.data.get("name")
+        email = request.data.get("email")
+        profession = request.data.get("profession")
+        course = request.data.get("course") or getattr(webinar, "title", None)
+        source = request.data.get("source") or "webinar"
+
+        # 1. Determine whether a Lead already exists (matching by phone)
+        lead = Lead.objects.filter(phone=phone).first() if phone else None
+        if not lead and phone:
+            lead = Lead.objects.create(
+                phone=phone,
+                name=name,
+                email=email,
+                course=course,
+                profession=profession,
+                source=source,
+                status="fresh",
+                is_converted=False,
+                created_by_type="public",
+            )
+            LeadStatusHistory.objects.create(
+                lead=lead,
+                old_status=None,
+                new_status=lead.status,
+                remarks="Lead Created"
+            )
+            sync_lead_to_telecrm(lead, action_note="Lead Created From Webinar")
+        elif lead:
+            update_fields = []
+            if not lead.name and name:
+                lead.name = name
+                update_fields.append("name")
+            if not lead.email and email:
+                lead.email = email
+                update_fields.append("email")
+            if not lead.course and course:
+                lead.course = course
+                update_fields.append("course")
+            if not lead.profession and profession:
+                lead.profession = profession
+                update_fields.append("profession")
+            if update_fields:
+                update_fields.append("updated_at")
+                lead.save(update_fields=update_fields)
+
         txn = PaymentTransaction.objects.create(
             amount=webinar.price,
             payment_status="pending",
             metadata={
                 "webinar_id": str(webinar.uuid),
-                "name": request.data.get("name"),
-                "email": request.data.get("email"),
+                "name": name,
+                "email": email,
                 "phone": phone,
-                "profession": request.data.get("profession"),
-                "source":request.data.get("source","webinar"),
-                },
+                "profession": profession,
+                "course": course,
+                "source": source,
+            },
             gateway=gateway,
             billing_type="webinar",
             currency="INR",
@@ -1746,20 +1927,29 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
 
         if registration:
             registration.payment_transaction = txn
-            registration.name = request.data.get("name")
-            registration.email = request.data.get("email")
-            registration.profession = request.data.get("profession")
+            registration.lead = lead
+            registration.name = name
+            registration.email = email
+            registration.profession = profession
+            registration.course = course
+            registration.source = source
             registration.save()
         else:
             registration = WebinarRegistration.objects.create(
                 webinar=webinar,
-                name=request.data.get("name"),
-                email=request.data.get("email"),
+                lead=lead,
+                name=name,
+                email=email,
                 phone=phone,
-                profession=request.data.get("profession"),
+                profession=profession,
+                course=course,
+                source=source,
                 is_paid=False,
                 payment_transaction=txn
             )
+
+        txn.webinar_registration = registration
+        txn.save(update_fields=["webinar_registration"])
 
         return self._create_payment(request, webinar, txn, order, gateway)
 
@@ -1782,10 +1972,136 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
 
         qs = (
             WebinarRegistration.objects
-            .filter(webinar__slug=slug)
-            .select_related('lead')
+            .select_related('lead', 'payment_transaction', 'webinar')
             .order_by('-id')
         )
+
+        if slug and slug != "all":
+            qs = qs.filter(webinar__slug=slug)
+
+        params = request.query_params
+
+        # 1. Lead Filters
+        lead_id = params.get("lead_id") or params.get("lead")
+        if lead_id:
+            lead_id_str = str(lead_id).strip()
+            if lead_id_str.isdigit():
+                qs = qs.filter(lead_id=int(lead_id_str))
+            else:
+                qs = qs.filter(lead__id=lead_id_str)
+
+        phone = params.get("phone")
+        if phone:
+            phone = phone.strip()
+            qs = qs.filter(Q(phone__icontains=phone) | Q(lead__phone__icontains=phone))
+
+        email = params.get("email")
+        if email:
+            email = email.strip()
+            qs = qs.filter(Q(email__iexact=email) | Q(lead__email__iexact=email))
+
+        name = params.get("name")
+        if name:
+            name = name.strip()
+            qs = qs.filter(Q(name__icontains=name) | Q(lead__name__icontains=name))
+
+        search = params.get("search")
+        if search:
+            search = search.strip()
+            qs = qs.filter(
+                Q(name__icontains=search)
+                | Q(phone__icontains=search)
+                | Q(email__icontains=search)
+                | Q(lead__name__icontains=search)
+                | Q(lead__phone__icontains=search)
+                | Q(lead__email__icontains=search)
+            )
+
+        status_val = params.get("status")
+        if status_val:
+            s = status_val.strip().lower()
+            if s in ["converted", "fresh", "interested", "contacted", "lost", "followup", "new"]:
+                qs = qs.filter(lead__status__iexact=s)
+            elif s == "paid":
+                qs = qs.filter(is_paid=True)
+            elif s in ["unpaid", "free"]:
+                qs = qs.filter(is_paid=False)
+            else:
+                qs = qs.filter(
+                    Q(lead__status__iexact=s)
+                    | Q(payment_transaction__payment_status__iexact=s)
+                )
+
+        lead_status = params.get("lead_status")
+        if lead_status:
+            qs = qs.filter(lead__status__iexact=lead_status.strip())
+
+        # 2. Payment Filters
+        is_paid = params.get("is_paid")
+        if is_paid is not None:
+            val_str = str(is_paid).strip().lower()
+            if val_str in ["true", "1", "yes"]:
+                qs = qs.filter(is_paid=True)
+            elif val_str in ["false", "0", "no"]:
+                qs = qs.filter(is_paid=False)
+
+        payment_status = params.get("payment_status")
+        if payment_status:
+            qs = qs.filter(payment_transaction__payment_status__iexact=payment_status.strip())
+
+        # 3. Webinar Filters
+        webinar_id = params.get("webinar_id") or params.get("webinar")
+        if webinar_id:
+            w_str = str(webinar_id).strip()
+            if w_str.isdigit():
+                qs = qs.filter(webinar__id=int(w_str))
+            else:
+                qs = qs.filter(webinar__uuid=w_str)
+
+        webinar_slug = params.get("webinar_slug")
+        if webinar_slug:
+            qs = qs.filter(webinar__slug=webinar_slug.strip())
+
+        # 4. Other Model Attributes
+        course = params.get("course")
+        if course:
+            qs = qs.filter(course__icontains=course.strip())
+
+        profession = params.get("profession")
+        if profession:
+            qs = qs.filter(profession__icontains=profession.strip())
+
+        source_val = params.get("source")
+        if source_val:
+            qs = qs.filter(source__iexact=source_val.strip())
+
+        attended = params.get("attended")
+        if attended is not None:
+            val_str = str(attended).strip().lower()
+            if val_str in ["true", "1"]:
+                qs = qs.filter(attended=True)
+            elif val_str in ["false", "0"]:
+                qs = qs.filter(attended=False)
+
+        certificate_sent = params.get("certificate_sent")
+        if certificate_sent is not None:
+            val_str = str(certificate_sent).strip().lower()
+            if val_str in ["true", "1"]:
+                qs = qs.filter(certificate_sent=True)
+            elif val_str in ["false", "0"]:
+                qs = qs.filter(certificate_sent=False)
+
+        from_date = params.get("from_date") or params.get("registered_at__gte")
+        if from_date:
+            parsed = parse_date(from_date) or parse_datetime(from_date)
+            if parsed:
+                qs = qs.filter(registered_at__date__gte=parsed if isinstance(parsed, date) else parsed.date())
+
+        to_date = params.get("to_date") or params.get("registered_at__lte")
+        if to_date:
+            parsed = parse_date(to_date) or parse_datetime(to_date)
+            if parsed:
+                qs = qs.filter(registered_at__date__lte=parsed if isinstance(parsed, date) else parsed.date())
 
         serializer = WebinarRegistrationSerializer(qs, many=True)
         return Response(serializer.data)
@@ -2141,8 +2457,8 @@ def _create_payment(self, request, webinar):
     payment_request.data = {
         "amount": webinar.price,
         "currency": "INR",
-        "success_url": f"https://portal.aryuacademy.com/webinar/payment-success/{webinar.uuid}",
-        "failure_url": f"https://portal.aryuacademy.com/webinar/payment-failed/{webinar.uuid}",
+        "success_url": f"https://aylms.aryuprojects.com/webinar/payment-success/{webinar.uuid}",
+        "failure_url": f"https://aylms.aryuprojects.com/webinar/payment-failed/{webinar.uuid}",
     }
 
     return razorpay_view.create(payment_request)

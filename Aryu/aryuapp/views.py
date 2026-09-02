@@ -8643,6 +8643,8 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             response["message"] = f"All attendance logs for {full_name}"
 
         return Response(response, status=200)
+
+
     from datetime import datetime, timedelta
     from django.utils.dateparse import parse_datetime
     from django.db.models import Q

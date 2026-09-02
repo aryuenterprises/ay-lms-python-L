@@ -20,6 +20,7 @@
         border: 1px solid #000000;
         width: 100%;
         box-sizing: border-box;
+        page-break-inside: avoid;
     }
     .title-banner {
         text-align: center;
@@ -45,7 +46,7 @@
     }
     .no-border td {
         border: none;
-        padding: 2px 4px;
+        padding: 3px 6px;
     }
     .b-bottom { border-bottom: 1px solid #000000; }
     .b-right { border-right: 1px solid #000000; }
@@ -64,6 +65,11 @@
     }
     .table-header-bg {
         background-color: #F2F4F7;
+    }
+    .item-row td {
+        height: 190px;
+        vertical-align: top;
+        padding: 8px;
     }
 </style>
 </head>
@@ -176,7 +182,7 @@
     </table>
 
     <!-- Amount Chargeable -->
-    <div class="b-bottom" style="padding: 4px 6px;">
+    <div class="b-bottom" style="padding: 6px 8px;">
         <span class="bold">Amount Chargeable (in Words):</span> {{ amount_in_words|default:"Only" }}
     </div>
 
