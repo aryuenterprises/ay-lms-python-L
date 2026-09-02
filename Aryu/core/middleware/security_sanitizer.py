@@ -56,6 +56,7 @@ PASS_THROUGH_KEYS = {
     "confirm_password",
     "old_password",
     "current_password",
+    "description",
 }
 
 

@@ -84,6 +84,7 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
         try:
             # Decode and validate refresh token structure/cryptography
             refresh = RefreshToken(token_str)
+            user_id = refresh.get("user_id") or refresh.get("id")
 
             if not user_id:
                 raise AuthenticationFailed("Invalid token payload: missing user ID.")
@@ -136,6 +137,12 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
 class SubscriptionSerializer(serializers.ModelSerializer):
 
     final_price = serializers.SerializerMethodField()
+    description = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        trim_whitespace=False  
+    )
 
     class Meta:
         model = Subscription
@@ -154,16 +161,9 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         ]
 
     def create(self, validated_data):
-
-        validated_data["final_price"] = (
-            validated_data.get("discount_price")
-            or validated_data.get("price")
-        )
-
         return Subscription.objects.create(**validated_data)
 
     def update(self, instance, validated_data):
-
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
@@ -175,7 +175,6 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         )
 
         instance.save()
-
         return instance
 
     def get_final_price(self, obj):
@@ -293,7 +292,11 @@ class DashboardSubscriptionSerializer(serializers.ModelSerializer):
     )
 
     description = serializers.CharField(
-        source="subscription.description"
+        source="subscription.description",
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        trim_whitespace=False
     )
 
     price = serializers.DecimalField(
@@ -383,7 +386,12 @@ class DashboardSubscriptionSerializer(serializers.ModelSerializer):
 class DashboardCurrentSubscriptionSerializer(serializers.Serializer):
     plan_name = serializers.CharField()
     slug = serializers.CharField()
-    description = serializers.CharField()
+    description = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        trim_whitespace=False
+    )
     price = serializers.DecimalField(max_digits=10, decimal_places=2)
     discount_price = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True)
     billing_type = serializers.CharField()

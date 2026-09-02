@@ -740,3 +740,141 @@ class ResumeHTMLAndAuthTestCase(TestCase):
         )
         self.assertEqual(resp2.status_code, status.HTTP_200_OK)
         self.assertEqual(resp2.data.get("message"), "Account already verified")
+
+
+class SubscriptionDescriptionRawHTMLTestCase(TestCase):
+    """
+    Validates that Subscription model's description strictly stores and persists raw HTML
+    in the database and API responses without any stripping, parsing, or conversion to plain text/newlines.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+        # Admin user for protected subscription management endpoints
+        self.admin_user = ResumeRegistration.objects.create(
+            first_name="Admin",
+            last_name="User",
+            email="admin@example.com",
+            password=make_password("AdminPass123!"),
+            is_verified=True,
+            status=True,
+        )
+        self.admin_user.user_type = "admin"
+        self.admin_user.save()
+
+    def _get_admin_token(self):
+        refresh = RefreshToken()
+        refresh["user_id"] = self.admin_user.id
+        refresh["id"] = self.admin_user.id
+        refresh["email"] = self.admin_user.email
+        refresh["user_type"] = "admin"
+        return str(refresh.access_token)
+
+    def test_subscription_creation_preserves_raw_html_description(self):
+        raw_html = "<ol><li>Free plan</li><li>freee</li></ol><ul><li>freee</li></ul>"
+
+        payload = {
+            "name": "Pro HTML Plan",
+            "slug": "pro-html-plan",
+            "description": raw_html,
+            "price": 29.99,
+            "discount_price": 19.99,
+            "billing_type": "monthly",
+            "duration_days": "30",
+            "limit": "pro",
+            "is_active": True,
+        }
+
+        # 1. Create via PublicSubscriptionPlansViewSet
+        response = self.client.post("/api/resume/pricing-plans/", data=payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data.get("success"))
+
+        plan_data = response.data["plan"]
+        self.assertEqual(plan_data["description"], raw_html)
+        self.assertNotIn("\nFree plan", plan_data["description"])
+        self.assertIn("<ol><li>Free plan</li>", plan_data["description"])
+
+        # 2. Verify Database Persistence
+        plan_id = plan_data["id"]
+        db_obj = Subscription.objects.get(id=plan_id)
+        self.assertEqual(db_obj.description, raw_html)
+
+        # 3. Retrieve list and verify API response retains raw HTML
+        list_response = self.client.get("/api/resume/pricing-plans/")
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        fetched_plans = list_response.data.get("plans", [])
+        matched = next((p for p in fetched_plans if p["id"] == plan_id), None)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["description"], raw_html)
+
+    def test_subscription_update_preserves_raw_html_description(self):
+        initial_html = "<p>Initial Description</p>"
+        sub = Subscription.objects.create(
+            name="HTML Update Plan",
+            slug="html-update-plan",
+            description=initial_html,
+            price=49.99,
+            billing_type="monthly",
+            duration_days="30",
+            limit="premium",
+            is_active=True,
+        )
+
+        updated_html = "<ol><li>Feature 1</li><li>Feature 2</li></ol><div class=\"highlight\"><strong>Special Offer</strong></div>"
+
+        # Update via PublicSubscriptionPlansViewSet
+        patch_resp = self.client.patch(
+            f"/api/resume/pricing-plans/{sub.id}",
+            data={"description": updated_html},
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(patch_resp.data.get("success"))
+        self.assertEqual(patch_resp.data["plan"]["description"], updated_html)
+
+        sub.refresh_from_db()
+        self.assertEqual(sub.description, updated_html)
+
+    def test_create_and_update_plan_via_subscription_viewset_preserves_raw_html(self):
+        admin_token = self._get_admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_token}")
+
+        raw_html = "<ol><li>Free plan</li><li>freee</li></ol><ul><li>freee</li></ul>"
+
+        payload = {
+            "name": "Admin HTML Plan",
+            "slug": "admin-html-plan",
+            "description": raw_html,
+            "price": 99.00,
+            "billing_type": "yearly",
+            "duration_days": "365",
+            "limit": "enterprise",
+            "is_active": True,
+        }
+
+        # 1. Create plan via create-plan endpoint
+        create_resp = self.client.post("/api/resume/create-plan/", data=payload, format="json")
+        self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED)
+        created_plan = create_resp.data["plan"]
+        self.assertEqual(created_plan["description"], raw_html)
+
+        plan_id = created_plan["id"]
+        sub = Subscription.objects.get(id=plan_id)
+        self.assertEqual(sub.description, raw_html)
+
+        # 2. Update plan via update-plan endpoint
+        new_raw_html = "<div><p>Updated <em>Enterprise Plan</em></p><ul><li>Feature A</li></ul></div>"
+        update_resp = self.client.patch(
+            f"/api/resume/update-plan/{plan_id}/",
+            data={"description": new_raw_html},
+            format="json",
+        )
+        self.assertEqual(update_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(update_resp.data["plan"]["description"], new_raw_html)
+
+        sub.refresh_from_db()
+        self.assertEqual(sub.description, new_raw_html)
+
