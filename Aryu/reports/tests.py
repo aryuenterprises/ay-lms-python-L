@@ -360,5 +360,143 @@ class StudentEnrollmentReportTestCase(TestCase):
         self.assertGreaterEqual(len(response_mismatch.data["data"]), 1)
 
 
+class GoogleReviewTestCase(TestCase):
+    """
+    Unit tests for Google Review API:
+    - GET /api/v1/reports/google-reviews
+    - POST /api/v1/reports/google-reviews (Upsert)
+    - PATCH /api/v1/reports/google-reviews/<id> (Update)
+    - DELETE /api/v1/reports/google-reviews/<id> (Reset)
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+
+        self.category = CourseCategory.objects.create(category_name="DevOps", is_archived=False)
+        self.course = Course.objects.create(course_name="Docker", course_category=self.category, is_archived=False)
+        self.batch = NewBatch.objects.create(
+            title="BATCH_DEV",
+            course=self.course,
+            start_date=timezone.now().date(),
+            end_date=timezone.now().date(),
+            start_time="10:00:00",
+            end_time="12:00:00",
+            is_archived=False
+        )
+
+        self.student = Student.objects.create(
+            first_name="Anand",
+            last_name="Verma",
+            email="anand@example.com",
+            contact_no="9876543210",
+            registration_id="AYA0826066",
+            username="anandverma",
+            password=make_password("pass123"),
+            converter="webinar"
+        )
+        StudentCourse.objects.create(student=self.student, course=self.course, batch=self.batch)
+
+        token = RefreshToken()
+        token["user_id"] = self.student.student_id
+        token["user_type"] = "admin"
+        self.access_token = str(token.access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.access_token}")
+
+    def test_get_google_reviews_list(self):
+        url = "/api/v1/reports/google-reviews"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["success"])
+        self.assertIn("data", response.data)
+        self.assertIn("pagination", response.data)
+        self.assertIn("filter_options", response.data)
+
+    def test_post_upsert_google_review(self):
+        url = "/api/v1/reports/google-reviews"
+        payload = {
+            "raw_student_id": self.student.student_id,
+            "student_id": "AYA0826066",
+            "course_id": self.course.course_id,
+            "batch_id": self.batch.batch_id,
+            "is_google_review": True,
+            "review_date": "2026-09-02",
+            "screenshot_url": "https://example.com/screenshot.png"
+        }
+        # First POST should Create (201 Created)
+        response = self.client.post(url, data=payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data["success"])
+        self.assertEqual(response.data["data"]["is_google_review"], True)
+
+        # Second POST should Upsert / Update (200 OK)
+        payload["review_date"] = "2026-09-03"
+        response_update = self.client.post(url, data=payload, format="json")
+        self.assertEqual(response_update.status_code, status.HTTP_200_OK)
+        self.assertEqual(response_update.data["data"]["review_date"], "2026-09-03")
+
+    def test_post_validation_mandatory_review_date(self):
+        url = "/api/v1/reports/google-reviews"
+        payload = {
+            "raw_student_id": self.student.student_id,
+            "course_id": self.course.course_id,
+            "batch_id": self.batch.batch_id,
+            "is_google_review": True
+            # review_date missing!
+        }
+        response = self.client.post(url, data=payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_422_UNPROCESSABLE_ENTITY)
+        self.assertFalse(response.data["success"])
+
+    def test_patch_and_delete_google_review(self):
+        # First create
+        url_post = "/api/v1/reports/google-reviews"
+        payload = {
+            "raw_student_id": self.student.student_id,
+            "course_id": self.course.course_id,
+            "batch_id": self.batch.batch_id,
+            "is_google_review": True,
+            "review_date": "2026-09-02"
+        }
+        res_post = self.client.post(url_post, data=payload, format="json")
+        review_id = res_post.data["data"]["id"]
+
+        # PATCH update
+        url_patch = f"/api/v1/reports/google-reviews/{review_id}"
+        patch_payload = {
+            "review_date": "2026-09-05",
+            "screenshot_url": "https://example.com/updated_screenshot.png"
+        }
+        res_patch = self.client.patch(url_patch, data=patch_payload, format="json")
+        self.assertEqual(res_patch.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_patch.data["data"]["review_date"], "2026-09-05")
+
+        # DELETE reset
+        url_delete = f"/api/v1/reports/google-reviews/{review_id}"
+        res_delete = self.client.delete(url_delete)
+        self.assertEqual(res_delete.status_code, status.HTTP_200_OK)
+        self.assertTrue(res_delete.data["success"])
+
+    def test_post_markdown_wrapped_screenshot_url(self):
+        url = "/api/v1/reports/google-reviews"
+        payload = {
+            "student_id": "AYA0826066",
+            "raw_student_id": self.student.student_id,
+            "course_id": self.course.course_id,
+            "batch_id": self.batch.batch_id,
+            "is_google_review": True,
+            "review_date": "2026-09-02",
+            "screenshot_url": "[https://storage.googleapis.com/your-bucket/reviews/AYA0826066_review.png](https://storage.googleapis.com/your-bucket/reviews/AYA0826066_review.png)"
+        }
+        response = self.client.post(url, data=payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data["success"])
+        self.assertEqual(
+            response.data["data"]["screenshot_url"],
+            "https://aylms.aryuprojects.com/api/media/AYA0826066_review.png"
+        )
+
+
+
+
 
 
