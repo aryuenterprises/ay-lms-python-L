@@ -1,16 +1,78 @@
+import os
 import math
+import re
 from datetime import datetime, date, time, timedelta
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from django.db.models import Q, Sum, Prefetch, Count
+from django.conf import settings
+from django.db import transaction, models
+from django.core.validators import URLValidator
+from django.core.exceptions import ValidationError
+from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from aryuapp.auth import CustomJWTAuthentication
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from aryuapp.models import Student, StudentCourse, Attendance
 from batches.models import NewBatch, ClassSchedule
 from payments.models import PaymentTransaction
 from courses.models import Course
+from reports.models import GoogleReview
+
+
+def clean_and_extract_url(url_val):
+    if not url_val:
+        return None
+    url_str = str(url_val).strip()
+    if not url_str:
+        return None
+    # Un-wrap Markdown link format like [text](http://...) or <http://...>
+    match = re.search(r'https?://[^\s\)\]"]+', url_str)
+    if match:
+        url_str = match.group(0)
+    return url_str
+
+
+def extract_filename_or_relative_path(input_val):
+    if not input_val:
+        return None
+    if not isinstance(input_val, str):
+        return None
+    cleaned = clean_and_extract_url(input_val)
+    if not cleaned:
+        return None
+    return cleaned.rstrip("/").split("/")[-1]
+
+
+def resolve_screenshot_url(review, request=None):
+    if not review:
+        return None
+    screenshot = getattr(review, "screenshot", None) or getattr(review, "screenshot_url", None)
+    if not screenshot:
+        return None
+
+    # Extract clean file name (e.g., "AYA0826066_review.png")
+    if hasattr(screenshot, "name") and screenshot.name:
+        filename = os.path.basename(screenshot.name)
+    elif isinstance(screenshot, str) and screenshot.strip():
+        clean_url = clean_and_extract_url(screenshot)
+        filename = clean_url.rstrip("/").split("/")[-1] if clean_url else None
+    else:
+        return None
+
+    if not filename:
+        return None
+
+    # Base URL without trailing slash
+    base_url = getattr(settings, "MEDIA_BASE_URL", "").rstrip("/")
+
+    # Ensure /media/ segment is present
+    if not base_url.endswith("/media"):
+        base_url = f"{base_url}/media"
+
+    return f"{base_url}/{filename}"
 
 
 def parse_date_bound_from(date_str):
@@ -800,6 +862,586 @@ class AttendanceReportView(APIView):
                     "message": str(e)
                 },
                 status=500
+            )
+
+
+class GoogleReviewReportView(APIView):
+    """
+    Report 3 - Google Review API.
+    GET /api/v1/reports/google-reviews (or /api/reports/google-reviews)
+    POST /api/v1/reports/google-reviews (Create or Upsert Google Review)
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request):
+        try:
+            # 1. Parse Pagination Parameters
+            try:
+                page = int(request.GET.get("page", 1))
+                if page < 1:
+                    page = 1
+            except (ValueError, TypeError):
+                page = 1
+
+            try:
+                limit = int(request.GET.get("limit", 50))
+                if limit < 1:
+                    limit = 50
+                elif limit > 500:
+                    limit = 500
+            except (ValueError, TypeError):
+                limit = 50
+
+            # 2. Parse Filters
+            search = request.GET.get("search", "").strip()
+            course_id = request.GET.get("course_id", "").strip()
+            batch_id = request.GET.get("batch_id", "").strip()
+            from_date_str = request.GET.get("from_date", "").strip()
+            to_date_str = request.GET.get("to_date", "").strip()
+            is_google_review_param = request.GET.get("is_google_review", "all").strip().lower()
+            sort_by = request.GET.get("sort_by", "review_date").strip().lower()
+            sort_order = request.GET.get("sort_order", "desc").strip().lower()
+
+            # Reset Rule for batch_id if mismatched with course_id
+            if course_id and batch_id:
+                valid_batch_exists = NewBatch.objects.filter(
+                    batch_id=batch_id, course_id=course_id, is_archived=False
+                ).exists() or StudentCourse.objects.filter(
+                    batch_id=batch_id, course_id=course_id
+                ).exists()
+                if not valid_batch_exists:
+                    batch_id = ""
+
+            # Base Queryset: Active students
+            students_qs = Student.objects.filter(is_archived=False)
+
+            # Search filter (name, email, registration_id)
+            if search:
+                students_qs = students_qs.filter(
+                    Q(first_name__icontains=search) |
+                    Q(last_name__icontains=search) |
+                    Q(email__icontains=search) |
+                    Q(registration_id__icontains=search)
+                )
+
+            # Course filter
+            if course_id:
+                students_qs = students_qs.filter(
+                    Q(student_courses__course_id=course_id) |
+                    Q(new_batches__course_id=course_id)
+                )
+
+            # Batch filter
+            if batch_id:
+                students_qs = students_qs.filter(
+                    Q(student_courses__batch_id=batch_id) |
+                    Q(new_batches__batch_id=batch_id)
+                )
+
+            # Google Review status filter
+            if is_google_review_param in ["yes", "true", "1"]:
+                students_qs = students_qs.filter(google_reviews__is_google_review=True)
+            elif is_google_review_param in ["no", "false", "0"]:
+                students_qs = students_qs.filter(
+                    Q(google_reviews__isnull=True) | Q(google_reviews__is_google_review=False)
+                )
+
+            # Date Range Filter against review_date or created_at
+            if from_date_str:
+                parsed_from = parse_date_bound_from(from_date_str)
+                if parsed_from:
+                    students_qs = students_qs.filter(
+                        Q(google_reviews__review_date__gte=parsed_from.date()) |
+                        Q(created_at__gte=parsed_from)
+                    )
+
+            if to_date_str:
+                parsed_to, lookup = parse_date_bound_to(to_date_str)
+                if parsed_to:
+                    if lookup == "lt":
+                        students_qs = students_qs.filter(
+                            Q(google_reviews__review_date__lt=parsed_to.date()) |
+                            Q(created_at__lt=parsed_to)
+                        )
+                    else:
+                        students_qs = students_qs.filter(
+                            Q(google_reviews__review_date__lte=parsed_to.date()) |
+                            Q(created_at__lte=parsed_to)
+                        )
+
+            students_qs = students_qs.distinct()
+            total_count = students_qs.count()
+
+            # 3. Pagination & Prefetching
+            offset = (page - 1) * limit
+            sliced_students = students_qs.order_by("-created_at", "-student_id").prefetch_related(
+                Prefetch(
+                    "google_reviews",
+                    queryset=GoogleReview.objects.select_related("course", "batch")
+                ),
+                Prefetch(
+                    "student_courses",
+                    queryset=StudentCourse.objects.select_related("course", "batch")
+                ),
+                Prefetch(
+                    "new_batches",
+                    queryset=NewBatch.objects.select_related("course")
+                )
+            )[offset:offset + limit]
+
+            data = []
+            for s in sliced_students:
+                full_name = f"{s.first_name or ''} {s.last_name or ''}".strip()
+                review = s.google_reviews.first()
+
+                courses_map = {}
+                batches_map = {}
+
+                for sc in s.student_courses.all():
+                    if sc.course and sc.course.course_name:
+                        courses_map[sc.course.course_id] = sc.course.course_name
+                    if sc.batch:
+                        b_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
+                        if b_title:
+                            batches_map[sc.batch.batch_id] = b_title
+
+                for nb in s.new_batches.all():
+                    if nb.course and nb.course.course_name:
+                        courses_map[nb.course.course_id] = nb.course.course_name
+                    if nb.title:
+                        batches_map[nb.batch_id] = nb.title
+
+                course_names = list(courses_map.values())
+                course_ids = list(courses_map.keys())
+                batch_names = list(batches_map.values())
+                batch_ids = list(batches_map.keys())
+
+                course_val = course_names[0] if course_names else "-"
+                course_id_val = course_ids[0] if course_ids else None
+                batch_val = batch_names[0] if batch_names else "-"
+                batch_id_val = batch_ids[0] if batch_ids else None
+
+                review_id = review.id if review else None
+                is_rev = review.is_google_review if review else False
+                rev_date = review.review_date.strftime("%Y-%m-%d") if (review and review.review_date) else None
+                screenshot_url = resolve_screenshot_url(review, request)
+
+                data.append({
+                    "id": review_id or str(s.student_id),
+                    "review_id": review_id,
+                    "student_id": s.registration_id or f"std_{s.student_id}",
+                    "raw_student_id": s.student_id,
+                    "student_name": full_name,
+                    "email": s.email,
+                    "is_google_review": is_rev,
+                    "review_date": rev_date,
+                    "screenshot_url": screenshot_url,
+                    "course_name": course_val,
+                    "course_id": course_id_val,
+                    "batch_name": batch_val,
+                    "batch_id": batch_id_val,
+                    "created_at": s.created_at.isoformat() if s.created_at else None
+                })
+
+            # 4. Fetch Active Filter Options for Dropdowns
+            active_courses = list(
+                Course.objects.filter(is_archived=False)
+                .exclude(status__iexact="Inactive")
+                .values("course_id", "course_name")
+                .order_by("course_name")
+            )
+            courses_options = [
+                {
+                    "id": c["course_id"],
+                    "course_id": c["course_id"],
+                    "name": c["course_name"],
+                    "course_name": c["course_name"]
+                }
+                for c in active_courses
+            ]
+
+            batches_qs = NewBatch.objects.filter(is_archived=False, status=True)
+            if course_id:
+                batches_qs = batches_qs.filter(course_id=course_id)
+
+            active_batches = list(
+                batches_qs.values("batch_id", "title", "course_id").order_by("title")
+            )
+            batches_options = [
+                {
+                    "id": b["batch_id"],
+                    "batch_id": b["batch_id"],
+                    "name": b["title"],
+                    "title": b["title"],
+                    "course_id": b["course_id"]
+                }
+                for b in active_batches
+            ]
+
+            filter_options = {
+                "courses": courses_options,
+                "batches": batches_options
+            }
+
+            total_pages = math.ceil(total_count / limit) if total_count > 0 else 0
+
+            return Response({
+                "success": True,
+                "data": data,
+                "pagination": {
+                    "total_count": total_count,
+                    "page": page,
+                    "limit": limit,
+                    "total_pages": total_pages
+                },
+                "filter_options": filter_options
+            }, status=200)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {"success": False, "message": str(e)},
+                status=500
+            )
+
+    def post(self, request):
+        """
+        POST /api/v1/reports/google-reviews
+        Create or Upsert Google review record for (raw_student_id, course_id, batch_id).
+        """
+        try:
+            data = request.data
+            raw_student_id = data.get("raw_student_id") or data.get("student_pk")
+            student_id_str = data.get("student_id")
+            course_id = data.get("course_id")
+            batch_id = data.get("batch_id")
+            is_google_review_val = data.get("is_google_review")
+            review_date_val = data.get("review_date")
+            screenshot_file = request.FILES.get("screenshot")
+            raw_screenshot_input = data.get("screenshot_url") or data.get("screenshot")
+            cleaned_url = clean_and_extract_url(raw_screenshot_input) if isinstance(raw_screenshot_input, str) else None
+            stored_file_name = extract_filename_or_relative_path(raw_screenshot_input) if isinstance(raw_screenshot_input, str) else None
+
+            # Validation: raw_student_id or student_id, course_id, and batch_id are required
+            if not raw_student_id and not student_id_str:
+                return Response(
+                    {"success": False, "message": "Field 'raw_student_id' or 'student_id' is required.", "error_code": "VALIDATION_ERROR"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if not course_id:
+                return Response(
+                    {"success": False, "message": "Field 'course_id' is required.", "error_code": "VALIDATION_ERROR"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if not batch_id:
+                return Response(
+                    {"success": False, "message": "Field 'batch_id' is required.", "error_code": "VALIDATION_ERROR"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Lookup Student
+            student = None
+            if raw_student_id:
+                student = Student.objects.filter(student_id=raw_student_id).first()
+            if not student and student_id_str:
+                student = Student.objects.filter(
+                    Q(registration_id=student_id_str) | Q(student_id=student_id_str)
+                ).first()
+
+            if not student:
+                return Response(
+                    {"success": False, "message": f"Student with identifier '{raw_student_id or student_id_str}' not found.", "error_code": "NOT_FOUND"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Lookup Course & Batch
+            course = Course.objects.filter(course_id=course_id).first()
+            batch = NewBatch.objects.filter(batch_id=batch_id).first()
+
+            if not course:
+                return Response(
+                    {"success": False, "message": f"Course with id '{course_id}' not found.", "error_code": "NOT_FOUND"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            if not batch:
+                return Response(
+                    {"success": False, "message": f"Batch with id '{batch_id}' not found.", "error_code": "NOT_FOUND"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Parse boolean is_google_review
+            is_google_review = False
+            if is_google_review_val is not None:
+                if isinstance(is_google_review_val, bool):
+                    is_google_review = is_google_review_val
+                elif str(is_google_review_val).lower() in ["true", "yes", "1"]:
+                    is_google_review = True
+
+            # Rule: If is_google_review is true, review_date is strictly mandatory
+            if is_google_review and not review_date_val:
+                return Response(
+                    {"success": False, "message": "Field 'review_date' is strictly required when is_google_review is true.", "error_code": "UNPROCESSABLE_ENTITY"},
+                    status=status.HTTP_422_UNPROCESSABLE_ENTITY
+                )
+
+            parsed_review_date = None
+            if review_date_val:
+                parsed_d = parse_date(str(review_date_val)) or parse_datetime(str(review_date_val))
+                if parsed_d:
+                    parsed_review_date = parsed_d.date() if isinstance(parsed_d, datetime) else parsed_d
+                else:
+                    return Response(
+                        {"success": False, "message": "Invalid date format for 'review_date'. Expected YYYY-MM-DD.", "error_code": "VALIDATION_ERROR"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            # Validate screenshot_url format if passed as string URL
+            if cleaned_url and not screenshot_file:
+                url_validator = URLValidator()
+                try:
+                    url_validator(cleaned_url)
+                except ValidationError:
+                    return Response(
+                        {"success": False, "message": "Field 'screenshot_url' must be a valid URI format.", "error_code": "VALIDATION_ERROR"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            # Atomic Upsert Database Logic
+            with transaction.atomic():
+                review, created = GoogleReview.objects.select_for_update().get_or_create(
+                    student=student,
+                    course=course,
+                    batch=batch,
+                    defaults={
+                        "is_google_review": is_google_review,
+                        "review_date": parsed_review_date,
+                        "screenshot_url": stored_file_name or cleaned_url
+                    }
+                )
+
+                review.is_google_review = is_google_review
+                if parsed_review_date is not None:
+                    review.review_date = parsed_review_date
+                
+                if screenshot_file:
+                    review.screenshot = screenshot_file
+
+                if stored_file_name or cleaned_url:
+                    review.screenshot_url = stored_file_name or cleaned_url
+
+                review.save()
+
+            screenshot_url = resolve_screenshot_url(review, request)
+
+            resp_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+            return Response({
+                "success": True,
+                "message": "Google review created successfully." if created else "Google review updated successfully.",
+                "data": {
+                    "id": review.id,
+                    "student_id": student.registration_id or f"std_{student.student_id}",
+                    "raw_student_id": student.student_id,
+                    "student_name": f"{student.first_name or ''} {student.last_name or ''}".strip(),
+                    "email": student.email,
+                    "is_google_review": review.is_google_review,
+                    "review_date": review.review_date.strftime("%Y-%m-%d") if review.review_date else None,
+                    "screenshot_url": screenshot_url,
+                    "course_name": course.course_name,
+                    "course_id": course.course_id,
+                    "batch_name": batch.title,
+                    "batch_id": batch.batch_id,
+                    "created_at": review.created_at.isoformat() if review.created_at else None,
+                    "updated_at": review.updated_at.isoformat() if review.updated_at else None
+                }
+            }, status=resp_status)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {"success": False, "message": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class GoogleReviewDetailView(APIView):
+    """
+    PATCH / PUT /api/v1/reports/google-reviews/<id>
+    Update Google review status (is_google_review), review_date, and screenshot file upload.
+    DELETE /api/v1/reports/google-reviews/<id>
+    Delete / reset Google review record.
+    <id> can be the GoogleReview PK or Student PK/registration_id.
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def patch(self, request, pk=None):
+        return self.update_review(request, pk)
+
+    def put(self, request, pk=None):
+        return self.update_review(request, pk)
+
+    def update_review(self, request, pk=None):
+        try:
+            review = None
+            student = None
+
+            # 1. Look up by GoogleReview PK or Student PK/registration_id
+            if str(pk).isdigit():
+                review = GoogleReview.objects.filter(id=int(pk)).first()
+
+            if not review:
+                student = Student.objects.filter(
+                    Q(student_id=pk) | Q(registration_id=pk)
+                ).first()
+                if student:
+                    review = GoogleReview.objects.filter(student=student).first()
+
+            if not review and not student:
+                return Response(
+                    {"success": False, "message": f"Review or Student with identifier '{pk}' not found.", "error_code": "NOT_FOUND"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # If review doesn't exist yet for this student, create it
+            if not review and student:
+                sc = StudentCourse.objects.filter(student=student).first()
+                nb = NewBatch.objects.filter(student_courses__student=student).first()
+                review = GoogleReview.objects.create(
+                    student=student,
+                    course=sc.course if sc else None,
+                    batch=sc.batch if (sc and sc.batch) else nb
+                )
+
+            # 2. Extract & Parse update data
+            data = request.data
+            is_google_review = data.get("is_google_review")
+            review_date = data.get("review_date")
+            screenshot = request.FILES.get("screenshot")
+            raw_screenshot_input = data.get("screenshot_url") or data.get("screenshot")
+            cleaned_url = clean_and_extract_url(raw_screenshot_input) if isinstance(raw_screenshot_input, str) else None
+            stored_file_name = extract_filename_or_relative_path(raw_screenshot_input) if isinstance(raw_screenshot_input, str) else None
+
+            if is_google_review is not None:
+                if isinstance(is_google_review, bool):
+                    review.is_google_review = is_google_review
+                elif str(is_google_review).lower() in ["true", "yes", "1"]:
+                    review.is_google_review = True
+                elif str(is_google_review).lower() in ["false", "no", "0"]:
+                    review.is_google_review = False
+
+            # Validation Rule: If is_google_review is true and review_date is null/empty
+            if review.is_google_review and not review.review_date and not review_date:
+                return Response(
+                    {"success": False, "message": "Field 'review_date' is required when is_google_review is true.", "error_code": "UNPROCESSABLE_ENTITY"},
+                    status=status.HTTP_422_UNPROCESSABLE_ENTITY
+                )
+
+            if review_date:
+                parsed_d = parse_date(str(review_date)) or parse_datetime(str(review_date))
+                if parsed_d:
+                    if isinstance(parsed_d, datetime):
+                        review.review_date = parsed_d.date()
+                    else:
+                        review.review_date = parsed_d
+
+            if screenshot and not isinstance(screenshot, str):
+                review.screenshot = screenshot
+
+            if cleaned_url and not screenshot:
+                url_validator = URLValidator()
+                try:
+                    url_validator(cleaned_url)
+                except ValidationError:
+                    return Response(
+                        {"success": False, "message": "Field 'screenshot_url' must be a valid URI format.", "error_code": "VALIDATION_ERROR"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                review.screenshot_url = stored_file_name or cleaned_url
+
+            review.save()
+
+            screenshot_url = resolve_screenshot_url(review, request)
+
+            return Response({
+                "success": True,
+                "message": "Google review updated successfully.",
+                "data": {
+                    "id": review.id,
+                    "student_id": review.student.registration_id or f"std_{review.student.student_id}",
+                    "raw_student_id": review.student.student_id,
+                    "student_name": f"{review.student.first_name or ''} {review.student.last_name or ''}".strip(),
+                    "email": review.student.email,
+                    "is_google_review": review.is_google_review,
+                    "review_date": review.review_date.strftime("%Y-%m-%d") if review.review_date else None,
+                    "screenshot_url": screenshot_url,
+                    "course_name": review.course.course_name if review.course else "-",
+                    "course_id": review.course.course_id if review.course else None,
+                    "batch_name": review.batch.title if review.batch else "-",
+                    "batch_id": review.batch.batch_id if review.batch else None,
+                    "updated_at": review.updated_at.isoformat() if review.updated_at else None
+                }
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {"success": False, "message": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def delete(self, request, pk=None):
+        """
+        DELETE /api/v1/reports/google-reviews/{id}
+        Delete review record or reset student review status.
+        """
+        try:
+            review = None
+            if str(pk).isdigit():
+                review = GoogleReview.objects.filter(id=int(pk)).first()
+            
+            if not review:
+                student = Student.objects.filter(
+                    Q(student_id=pk) | Q(registration_id=pk)
+                ).first()
+                if student:
+                    review = GoogleReview.objects.filter(student=student).first()
+
+            if not review:
+                return Response(
+                    {"success": False, "message": f"Google review record with identifier '{pk}' not found.", "error_code": "NOT_FOUND"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            review_id = review.id
+            student_id = review.student.registration_id or f"std_{review.student.student_id}"
+
+            # Delete the GoogleReview DB record (Soft Reset so student appears with is_google_review: false)
+            review.delete()
+
+            return Response({
+                "success": True,
+                "message": f"Google review record #{review_id} for student {student_id} reset/deleted successfully.",
+                "data": {
+                    "id": review_id,
+                    "student_id": student_id,
+                    "is_google_review": False,
+                    "review_date": None,
+                    "screenshot_url": None
+                }
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {"success": False, "message": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
 
