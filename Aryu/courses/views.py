@@ -3,7 +3,7 @@ from .serializers import *
 from rest_framework.exceptions import ValidationError, NotFound
 from aryuapp.auth import CustomJWTAuthentication
 from rest_framework.response import Response
-from rest_framework import status, viewsets
+from rest_framework import status, viewsets, permissions, filters
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action, api_view
 from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
@@ -11,15 +11,20 @@ from django.contrib.auth.hashers import *
 from django.db.models import Q
 from aryuapp.mixins import LoggingMixin,NotesMixin
 from aryuapp.models import ModulePermission, Student, Trainer
+from rest_framework.pagination import PageNumberPagination
 from aryuapp.views import has_permission,flatten_errors
 from django.shortcuts import get_object_or_404
 import traceback
 from batches.serializers import NewBatchSerializer
+from rest_framework.throttling import AnonRateThrottle
 from django.db import transaction
+import logging
 # Create your views here.
+logger = logging.getLogger('general')
 
-
-
+class PublicCourseAnonThrottle(AnonRateThrottle):
+    # Adjust rate based on operational requirements (e.g., '100/day', '20/hour')
+    rate = '60/minute'
 
 
 CURRENCIES = [
@@ -547,7 +552,32 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
         context["student"] = student
         return context
 
-   
+
+class PublicCoursePagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 50  # Prevents client from requesting huge payloads (OWASP API4)
+
+class PublicCourseViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Public read-only endpoint returning only course names.
+    OWASP Compliant: No data leakage, strict rate-limiting, paginated response.
+    """
+    serializer_class = PublicCourseNameSerializer
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []  # Disables overhead & auth vulnerability vectors on public routes
+    throttle_classes = [PublicCourseAnonThrottle]
+    pagination_class = PublicCoursePagination
+    
+    # Restrict allowed methods to GET, HEAD, OPTIONS strictly
+    http_method_names = ['get', 'head', 'options']
+
+    def get_queryset(self):
+        # DSA Optimization: .only() fetches only primary key and requested field,
+        # dramatically cutting SQL IO and payload overhead.
+        return Course.objects.filter(
+            is_archived=False
+        ).only('course_id', 'course_name').order_by('course_id')
     
 class CourseVideoViewSet(viewsets.ModelViewSet):
     serializer_class = CourseVideoSerializer
