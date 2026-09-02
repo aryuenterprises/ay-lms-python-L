@@ -17,6 +17,7 @@ urlpatterns = [
    path('courses/<str:course_id>/topic/<int:pk>/archive',TopicViewSet.as_view({'delete': 'destroy',})),
    path('courses/<str:course_id>/syllabus',CourseSyllabusViewSet.as_view({'get': 'list', 'post': 'create'})),
    path('courses/<str:course_id>/syllabus/<int:syllabus_id>',CourseSyllabusViewSet.as_view({'delete': 'destroy', 'patch': 'update'})),
+   path('public/courses', PublicCourseViewSet.as_view({'get':'list'})),
 
 ]
     

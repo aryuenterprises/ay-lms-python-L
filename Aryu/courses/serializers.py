@@ -248,6 +248,11 @@ class CourseListSerializer(serializers.ModelSerializer):
             return settings.MEDIA_BASE_URL + obj.syllabus_thumbnail.url
         return None
 
+class PublicCourseNameSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Course
+        fields = [ 'course_name']
+        read_only_fields = [ 'course_name']
 
 class CaseInsensitiveSlugRelatedField(serializers.SlugRelatedField):
     def to_internal_value(self, data):
