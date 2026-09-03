@@ -129,7 +129,8 @@ class AryuReportView(APIView):
 
             # Ordered descending by creation date (-created_at)
             students = Student.objects.filter(
-                is_archived=False
+                is_archived=False,
+                status=True
             ).order_by("-created_at").distinct()
 
             if search:
@@ -157,6 +158,12 @@ class AryuReportView(APIView):
                 Course.objects.filter(is_archived=False)
                 .values("course_id", "course_name")
                 .order_by("course_name")
+            )
+
+            categories = list(
+                CourseCategory.objects.filter(is_archived=False)
+                .values("category_id", "category_name")
+                .order_by("category_name")
             )
 
             data = []
@@ -281,18 +288,18 @@ class AryuReportView(APIView):
             return Response({
                 "success": True,
                 "total_records": students.count(),
+                "students": data,
                 "data": data,
                 "courses": courses,
+                "categories": categories,
             })
 
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-
+            logger.exception("Error in AryuReportView")
             return Response(
                 {
                     "success": False,
-                    "message": str(e)
+                    "message": "An unexpected error occurred."
                 },
                 status=500
             )
@@ -350,7 +357,7 @@ class StudentEnrollmentReportView(APIView):
                     batch_id = ""
 
             # Base queryset: Active/non-archived students
-            students_qs = Student.objects.filter(is_archived=False)
+            students_qs = Student.objects.filter(is_archived=False, status=True)
 
             # Case-insensitive search on student name (and registration_id/email)
             if search:
@@ -428,7 +435,17 @@ class StudentEnrollmentReportView(APIView):
                 )
             )[offset:offset + limit]
 
-            # 5. Build Response Data List
+            # 5. Fetch Active Courses matching Course Management criteria (/api/courses)
+            active_courses = list(
+                Course.objects.filter(is_archived=False)
+                .exclude(status__iexact="Inactive")
+                .values("course_id", "course_name")
+                .order_by("course_name")
+            )
+            valid_active_course_map = {c["course_id"]: c["course_name"] for c in active_courses if c["course_name"]}
+            valid_active_course_ids = set(valid_active_course_map.keys())
+
+            # 6. Build Response Data List
             data = []
             for s in sliced_students:
                 full_name = f"{s.first_name or ''} {s.last_name or ''}".strip()
@@ -438,10 +455,13 @@ class StudentEnrollmentReportView(APIView):
 
                 # A. Collect from StudentCourse
                 for sc in s.student_courses.all():
-                    if sc.course and sc.course.course_name:
-                        if not course_id or str(sc.course.course_id) == str(course_id):
-                            courses_map[sc.course.course_id] = sc.course.course_name
-                    if sc.batch:
+                    c_obj = sc.course
+                    if c_obj and c_obj.course_id in valid_active_course_ids:
+                        c_name = c_obj.course_name
+                        if c_name:
+                            if not course_id or str(c_obj.course_id) == str(course_id):
+                                courses_map[c_obj.course_id] = c_name
+                    if sc.batch and not getattr(sc.batch, "is_archived", False):
                         if not batch_id or str(sc.batch.batch_id) == str(batch_id):
                             batch_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
                             if batch_title:
@@ -449,30 +469,37 @@ class StudentEnrollmentReportView(APIView):
 
                 # B. Collect from NewBatch
                 for nb in s.new_batches.all():
-                    if nb.course and nb.course.course_name:
-                        if not course_id or str(nb.course.course_id) == str(course_id):
-                            courses_map[nb.course.course_id] = nb.course.course_name
-                    if nb.title:
+                    c_obj = nb.course
+                    if c_obj and c_obj.course_id in valid_active_course_ids:
+                        c_name = c_obj.course_name
+                        if c_name:
+                            if not course_id or str(c_obj.course_id) == str(course_id):
+                                courses_map[c_obj.course_id] = c_name
+                    if nb.title and not getattr(nb, "is_archived", False):
                         if not batch_id or str(nb.batch_id) == str(batch_id):
                             batches_map[nb.batch_id] = nb.title
 
                 # Fallback to all assigned if empty maps
                 if not courses_map and not course_id:
                     for sc in s.student_courses.all():
-                        if sc.course:
-                            courses_map[sc.course.course_id] = sc.course.course_name
+                        c_obj = sc.course
+                        if c_obj and c_obj.course_id in valid_active_course_ids:
+                            if c_obj.course_name:
+                                courses_map[c_obj.course_id] = c_obj.course_name
                     for nb in s.new_batches.all():
-                        if nb.course:
-                            courses_map[nb.course.course_id] = nb.course.course_name
+                        c_obj = nb.course
+                        if c_obj and c_obj.course_id in valid_active_course_ids:
+                            if c_obj.course_name:
+                                courses_map[c_obj.course_id] = c_obj.course_name
 
                 if not batches_map and not batch_id:
                     for sc in s.student_courses.all():
-                        if sc.batch:
+                        if sc.batch and not getattr(sc.batch, "is_archived", False):
                             b_name = sc.batch.title or getattr(sc.batch, "batch_name", None)
                             if b_name:
                                 batches_map[sc.batch.batch_id] = b_name
                     for nb in s.new_batches.all():
-                        if nb.title:
+                        if nb.title and not getattr(nb, "is_archived", False):
                             batches_map[nb.batch_id] = nb.title
 
                 course_names = list(courses_map.values())
@@ -481,31 +508,32 @@ class StudentEnrollmentReportView(APIView):
                 batch_ids = list(batches_map.keys())
 
                 course_val = ", ".join(course_names) if course_names else "-"
-                course_id_val = course_ids[0] if course_ids else None
                 batch_val = ", ".join(batch_names) if batch_names else "-"
-                batch_id_val = batch_ids[0] if batch_ids else None
 
-                created_at_iso = s.created_at.isoformat() if s.created_at else None
+                created_at_iso = s.created_at.strftime('%Y-%m-%d') if s.created_at else "-"
 
                 data.append({
                     "id": str(s.student_id),
                     "student_id": s.registration_id or f"std_{s.student_id}",
+                    "registration_id": s.registration_id or f"std_{s.student_id}",
+                    "first_name": s.first_name or "",
+                    "last_name": s.last_name or "",
                     "student_name": full_name,
-                    "course": course_val,
-                    "course_id": course_id_val,
-                    "batch": batch_val,
-                    "batch_id": batch_id_val,
+                    "email": s.email or "",
+                    "contact_no": s.contact_no or "",
                     "created_at": created_at_iso,
                     "enrolled_at": created_at_iso,
+                    "course_id": course_ids[0] if course_ids else None,
+                    "course_ids": course_ids,
+                    "course_name": course_names,
+                    "course": course_val,
+                    "batch_id": batch_ids[0] if batch_ids else None,
+                    "batch_ids": batch_ids,
+                    "batch_title": batch_names,
+                    "batch": batch_val,
                 })
 
-            # 6. Fetch Active Filter Options for Dropdowns
-            active_courses = list(
-                Course.objects.filter(is_archived=False)
-                .exclude(status__iexact="Inactive")
-                .values("course_id", "course_name")
-                .order_by("course_name")
-            )
+            # 7. Fetch Active Filter Options for Dropdowns
             courses_options = [
                 {
                     "id": c["course_id"],
@@ -534,16 +562,36 @@ class StudentEnrollmentReportView(APIView):
                 for b in active_batches
             ]
 
+            active_categories = list(
+                CourseCategory.objects.filter(is_archived=False)
+                .values("category_id", "category_name")
+                .order_by("category_name")
+            )
+            categories_options = [
+                {
+                    "id": cat["category_id"],
+                    "category_id": cat["category_id"],
+                    "name": cat["category_name"],
+                    "category_name": cat["category_name"]
+                }
+                for cat in active_categories
+            ]
+
             filter_options = {
                 "courses": courses_options,
-                "batches": batches_options
+                "batches": batches_options,
+                "categories": categories_options
             }
 
             total_pages = math.ceil(total_count / limit) if total_count > 0 else 0
 
             return Response({
                 "success": True,
+                "students": data,
                 "data": data,
+                "courses": courses_options,
+                "batches": batches_options,
+                "categories": categories_options,
                 "pagination": {
                     "total_count": total_count,
                     "page": page,
@@ -554,12 +602,11 @@ class StudentEnrollmentReportView(APIView):
             }, status=200)
 
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logger.exception("Error in StudentEnrollmentReportView")
             return Response(
                 {
                     "success": False,
-                    "message": str(e)
+                    "message": "An error occurred while fetching the student enrollment report."
                 },
                 status=500
             )
