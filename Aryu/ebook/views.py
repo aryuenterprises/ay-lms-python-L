@@ -389,8 +389,8 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
     permission_classes = [AllowAny]
 
     def _get_client(self):
-        gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay").first()
-        if not gateway:
+        gateway = get_active_razorpay_gateway()
+        if not gateway or not gateway.public_key or not gateway.secret_key:
             return None, None
         client = razorpay.Client(auth=(gateway.public_key, gateway.secret_key))
         return client, gateway
@@ -424,7 +424,10 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
         registration = None
         if registration_id:
-            registration = EbookRegistration.objects.filter(id=registration_id).first()
+            try:
+                registration = EbookRegistration.objects.filter(id=int(registration_id)).first()
+            except (ValueError, TypeError):
+                registration = None
 
         order = client.order.create({
             "amount": int(float(amount) * 100),
@@ -434,9 +437,9 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             "notes": {
                 "ebook_id": str(ebook_id),
                 "registration_id": str(registration_id) if registration_id else "",
-                "name": name,
-                "email": email,
-                "phone": phone,
+                "name": name or "",
+                "email": email or "",
+                "phone": str(phone) if phone else "",
             }
         })
 
@@ -448,23 +451,25 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             order_id=order["id"],
             transaction_id=transaction_id,
             phone=phone,
+            ebookregistration=registration,
             metadata={
                 "ebook_id": str(ebook_id),
-                "registration_id": str(registration_id) if registration_id else "",
-                "name": name,
-                "email": email,
-                "phone": phone,
+                "registration_id": str(registration.id) if registration else (str(registration_id) if registration_id else ""),
+                "name": name or "",
+                "email": email or "",
+                "phone": str(phone) if phone else "",
             }
         )
 
         if registration:
             registration.payment_transaction = txn
-            registration.save()
+            registration.save(update_fields=["payment_transaction"])
 
         return Response({
             "success": True,
             "order_id": order["id"],
             "receipt": transaction_id,
+            "transaction_id": transaction_id,
             "key": gateway.public_key,
             "amount": int(float(amount) * 100),
             "currency": "INR",
@@ -473,7 +478,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
             "email": registration.email if registration and registration.email else email,
             "name": registration.name if registration and registration.name else name,
             "phone": registration.phone if registration and registration.phone else phone,
-            "registration_id": registration_id,
+            "registration_id": registration.id if registration else registration_id,
             "role_id": role_id,
             "role_name": role_name,
             "created_at": ebook.created_at
@@ -481,21 +486,30 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['post'], url_path="verify")
     def verify_payment(self, request):
-        payment_id = request.data.get("razorpay_payment_id")
-        order_id = request.data.get("razorpay_order_id")
-        signature = request.data.get("razorpay_signature")
+        payment_id = request.data.get("razorpay_payment_id") or request.data.get("payment_id")
+        order_id = request.data.get("razorpay_order_id") or request.data.get("order_id")
+        signature = request.data.get("razorpay_signature") or request.data.get("signature")
 
         if not all([payment_id, order_id, signature]):
+            logger.error(
+                "Ebook verify_payment: Missing required parameters (payment_id=%s, order_id=%s, signature=%s)",
+                bool(payment_id), bool(order_id), bool(signature)
+            )
             return Response(
-                {"success": False, "message": "Missing fields"},
+                {"success": False, "message": "Missing payment verification fields"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        gateway = PaymentGateway.objects.filter(gatway_name__icontains="razorpay").first()
-        if not gateway:
+        payment_id = str(payment_id).strip()
+        order_id = str(order_id).strip()
+        signature = str(signature).strip()
+
+        gateway = get_active_razorpay_gateway()
+        if not gateway or not gateway.public_key or not gateway.secret_key:
+            logger.error("Ebook verify_payment: Active Razorpay gateway not configured")
             return Response(
-                {"success": False, "message": "Gateway not configured"},
-                status=status.HTTP_400_BAD_REQUEST
+                {"success": False, "message": "Razorpay gateway not configured"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
         try:
@@ -505,22 +519,91 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
                 "razorpay_order_id": order_id,
                 "razorpay_signature": signature
             })
-
-            txn = PaymentTransaction.objects.filter(order_id=order_id).first()
-            if txn:
-                txn.razorpay_payment_id = payment_id
-                txn.payment_status = "done"
-                txn.save()
-
-                EbookRegistrationViewSet.update_registration_after_payment(txn)
-
         except razorpay.errors.SignatureVerificationError:
+            logger.error(
+                "Ebook verify_payment: SignatureVerificationError for order_id=%s, payment_id=%s",
+                order_id, payment_id
+            )
             return Response(
-                {"success": False, "message": "Invalid signature"},
+                {"success": False, "message": "Invalid payment signature"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger.exception("Ebook verify_payment: Unexpected error during signature verification: %s", e)
+            return Response(
+                {"success": False, "message": "Signature verification error"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        return Response({"success": True})
+        with db_transaction.atomic():
+            # Robust lookup:
+            # 1. By Razorpay order_id
+            txn = PaymentTransaction.objects.select_for_update(of=('self',)).filter(order_id=order_id).first()
+
+            # 2. Fallback: In case local order/transaction ID was sent in place of Razorpay order_id
+            if not txn:
+                txn = PaymentTransaction.objects.select_for_update(of=('self',)).filter(transaction_id=order_id).first()
+
+            # 3. Fallback: by extra receipt/transaction_id payload parameter if present
+            if not txn:
+                alt_id = request.data.get("transaction_id") or request.data.get("receipt")
+                if alt_id:
+                    txn = PaymentTransaction.objects.select_for_update(of=('self',)).filter(
+                        transaction_id=str(alt_id).strip()
+                    ).first()
+
+            # 4. Fallback: by registration_id if passed
+            if not txn:
+                reg_id = request.data.get("registration_id")
+                if reg_id and str(reg_id).isdigit():
+                    txn = PaymentTransaction.objects.select_for_update(of=('self',)).filter(
+                        ebookregistration_id=int(reg_id)
+                    ).order_by("-id").first()
+
+            if not txn:
+                logger.error("Ebook verify_payment: PaymentTransaction not found for order_id=%s", order_id)
+                return Response(
+                    {"success": False, "message": f"Payment transaction not found for order {order_id}"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Idempotency check:
+            if txn.payment_status in ["done", "paid", "success"]:
+                logger.info(
+                    "Ebook verify_payment: Transaction %s already completed (status=%s). Returning idempotent success.",
+                    txn.id, txn.payment_status
+                )
+                reg = EbookRegistrationViewSet.update_registration_after_payment(txn)
+                return Response({
+                    "success": True,
+                    "message": "Payment already verified",
+                    "payment_status": txn.payment_status,
+                    "order_id": txn.order_id,
+                    "transaction_id": txn.transaction_id,
+                    "registration_id": reg.id if reg else (txn.ebookregistration_id or None)
+                })
+
+            # Transition transaction to "done"
+            txn.payment_status = "done"
+            txn.transaction_id = payment_id
+            if not isinstance(txn.metadata, dict):
+                txn.metadata = {}
+            txn.metadata["razorpay_payment_id"] = payment_id
+            txn.save()
+
+            logger.info("Ebook verify_payment: Transaction %s successfully updated to status='done'", txn.id)
+
+            # Update EbookRegistration status and linkage
+            registration = EbookRegistrationViewSet.update_registration_after_payment(txn)
+
+            return Response({
+                "success": True,
+                "message": "Payment verified successfully",
+                "payment_status": "done",
+                "order_id": txn.order_id,
+                "transaction_id": txn.transaction_id,
+                "registration_id": registration.id if registration else (txn.ebookregistration_id or None)
+            })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -528,8 +611,8 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 # ─────────────────────────────────────────────────────────────────────────────
 @method_decorator(csrf_exempt, name='dispatch')
 class EbookRegistrationViewSet(viewsets.ViewSet):
-    # authentication_classes = []
-    # permission_classes = [AllowAny]
+    authentication_classes = []
+    permission_classes = [AllowAny]
 
     def _is_first_time_user(self, email, phone, current_registration_id=None):
         q_filter = Q()
@@ -785,36 +868,68 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
 
     @classmethod
     def update_registration_after_payment(cls, txn):
-        meta = txn.metadata or {}
+        meta = txn.metadata if isinstance(txn.metadata, dict) else {}
         registration_id = meta.get("registration_id")
 
-        if not registration_id:
-            logger.error("No registration_id found in transaction metadata")
-            return None
+        registration = None
 
-        try:
-            registration = EbookRegistration.objects.filter(id=int(registration_id)).first()
-        except (ValueError, TypeError):
-            logger.error(f"Invalid registration_id: {registration_id}")
-            return None
+        # 1. Direct foreign key lookup
+        if getattr(txn, "ebookregistration", None):
+            registration = txn.ebookregistration
+
+        # 2. Reverse foreign key lookup
+        if not registration and hasattr(txn, "ebook_registrations"):
+            registration = txn.ebook_registrations.order_by("-id").first()
+
+        # 3. By registration_id in metadata
+        if not registration and registration_id:
+            try:
+                registration = EbookRegistration.objects.filter(id=int(registration_id)).first()
+            except (ValueError, TypeError):
+                logger.warning("Invalid registration_id in transaction metadata: %s", registration_id)
+
+        # 4. By payment_transaction foreign key on EbookRegistration
+        if not registration:
+            registration = EbookRegistration.objects.filter(payment_transaction=txn).order_by("-id").first()
+
+        # 5. Fallback by phone/email and ebook_id
+        if not registration:
+            phone = txn.phone or meta.get("phone")
+            email = meta.get("email")
+            ebook_id = meta.get("ebook_id")
+            if (phone or email) and ebook_id:
+                q = Q(ebook_id=ebook_id)
+                if phone:
+                    q &= (Q(phone=phone) | Q(phone=phone[-10:]))
+                elif email:
+                    q &= Q(email__iexact=email)
+                registration = EbookRegistration.objects.filter(q).order_by("-id").first()
 
         if not registration:
-            logger.error(f"EbookRegistration not found for ID: {registration_id}")
+            logger.error("No EbookRegistration found for transaction %s (metadata=%s)", txn.id, meta)
             return None
 
+        # Ensure bidirectional linkage and is_paid flag
+        already_paid = bool(registration.is_paid)
         registration.is_paid = True
         registration.payment_transaction = txn
-        registration.save()
+        registration.save(update_fields=["is_paid", "payment_transaction"])
+
+        if getattr(txn, "ebookregistration_id", None) != registration.id:
+            txn.ebookregistration = registration
+            txn.save(update_fields=["ebookregistration"])
 
         raw_password = cache.get(f"ebook_raw_pwd_{registration.id}")
         if raw_password:
             cache.delete(f"ebook_raw_pwd_{registration.id}")
 
-        try:
-            logger.info(f"📧 Sending email after payment confirmation to: {registration.email or registration.phone}")
-            send_ebook_registration_email(registration, password=raw_password)
-        except Exception as e:
-            logger.error(f"EMAIL ERROR: {str(e)}")
+        # Send confirmation email only on initial transition to avoid duplicates
+        if not already_paid:
+            try:
+                logger.info(f"📧 Sending email after payment confirmation to: {registration.email or registration.phone}")
+                send_ebook_registration_email(registration, password=raw_password)
+            except Exception as e:
+                logger.error(f"EMAIL ERROR: {str(e)}")
 
         return registration
 
