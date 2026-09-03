@@ -611,8 +611,24 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 # ─────────────────────────────────────────────────────────────────────────────
 @method_decorator(csrf_exempt, name='dispatch')
 class EbookRegistrationViewSet(viewsets.ViewSet):
-    authentication_classes = []
-    permission_classes = [AllowAny]
+    
+    def get_permissions(self):
+        """
+        Dynamically enforce authentication for specific actions:
+        - `create`: Publicly accessible (AllowAny)
+        - `list`, `all_transactions`, `user_transaction_history`: Authenticated only (IsAuthenticated)
+        """
+        protected_actions = ['list', 'all_transactions', 'user_transaction_history']
+        if self.action in protected_actions:
+            return [IsAuthenticated()]
+        return [AllowAny()]
+
+    def get_authenticators(self):
+        """
+        Returns default authentication classes configured in Django REST Framework 
+        settings (e.g., JWTAuthentication, SessionAuthentication, TokenAuthentication).
+        """
+        return super().get_authenticators()
 
     def _is_first_time_user(self, email, phone, current_registration_id=None):
         q_filter = Q()
@@ -938,11 +954,6 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
         return cls.update_registration_after_payment(txn)
 
     def list(self, request, slug=None):
-        if not request.user.is_authenticated:
-            return Response(
-                {"success": False, "message": "Authentication required"},
-                status=status.HTTP_403_FORBIDDEN
-            )
 
         qs = (
             EbookRegistration.objects
