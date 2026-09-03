@@ -553,10 +553,6 @@ class CourseViewSet(LoggingMixin, viewsets.ModelViewSet):
         return context
 
 
-class PublicCoursePagination(PageNumberPagination):
-    page_size = 20
-    page_size_query_param = 'page_size'
-    max_page_size = 50  # Prevents client from requesting huge payloads (OWASP API4)
 
 class PublicCourseViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -567,7 +563,6 @@ class PublicCourseViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []  # Disables overhead & auth vulnerability vectors on public routes
     throttle_classes = [PublicCourseAnonThrottle]
-    pagination_class = PublicCoursePagination
     
     # Restrict allowed methods to GET, HEAD, OPTIONS strictly
     http_method_names = ['get', 'head', 'options']
