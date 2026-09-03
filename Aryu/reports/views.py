@@ -16,11 +16,14 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from aryuapp.auth import CustomJWTAuthentication
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+import logging
 from aryuapp.models import Student, StudentCourse, Attendance
 from batches.models import NewBatch, ClassSchedule
 from payments.models import PaymentTransaction
-from courses.models import Course
+from courses.models import Course, CourseCategory
 from reports.models import GoogleReview
+
+logger = logging.getLogger(__name__)
 
 
 def clean_and_extract_url(url_val):
@@ -566,17 +569,15 @@ class AttendanceReportView(APIView):
     """
     Production-grade Attendance Report API endpoint.
     GET /api/v1/reports/attendance (or /api/reports/attendance)
-    Supports pagination (limit=50, page=1 default), sort (created_at DESC default),
-    search (fuzzy on student name/email/reg_id), course_id, batch_id, date range filtering,
-    dynamic S.No calculation, total_classes, attended_classes, not_attended_classes,
-    attendance_percentage, and filter_options.
+    Strictly bases report on active students (is_archived=False, status=True).
+    Follows OWASP security guidelines and DSA best practices ($O(1)$ lookups, 0 N+1 queries).
     """
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
 
     def get(self, request):
         try:
-            # 1. Parse Pagination Parameters
+            # 1. Parse & Sanitize Pagination Parameters (OWASP Input Validation)
             try:
                 page = int(request.GET.get("page", 1))
                 if page < 1:
@@ -588,19 +589,43 @@ class AttendanceReportView(APIView):
                 limit = int(request.GET.get("limit", 50))
                 if limit < 1:
                     limit = 50
-                elif limit > 500:
-                    limit = 500
+                elif limit > 200:
+                    limit = 200
             except (ValueError, TypeError):
                 limit = 50
 
-            # 2. Parse Query Filters
-            search = request.GET.get("search", "").strip()
-            course_id = request.GET.get("course_id", "").strip()
-            batch_id = request.GET.get("batch_id", "").strip()
+            # 2. Parse & Sanitize Query Filters
+            raw_search = request.GET.get("search", "")
+            search = str(raw_search).strip()[:100]
+
+            raw_course_id = request.GET.get("course_id", "")
+            course_id = str(raw_course_id).strip()
+
+            raw_batch_id = request.GET.get("batch_id", "")
+            batch_id = str(raw_batch_id).strip()
+
             from_date_str = request.GET.get("from_date", "").strip()
             to_date_str = request.GET.get("to_date", "").strip()
+
+            # Sanitize Sort Parameters (OWASP Parameter Whitelisting)
             sort_by = request.GET.get("sort_by", "created_at").strip().lower()
             sort_order = request.GET.get("sort_order", "desc").strip().lower()
+            if sort_order not in ["asc", "desc"]:
+                sort_order = "desc"
+
+            SORT_FIELDS_WHITELIST = {
+                "created_at": "created_at",
+                "enrolled_at": "created_at",
+                "student_name": "first_name",
+                "name": "first_name",
+                "first_name": "first_name",
+                "last_name": "last_name",
+                "registration_id": "registration_id",
+                "student_id": "student_id",
+                "email": "email",
+            }
+            db_sort_field = SORT_FIELDS_WHITELIST.get(sort_by, "created_at")
+            order_expr = db_sort_field if sort_order == "asc" else f"-{db_sort_field}"
 
             # Batch validation & reset rule
             if course_id and batch_id:
@@ -615,10 +640,10 @@ class AttendanceReportView(APIView):
                 if not valid_batch_exists:
                     batch_id = ""
 
-            # Base Queryset: Active students
-            students_qs = Student.objects.filter(is_archived=False)
+            # Primary Base Queryset: Active Students Only (is_archived=False, status=True)
+            students_qs = Student.objects.filter(is_archived=False, status=True)
 
-            # Search filter (fuzzy on student name, email, reg_id)
+            # Search filter (fuzzy on student name, email, registration_id)
             if search:
                 students_qs = students_qs.filter(
                     Q(first_name__icontains=search) |
@@ -655,24 +680,10 @@ class AttendanceReportView(APIView):
                     else:
                         students_qs = students_qs.filter(created_at__lte=parsed_to)
 
-            # 3. Sorting Mapping
-            sort_map = {
-                "created_at": "created_at",
-                "enrolled_at": "created_at",
-                "student_name": "first_name",
-                "name": "first_name",
-                "first_name": "first_name",
-                "last_name": "last_name",
-                "registration_id": "registration_id",
-                "student_id": "registration_id",
-            }
-            db_sort_field = sort_map.get(sort_by, "created_at")
-            order_expr = db_sort_field if sort_order == "asc" else f"-{db_sort_field}"
-
             students_qs = students_qs.distinct()
             total_count = students_qs.count()
 
-            # 4. Paginate with Prefetching
+            # Paginate with efficient Prefetching on the paginated slice only
             offset = (page - 1) * limit
             sliced_students = students_qs.order_by(order_expr, "-student_id").prefetch_related(
                 Prefetch(
@@ -685,7 +696,7 @@ class AttendanceReportView(APIView):
                 )
             )[offset:offset + limit]
 
-            # 5. Bulk Aggregations & Efficient Lookups for Attendance Metrics
+            # DSA Optimization: Hash Map Pre-Collection ($O(1)$ lookups, zero N+1 queries)
             student_meta = {}
             all_batch_ids = set()
             all_course_ids = set()
@@ -744,7 +755,7 @@ class AttendanceReportView(APIView):
 
             student_pks = [s.student_id for s in sliced_students]
 
-            # Bulk query scheduled classes where is_archived=False and is_class_cancelled=False
+            # Bulk query active scheduled classes (is_archived=False, is_class_cancelled=False)
             schedules_by_new_batch = defaultdict(list)
             schedules_by_old_batch = defaultdict(list)
             schedules_by_course = defaultdict(list)
@@ -867,6 +878,7 @@ class AttendanceReportView(APIView):
                 data.append({
                     "s_no": s_no,
                     "student_id": str(s.student_id),
+                    # "student_id": s.registration_id or f"std_{s.student_id}",
                     "registration_id": s.registration_id or f"std_{s.student_id}",
                     "student_name": full_name,
                     "email": s.email,
@@ -879,7 +891,7 @@ class AttendanceReportView(APIView):
                     "not_attended_classes": not_attended_classes,
                     "attendance_percentage": attendance_percentage,
                     "created_at": formatted_date,
-                    "enrolled_at": formatted_date,
+                    # "enrolled_at": formatted_date,
                 })
 
             # 6. Fetch Active Filter Options for Dropdowns
@@ -917,16 +929,40 @@ class AttendanceReportView(APIView):
                 for b in active_batches
             ]
 
+            active_categories = list(
+                CourseCategory.objects.filter(is_archived=False)
+                .values("category_id", "category_name")
+                .order_by("category_name")
+            )
+            categories_options = [
+                {
+                    "id": cat["category_id"],
+                    "category_id": cat["category_id"],
+                    "name": cat["category_name"],
+                    "category_name": cat["category_name"]
+                }
+                for cat in active_categories
+            ]
+
+            companies_options = []
+
             filter_options = {
                 "courses": courses_options,
-                "batches": batches_options
+                "batches": batches_options,
+                "categories": categories_options,
+                "companies": companies_options,
             }
 
             total_pages = math.ceil(total_count / limit) if total_count > 0 else 0
 
             return Response({
                 "success": True,
+                "students": data,
                 "data": data,
+                "batches": batches_options,
+                "courses": courses_options,
+                "categories": categories_options,
+                "companies": companies_options,
                 "pagination": {
                     "total_count": total_count,
                     "page": page,
@@ -937,12 +973,11 @@ class AttendanceReportView(APIView):
             }, status=200)
 
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logger.exception("Error in AttendanceReportView")
             return Response(
                 {
                     "success": False,
-                    "message": str(e)
+                    "message": "An unexpected error occurred while fetching the attendance report."
                 },
                 status=500
             )
