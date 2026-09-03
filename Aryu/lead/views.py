@@ -19,6 +19,7 @@ import csv
 import io
 import mimetypes
 import re
+import hashlib
 from django.utils.dateparse import parse_date, parse_datetime
 import openpyxl
 from rest_framework.decorators import action
@@ -29,6 +30,101 @@ from .services import ReportService
 from .telecrm import sync_lead_to_telecrm, sync_leads_bulk_to_telecrm
 
 # Create your views here.
+
+# =========================================================
+# PAGINATION & DYNAMIC SORTING
+# =========================================================
+
+def resolve_lead_ordering(query_params):
+    """
+    Resolves dynamic sorting from request query parameters.
+    Supports:
+      - sortby=asc, sortby=asd (typo tolerance), sortby=desc
+      - sortby=date, sortby=created_at, sortby=name, sortby=id, etc.
+      - sortby=date&order=asc / sortby=date&order=desc
+      - sort_by, order_by, ordering, sort
+      - order, sort_order, sort_direction, direction (asc / asd / desc)
+    Returns a tuple of field names, e.g. ('-created_at', '-id') or ('created_at', 'id').
+    """
+    raw_field = (
+        query_params.get("sortby")
+        or query_params.get("sort_by")
+        or query_params.get("order_by")
+        or query_params.get("ordering")
+        or query_params.get("sort")
+    )
+    raw_dir = (
+        query_params.get("order")
+        or query_params.get("sort_order")
+        or query_params.get("sort_direction")
+        or query_params.get("direction")
+    )
+
+    field = "created_at"
+    direction = "desc"
+
+    if raw_dir:
+        d = str(raw_dir).strip().lower()
+        if d in ("asc", "asd", "ascending", "1"):
+            direction = "asc"
+        elif d in ("desc", "descending", "-1"):
+            direction = "desc"
+
+    if raw_field:
+        val = str(raw_field).strip().lower()
+        if val in ("asc", "asd", "ascending", "1"):
+            direction = "asc"
+            field = "created_at"
+        elif val in ("desc", "descending", "-1"):
+            direction = "desc"
+            field = "created_at"
+        else:
+            if val.startswith("-"):
+                direction = "desc"
+                val = val[1:]
+            elif val.startswith("+"):
+                direction = "asc"
+                val = val[1:]
+
+            field_map = {
+                "date": "created_at",
+                "created_at": "created_at",
+                "created": "created_at",
+                "updated_at": "updated_at",
+                "updated": "updated_at",
+                "followup_date": "followup_date",
+                "next_followup_date": "next_followup_date",
+                "name": "name",
+                "id": "id",
+                "status": "status",
+                "priority": "priority",
+                "course": "course",
+                "city": "city",
+            }
+            field = field_map.get(val, "created_at")
+
+    if direction == "asc":
+        if field == "id":
+            return ("id",)
+        return (field, "id")
+    else:
+        if field == "id":
+            return ("-id",)
+        return (f"-{field}", "-id")
+
+
+class LeadPagination(CursorPagination):
+    page_size = 25
+    ordering = ("-created_at", "-id")
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+    def get_ordering(self, request, queryset=None, view=None):
+        if request and hasattr(request, "query_params"):
+            ordering = resolve_lead_ordering(request.query_params)
+            if ordering:
+                return ordering
+        return self.ordering
 
 # =========================================================
 # THROTTLES
@@ -42,15 +138,6 @@ class AdminLeadThrottle(UserRateThrottle):
     scope = "admin_lead"
 
 
-# =========================================================
-# PAGINATION
-# =========================================================
-
-class LeadPagination(CursorPagination):
-    page_size = 25
-    ordering = "-created_at"
-    page_size_query_param = "page_size"
-    max_page_size = 100
 
 
 # =========================================================
@@ -195,7 +282,8 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
     def list(self, request):
         self.validate_admin_access(request)
 
-        cache_key = f"lead-engine:{request.user.id}:{hash(request.get_full_path())}"
+        ordering = resolve_lead_ordering(request.query_params)
+        cache_key = f"lead-engine:{request.user.id}:{hashlib.sha256(request.get_full_path().encode('utf-8')).hexdigest()}"
         cached_response = cache.get(cache_key)
         if cached_response:
             return Response(cached_response)
@@ -257,6 +345,9 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
                     leads_queryset = leads_queryset.filter(course__iexact=courses_list[0])
                 else:
                     leads_queryset = leads_queryset.filter(course__in=courses_list)
+
+        # Apply dynamic sorting
+        leads_queryset = leads_queryset.order_by(*ordering)
 
         # =====================================
         # 5. DICT PROJECTION & CURSOR PAGINATION
@@ -1341,6 +1432,33 @@ class LeadReportViewSet(viewsets.ViewSet):
         validated_data = serializer.validated_data
 
         report_type = validated_data["report_type"]
+        filters = validated_data.get("filters", {})
+        pagination = validated_data.get(
+            "pagination",
+            {
+                "page": 1,
+                "page_size": 50,
+            },
+        )
+
+        result = self.service.dispatch(
+            report_type=report_type,
+            filters=filters,
+            pagination=pagination,
+        )
+
+        return Response(
+            {
+                "success": True,
+                "report_type": report_type,
+                "count": result["count"],
+                "page": pagination.get("page", 1),
+                "page_size": pagination.get("page_size", 50),
+                "results": result["results"],
+            },
+            status=status.HTTP_200_OK,
+        )
+    
         filters = validated_data.get("filters", {})
         pagination = validated_data.get(
             "pagination",

@@ -113,6 +113,13 @@ def process_razorpay_webhook_event(data: dict) -> dict:
             if txn.payment_status in ["done", "paid", "success"]:
                 logger.info("Razorpay Webhook: Transaction %s already processed (status=%s). Skipping.",
                             order_id, txn.payment_status)
+                metadata = txn.metadata if isinstance(txn.metadata, dict) else {}
+                if metadata.get("ebook_id") or metadata.get("registration_id") or getattr(txn, "ebookregistration", None) or (hasattr(txn, "ebook_registrations") and txn.ebook_registrations.exists()):
+                    try:
+                        from ebook.views import EbookRegistrationViewSet
+                        EbookRegistrationViewSet.update_registration_after_payment(txn)
+                    except Exception as e:
+                        logger.exception("Error in idempotent EbookRegistration check for transaction %s: %s", txn.id, e)
                 return {"status": "success", "message": "Already processed", "processed": True}
 
             # Update PaymentTransaction status explicitly to "done"
@@ -137,7 +144,7 @@ def process_razorpay_webhook_event(data: dict) -> dict:
                     logger.exception("Error processing WebinarRegistration via create_registration_from_transaction for transaction %s: %s", txn.id, e)
 
             # 2. Handle Ebook Registration Payment Flow
-            if metadata.get("ebook_id") or metadata.get("registration_id") or getattr(txn, "ebookregistration", None):
+            if metadata.get("ebook_id") or metadata.get("registration_id") or getattr(txn, "ebookregistration", None) or (hasattr(txn, "ebook_registrations") and txn.ebook_registrations.exists()):
                 try:
                     from ebook.views import EbookRegistrationViewSet
                     EbookRegistrationViewSet.update_registration_after_payment(txn)
