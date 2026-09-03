@@ -2,6 +2,7 @@ import os
 import math
 import re
 from datetime import datetime, date, time, timedelta
+from collections import defaultdict
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from django.db.models import Q, Sum, Prefetch, Count
@@ -684,39 +685,12 @@ class AttendanceReportView(APIView):
                 )
             )[offset:offset + limit]
 
-            # 5. Bulk Aggregations for Attendance Metrics
-            student_pks = [s.student_id for s in sliced_students]
+            # 5. Bulk Aggregations & Efficient Lookups for Attendance Metrics
+            student_meta = {}
+            all_batch_ids = set()
+            all_course_ids = set()
 
-            # Attendance PRESENT counts per student
-            attendance_counts = dict(
-                Attendance.objects.filter(student_id__in=student_pks, status__iexact="PRESENT")
-                .values("student_id")
-                .annotate(cnt=Count("id"))
-                .values_list("student_id", "cnt")
-            )
-
-            # ClassSchedule counts per batch
-            batch_class_counts = dict(
-                ClassSchedule.objects.filter(is_archived=False, is_class_cancelled=False)
-                .filter(Q(new_batch_id__isnull=False) | Q(batch_id__isnull=False))
-                .values("new_batch_id")
-                .annotate(cnt=Count("schedule_id"))
-                .values_list("new_batch_id", "cnt")
-            )
-
-            # ClassSchedule counts per course (as fallback)
-            course_class_counts = dict(
-                ClassSchedule.objects.filter(is_archived=False, is_class_cancelled=False)
-                .values("course_id")
-                .annotate(cnt=Count("schedule_id"))
-                .values_list("course_id", "cnt")
-            )
-
-            data = []
-            for idx, s in enumerate(sliced_students):
-                s_no = offset + idx + 1
-                full_name = f"{s.first_name or ''} {s.last_name or ''}".strip()
-
+            for s in sliced_students:
                 courses_map = {}
                 batches_map = {}
 
@@ -756,35 +730,144 @@ class AttendanceReportView(APIView):
                         if nb.title:
                             batches_map[nb.batch_id] = nb.title
 
+                c_ids = list(courses_map.keys())
+                b_ids = list(batches_map.keys())
+
+                student_meta[s.student_id] = {
+                    "courses_map": courses_map,
+                    "batches_map": batches_map,
+                    "batch_ids": b_ids,
+                    "course_ids": c_ids,
+                }
+                all_batch_ids.update(b_ids)
+                all_course_ids.update(c_ids)
+
+            student_pks = [s.student_id for s in sliced_students]
+
+            # Bulk query scheduled classes where is_archived=False and is_class_cancelled=False
+            schedules_by_new_batch = defaultdict(list)
+            schedules_by_old_batch = defaultdict(list)
+            schedules_by_course = defaultdict(list)
+
+            if all_batch_ids or all_course_ids:
+                sched_filter = Q(is_archived=False, is_class_cancelled=False)
+                sched_scope = Q()
+                if all_batch_ids:
+                    sched_scope |= Q(new_batch_id__in=all_batch_ids) | Q(batch_id__in=all_batch_ids)
+                if all_course_ids:
+                    sched_scope |= Q(course_id__in=all_course_ids)
+
+                schedules_qs = ClassSchedule.objects.filter(
+                    sched_filter & sched_scope
+                ).values(
+                    "schedule_id", "new_batch_id", "batch_id", "course_id", "scheduled_date"
+                )
+
+                for cs in schedules_qs:
+                    if cs["new_batch_id"]:
+                        schedules_by_new_batch[cs["new_batch_id"]].append(cs)
+                    if cs["batch_id"]:
+                        schedules_by_old_batch[cs["batch_id"]].append(cs)
+                    if cs["course_id"]:
+                        schedules_by_course[cs["course_id"]].append(cs)
+
+            # Bulk query attendance / login records for student_pks
+            attendance_by_student = defaultdict(list)
+            if student_pks:
+                att_qs = Attendance.objects.filter(
+                    student_id__in=student_pks
+                ).exclude(
+                    status__iexact="ABSENT"
+                ).values(
+                    "id", "student_id", "schedule_id", "new_batch_id", "batch_id", "course_id", "date", "status"
+                )
+
+                for att in att_qs:
+                    attendance_by_student[att["student_id"]].append(att)
+
+            data = []
+            for idx, s in enumerate(sliced_students):
+                s_no = offset + idx + 1
+                full_name = f"{s.first_name or ''} {s.last_name or ''}".strip()
+
+                meta = student_meta.get(s.student_id, {})
+                courses_map = meta.get("courses_map", {})
+                batches_map = meta.get("batches_map", {})
+                batch_ids = meta.get("batch_ids", [])
+                course_ids = meta.get("course_ids", [])
+
                 course_names = list(courses_map.values())
-                course_ids = list(courses_map.keys())
                 batch_names = list(batches_map.values())
-                batch_ids = list(batches_map.keys())
 
                 course_val = ", ".join(course_names) if course_names else "-"
                 course_id_val = course_ids[0] if course_ids else None
                 batch_val = ", ".join(batch_names) if batch_names else "-"
                 batch_id_val = batch_ids[0] if batch_ids else None
 
-                # Calculate total classes conducted for student's batches / courses
-                total_classes = 0
+                # Gather applicable scheduled classes for student s
+                student_schedules = {}
                 if batch_ids:
                     for b_id in batch_ids:
-                        total_classes += batch_class_counts.get(b_id, 0)
+                        for cs in schedules_by_new_batch.get(b_id, []):
+                            student_schedules[cs["schedule_id"]] = cs
+                        for cs in schedules_by_old_batch.get(b_id, []):
+                            student_schedules[cs["schedule_id"]] = cs
                 elif course_ids:
                     for c_id in course_ids:
-                        total_classes += course_class_counts.get(c_id, 0)
+                        for cs in schedules_by_course.get(c_id, []):
+                            student_schedules[cs["schedule_id"]] = cs
 
-                attended_classes = attendance_counts.get(s.student_id, 0)
+                total_classes = len(student_schedules)
+
+                # Process student attendance / login records
+                student_atts = attendance_by_student.get(s.student_id, [])
+                att_schedule_ids = set()
+                unassigned_att_date_batch_course = set()
+                unassigned_att_dates = set()
+
+                for att in student_atts:
+                    if att["schedule_id"]:
+                        att_schedule_ids.add(att["schedule_id"])
+                    else:
+                        raw_dt = att["date"]
+                        att_date = raw_dt.date() if hasattr(raw_dt, "date") else raw_dt
+                        if att_date:
+                            unassigned_att_dates.add(att_date)
+                            if att["new_batch_id"]:
+                                unassigned_att_date_batch_course.add((att_date, "nb", att["new_batch_id"]))
+                            if att["batch_id"]:
+                                unassigned_att_date_batch_course.add((att_date, "b", att["batch_id"]))
+                            if att["course_id"]:
+                                unassigned_att_date_batch_course.add((att_date, "c", att["course_id"]))
+
+                attended_classes = 0
+                for cs_id, cs in student_schedules.items():
+                    cs_date = cs["scheduled_date"]
+                    is_attended = False
+
+                    if cs_id in att_schedule_ids:
+                        is_attended = True
+                    elif cs["new_batch_id"] and (cs_date, "nb", cs["new_batch_id"]) in unassigned_att_date_batch_course:
+                        is_attended = True
+                    elif cs["batch_id"] and (cs_date, "b", cs["batch_id"]) in unassigned_att_date_batch_course:
+                        is_attended = True
+                    elif cs["course_id"] and (cs_date, "c", cs["course_id"]) in unassigned_att_date_batch_course:
+                        is_attended = True
+                    elif cs_date in unassigned_att_dates:
+                        is_attended = True
+
+                    if is_attended:
+                        attended_classes += 1
+
                 not_attended_classes = max(0, total_classes - attended_classes)
                 attendance_percentage = round((attended_classes / total_classes) * 100, 2) if total_classes > 0 else 0.0
 
-                created_at_iso = s.created_at.isoformat() if s.created_at else None
+                formatted_date = s.created_at.strftime('%Y-%m-%d') if s.created_at else None
 
                 data.append({
                     "s_no": s_no,
-                    "id": str(s.student_id),
-                    "student_id": s.registration_id or f"std_{s.student_id}",
+                    "student_id": str(s.student_id),
+                    "registration_id": s.registration_id or f"std_{s.student_id}",
                     "student_name": full_name,
                     "email": s.email,
                     "course": course_val,
@@ -795,8 +878,8 @@ class AttendanceReportView(APIView):
                     "attended_classes": attended_classes,
                     "not_attended_classes": not_attended_classes,
                     "attendance_percentage": attendance_percentage,
-                    "created_at": created_at_iso,
-                    "enrolled_at": created_at_iso,
+                    "created_at": formatted_date,
+                    "enrolled_at": formatted_date,
                 })
 
             # 6. Fetch Active Filter Options for Dropdowns
