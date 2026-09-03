@@ -122,6 +122,39 @@ class AttendanceReportTestCase(TestCase):
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["student_name"], "Ravi Teja")
 
+    def test_attendance_report_date_formatting(self):
+        created_time = timezone.make_aware(datetime(2026, 8, 28, 6, 37, 46))
+        Student.objects.filter(pk=self.student.pk).update(created_at=created_time)
+
+        url = "/api/v1/reports/attendance"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ravi_record = next(item for item in response.data["data"] if item["student_name"] == "Ravi Teja")
+        self.assertEqual(ravi_record["created_at"], "2026-08-28")
+        self.assertEqual(ravi_record["enrolled_at"], "2026-08-28")
+
+    def test_attendance_report_cancelled_schedules_excluded(self):
+        # Create a cancelled schedule
+        ClassSchedule.objects.create(
+            new_batch=self.batch,
+            course=self.course,
+            scheduled_date=timezone.now().date(),
+            start_time=time(14, 0, 0),
+            end_time=time(16, 0, 0),
+            is_archived=False,
+            is_class_cancelled=True
+        )
+
+        url = "/api/v1/reports/attendance"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ravi_record = next(item for item in response.data["data"] if item["student_name"] == "Ravi Teja")
+        # Total classes should still be 2 (excluding the cancelled schedule)
+        self.assertEqual(ravi_record["total_classes"], 2)
+        self.assertEqual(ravi_record["attended_classes"], 1)
+        self.assertEqual(ravi_record["not_attended_classes"], 1)
+        self.assertEqual(ravi_record["attendance_percentage"], 50.0)
+
 
 
 class StudentEnrollmentReportTestCase(TestCase):
