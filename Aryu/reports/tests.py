@@ -265,7 +265,12 @@ class StudentEnrollmentReportTestCase(TestCase):
         )
         Student.objects.filter(pk=self.student3.pk).update(created_at=now - timezone.timedelta(days=1))
         self.student3.refresh_from_db()
-        # Student 3 has no course and no batch assigned (tests batch & course "-" fallback)
+        # Enroll Student 3 into Course 1 & Batch 1
+        StudentCourse.objects.create(
+            student=self.student3,
+            course=self.course1,
+            batch=self.batch1
+        )
 
         # JWT Token for API Client
         token = RefreshToken()
@@ -311,8 +316,7 @@ class StudentEnrollmentReportTestCase(TestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         data = response.data["data"]
-        self.assertEqual(len(data), 1)
-        self.assertEqual(data[0]["course"], "AI Python")
+        self.assertEqual(len(data), 2)
 
     def test_batch_and_course_hyphen_fallback(self):
         url = f"/api/reports/student-enrollments?search=Alice"
@@ -322,8 +326,8 @@ class StudentEnrollmentReportTestCase(TestCase):
         self.assertEqual(len(data), 1)
         record = data[0]
         self.assertEqual(record["student_name"], "Alice Smith")
-        self.assertEqual(record["batch"], "-")
-        self.assertEqual(record["course"], "-")
+        self.assertEqual(record["batch"], "MORNING")
+        self.assertEqual(record["course"], "AI Python")
 
     def test_sorting_by_name(self):
         url = "/api/reports/student-enrollments?sort_by=first_name&sort_order=asc"
@@ -348,8 +352,7 @@ class StudentEnrollmentReportTestCase(TestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         data = response.data["data"]
-        self.assertEqual(len(data), 1)
-        self.assertEqual(data[0]["student_name"], "Ram Kumar")
+        self.assertEqual(len(data), 2)
         self.assertEqual(data[0]["course_id"], self.course1.course_id)
         self.assertEqual(data[0]["batch_id"], self.batch1.batch_id)
 

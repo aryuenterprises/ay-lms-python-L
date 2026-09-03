@@ -131,6 +131,8 @@ class AryuReportView(APIView):
             students = Student.objects.filter(
                 is_archived=False,
                 status=True
+            ).filter(
+                Q(student_courses__isnull=False) | Q(new_batches__isnull=False)
             ).order_by("-created_at").distinct()
 
             if search:
@@ -356,8 +358,13 @@ class StudentEnrollmentReportView(APIView):
                 if not valid_batch_exists:
                     batch_id = ""
 
-            # Base queryset: Active/non-archived students
-            students_qs = Student.objects.filter(is_archived=False, status=True)
+            # Base queryset: Active/non-archived students enrolled in at least one course or batch
+            students_qs = Student.objects.filter(
+                is_archived=False,
+                status=True
+            ).filter(
+                Q(student_courses__isnull=False) | Q(new_batches__isnull=False)
+            ).distinct()
 
             # Case-insensitive search on student name (and registration_id/email)
             if search:
