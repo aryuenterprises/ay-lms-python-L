@@ -35,8 +35,12 @@ urlpatterns = [
     ),
 
     path('reg/<int:pk>/',EbookUserViewSet.as_view({'get':'list','patch':'partial_update'}),name='ebook-reg'),
-    path("payments/verify/",RazorpayPaymentViewSet.as_view({"post": "verify_payment"}),name="payment-verify"),
+    path("payments/", RazorpayPaymentViewSet.as_view({"post": "create"}), name="ebook-payment-create"),
+    path("payments/verify/", RazorpayPaymentViewSet.as_view({"post": "verify_payment"}), name="payment-verify"),
+    path("ebook/payments/verify/", RazorpayPaymentViewSet.as_view({"post": "verify_payment"}), name="ebook-payments-verify-alias"),
+    path("ebook/payment/verify/", RazorpayPaymentViewSet.as_view({"post": "verify_payment"}), name="ebook-payment-verify-singular-alias"),
     path("razorpay/webhook/", razorpay_webhook, name="ebook-razorpay-webhook"),
+    path("ebook/razorpay/webhook/", razorpay_webhook, name="ebook-razorpay-webhook-alias"),
     
     #Reviews
     path('reviews/', ReviewListCreateView.as_view(), name='review-list-create'),
