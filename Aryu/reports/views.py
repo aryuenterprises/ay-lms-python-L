@@ -696,6 +696,16 @@ class AttendanceReportView(APIView):
                 )
             )[offset:offset + limit]
 
+            # 5. Fetch Active Courses matching Course Management criteria (/api/courses)
+            active_courses = list(
+                Course.objects.filter(is_archived=False)
+                .exclude(status__iexact="Inactive")
+                .values("course_id", "course_name")
+                .order_by("course_name")
+            )
+            valid_active_course_map = {c["course_id"]: c["course_name"] for c in active_courses if c["course_name"]}
+            valid_active_course_ids = set(valid_active_course_map.keys())
+
             # DSA Optimization: Hash Map Pre-Collection ($O(1)$ lookups, zero N+1 queries)
             student_meta = {}
             all_batch_ids = set()
@@ -706,39 +716,49 @@ class AttendanceReportView(APIView):
                 batches_map = {}
 
                 for sc in s.student_courses.all():
-                    if sc.course and sc.course.course_name:
-                        if not course_id or str(sc.course.course_id) == str(course_id):
-                            courses_map[sc.course.course_id] = sc.course.course_name
-                    if sc.batch:
+                    c_obj = sc.course
+                    if c_obj and c_obj.course_id in valid_active_course_ids:
+                        c_name = c_obj.course_name
+                        if c_name:
+                            if not course_id or str(c_obj.course_id) == str(course_id):
+                                courses_map[c_obj.course_id] = c_name
+                    if sc.batch and not getattr(sc.batch, "is_archived", False):
                         if not batch_id or str(sc.batch.batch_id) == str(batch_id):
                             b_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
                             if b_title:
                                 batches_map[sc.batch.batch_id] = b_title
 
                 for nb in s.new_batches.all():
-                    if nb.course and nb.course.course_name:
-                        if not course_id or str(nb.course.course_id) == str(course_id):
-                            courses_map[nb.course.course_id] = nb.course.course_name
-                    if nb.title:
+                    c_obj = nb.course
+                    if c_obj and c_obj.course_id in valid_active_course_ids:
+                        c_name = c_obj.course_name
+                        if c_name:
+                            if not course_id or str(c_obj.course_id) == str(course_id):
+                                courses_map[c_obj.course_id] = c_name
+                    if nb.title and not getattr(nb, "is_archived", False):
                         if not batch_id or str(nb.batch_id) == str(batch_id):
                             batches_map[nb.batch_id] = nb.title
 
                 if not courses_map and not course_id:
                     for sc in s.student_courses.all():
-                        if sc.course:
-                            courses_map[sc.course.course_id] = sc.course.course_name
+                        c_obj = sc.course
+                        if c_obj and c_obj.course_id in valid_active_course_ids:
+                            if c_obj.course_name:
+                                courses_map[c_obj.course_id] = c_obj.course_name
                     for nb in s.new_batches.all():
-                        if nb.course:
-                            courses_map[nb.course.course_id] = nb.course.course_name
+                        c_obj = nb.course
+                        if c_obj and c_obj.course_id in valid_active_course_ids:
+                            if c_obj.course_name:
+                                courses_map[c_obj.course_id] = c_obj.course_name
 
                 if not batches_map and not batch_id:
                     for sc in s.student_courses.all():
-                        if sc.batch:
+                        if sc.batch and not getattr(sc.batch, "is_archived", False):
                             b_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
                             if b_title:
                                 batches_map[sc.batch.batch_id] = b_title
                     for nb in s.new_batches.all():
-                        if nb.title:
+                        if nb.title and not getattr(nb, "is_archived", False):
                             batches_map[nb.batch_id] = nb.title
 
                 c_ids = list(courses_map.keys())
@@ -877,8 +897,8 @@ class AttendanceReportView(APIView):
 
                 data.append({
                     "s_no": s_no,
-                    "student_id": str(s.student_id),
-                    # "student_id": s.registration_id or f"std_{s.student_id}",
+                    "id": str(s.student_id),
+                    "student_id": s.registration_id or f"std_{s.student_id}",
                     "registration_id": s.registration_id or f"std_{s.student_id}",
                     "student_name": full_name,
                     "email": s.email,
@@ -891,16 +911,10 @@ class AttendanceReportView(APIView):
                     "not_attended_classes": not_attended_classes,
                     "attendance_percentage": attendance_percentage,
                     "created_at": formatted_date,
-                    # "enrolled_at": formatted_date,
+                    "enrolled_at": formatted_date,
                 })
 
             # 6. Fetch Active Filter Options for Dropdowns
-            active_courses = list(
-                Course.objects.filter(is_archived=False)
-                .exclude(status__iexact="Inactive")
-                .values("course_id", "course_name")
-                .order_by("course_name")
-            )
             courses_options = [
                 {
                     "id": c["course_id"],
@@ -962,14 +976,14 @@ class AttendanceReportView(APIView):
                 "batches": batches_options,
                 "courses": courses_options,
                 "categories": categories_options,
-                "companies": companies_options,
+                # "companies": companies_options,
                 "pagination": {
                     "total_count": total_count,
                     "page": page,
                     "limit": limit,
                     "total_pages": total_pages
                 },
-                "filter_options": filter_options
+                # "filter_options": filter_options
             }, status=200)
 
         except Exception as e:
