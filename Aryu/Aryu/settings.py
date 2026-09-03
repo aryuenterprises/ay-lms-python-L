@@ -461,7 +461,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
     "https://portal.aryuacademy.com",
 ]
@@ -474,7 +474,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
     "https://portal.aryuacademy.com",
 
@@ -948,7 +948,7 @@ LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'Asia/Kolkata'
 
-FRONTEND_URL = 'https://aylms.aryuprojects.com'
+FRONTEND_URL = 'https://portal.aryuacademy.com'
 PORTAL_FRONTEND_URL = FRONTEND_URL
 SITE_URL = FRONTEND_URL
 

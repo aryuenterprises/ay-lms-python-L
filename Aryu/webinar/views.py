@@ -1475,14 +1475,14 @@ class WebinarRegistrationViewSet(viewsets.ViewSet):
             data["transaction_id"] = str(txn.id)
 
             from django.conf import settings
-            frontend_url = getattr(settings, "FRONTEND_URL", "https://aylms.aryuprojects.com")
+            frontend_url = getattr(settings, "FRONTEND_URL", "https://portal.aryuacademy.com")
             data["success_url"] = request.data.get(
                 "success_url",
-                "https://aylms.aryuprojects.com/payment-success"
+                "https://portal.aryuacademy.com/payment-success"
             )
             data["failure_url"] = request.data.get(
                 "failure_url",
-                "https://aylms.aryuprojects.com/payment-failed"
+                "https://portal.aryuacademy.com/payment-failed"
             )
 
             request._full_data = data
@@ -2451,14 +2451,14 @@ def whatsapp_webhook(request):
 def _create_payment(self, request, webinar):
     razorpay_view = RazorpayPaymentViewSet()
     from django.conf import settings
-    frontend_url = getattr(settings, "FRONTEND_URL", "https://aylms.aryuprojects.com")
+    frontend_url = getattr(settings, "FRONTEND_URL", "https://portal.aryuacademy.com")
 
     payment_request = request._request
     payment_request.data = {
         "amount": webinar.price,
         "currency": "INR",
-        "success_url": f"https://aylms.aryuprojects.com/webinar/payment-success/{webinar.uuid}",
-        "failure_url": f"https://aylms.aryuprojects.com/webinar/payment-failed/{webinar.uuid}",
+        "success_url": f"https://portal.aryuacademy.com/webinar/payment-success/{webinar.uuid}",
+        "failure_url": f"https://portal.aryuacademy.com/webinar/payment-failed/{webinar.uuid}",
     }
 
     return razorpay_view.create(payment_request)
