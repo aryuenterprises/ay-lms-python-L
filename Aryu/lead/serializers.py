@@ -6,6 +6,7 @@ from aryuapp.models import User
 from django.db import transaction
 from django.conf import settings
 from .telecrm import sync_lead_to_telecrm
+from .emails import send_contact_us_thank_you_email
 
 
 # COMMON MIXINS
@@ -398,6 +399,11 @@ class LeadSerializer(serializers.ModelSerializer):
         # ==========================================
         sync_lead_to_telecrm(lead, action_note="Lead Created")
 
+        # ==========================================
+        # CONTACT US THANK YOU EMAIL
+        # ==========================================
+        send_contact_us_thank_you_email(lead)
+
         return lead
 
     # UPDATE
@@ -622,6 +628,11 @@ class PublicLeadCreateSerializer(serializers.ModelSerializer):
         # TELECRM LEAD CREATE
         # ==========================================
         sync_lead_to_telecrm(lead, action_note="Lead Created From Website")
+
+        # ==========================================
+        # CONTACT US THANK YOU EMAIL
+        # ==========================================
+        send_contact_us_thank_you_email(lead)
 
         return lead
 
