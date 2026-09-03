@@ -9,7 +9,7 @@ Reuses existing project SMTP configuration, email structures, and branding.
 import logging
 from datetime import datetime
 from typing import Any, Dict
-
+from aryuapp.models import Settings
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.db import transaction
@@ -20,23 +20,22 @@ logger = logging.getLogger(__name__)
 
 def get_brand_logo_url() -> str:
     """
-    Resolves the official logo URL using the project's Settings model and MEDIA_BASE_URL,
-    matching the logo resolution conventions used by aryuapp and payments.
+    Resolves the official logo URL using the secondary_logo field from the Settings model.
+    Optimized for O(1) performance using database-level field projection.
     """
     media_base_url = getattr(settings, "MEDIA_BASE_URL", "https://portal.aryuacademy.com/api").rstrip("/")
 
     try:
-        from aryuapp.models import Settings
-        site_settings = Settings.objects.first()
-        if site_settings:
-            if site_settings.email_logo and hasattr(site_settings.email_logo, "url"):
-                return f"{media_base_url}{site_settings.email_logo.url}"
-            if site_settings.secondary_logo and hasattr(site_settings.secondary_logo, "url"):
-                return f"{media_base_url}{site_settings.secondary_logo.url}"
-            if site_settings.general_logo and hasattr(site_settings.general_logo, "url"):
-                return f"{media_base_url}{site_settings.general_logo.url}"
+        # Fetch only the secondary_logo field value without loading the full model object into memory
+        logo_file = Settings.objects.values_list("secondary_logo", flat=True).first()
+
+        if logo_file:
+            # Clean leading slash if present to guarantee well-formed URL join
+            logo_path = logo_file if logo_file.startswith("media/") else f"media/{logo_file.lstrip('/')}"
+            return f"{media_base_url}/{logo_path}"
+
     except Exception as exc:
-        logger.debug("Failed to retrieve Settings model for email logo: %s", exc)
+        logger.debug("Failed to retrieve Settings model for secondary_logo: %s", exc)
 
     # Fallback to standard email logo path
     return f"{media_base_url}/media/logos/aryu_logo_Vgz0Png.png"
