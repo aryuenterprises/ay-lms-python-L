@@ -18,12 +18,13 @@ from rest_framework.pagination import PageNumberPagination
 from aryuapp.auth import CustomJWTAuthentication
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 import logging
-from aryuapp.models import Student, StudentCourse, Attendance
+from aryuapp.models import Student, StudentCourse, Attendance, Trainer
 from batches.models import NewBatch, ClassSchedule, BatchCourseTrainer
-from payments.models import PaymentTransaction
+from payments.models import PaymentTransaction, TutorPayment
 from payments.services.invoice_service import InvoiceService
 from courses.models import Course, CourseCategory
 from reports.models import GoogleReview
+from reports.pagination import TutorPaymentReportPagination
 
 logger = logging.getLogger(__name__)
 
@@ -2007,6 +2008,219 @@ class StudentPaymentHistoryReportView(APIView):
                     "success": False,
                     "message": "An unexpected error occurred while generating student payment history report."
                 },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class TutorPaymentReportView(APIView):
+    """
+    Secure, production-grade report API endpoint for Tutor Payments.
+    Enforces BOLA role verification, strict input sanitization/validation against SQLi,
+    and database optimization using select_related and pagination.
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+    pagination_class = TutorPaymentReportPagination
+
+    def get(self, request):
+        try:
+            # 1. BOLA & Access Control: Restricted to super_admin and admin
+            user = request.user
+            user_type = getattr(user, "user_type", "")
+            if user_type not in ["super_admin", "admin"]:
+                return Response(
+                    {"success": False, "message": "Unauthorized access."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            # 2. Input Validation & Sanitization (OWASP)
+            raw_course_id = request.query_params.get("course_id")
+            raw_batch_id = request.query_params.get("batch_id")
+            raw_tutor_id = request.query_params.get("tutor_id")
+            raw_status = request.query_params.get("payment_status")
+            raw_from_date = request.query_params.get("from_date")
+            raw_to_date = request.query_params.get("to_date")
+            search_term = request.query_params.get("search")
+
+            course_id = None
+            if raw_course_id is not None and str(raw_course_id).strip():
+                try:
+                    course_id = int(str(raw_course_id).strip())
+                    if course_id <= 0:
+                        raise ValueError
+                except ValueError:
+                    return Response(
+                        {"success": False, "message": "Invalid course_id format. Must be a positive integer."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            batch_id = None
+            if raw_batch_id is not None and str(raw_batch_id).strip():
+                try:
+                    batch_id = int(str(raw_batch_id).strip())
+                    if batch_id <= 0:
+                        raise ValueError
+                except ValueError:
+                    return Response(
+                        {"success": False, "message": "Invalid batch_id format. Must be a positive integer."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            tutor_id = None
+            if raw_tutor_id is not None and str(raw_tutor_id).strip():
+                try:
+                    tutor_id = int(str(raw_tutor_id).strip())
+                    if tutor_id <= 0:
+                        raise ValueError
+                except ValueError:
+                    return Response(
+                        {"success": False, "message": "Invalid tutor_id format. Must be a positive integer."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            from_date = None
+            if raw_from_date is not None and str(raw_from_date).strip():
+                try:
+                    from_date = datetime.strptime(str(raw_from_date).strip(), "%Y-%m-%d").date()
+                except ValueError:
+                    return Response(
+                        {"success": False, "message": "Invalid from_date format. Must be YYYY-MM-DD."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            to_date = None
+            if raw_to_date is not None and str(raw_to_date).strip():
+                try:
+                    to_date = datetime.strptime(str(raw_to_date).strip(), "%Y-%m-%d").date()
+                except ValueError:
+                    return Response(
+                        {"success": False, "message": "Invalid to_date format. Must be YYYY-MM-DD."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            payment_status = None
+            if raw_status is not None and str(raw_status).strip():
+                payment_status = str(raw_status).strip().lower()
+
+            # 3. Metadata Dropdowns (Optimized via .values())
+            all_courses = list(
+                Course.objects.filter(is_archived=False)
+                .values("course_id", "course_name")
+                .order_by("course_name")
+            )
+
+            batches_qs = NewBatch.objects.filter(is_archived=False)
+            if course_id:
+                batches_qs = batches_qs.filter(course_id=course_id)
+
+            all_batches = list(
+                batches_qs.values(
+                    "batch_id",
+                    "title",
+                    "course_id"
+                ).order_by("title")
+            )
+
+            all_tutors = list(
+                Trainer.objects.all()
+                .values("trainer_id", "full_name")
+                .order_by("full_name")
+            )
+
+            # 4. Database Queryset Optimization (Avoid N+1 with select_related)
+            payments_qs = TutorPayment.objects.select_related("tutor", "course", "batch")
+
+            if course_id:
+                payments_qs = payments_qs.filter(course_id=course_id)
+
+            if batch_id:
+                payments_qs = payments_qs.filter(batch_id=batch_id)
+
+            if tutor_id:
+                payments_qs = payments_qs.filter(tutor_id=tutor_id)
+
+            if payment_status:
+                payments_qs = payments_qs.filter(payment_status__iexact=payment_status)
+
+            if from_date:
+                payments_qs = payments_qs.filter(payment_date__gte=from_date)
+
+            if to_date:
+                payments_qs = payments_qs.filter(payment_date__lte=to_date)
+
+            if search_term and str(search_term).strip():
+                term = str(search_term).strip()
+                payments_qs = payments_qs.filter(
+                    Q(tutor__full_name__icontains=term) |
+                    Q(tutor__username__icontains=term) |
+                    Q(course__course_name__icontains=term) |
+                    Q(batch__title__icontains=term)
+                )
+
+            # Indexed field sorting
+            payments_qs = payments_qs.order_by("-payment_date", "-id")
+
+            # 5. Pagination & Explicit Whitelisted Serialization
+            paginator = self.pagination_class()
+            page = paginator.paginate_queryset(payments_qs, request, view=self)
+            target_qs = page if page is not None else payments_qs
+
+            results = []
+            for p in target_qs:
+                tutor_name = p.tutor.full_name if p.tutor and p.tutor.full_name else (
+                    getattr(p.tutor, "username", "") if p.tutor else "N/A"
+                )
+                course_name = p.course.course_name if p.course and p.course.course_name else "N/A"
+                batch_title = (
+                    p.batch.title if p.batch and getattr(p.batch, "title", None)
+                    else (getattr(p.batch, "batch_name", None) or f"Batch {p.batch_id}" if p.batch else "N/A")
+                )
+
+                results.append({
+                    "id": p.id,
+                    "tutor_id": p.tutor_id,
+                    "tutor_name": tutor_name,
+                    "course_id": p.course_id,
+                    "course_name": course_name,
+                    "batch_id": p.batch_id,
+                    "batch_title": batch_title,
+                    "payment_type": p.payment_type or "N/A",
+                    "payment_date": str(p.payment_date) if p.payment_date else None,
+                    "amount": float(p.tutor_payment or 0),
+                    "course_fee": float(p.course_fee or 0),
+                    "payment_status": p.payment_status or "pending",
+                    "notes": p.notes or ""
+                })
+
+            response_payload = {
+                "success": True,
+                "courses": all_courses,
+                "batches": all_batches,
+                # "tutors": all_tutors,
+                "results": results
+            }
+
+            if page is not None:
+                response_payload["meta"] = {
+                    "total_records": paginator.page.paginator.count,
+                    "total_pages": paginator.page.paginator.num_pages,
+                    "current_page": paginator.page.number,
+                    "page_size": paginator.get_page_size(request)
+                }
+                return Response(response_payload, status=status.HTTP_200_OK)
+
+            response_payload["meta"] = {
+                "total_records": len(results),
+                "total_pages": 1,
+                "current_page": 1,
+                "page_size": len(results)
+            }
+            return Response(response_payload, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.exception("Error in TutorPaymentReportView")
+            return Response(
+                {"success": False, "message": "An error occurred generating tutor payment report."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
