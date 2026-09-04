@@ -99,6 +99,45 @@ def resolve_screenshot_url(review, request=None):
     return f"{base_url}/{filename}"
 
 
+def extract_batch_schedule(batch, course=None):
+    """
+    Extract and format schedule details from a NewBatch instance.
+    Duration is resolved from Course metadata first, then batch.duration,
+    then a date-span fallback.
+    """
+    if not batch:
+        return {
+            "batch_duration": "-",
+            "start_time": None,
+            "end_time": None,
+            "start_date": None,
+            "end_date": None,
+        }
+
+    s_date = batch.start_date.strftime("%Y-%m-%d") if getattr(batch, "start_date", None) else None
+    e_date = batch.end_date.strftime("%Y-%m-%d") if getattr(batch, "end_date", None) else None
+    s_time = batch.start_time.strftime("%I:%M %p") if getattr(batch, "start_time", None) else None
+    e_time = batch.end_time.strftime("%I:%M %p") if getattr(batch, "end_time", None) else None
+
+    duration = None
+    target_course = course or getattr(batch, "course", None)
+    if target_course and getattr(target_course, "duration", None):
+        unit = f" {target_course.duration_type}" if getattr(target_course, "duration_type", None) else ""
+        duration = f"{target_course.duration}{unit}".strip()
+    elif getattr(batch, "duration", None):
+        duration = str(batch.duration)
+    elif s_date and e_date:
+        duration = f"{s_date} to {e_date}"
+
+    return {
+        "batch_duration": duration or "-",
+        "start_time": s_time or "-",
+        "end_time": e_time or "-",
+        "start_date": s_date or "-",
+        "end_date": e_date or "-",
+    }
+
+
 def parse_date_bound_from(date_str):
     if not date_str:
         return None
@@ -539,6 +578,22 @@ class StudentEnrollmentReportView(APIView):
 
                 created_at_iso = s.created_at.strftime('%Y-%m-%d') if s.created_at else "-"
 
+                # Resolve primary batch object for schedule extraction
+                primary_batch = None
+                primary_course = None
+                for sc in s.student_courses.all():
+                    if sc.batch:
+                        primary_batch = sc.batch
+                        primary_course = sc.course
+                        break
+                if not primary_batch:
+                    for nb in s.new_batches.all():
+                        primary_batch = nb
+                        primary_course = nb.course
+                        break
+
+                schedule = extract_batch_schedule(primary_batch, primary_course)
+
                 data.append({
                     "id": str(s.student_id),
                     "student_id": s.registration_id or f"std_{s.student_id}",
@@ -558,6 +613,11 @@ class StudentEnrollmentReportView(APIView):
                     "batch_ids": batch_ids,
                     "batch_title": batch_names,
                     "batch": batch_val,
+                    "batch_duration": schedule["batch_duration"],
+                    "start_time": schedule["start_time"],
+                    "end_time": schedule["end_time"],
+                    "start_date": schedule["start_date"],
+                    "end_date": schedule["end_date"],
                 })
 
             # 7. Fetch Active Filter Options for Dropdowns
