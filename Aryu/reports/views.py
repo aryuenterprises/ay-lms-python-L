@@ -5,7 +5,7 @@ from datetime import datetime, date, time, timedelta
 from collections import defaultdict
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
-from django.db.models import Q, Sum, Prefetch, Count
+from django.db.models import Q, Sum, Prefetch, Count, Max
 from django.conf import settings
 from django.db import transaction, models
 from django.core.validators import URLValidator
@@ -14,12 +14,14 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.pagination import PageNumberPagination
 from aryuapp.auth import CustomJWTAuthentication
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 import logging
 from aryuapp.models import Student, StudentCourse, Attendance
-from batches.models import NewBatch, ClassSchedule
+from batches.models import NewBatch, ClassSchedule, BatchCourseTrainer
 from payments.models import PaymentTransaction
+from payments.services.invoice_service import InvoiceService
 from courses.models import Course, CourseCategory
 from reports.models import GoogleReview
 
@@ -1629,6 +1631,385 @@ class GoogleReviewDetailView(APIView):
                 {"success": False, "message": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class StudentPaymentHistoryReportPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = 'limit'
+    max_page_size = 500
+
+    def get_paginated_response(self, data):
+        return Response({
+            "success": True,
+            "meta": {
+                "total_records": self.page.paginator.count,
+                "total_pages": self.page.paginator.num_pages,
+                "current_page": self.page.number,
+                "page_size": self.get_page_size(self.request)
+            },
+            "results": data
+        })
+
+
+class ReportFilterOptionsView(APIView):
+    """
+    Metadata endpoint to support UI filters for payment reports.
+    Returns active courses and (cascaded) active batches.
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+
+    def get(self, request):
+        try:
+            user = request.user
+            user_type = getattr(user, "user_type", "")
+            if user_type not in ["super_admin", "admin"]:
+                return Response(
+                    {"success": False, "message": "Unauthorized"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            course_id = request.query_params.get("course_id")
+
+            courses_qs = Course.objects.filter(is_archived=False).order_by("course_name")
+            courses = [
+                {
+                    "course_id": c.course_id,
+                    "course_name": c.course_name or ""
+                }
+                for c in courses_qs
+            ]
+
+            batches_qs = NewBatch.objects.filter(is_archived=False)
+            if course_id:
+                batches_qs = batches_qs.filter(course_id=course_id)
+
+            batches = [
+                {
+                    "batch_id": b.batch_id,
+                    "title": b.title or f"Batch {b.batch_id}",
+                    "batch_title": b.title or f"Batch {b.batch_id}",
+                    "course_id": b.course_id
+                }
+                for b in batches_qs.order_by("title")
+            ]
+
+            return Response({
+                "success": True,
+                "data": {
+                    "courses": courses,
+                    "batches": batches
+                }
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.exception("Error in ReportFilterOptionsView")
+            return Response(
+                {"success": False, "message": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class StudentPaymentHistoryReportView(APIView):
+    """
+    GET report endpoint to serve detailed student payment summaries
+    with server-side pagination and nested payment histories.
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+    pagination_class = StudentPaymentHistoryReportPagination
+
+    def get(self, request):
+        try:
+            user = request.user
+            user_type = getattr(user, "user_type", "")
+            if user_type not in ["super_admin", "admin"]:
+                return Response(
+                    {"success": False, "message": "Unauthorized"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            # Filter non-archived students
+            all_students = Student.objects.filter(is_archived=False)
+
+            # Include only students associated with courses/batches/transactions
+            students_qs = all_students.filter(
+                Q(student_courses__isnull=False) |
+                Q(new_batches__course__isnull=False, new_batches__is_archived=False) |
+                Q(batchcoursetrainer__course__isnull=False) |
+                Q(transactions__course__isnull=False, transactions__is_archived=False)
+            )
+
+            # Extract query parameters for dynamic cascaded and date filtering
+            course_id = request.query_params.get("course_id")
+            batch_id = request.query_params.get("batch_id")
+            from_date = request.query_params.get("from_date")
+            to_date = request.query_params.get("to_date")
+            search = request.query_params.get("search")
+
+            # ---------------------------------------------------------
+            # Metadata for Filters: Courses & Batches Separately
+            # ---------------------------------------------------------
+            all_courses = list(
+                Course.objects.filter(is_archived=False)
+                .values("course_id", "course_name")
+                .order_by("course_name")
+            )
+
+            batches_qs = NewBatch.objects.filter(is_archived=False)
+            if course_id:
+                batches_qs = batches_qs.filter(course_id=course_id)
+
+            all_batches = list(
+                batches_qs.values(
+                    "batch_id",
+                    "title",
+                    "course_id"
+                ).order_by("title")
+            )
+
+            # Filter non-archived students
+            all_students = Student.objects.filter(is_archived=False)
+
+            # Include only students associated with courses/batches/transactions
+            students_qs = all_students.filter(
+                Q(student_courses__isnull=False) |
+                Q(new_batches__course__isnull=False, new_batches__is_archived=False) |
+                Q(batchcoursetrainer__course__isnull=False) |
+                Q(transactions__course__isnull=False, transactions__is_archived=False)
+            )
+
+            # 1. Course Filter
+            if course_id:
+                students_qs = students_qs.filter(
+                    Q(student_courses__course_id=course_id) |
+                    Q(new_batches__course_id=course_id, new_batches__is_archived=False) |
+                    Q(batchcoursetrainer__course_id=course_id) |
+                    Q(transactions__course_id=course_id, transactions__is_archived=False)
+                )
+
+            # 2. Batch Filter
+            if batch_id:
+                students_qs = students_qs.filter(
+                    Q(new_batches__batch_id=batch_id, new_batches__is_archived=False) |
+                    Q(student_courses__batch_id=batch_id)
+                )
+
+            # 3. Date Range Filter (Applied on transaction created_at date)
+            if from_date:
+                students_qs = students_qs.filter(transactions__created_at__date__gte=from_date)
+            if to_date:
+                students_qs = students_qs.filter(transactions__created_at__date__lte=to_date)
+
+            # 4. Search Filter
+            if search:
+                search_term = str(search).strip()
+                if search_term:
+                    students_qs = students_qs.filter(
+                        Q(first_name__icontains=search_term) |
+                        Q(last_name__icontains=search_term) |
+                        Q(registration_id__icontains=search_term) |
+                        Q(email__icontains=search_term) |
+                        Q(contact_no__icontains=search_term)
+                    )
+
+            students_qs = students_qs.distinct()
+
+            # Prefetch non-archived transactions ordered by -created_at with select_related('course', 'gateway')
+            tx_filter = Q(is_archived=False)
+            if from_date:
+                tx_filter &= Q(created_at__date__gte=from_date)
+            if to_date:
+                tx_filter &= Q(created_at__date__lte=to_date)
+            if course_id:
+                tx_filter &= Q(course_id=course_id)
+
+            transactions_prefetch = Prefetch(
+                "transactions",
+                queryset=PaymentTransaction.objects.filter(tx_filter).select_related("course", "gateway").order_by("-created_at")
+            )
+
+            # Prefetch related courses/batches and annotate/order by last payment
+            students_qs = students_qs.prefetch_related(
+                "new_batches__course",
+                "student_courses__course",
+                "batchcoursetrainer_set__course",
+                transactions_prefetch
+            ).annotate(
+                last_payment=Max("transactions__created_at")
+            ).order_by("-last_payment", "-student_id")
+
+            paginator = self.pagination_class()
+            page = paginator.paginate_queryset(students_qs, request, view=self)
+            target_qs = page if page is not None else students_qs
+
+            valid_statuses = {"success", "done", "paid", "complete", "captured", "partial", "advanced"}
+
+            results = []
+            for student in target_qs:
+                # 1. Deduplicate & Collect Courses
+                courses_dict = {}
+                for sc in student.student_courses.all():
+                    if sc.course and not getattr(sc.course, "is_archived", False):
+                        courses_dict[sc.course.course_id] = sc.course
+                for nb in student.new_batches.all():
+                    if nb.course and not getattr(nb.course, "is_archived", False):
+                        courses_dict[nb.course.course_id] = nb.course
+                bct_manager = getattr(student, "batchcoursetrainer", None) or getattr(student, "batchcoursetrainer_set", None)
+                if bct_manager is not None:
+                    for bct in bct_manager.all():
+                        if bct.course and not getattr(bct.course, "is_archived", False):
+                            courses_dict[bct.course.course_id] = bct.course
+                for tx in student.transactions.all():
+                    if tx.course and not getattr(tx.course, "is_archived", False):
+                        courses_dict[tx.course.course_id] = tx.course
+
+                courses_list = [
+                    {
+                        "course_id": course.course_id,
+                        "course_name": course.course_name or "",
+                        "course_fee": float(course.fee or 0)
+                    }
+                    for course in courses_dict.values()
+                ]
+
+                # 2. Deduplicate & Collect Batches
+                batches_dict = {}
+                for nb in student.new_batches.all():
+                    if not getattr(nb, "is_archived", False):
+                        batches_dict[nb.batch_id] = nb
+                for sc in student.student_courses.all():
+                    if sc.batch and not getattr(sc.batch, "is_archived", False):
+                        batches_dict[sc.batch.batch_id] = sc.batch
+
+                batches_list = []
+                for batch in batches_dict.values():
+                    duration_str = None
+                    if getattr(batch, "course", None) and getattr(batch.course, "duration", None):
+                        dur_type = f" {batch.course.duration_type}" if getattr(batch.course, "duration_type", None) else ""
+                        duration_str = f"{batch.course.duration}{dur_type}"
+                    elif getattr(batch, "start_date", None) and getattr(batch, "end_date", None):
+                        duration_str = f"{batch.start_date} to {batch.end_date}"
+
+                    batches_list.append({
+                        "batch_id": batch.batch_id,
+                        "batch_title": getattr(batch, "title", None) or getattr(batch, "batch_name", None) or f"Batch {batch.batch_id}",
+                        "duration": duration_str or "N/A"
+                    })
+
+                # 3. Financial Totals & Aggregations
+                total_course_fee = sum(float(c.fee or 0) for c in courses_dict.values())
+                discount = float(getattr(student, "discount", 0) or 0)
+                total_after_discount = max(total_course_fee - discount, 0.0)
+
+                all_txs = list(student.transactions.all())
+
+                total_paid_amount = sum(
+                    float(tx.amount or 0)
+                    for tx in all_txs
+                    if tx.payment_status and str(tx.payment_status).lower() in valid_statuses
+                )
+
+                total_pending_amount = max(total_after_discount - total_paid_amount, 0.0)
+
+                if total_pending_amount <= 0 and total_paid_amount > 0:
+                    status_str = "Completed"
+                elif total_paid_amount > 0 and total_pending_amount > 0:
+                    status_str = "Partial"
+                else:
+                    status_str = "Pending"
+
+                # 4. Payment History Log per Student
+                payment_history = []
+                for tx in all_txs:
+                    if not tx.invoice and str(tx.payment_status).lower() in ["success", "done", "paid", "complete", "captured"]:
+                        try:
+                            tx = InvoiceService.generate_invoice(tx.id)
+                        except Exception as e:
+                            logger.error(f"[Payment Report] Lazy invoice generation failed for transaction {tx.id}: {str(e)}")
+
+                    invoice_url = None
+                    if tx.invoice:
+                        rel_path = tx.invoice.url if hasattr(tx.invoice, "url") else str(tx.invoice)
+                        if rel_path:
+                            if rel_path.startswith("http://") or rel_path.startswith("https://"):
+                                invoice_url = rel_path
+                            else:
+                                try:
+                                    invoice_url = request.build_absolute_uri(rel_path)
+                                except Exception:
+                                    base = getattr(settings, "MEDIA_BASE_URL", "http://localhost:8000")
+                                    prefix = "" if rel_path.startswith("/") else "/"
+                                    invoice_url = f"{base.rstrip('/')}{prefix}{rel_path}"
+
+                    payment_history.append({
+                        "transaction_id": tx.transaction_id or f"TXN{tx.id}",
+                        "course_name": tx.course.course_name if tx.course else (tx.description or "General Payment"),
+                        "amount": float(tx.amount or 0),
+                        "payment_status": tx.payment_status,
+                        "payment_mode": tx.payment_mode or (tx.metadata.get("mode") if tx.metadata else "Cash"),
+                        "currency": tx.currency or "INR",
+                        "gateway": tx.gateway.gatway_name if tx.gateway else None,
+                        "invoice_no": tx.invoice_no,
+                        "invoice_date": str(tx.invoice_date) if tx.invoice_date else None,
+                        "invoice_url": invoice_url,
+                        "created_at": tx.created_at.isoformat() if tx.created_at else None
+                    })
+
+                full_name = f"{student.first_name or ''} {student.last_name or ''}".strip()
+
+                results.append({
+                    "student_id": student.student_id,
+                    "registration_id": student.registration_id or "",
+                    "student_name": full_name,
+                    "email": student.email or "",
+                    "phone": student.contact_no or "",
+                    "contact_no": student.contact_no or "",
+                    "courses": courses_list,
+                    "batches": batches_list,
+                    "total_course_fee": total_course_fee,
+                    "discount": discount,
+                    "total_after_discount": total_after_discount,
+                    "total_paid_amount": total_paid_amount,
+                    "total_pending_amount": total_pending_amount,
+                    "status": status_str,
+                    "payment_history": payment_history
+                })
+
+            response_payload = {
+                "success": True,
+                "courses": all_courses,
+                "batches": all_batches,
+                "results": results
+            }
+
+            if page is not None:
+                response_payload["meta"] = {
+                    "total_records": paginator.page.paginator.count,
+                    "total_pages": paginator.page.paginator.num_pages,
+                    "current_page": paginator.page.number,
+                    "page_size": paginator.get_page_size(request)
+                }
+                return Response(response_payload, status=status.HTTP_200_OK)
+
+            response_payload["meta"] = {
+                "total_records": len(results),
+                "total_pages": 1,
+                "current_page": 1,
+                "page_size": len(results)
+            }
+            return Response(response_payload, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.exception("Error in StudentPaymentHistoryReportView")
+            return Response(
+                {
+                    "success": False,
+                    "message": "An unexpected error occurred while generating student payment history report."
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 
 
 

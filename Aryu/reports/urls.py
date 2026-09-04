@@ -4,7 +4,9 @@ from reports.views import (
     StudentEnrollmentReportView,
     AttendanceReportView,
     GoogleReviewReportView,
-    GoogleReviewDetailView
+    GoogleReviewDetailView,
+    StudentPaymentHistoryReportView,
+    ReportFilterOptionsView
 )
 
 urlpatterns = [
@@ -16,5 +18,13 @@ urlpatterns = [
     path('reports/google-reviews', GoogleReviewReportView.as_view()),
     path('v1/reports/google-reviews', GoogleReviewReportView.as_view()),
     path('reports/google-reviews/<str:pk>', GoogleReviewDetailView.as_view()),
-    path('v1/reports/google-reviews/<str:pk>', GoogleReviewDetailView.as_view())
+    path('v1/reports/google-reviews/<str:pk>', GoogleReviewDetailView.as_view()),
+    path('reports/filter-options/', ReportFilterOptionsView.as_view()),
+    path('reports/filter-options', ReportFilterOptionsView.as_view()),
+    path('v1/reports/filter-options/', ReportFilterOptionsView.as_view()),
+    path('v1/reports/filter-options', ReportFilterOptionsView.as_view()),
+    path('reports/student-payment-history/', StudentPaymentHistoryReportView.as_view()),
+    path('reports/student-payment-history', StudentPaymentHistoryReportView.as_view()),
+    path('v1/reports/student-payment-history/', StudentPaymentHistoryReportView.as_view()),
+    path('v1/reports/student-payment-history', StudentPaymentHistoryReportView.as_view()),
 ]
