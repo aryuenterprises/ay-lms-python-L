@@ -6,7 +6,8 @@ from reports.views import (
     GoogleReviewReportView,
     GoogleReviewDetailView,
     StudentPaymentHistoryReportView,
-    ReportFilterOptionsView
+    ReportFilterOptionsView,
+    TutorPaymentReportView
 )
 
 urlpatterns = [
@@ -27,4 +28,8 @@ urlpatterns = [
     path('reports/student-payment-history', StudentPaymentHistoryReportView.as_view()),
     path('v1/reports/student-payment-history/', StudentPaymentHistoryReportView.as_view()),
     path('v1/reports/student-payment-history', StudentPaymentHistoryReportView.as_view()),
+    path('reports/tutor-payments/', TutorPaymentReportView.as_view()),
+    path('reports/tutor-payments', TutorPaymentReportView.as_view()),
+    path('v1/reports/tutor-payments/', TutorPaymentReportView.as_view()),
+    path('v1/reports/tutor-payments', TutorPaymentReportView.as_view()),
 ]
