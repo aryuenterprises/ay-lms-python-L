@@ -18,6 +18,7 @@ from rest_framework.decorators import action
 import csv
 import io
 import mimetypes
+from resources.models import Resources
 import re
 import hashlib
 from django.utils.dateparse import parse_date, parse_datetime
@@ -276,6 +277,25 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
         cache.set(cache_key, courses, timeout=600)
         return courses
 
+    def get_active_resources(self):
+        """
+        Fetches all non-deleted/active resources returning only 'id' and 'title'.
+        Cached for high-concurrency efficiency.
+        """
+        cache_key = "active_resources"
+        resources = cache.get(cache_key)
+
+        if resources is not None:
+            return resources
+
+        resources = list(
+            Resources.objects.all()
+            .values("id", "title")
+        )
+
+        cache.set(cache_key, resources, timeout=600)
+        return resources
+
     # =====================================================
     # MAIN LIST METHOD
     # =====================================================
@@ -364,6 +384,7 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
             "priority",
             "lead_stage",
             "source",
+            "source_campaign",
             "created_at",
             "followup_date",
             "next_followup_date",
@@ -385,6 +406,7 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
         response_data["total_active_leads"] = total_active_leads
         response_data["courses"] = self.get_active_courses()
         response_data["users"] = self.get_active_handled_by_users()
+        response_data["resources"] = self.get_active_resources()
 
         # =====================================
         # CACHE PRESERVATION
