@@ -1321,8 +1321,9 @@ class GoogleReviewReportView(APIView):
 
     def post(self, request):
         """
-        POST /api/v1/reports/google-reviews
-        Create or Upsert Google review record for (raw_student_id, course_id, batch_id).
+        POST /api/reports/google-reviews
+        Create or Upsert Google Review & multi-platform review records by Student identifier.
+        course_id and batch_id are optional — auto-resolved from student's existing enrolments.
         """
         try:
             data = request.data
@@ -1330,77 +1331,64 @@ class GoogleReviewReportView(APIView):
             student_id_str = data.get("student_id")
             course_id = data.get("course_id")
             batch_id = data.get("batch_id")
-            is_google_review_val = data.get("is_google_review")
-            review_date_val = data.get("review_date")
-            screenshot_file = request.FILES.get("screenshot")
-            raw_screenshot_input = data.get("screenshot_url") or data.get("screenshot")
-            cleaned_url = clean_and_extract_url(raw_screenshot_input) if isinstance(raw_screenshot_input, str) else None
-            stored_file_name = extract_filename_or_relative_path(raw_screenshot_input) if isinstance(raw_screenshot_input, str) else None
 
-            # Validation: raw_student_id or student_id, course_id, and batch_id are required
+            # 1. Require ONLY Student Identifier
             if not raw_student_id and not student_id_str:
                 return Response(
-                    {"success": False, "message": "Field 'raw_student_id' or 'student_id' is required.", "error_code": "VALIDATION_ERROR"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            if not course_id:
-                return Response(
-                    {"success": False, "message": "Field 'course_id' is required.", "error_code": "VALIDATION_ERROR"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            if not batch_id:
-                return Response(
-                    {"success": False, "message": "Field 'batch_id' is required.", "error_code": "VALIDATION_ERROR"},
+                    {"success": False, "message": "Field 'student_id' or 'raw_student_id' is required.", "error_code": "VALIDATION_ERROR"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # Lookup Student
+            # 2. Lookup Student
             student = None
             if raw_student_id:
-                student = Student.objects.filter(student_id=raw_student_id).first()
+                student = Student.objects.filter(student_id=raw_student_id, is_archived=False).first()
             if not student and student_id_str:
                 student = Student.objects.filter(
-                    Q(registration_id=student_id_str) | Q(student_id=student_id_str)
+                    Q(registration_id=student_id_str) | Q(student_id=student_id_str),
+                    is_archived=False
                 ).first()
 
             if not student:
                 return Response(
-                    {"success": False, "message": f"Student with identifier '{raw_student_id or student_id_str}' not found.", "error_code": "NOT_FOUND"},
+                    {"success": False, "message": f"Student '{raw_student_id or student_id_str}' not found.", "error_code": "NOT_FOUND"},
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-            # Lookup Course & Batch
-            course = Course.objects.filter(course_id=course_id).first()
-            batch = NewBatch.objects.filter(batch_id=batch_id).first()
+            # 3. Resolve Course & Batch (auto-populate from student enrolments if not supplied)
+            course = None
+            batch = None
+
+            if course_id:
+                course = Course.objects.filter(course_id=course_id, is_archived=False).first()
+            if batch_id:
+                batch = NewBatch.objects.filter(batch_id=batch_id, is_archived=False).first()
 
             if not course:
-                return Response(
-                    {"success": False, "message": f"Course with id '{course_id}' not found.", "error_code": "NOT_FOUND"},
-                    status=status.HTTP_404_NOT_FOUND
-                )
+                sc = student.student_courses.select_related("course").filter(course__isnull=False).first()
+                if sc and sc.course:
+                    course = sc.course
+                else:
+                    nb = student.new_batches.select_related("course").filter(course__isnull=False, is_archived=False).first()
+                    if nb and nb.course:
+                        course = nb.course
+
             if not batch:
-                return Response(
-                    {"success": False, "message": f"Batch with id '{batch_id}' not found.", "error_code": "NOT_FOUND"},
-                    status=status.HTTP_404_NOT_FOUND
-                )
+                sc = student.student_courses.select_related("batch").filter(batch__isnull=False).first()
+                if sc and sc.batch:
+                    batch = sc.batch
+                else:
+                    batch = student.new_batches.filter(is_archived=False).first()
 
-            # Parse boolean is_google_review
-            is_google_review = False
-            if is_google_review_val is not None:
-                if isinstance(is_google_review_val, bool):
-                    is_google_review = is_google_review_val
-                elif str(is_google_review_val).lower() in ["true", "yes", "1"]:
-                    is_google_review = True
-
-            # Rule: If is_google_review is true, review_date is strictly mandatory
-            if is_google_review and not review_date_val:
-                return Response(
-                    {"success": False, "message": "Field 'review_date' is strictly required when is_google_review is true.", "error_code": "UNPROCESSABLE_ENTITY"},
-                    status=status.HTTP_422_UNPROCESSABLE_ENTITY
-                )
-
+            # 4. Extract Review Fields
+            is_google_review = parse_bool(data.get("is_google_review")) or False
+            review_date_val = data.get("review_date")
             parsed_review_date = None
-            if review_date_val:
+
+            if is_google_review and not review_date_val:
+                # Default to today when date is omitted but review is flagged true
+                parsed_review_date = timezone.now().date()
+            elif review_date_val:
                 parsed_d = parse_date(str(review_date_val)) or parse_datetime(str(review_date_val))
                 if parsed_d:
                     parsed_review_date = parsed_d.date() if isinstance(parsed_d, datetime) else parsed_d
@@ -1410,39 +1398,51 @@ class GoogleReviewReportView(APIView):
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-            # Validate screenshot_url format if passed as string URL
-            if cleaned_url and not screenshot_file:
-                url_validator = URLValidator()
-                try:
-                    url_validator(cleaned_url)
-                except ValidationError:
-                    return Response(
-                        {"success": False, "message": "Field 'screenshot_url' must be a valid URI format.", "error_code": "VALIDATION_ERROR"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-            # Atomic Upsert Database Logic
+            # 5. Atomic Upsert (lookup by student only — one review record per student)
             with transaction.atomic():
-                review, created = GoogleReview.objects.select_for_update().get_or_create(
-                    student=student,
-                    course=course,
-                    batch=batch,
-                    defaults={
-                        "is_google_review": is_google_review,
-                        "review_date": parsed_review_date,
-                        "screenshot_url": stored_file_name or cleaned_url
-                    }
-                )
+                review = GoogleReview.objects.select_for_update().filter(student=student).first()
+                created = False
 
-                review.is_google_review = is_google_review
+                if not review:
+                    review = GoogleReview.objects.create(
+                        student=student,
+                        course=course,
+                        batch=batch
+                    )
+                    created = True
+                else:
+                    # Backfill course/batch on existing record if currently unset
+                    if course and not review.course:
+                        review.course = course
+                    if batch and not review.batch:
+                        review.batch = batch
+
+                # Google review fields
+                if "is_google_review" in data:
+                    review.is_google_review = is_google_review
                 if parsed_review_date is not None:
                     review.review_date = parsed_review_date
-                
-                if screenshot_file:
-                    review.screenshot = screenshot_file
 
-                if stored_file_name or cleaned_url:
-                    review.screenshot_url = stored_file_name or cleaned_url
+                # Multi-platform boolean flags
+                if "linkedin_review" in data:
+                    review.linkedin_review = parse_bool(data.get("linkedin_review")) or False
+                if "facebook_review" in data:
+                    review.facebook_review = parse_bool(data.get("facebook_review")) or False
+                if "trustpilot_review" in data:
+                    review.trustpilot_review = parse_bool(data.get("trustpilot_review")) or False
+
+                # File uploads — all platforms (supports both plain key and *_url alias)
+                platform_file_keys = {
+                    "screenshot":            ["screenshot", "screenshot_url"],
+                    "linkedin_screenshot":   ["linkedin_screenshot", "linkedin_screenshot_url"],
+                    "facebook_screenshot":   ["facebook_screenshot", "facebook_screenshot_url"],
+                    "trustpilot_screenshot": ["trustpilot_screenshot", "trustpilot_screenshot_url"],
+                }
+                for model_field, possible_keys in platform_file_keys.items():
+                    for key in possible_keys:
+                        if key in request.FILES:
+                            setattr(review, model_field, request.FILES[key])
+                            break
 
                 review.save()
 
@@ -1450,7 +1450,7 @@ class GoogleReviewReportView(APIView):
             resp_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
             return Response({
                 "success": True,
-                "message": "Google review created successfully." if created else "Google review updated successfully.",
+                "message": "Review created successfully." if created else "Review updated successfully.",
                 "data": serializer.data
             }, status=resp_status)
 
