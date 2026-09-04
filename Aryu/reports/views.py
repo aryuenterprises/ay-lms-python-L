@@ -5,7 +5,7 @@ from datetime import datetime, date, time, timedelta
 from collections import defaultdict
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
-from django.db.models import Q, Sum, Prefetch, Count
+from django.db.models import Q, Sum, Prefetch, Count, Max
 from django.conf import settings
 from django.db import transaction, models
 from django.core.validators import URLValidator
@@ -14,14 +14,18 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.pagination import PageNumberPagination
 from aryuapp.auth import CustomJWTAuthentication
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 import logging
-from aryuapp.models import Student, StudentCourse, Attendance
-from batches.models import NewBatch, ClassSchedule
-from payments.models import PaymentTransaction
+from aryuapp.models import Student, StudentCourse, Attendance, Trainer
+from batches.models import NewBatch, ClassSchedule, BatchCourseTrainer
+from payments.models import PaymentTransaction, TutorPayment
+from payments.services.invoice_service import InvoiceService
 from courses.models import Course, CourseCategory
 from reports.models import GoogleReview
+from reports.pagination import TutorPaymentReportPagination
+from reports.serializers import GoogleReviewSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +52,22 @@ def extract_filename_or_relative_path(input_val):
     if not cleaned:
         return None
     return cleaned.rstrip("/").split("/")[-1]
+
+
+def parse_bool(val):
+    """
+    Safely coerce multipart/form-data string values to Python booleans.
+    Returns None if value is absent/unrecognised so callers can skip the field.
+    """
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    if str(val).strip().lower() in ["true", "1", "yes"]:
+        return True
+    if str(val).strip().lower() in ["false", "0", "no"]:
+        return False
+    return None
 
 
 def resolve_screenshot_url(review, request=None):
@@ -77,6 +97,45 @@ def resolve_screenshot_url(review, request=None):
         base_url = f"{base_url}/media"
 
     return f"{base_url}/{filename}"
+
+
+def extract_batch_schedule(batch, course=None):
+    """
+    Extract and format schedule details from a NewBatch instance.
+    Duration is resolved from Course metadata first, then batch.duration,
+    then a date-span fallback.
+    """
+    if not batch:
+        return {
+            "batch_duration": "-",
+            "start_time": None,
+            "end_time": None,
+            "start_date": None,
+            "end_date": None,
+        }
+
+    s_date = batch.start_date.strftime("%Y-%m-%d") if getattr(batch, "start_date", None) else None
+    e_date = batch.end_date.strftime("%Y-%m-%d") if getattr(batch, "end_date", None) else None
+    s_time = batch.start_time.strftime("%I:%M %p") if getattr(batch, "start_time", None) else None
+    e_time = batch.end_time.strftime("%I:%M %p") if getattr(batch, "end_time", None) else None
+
+    duration = None
+    target_course = course or getattr(batch, "course", None)
+    if target_course and getattr(target_course, "duration", None):
+        unit = f" {target_course.duration_type}" if getattr(target_course, "duration_type", None) else ""
+        duration = f"{target_course.duration}{unit}".strip()
+    elif getattr(batch, "duration", None):
+        duration = str(batch.duration)
+    elif s_date and e_date:
+        duration = f"{s_date} to {e_date}"
+
+    return {
+        "batch_duration": duration or "-",
+        "start_time": s_time or "-",
+        "end_time": e_time or "-",
+        "start_date": s_date or "-",
+        "end_date": e_date or "-",
+    }
 
 
 def parse_date_bound_from(date_str):
@@ -309,96 +368,115 @@ class AryuReportView(APIView):
 
 class StudentEnrollmentReportView(APIView):
     """
-    Performant API Endpoint for Student Enrollment Report Table.
-    Supports pagination (page, limit), case-insensitive search on student name,
-    course_id filter, batch_id filter, date filtering (from_date, to_date),
-    sorting (sort_by, sort_order), batch hyphen fallback, and returns student_id.
+    Production-grade API Endpoint for Student Enrollment Report.
+    Supports role enforcement, input sanitization, batch lifecycle status filtering
+    (current, completed, future), and database-level pagination.
     """
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
 
+    _VALID_BATCH_STATUSES = {"current", "ongoing", "completed", "past", "future", "upcoming"}
+
+    @staticmethod
+    def _build_batch_lifecycle_query(batch_status, now_dt):
+        today = now_dt.date()
+        current_time = now_dt.time()
+
+        if batch_status in ("current", "ongoing"):
+            cond = (
+                (Q(start_date__lt=today) & Q(end_date__gt=today)) |
+                Q(start_date=today, end_date__gt=today, start_time__lte=current_time) |
+                Q(start_date__lt=today, end_date=today, end_time__gte=current_time) |
+                Q(start_date=today, end_date=today, start_time__lte=current_time, end_time__gte=current_time)
+            )
+        elif batch_status in ("completed", "past"):
+            cond = Q(end_date__lt=today) | Q(end_date=today, end_time__lt=current_time)
+        elif batch_status in ("future", "upcoming"):
+            cond = Q(start_date__gt=today) | Q(start_date=today, start_time__gt=current_time)
+        else:
+            return Q()
+
+        matching = NewBatch.objects.filter(cond)
+        return (
+            Q(new_batches__is_archived=False, new_batches__in=matching) |
+            Q(student_courses__batch__is_archived=False, student_courses__batch__in=matching)
+        )
+
     def get(self, request):
         try:
-            # 1. Parse Pagination Parameters
+            # 1. RBAC
+            user = request.user
+            if getattr(user, "user_type", "") not in ["super_admin", "admin"]:
+                return Response({"success": False, "message": "Unauthorized access."}, status=status.HTTP_403_FORBIDDEN)
+
+            # 2. Bounded Pagination (OWASP A04)
             try:
-                page = int(request.GET.get("page", 1))
-                if page < 1:
-                    page = 1
+                page = max(1, int(request.GET.get("page", 1)))
             except (ValueError, TypeError):
                 page = 1
-
             try:
-                limit = int(request.GET.get("limit", 50))
-                if limit < 1:
-                    limit = 50
-                elif limit > 500:
-                    limit = 500
+                limit = min(100, max(1, int(request.GET.get("limit", 50))))
             except (ValueError, TypeError):
                 limit = 50
 
-            # 2. Parse Search & Filter Parameters
+            # 3. Input Sanitization
             search = request.GET.get("search", "").strip()
             course_id = request.GET.get("course_id", "").strip()
             batch_id = request.GET.get("batch_id", "").strip()
+            batch_status = request.GET.get("batch_status", "").strip().lower()
             from_date_str = request.GET.get("from_date", "").strip()
             to_date_str = request.GET.get("to_date", "").strip()
             sort_by = request.GET.get("sort_by", "created_at").strip().lower()
             sort_order = request.GET.get("sort_order", "desc").strip().lower()
 
-            # Reset Rule for batch_id: If batch_id does not belong to course_id, discard batch_id
+            # Whitelist batch_status
+            if batch_status not in self._VALID_BATCH_STATUSES:
+                batch_status = ""
+
+            # Cascade check
             if course_id and batch_id:
-                valid_batch_exists = NewBatch.objects.filter(
-                    batch_id=batch_id,
-                    course_id=course_id,
-                    is_archived=False
-                ).exists() or StudentCourse.objects.filter(
-                    batch_id=batch_id,
-                    course_id=course_id
-                ).exists()
-                if not valid_batch_exists:
+                valid = (
+                    NewBatch.objects.filter(batch_id=batch_id, course_id=course_id, is_archived=False).exists() or
+                    StudentCourse.objects.filter(batch_id=batch_id, course_id=course_id).exists()
+                )
+                if not valid:
                     batch_id = ""
 
-            # Base queryset: Active/non-archived students enrolled in at least one course or batch
+            # 4. Base QuerySet
             students_qs = Student.objects.filter(
-                is_archived=False,
-                status=True
-            ).filter(
-                Q(student_courses__isnull=False) | Q(new_batches__isnull=False)
-            ).distinct()
+                is_archived=False, status=True
+            ).filter(Q(student_courses__isnull=False) | Q(new_batches__isnull=False))
 
-            # Case-insensitive search on student name (and registration_id/email)
             if search:
                 students_qs = students_qs.filter(
-                    Q(first_name__icontains=search) |
-                    Q(last_name__icontains=search) |
-                    Q(email__icontains=search) |
-                    Q(registration_id__icontains=search) |
+                    Q(first_name__icontains=search) | Q(last_name__icontains=search) |
+                    Q(email__icontains=search) | Q(registration_id__icontains=search) |
                     Q(student_courses__course__course_name__icontains=search) |
                     Q(student_courses__batch__title__icontains=search) |
                     Q(new_batches__course__course_name__icontains=search) |
                     Q(new_batches__title__icontains=search)
                 )
-
-            # Filter by course_id
             if course_id:
                 students_qs = students_qs.filter(
-                    Q(student_courses__course_id=course_id) |
-                    Q(new_batches__course_id=course_id)
+                    Q(student_courses__course_id=course_id) | Q(new_batches__course_id=course_id)
                 )
-
-            # Filter by batch_id
             if batch_id:
                 students_qs = students_qs.filter(
-                    Q(student_courses__batch_id=batch_id) |
-                    Q(new_batches__batch_id=batch_id)
+                    Q(student_courses__batch_id=batch_id) | Q(new_batches__batch_id=batch_id)
                 )
 
-            # Date Range Filter on student enrollment / created_at date
+            # 5. Batch Lifecycle Filter
+            now_dt = timezone.now()
+            if batch_status:
+                students_qs = students_qs.filter(
+                    self._build_batch_lifecycle_query(batch_status, now_dt)
+                )
+
+            # 6. Date Filters
             if from_date_str:
                 parsed_from = parse_date_bound_from(from_date_str)
                 if parsed_from:
                     students_qs = students_qs.filter(created_at__gte=parsed_from)
-
             if to_date_str:
                 parsed_to, lookup = parse_date_bound_to(to_date_str)
                 if parsed_to:
@@ -407,50 +485,33 @@ class StudentEnrollmentReportView(APIView):
                     else:
                         students_qs = students_qs.filter(created_at__lte=parsed_to)
 
-            # 3. Sorting Field Mapping
+            # 7. Sorting
             sort_map = {
-                "created_at": "created_at",
-                "enrolled_at": "created_at",
-                "student_name": "first_name",
-                "name": "first_name",
-                "first_name": "first_name",
-                "last_name": "last_name",
-                "registration_id": "registration_id",
-                "student_id": "registration_id",
+                "created_at": "created_at", "enrolled_at": "created_at",
+                "student_name": "first_name", "name": "first_name",
+                "first_name": "first_name", "last_name": "last_name",
+                "registration_id": "registration_id", "student_id": "registration_id",
             }
-            db_sort_field = sort_map.get(sort_by, "created_at")
+            order_field = sort_map.get(sort_by, "created_at")
+            order_expr = order_field if sort_order == "asc" else f"-{order_field}"
 
-            if sort_order == "asc":
-                order_expr = db_sort_field
-            else:
-                order_expr = f"-{db_sort_field}"
-
-            # Distinct before counting and slicing
             students_qs = students_qs.distinct()
             total_count = students_qs.count()
 
-            # 4. Database-level Pagination Slicing with Prefetching
+            # 8. Slice & Prefetch
             offset = (page - 1) * limit
             sliced_students = students_qs.order_by(order_expr, "-student_id").prefetch_related(
-                Prefetch(
-                    "student_courses",
-                    queryset=StudentCourse.objects.select_related("course", "batch")
-                ),
-                Prefetch(
-                    "new_batches",
-                    queryset=NewBatch.objects.select_related("course")
-                )
+                Prefetch("student_courses", queryset=StudentCourse.objects.select_related("course", "batch")),
+                Prefetch("new_batches", queryset=NewBatch.objects.select_related("course"))
             )[offset:offset + limit]
 
-            # 5. Fetch Active Courses matching Course Management criteria (/api/courses)
+            # 9. Active courses for filter options & validation
             active_courses = list(
                 Course.objects.filter(is_archived=False)
                 .exclude(status__iexact="Inactive")
-                .values("course_id", "course_name")
-                .order_by("course_name")
+                .values("course_id", "course_name").order_by("course_name")
             )
-            valid_active_course_map = {c["course_id"]: c["course_name"] for c in active_courses if c["course_name"]}
-            valid_active_course_ids = set(valid_active_course_map.keys())
+            valid_active_course_ids = {c["course_id"] for c in active_courses if c["course_name"]}
 
             # 6. Build Response Data List
             data = []
@@ -519,6 +580,33 @@ class StudentEnrollmentReportView(APIView):
 
                 created_at_iso = s.created_at.strftime('%Y-%m-%d') if s.created_at else "-"
 
+                # Resolve primary batch object for schedule extraction
+                primary_batch = None
+                primary_course = None
+                for sc in s.student_courses.all():
+                    if sc.batch:
+                        primary_batch = sc.batch
+                        primary_course = sc.course
+                        break
+                if not primary_batch:
+                    for nb in s.new_batches.all():
+                        primary_batch = nb
+                        primary_course = nb.course
+                        break
+
+                schedule = extract_batch_schedule(primary_batch, primary_course)
+
+                # Compute batch lifecycle badge
+                computed_status = "N/A"
+                if primary_batch and getattr(primary_batch, "start_date", None) and getattr(primary_batch, "end_date", None):
+                    t_date = now_dt.date()
+                    if primary_batch.end_date < t_date:
+                        computed_status = "Completed"
+                    elif primary_batch.start_date > t_date:
+                        computed_status = "Future"
+                    else:
+                        computed_status = "Current"
+
                 data.append({
                     "id": str(s.student_id),
                     "student_id": s.registration_id or f"std_{s.student_id}",
@@ -538,6 +626,12 @@ class StudentEnrollmentReportView(APIView):
                     "batch_ids": batch_ids,
                     "batch_title": batch_names,
                     "batch": batch_val,
+                    "batch_status": computed_status,
+                    "batch_duration": schedule["batch_duration"],
+                    "start_time": schedule["start_time"],
+                    "end_time": schedule["end_time"],
+                    "start_date": schedule["start_date"],
+                    "end_date": schedule["end_date"],
                 })
 
             # 7. Fetch Active Filter Options for Dropdowns
@@ -1179,57 +1273,63 @@ class GoogleReviewReportView(APIView):
 
             data = []
             for s in sliced_students:
-                full_name = f"{s.first_name or ''} {s.last_name or ''}".strip()
                 review = s.google_reviews.first()
 
-                courses_map = {}
-                batches_map = {}
+                if review:
+                    # Serialize the review record directly — includes all platforms & URLs
+                    serialized = GoogleReviewSerializer(review, context={"request": request}).data
+                else:
+                    # Student has no review yet — build a stub entry with enrollment metadata
+                    courses_map = {}
+                    batches_map = {}
 
-                for sc in s.student_courses.all():
-                    if sc.course and sc.course.course_name:
-                        courses_map[sc.course.course_id] = sc.course.course_name
-                    if sc.batch:
-                        b_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
-                        if b_title:
-                            batches_map[sc.batch.batch_id] = b_title
+                    for sc in s.student_courses.all():
+                        if sc.course and sc.course.course_name:
+                            courses_map[sc.course.course_id] = sc.course.course_name
+                        if sc.batch:
+                            b_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
+                            if b_title:
+                                batches_map[sc.batch.batch_id] = b_title
 
-                for nb in s.new_batches.all():
-                    if nb.course and nb.course.course_name:
-                        courses_map[nb.course.course_id] = nb.course.course_name
-                    if nb.title:
-                        batches_map[nb.batch_id] = nb.title
+                    for nb in s.new_batches.all():
+                        if nb.course and nb.course.course_name:
+                            courses_map[nb.course.course_id] = nb.course.course_name
+                        if nb.title:
+                            batches_map[nb.batch_id] = nb.title
 
-                course_names = list(courses_map.values())
-                course_ids = list(courses_map.keys())
-                batch_names = list(batches_map.values())
-                batch_ids = list(batches_map.keys())
+                    course_ids = list(courses_map.keys())
+                    course_names = list(courses_map.values())
+                    batch_ids = list(batches_map.keys())
+                    batch_names = list(batches_map.values())
 
-                course_val = course_names[0] if course_names else "-"
-                course_id_val = course_ids[0] if course_ids else None
-                batch_val = batch_names[0] if batch_names else "-"
-                batch_id_val = batch_ids[0] if batch_ids else None
+                    serialized = {
+                        "id": None,
+                        "review_id": None,
+                        "student": s.student_id,
+                        "student_id": s.registration_id or f"std_{s.student_id}",
+                        "raw_student_id": s.student_id,
+                        "student_name": f"{s.first_name or ''} {s.last_name or ''}".strip(),
+                        "email": s.email,
+                        "course": course_ids[0] if course_ids else None,
+                        "course_id": course_ids[0] if course_ids else None,
+                        "course_name": course_names[0] if course_names else "-",
+                        "batch": batch_ids[0] if batch_ids else None,
+                        "batch_id": batch_ids[0] if batch_ids else None,
+                        "batch_name": batch_names[0] if batch_names else "-",
+                        "is_google_review": False,
+                        "review_date": None,
+                        "screenshot_url": None,
+                        "linkedin_review": False,
+                        "linkedin_screenshot_url": None,
+                        "facebook_review": False,
+                        "facebook_screenshot_url": None,
+                        "trustpilot_review": False,
+                        "trustpilot_screenshot_url": None,
+                        "created_at": s.created_at.isoformat() if s.created_at else None,
+                        "updated_at": None,
+                    }
 
-                review_id = review.id if review else None
-                is_rev = review.is_google_review if review else False
-                rev_date = review.review_date.strftime("%Y-%m-%d") if (review and review.review_date) else None
-                screenshot_url = resolve_screenshot_url(review, request)
-
-                data.append({
-                    "id": review_id or str(s.student_id),
-                    "review_id": review_id,
-                    "student_id": s.registration_id or f"std_{s.student_id}",
-                    "raw_student_id": s.student_id,
-                    "student_name": full_name,
-                    "email": s.email,
-                    "is_google_review": is_rev,
-                    "review_date": rev_date,
-                    "screenshot_url": screenshot_url,
-                    "course_name": course_val,
-                    "course_id": course_id_val,
-                    "batch_name": batch_val,
-                    "batch_id": batch_id_val,
-                    "created_at": s.created_at.isoformat() if s.created_at else None
-                })
+                data.append(serialized)
 
             # 4. Fetch Active Filter Options for Dropdowns
             active_courses = list(
@@ -1295,8 +1395,9 @@ class GoogleReviewReportView(APIView):
 
     def post(self, request):
         """
-        POST /api/v1/reports/google-reviews
-        Create or Upsert Google review record for (raw_student_id, course_id, batch_id).
+        POST /api/reports/google-reviews
+        Create or Upsert Google Review & multi-platform review records by Student identifier.
+        course_id and batch_id are optional — auto-resolved from student's existing enrolments.
         """
         try:
             data = request.data
@@ -1304,77 +1405,64 @@ class GoogleReviewReportView(APIView):
             student_id_str = data.get("student_id")
             course_id = data.get("course_id")
             batch_id = data.get("batch_id")
-            is_google_review_val = data.get("is_google_review")
-            review_date_val = data.get("review_date")
-            screenshot_file = request.FILES.get("screenshot")
-            raw_screenshot_input = data.get("screenshot_url") or data.get("screenshot")
-            cleaned_url = clean_and_extract_url(raw_screenshot_input) if isinstance(raw_screenshot_input, str) else None
-            stored_file_name = extract_filename_or_relative_path(raw_screenshot_input) if isinstance(raw_screenshot_input, str) else None
 
-            # Validation: raw_student_id or student_id, course_id, and batch_id are required
+            # 1. Require ONLY Student Identifier
             if not raw_student_id and not student_id_str:
                 return Response(
-                    {"success": False, "message": "Field 'raw_student_id' or 'student_id' is required.", "error_code": "VALIDATION_ERROR"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            if not course_id:
-                return Response(
-                    {"success": False, "message": "Field 'course_id' is required.", "error_code": "VALIDATION_ERROR"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            if not batch_id:
-                return Response(
-                    {"success": False, "message": "Field 'batch_id' is required.", "error_code": "VALIDATION_ERROR"},
+                    {"success": False, "message": "Field 'student_id' or 'raw_student_id' is required.", "error_code": "VALIDATION_ERROR"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # Lookup Student
+            # 2. Lookup Student
             student = None
             if raw_student_id:
-                student = Student.objects.filter(student_id=raw_student_id).first()
+                student = Student.objects.filter(student_id=raw_student_id, is_archived=False).first()
             if not student and student_id_str:
                 student = Student.objects.filter(
-                    Q(registration_id=student_id_str) | Q(student_id=student_id_str)
+                    Q(registration_id=student_id_str) | Q(student_id=student_id_str),
+                    is_archived=False
                 ).first()
 
             if not student:
                 return Response(
-                    {"success": False, "message": f"Student with identifier '{raw_student_id or student_id_str}' not found.", "error_code": "NOT_FOUND"},
+                    {"success": False, "message": f"Student '{raw_student_id or student_id_str}' not found.", "error_code": "NOT_FOUND"},
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-            # Lookup Course & Batch
-            course = Course.objects.filter(course_id=course_id).first()
-            batch = NewBatch.objects.filter(batch_id=batch_id).first()
+            # 3. Resolve Course & Batch (auto-populate from student enrolments if not supplied)
+            course = None
+            batch = None
+
+            if course_id:
+                course = Course.objects.filter(course_id=course_id, is_archived=False).first()
+            if batch_id:
+                batch = NewBatch.objects.filter(batch_id=batch_id, is_archived=False).first()
 
             if not course:
-                return Response(
-                    {"success": False, "message": f"Course with id '{course_id}' not found.", "error_code": "NOT_FOUND"},
-                    status=status.HTTP_404_NOT_FOUND
-                )
+                sc = student.student_courses.select_related("course").filter(course__isnull=False).first()
+                if sc and sc.course:
+                    course = sc.course
+                else:
+                    nb = student.new_batches.select_related("course").filter(course__isnull=False, is_archived=False).first()
+                    if nb and nb.course:
+                        course = nb.course
+
             if not batch:
-                return Response(
-                    {"success": False, "message": f"Batch with id '{batch_id}' not found.", "error_code": "NOT_FOUND"},
-                    status=status.HTTP_404_NOT_FOUND
-                )
+                sc = student.student_courses.select_related("batch").filter(batch__isnull=False).first()
+                if sc and sc.batch:
+                    batch = sc.batch
+                else:
+                    batch = student.new_batches.filter(is_archived=False).first()
 
-            # Parse boolean is_google_review
-            is_google_review = False
-            if is_google_review_val is not None:
-                if isinstance(is_google_review_val, bool):
-                    is_google_review = is_google_review_val
-                elif str(is_google_review_val).lower() in ["true", "yes", "1"]:
-                    is_google_review = True
-
-            # Rule: If is_google_review is true, review_date is strictly mandatory
-            if is_google_review and not review_date_val:
-                return Response(
-                    {"success": False, "message": "Field 'review_date' is strictly required when is_google_review is true.", "error_code": "UNPROCESSABLE_ENTITY"},
-                    status=status.HTTP_422_UNPROCESSABLE_ENTITY
-                )
-
+            # 4. Extract Review Fields
+            is_google_review = parse_bool(data.get("is_google_review")) or False
+            review_date_val = data.get("review_date")
             parsed_review_date = None
-            if review_date_val:
+
+            if is_google_review and not review_date_val:
+                # Default to today when date is omitted but review is flagged true
+                parsed_review_date = timezone.now().date()
+            elif review_date_val:
                 parsed_d = parse_date(str(review_date_val)) or parse_datetime(str(review_date_val))
                 if parsed_d:
                     parsed_review_date = parsed_d.date() if isinstance(parsed_d, datetime) else parsed_d
@@ -1384,64 +1472,60 @@ class GoogleReviewReportView(APIView):
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-            # Validate screenshot_url format if passed as string URL
-            if cleaned_url and not screenshot_file:
-                url_validator = URLValidator()
-                try:
-                    url_validator(cleaned_url)
-                except ValidationError:
-                    return Response(
-                        {"success": False, "message": "Field 'screenshot_url' must be a valid URI format.", "error_code": "VALIDATION_ERROR"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-            # Atomic Upsert Database Logic
+            # 5. Atomic Upsert (lookup by student only — one review record per student)
             with transaction.atomic():
-                review, created = GoogleReview.objects.select_for_update().get_or_create(
-                    student=student,
-                    course=course,
-                    batch=batch,
-                    defaults={
-                        "is_google_review": is_google_review,
-                        "review_date": parsed_review_date,
-                        "screenshot_url": stored_file_name or cleaned_url
-                    }
-                )
+                review = GoogleReview.objects.select_for_update().filter(student=student).first()
+                created = False
 
-                review.is_google_review = is_google_review
+                if not review:
+                    review = GoogleReview.objects.create(
+                        student=student,
+                        course=course,
+                        batch=batch
+                    )
+                    created = True
+                else:
+                    # Backfill course/batch on existing record if currently unset
+                    if course and not review.course:
+                        review.course = course
+                    if batch and not review.batch:
+                        review.batch = batch
+
+                # Google review fields
+                if "is_google_review" in data:
+                    review.is_google_review = is_google_review
                 if parsed_review_date is not None:
                     review.review_date = parsed_review_date
-                
-                if screenshot_file:
-                    review.screenshot = screenshot_file
 
-                if stored_file_name or cleaned_url:
-                    review.screenshot_url = stored_file_name or cleaned_url
+                # Multi-platform boolean flags
+                if "linkedin_review" in data:
+                    review.linkedin_review = parse_bool(data.get("linkedin_review")) or False
+                if "facebook_review" in data:
+                    review.facebook_review = parse_bool(data.get("facebook_review")) or False
+                if "trustpilot_review" in data:
+                    review.trustpilot_review = parse_bool(data.get("trustpilot_review")) or False
+
+                # File uploads — all platforms (supports both plain key and *_url alias)
+                platform_file_keys = {
+                    "screenshot":            ["screenshot", "screenshot_url"],
+                    "linkedin_screenshot":   ["linkedin_screenshot", "linkedin_screenshot_url"],
+                    "facebook_screenshot":   ["facebook_screenshot", "facebook_screenshot_url"],
+                    "trustpilot_screenshot": ["trustpilot_screenshot", "trustpilot_screenshot_url"],
+                }
+                for model_field, possible_keys in platform_file_keys.items():
+                    for key in possible_keys:
+                        if key in request.FILES:
+                            setattr(review, model_field, request.FILES[key])
+                            break
 
                 review.save()
 
-            screenshot_url = resolve_screenshot_url(review, request)
-
+            serializer = GoogleReviewSerializer(review, context={"request": request})
             resp_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
             return Response({
                 "success": True,
-                "message": "Google review created successfully." if created else "Google review updated successfully.",
-                "data": {
-                    "id": review.id,
-                    "student_id": student.registration_id or f"std_{student.student_id}",
-                    "raw_student_id": student.student_id,
-                    "student_name": f"{student.first_name or ''} {student.last_name or ''}".strip(),
-                    "email": student.email,
-                    "is_google_review": review.is_google_review,
-                    "review_date": review.review_date.strftime("%Y-%m-%d") if review.review_date else None,
-                    "screenshot_url": screenshot_url,
-                    "course_name": course.course_name,
-                    "course_id": course.course_id,
-                    "batch_name": batch.title,
-                    "batch_id": batch.batch_id,
-                    "created_at": review.created_at.isoformat() if review.created_at else None,
-                    "updated_at": review.updated_at.isoformat() if review.updated_at else None
-                }
+                "message": "Review created successfully." if created else "Review updated successfully.",
+                "data": serializer.data
             }, status=resp_status)
 
         except Exception as e:
@@ -1505,20 +1589,25 @@ class GoogleReviewDetailView(APIView):
 
             # 2. Extract & Parse update data
             data = request.data
-            is_google_review = data.get("is_google_review")
-            review_date = data.get("review_date")
-            screenshot = request.FILES.get("screenshot")
-            raw_screenshot_input = data.get("screenshot_url") or data.get("screenshot")
-            cleaned_url = clean_and_extract_url(raw_screenshot_input) if isinstance(raw_screenshot_input, str) else None
-            stored_file_name = extract_filename_or_relative_path(raw_screenshot_input) if isinstance(raw_screenshot_input, str) else None
+            files = request.FILES
+
+            # --- Boolean fields (all platforms) ---
+            is_google_review   = parse_bool(data.get("is_google_review"))
+            is_linkedin_review = parse_bool(data.get("linkedin_review"))
+            is_facebook_review = parse_bool(data.get("facebook_review"))
+            is_trustpilot_review = parse_bool(data.get("trustpilot_review"))
 
             if is_google_review is not None:
-                if isinstance(is_google_review, bool):
-                    review.is_google_review = is_google_review
-                elif str(is_google_review).lower() in ["true", "yes", "1"]:
-                    review.is_google_review = True
-                elif str(is_google_review).lower() in ["false", "no", "0"]:
-                    review.is_google_review = False
+                review.is_google_review = is_google_review
+            if is_linkedin_review is not None:
+                review.linkedin_review = is_linkedin_review
+            if is_facebook_review is not None:
+                review.facebook_review = is_facebook_review
+            if is_trustpilot_review is not None:
+                review.trustpilot_review = is_trustpilot_review
+
+            # --- Review date ---
+            review_date = data.get("review_date")
 
             # Validation Rule: If is_google_review is true and review_date is null/empty
             if review.is_google_review and not review.review_date and not review_date:
@@ -1530,47 +1619,50 @@ class GoogleReviewDetailView(APIView):
             if review_date:
                 parsed_d = parse_date(str(review_date)) or parse_datetime(str(review_date))
                 if parsed_d:
-                    if isinstance(parsed_d, datetime):
-                        review.review_date = parsed_d.date()
-                    else:
-                        review.review_date = parsed_d
+                    review.review_date = parsed_d.date() if isinstance(parsed_d, datetime) else parsed_d
 
-            if screenshot and not isinstance(screenshot, str):
-                review.screenshot = screenshot
+            # --- Screenshot file uploads (all platforms) ---
+            # Support both plain field name and *_url alias (e.g. "linkedin_screenshot" or "linkedin_screenshot_url")
+            platform_file_keys = {
+                "screenshot":            ["screenshot", "screenshot_url"],
+                "linkedin_screenshot":   ["linkedin_screenshot", "linkedin_screenshot_url"],
+                "facebook_screenshot":   ["facebook_screenshot", "facebook_screenshot_url"],
+                "trustpilot_screenshot": ["trustpilot_screenshot", "trustpilot_screenshot_url"],
+            }
 
-            if cleaned_url and not screenshot:
-                url_validator = URLValidator()
-                try:
-                    url_validator(cleaned_url)
-                except ValidationError:
-                    return Response(
-                        {"success": False, "message": "Field 'screenshot_url' must be a valid URI format.", "error_code": "VALIDATION_ERROR"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                review.screenshot_url = stored_file_name or cleaned_url
+            for model_field, possible_keys in platform_file_keys.items():
+                file_obj = None
+                for key in possible_keys:
+                    if key in files:
+                        file_obj = files[key]
+                        break
+                if file_obj:
+                    setattr(review, model_field, file_obj)
+
+            # Fallback: persist Google screenshot_url string if no file was uploaded
+            if not files.get("screenshot") and not files.get("screenshot_url"):
+                raw_screenshot_input = data.get("screenshot_url") or data.get("screenshot")
+                if isinstance(raw_screenshot_input, str):
+                    cleaned_url = clean_and_extract_url(raw_screenshot_input)
+                    if cleaned_url:
+                        url_validator = URLValidator()
+                        try:
+                            url_validator(cleaned_url)
+                        except ValidationError:
+                            return Response(
+                                {"success": False, "message": "Field 'screenshot_url' must be a valid URI format.", "error_code": "VALIDATION_ERROR"},
+                                status=status.HTTP_400_BAD_REQUEST
+                            )
+                        review.screenshot_url = extract_filename_or_relative_path(raw_screenshot_input) or cleaned_url
 
             review.save()
 
-            screenshot_url = resolve_screenshot_url(review, request)
+            serializer = GoogleReviewSerializer(review, context={"request": request})
 
             return Response({
                 "success": True,
                 "message": "Google review updated successfully.",
-                "data": {
-                    "id": review.id,
-                    "student_id": review.student.registration_id or f"std_{review.student.student_id}",
-                    "raw_student_id": review.student.student_id,
-                    "student_name": f"{review.student.first_name or ''} {review.student.last_name or ''}".strip(),
-                    "email": review.student.email,
-                    "is_google_review": review.is_google_review,
-                    "review_date": review.review_date.strftime("%Y-%m-%d") if review.review_date else None,
-                    "screenshot_url": screenshot_url,
-                    "course_name": review.course.course_name if review.course else "-",
-                    "course_id": review.course.course_id if review.course else None,
-                    "batch_name": review.batch.title if review.batch else "-",
-                    "batch_id": review.batch.batch_id if review.batch else None,
-                    "updated_at": review.updated_at.isoformat() if review.updated_at else None
-                }
+                "data": serializer.data
             }, status=status.HTTP_200_OK)
 
         except Exception as e:
@@ -1629,6 +1721,598 @@ class GoogleReviewDetailView(APIView):
                 {"success": False, "message": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class StudentPaymentHistoryReportPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = 'limit'
+    max_page_size = 500
+
+    def get_paginated_response(self, data):
+        return Response({
+            "success": True,
+            "meta": {
+                "total_records": self.page.paginator.count,
+                "total_pages": self.page.paginator.num_pages,
+                "current_page": self.page.number,
+                "page_size": self.get_page_size(self.request)
+            },
+            "results": data
+        })
+
+
+class ReportFilterOptionsView(APIView):
+    """
+    Metadata endpoint to support UI filters for payment reports.
+    Returns active courses and (cascaded) active batches.
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+
+    def get(self, request):
+        try:
+            user = request.user
+            user_type = getattr(user, "user_type", "")
+            if user_type not in ["super_admin", "admin"]:
+                return Response(
+                    {"success": False, "message": "Unauthorized"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            course_id = request.query_params.get("course_id")
+
+            courses_qs = Course.objects.filter(is_archived=False).order_by("course_name")
+            courses = [
+                {
+                    "course_id": c.course_id,
+                    "course_name": c.course_name or ""
+                }
+                for c in courses_qs
+            ]
+
+            batches_qs = NewBatch.objects.filter(is_archived=False)
+            if course_id:
+                batches_qs = batches_qs.filter(course_id=course_id)
+
+            batches = [
+                {
+                    "batch_id": b.batch_id,
+                    "title": b.title or f"Batch {b.batch_id}",
+                    "batch_title": b.title or f"Batch {b.batch_id}",
+                    "course_id": b.course_id
+                }
+                for b in batches_qs.order_by("title")
+            ]
+
+            return Response({
+                "success": True,
+                "data": {
+                    "courses": courses,
+                    "batches": batches
+                }
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.exception("Error in ReportFilterOptionsView")
+            return Response(
+                {"success": False, "message": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class StudentPaymentHistoryReportView(APIView):
+    """
+    GET report endpoint to serve detailed student payment summaries
+    with server-side pagination and nested payment histories.
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+    pagination_class = StudentPaymentHistoryReportPagination
+
+    def get(self, request):
+        try:
+            user = request.user
+            user_type = getattr(user, "user_type", "")
+            if user_type not in ["super_admin", "admin"]:
+                return Response(
+                    {"success": False, "message": "Unauthorized"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            # Filter non-archived students
+            all_students = Student.objects.filter(is_archived=False)
+
+            # Include only students associated with courses/batches/transactions
+            students_qs = all_students.filter(
+                Q(student_courses__isnull=False) |
+                Q(new_batches__course__isnull=False, new_batches__is_archived=False) |
+                Q(batchcoursetrainer__course__isnull=False) |
+                Q(transactions__course__isnull=False, transactions__is_archived=False)
+            )
+
+            # Extract query parameters for dynamic cascaded and date filtering
+            course_id = request.query_params.get("course_id")
+            batch_id = request.query_params.get("batch_id")
+            from_date = request.query_params.get("from_date")
+            to_date = request.query_params.get("to_date")
+            search = request.query_params.get("search")
+
+            # ---------------------------------------------------------
+            # Metadata for Filters: Courses & Batches Separately
+            # ---------------------------------------------------------
+            all_courses = list(
+                Course.objects.filter(is_archived=False)
+                .values("course_id", "course_name")
+                .order_by("course_name")
+            )
+
+            batches_qs = NewBatch.objects.filter(is_archived=False)
+            if course_id:
+                batches_qs = batches_qs.filter(course_id=course_id)
+
+            all_batches = list(
+                batches_qs.values(
+                    "batch_id",
+                    "title",
+                    "course_id"
+                ).order_by("title")
+            )
+
+            # Filter non-archived students
+            all_students = Student.objects.filter(is_archived=False)
+
+            # Include only students associated with courses/batches/transactions
+            students_qs = all_students.filter(
+                Q(student_courses__isnull=False) |
+                Q(new_batches__course__isnull=False, new_batches__is_archived=False) |
+                Q(batchcoursetrainer__course__isnull=False) |
+                Q(transactions__course__isnull=False, transactions__is_archived=False)
+            )
+
+            # 1. Course Filter
+            if course_id:
+                students_qs = students_qs.filter(
+                    Q(student_courses__course_id=course_id) |
+                    Q(new_batches__course_id=course_id, new_batches__is_archived=False) |
+                    Q(batchcoursetrainer__course_id=course_id) |
+                    Q(transactions__course_id=course_id, transactions__is_archived=False)
+                )
+
+            # 2. Batch Filter
+            if batch_id:
+                students_qs = students_qs.filter(
+                    Q(new_batches__batch_id=batch_id, new_batches__is_archived=False) |
+                    Q(student_courses__batch_id=batch_id)
+                )
+
+            # 3. Date Range Filter (Applied on transaction created_at date)
+            if from_date:
+                students_qs = students_qs.filter(transactions__created_at__date__gte=from_date)
+            if to_date:
+                students_qs = students_qs.filter(transactions__created_at__date__lte=to_date)
+
+            # 4. Search Filter
+            if search:
+                search_term = str(search).strip()
+                if search_term:
+                    students_qs = students_qs.filter(
+                        Q(first_name__icontains=search_term) |
+                        Q(last_name__icontains=search_term) |
+                        Q(registration_id__icontains=search_term) |
+                        Q(email__icontains=search_term) |
+                        Q(contact_no__icontains=search_term)
+                    )
+
+            students_qs = students_qs.distinct()
+
+            # Prefetch non-archived transactions ordered by -created_at with select_related('course', 'gateway')
+            tx_filter = Q(is_archived=False)
+            if from_date:
+                tx_filter &= Q(created_at__date__gte=from_date)
+            if to_date:
+                tx_filter &= Q(created_at__date__lte=to_date)
+            if course_id:
+                tx_filter &= Q(course_id=course_id)
+
+            transactions_prefetch = Prefetch(
+                "transactions",
+                queryset=PaymentTransaction.objects.filter(tx_filter).select_related("course", "gateway").order_by("-created_at")
+            )
+
+            # Prefetch related courses/batches and annotate/order by last payment
+            students_qs = students_qs.prefetch_related(
+                "new_batches__course",
+                "student_courses__course",
+                "batchcoursetrainer_set__course",
+                transactions_prefetch
+            ).annotate(
+                last_payment=Max("transactions__created_at")
+            ).order_by("-last_payment", "-student_id")
+
+            paginator = self.pagination_class()
+            page = paginator.paginate_queryset(students_qs, request, view=self)
+            target_qs = page if page is not None else students_qs
+
+            valid_statuses = {"success", "done", "paid", "complete", "captured", "partial", "advanced"}
+
+            results = []
+            for student in target_qs:
+                # 1. Deduplicate & Collect Courses
+                courses_dict = {}
+                for sc in student.student_courses.all():
+                    if sc.course and not getattr(sc.course, "is_archived", False):
+                        courses_dict[sc.course.course_id] = sc.course
+                for nb in student.new_batches.all():
+                    if nb.course and not getattr(nb.course, "is_archived", False):
+                        courses_dict[nb.course.course_id] = nb.course
+                bct_manager = getattr(student, "batchcoursetrainer", None) or getattr(student, "batchcoursetrainer_set", None)
+                if bct_manager is not None:
+                    for bct in bct_manager.all():
+                        if bct.course and not getattr(bct.course, "is_archived", False):
+                            courses_dict[bct.course.course_id] = bct.course
+                for tx in student.transactions.all():
+                    if tx.course and not getattr(tx.course, "is_archived", False):
+                        courses_dict[tx.course.course_id] = tx.course
+
+                courses_list = [
+                    {
+                        "course_id": course.course_id,
+                        "course_name": course.course_name or "",
+                        "course_fee": float(course.fee or 0)
+                    }
+                    for course in courses_dict.values()
+                ]
+
+                # 2. Deduplicate & Collect Batches
+                batches_dict = {}
+                for nb in student.new_batches.all():
+                    if not getattr(nb, "is_archived", False):
+                        batches_dict[nb.batch_id] = nb
+                for sc in student.student_courses.all():
+                    if sc.batch and not getattr(sc.batch, "is_archived", False):
+                        batches_dict[sc.batch.batch_id] = sc.batch
+
+                batches_list = []
+                for batch in batches_dict.values():
+                    duration_str = None
+                    if getattr(batch, "course", None) and getattr(batch.course, "duration", None):
+                        dur_type = f" {batch.course.duration_type}" if getattr(batch.course, "duration_type", None) else ""
+                        duration_str = f"{batch.course.duration}{dur_type}"
+                    elif getattr(batch, "start_date", None) and getattr(batch, "end_date", None):
+                        duration_str = f"{batch.start_date} to {batch.end_date}"
+
+                    batches_list.append({
+                        "batch_id": batch.batch_id,
+                        "batch_title": getattr(batch, "title", None) or getattr(batch, "batch_name", None) or f"Batch {batch.batch_id}",
+                        "duration": duration_str or "N/A"
+                    })
+
+                # 3. Financial Totals & Aggregations
+                total_course_fee = sum(float(c.fee or 0) for c in courses_dict.values())
+                discount = float(getattr(student, "discount", 0) or 0)
+                total_after_discount = max(total_course_fee - discount, 0.0)
+
+                all_txs = list(student.transactions.all())
+
+                total_paid_amount = sum(
+                    float(tx.amount or 0)
+                    for tx in all_txs
+                    if tx.payment_status and str(tx.payment_status).lower() in valid_statuses
+                )
+
+                total_pending_amount = max(total_after_discount - total_paid_amount, 0.0)
+
+                if total_pending_amount <= 0 and total_paid_amount > 0:
+                    status_str = "Completed"
+                elif total_paid_amount > 0 and total_pending_amount > 0:
+                    status_str = "Partial"
+                else:
+                    status_str = "Pending"
+
+                # 4. Payment History Log per Student
+                payment_history = []
+                for tx in all_txs:
+                    if not tx.invoice and str(tx.payment_status).lower() in ["success", "done", "paid", "complete", "captured"]:
+                        try:
+                            tx = InvoiceService.generate_invoice(tx.id)
+                        except Exception as e:
+                            logger.error(f"[Payment Report] Lazy invoice generation failed for transaction {tx.id}: {str(e)}")
+
+                    invoice_url = None
+                    if tx.invoice:
+                        rel_path = tx.invoice.url if hasattr(tx.invoice, "url") else str(tx.invoice)
+                        if rel_path:
+                            if rel_path.startswith("http://") or rel_path.startswith("https://"):
+                                invoice_url = rel_path
+                            else:
+                                try:
+                                    invoice_url = request.build_absolute_uri(rel_path)
+                                except Exception:
+                                    base = getattr(settings, "MEDIA_BASE_URL", "http://localhost:8000")
+                                    prefix = "" if rel_path.startswith("/") else "/"
+                                    invoice_url = f"{base.rstrip('/')}{prefix}{rel_path}"
+
+                    payment_history.append({
+                        "transaction_id": tx.transaction_id or f"TXN{tx.id}",
+                        "course_name": tx.course.course_name if tx.course else (tx.description or "General Payment"),
+                        "amount": float(tx.amount or 0),
+                        "payment_status": tx.payment_status,
+                        "payment_mode": tx.payment_mode or (tx.metadata.get("mode") if tx.metadata else "Cash"),
+                        "currency": tx.currency or "INR",
+                        "gateway": tx.gateway.gatway_name if tx.gateway else None,
+                        "invoice_no": tx.invoice_no,
+                        "invoice_date": str(tx.invoice_date) if tx.invoice_date else None,
+                        "invoice_url": invoice_url,
+                        "created_at": tx.created_at.isoformat() if tx.created_at else None
+                    })
+
+                full_name = f"{student.first_name or ''} {student.last_name or ''}".strip()
+
+                results.append({
+                    "student_id": student.student_id,
+                    "registration_id": student.registration_id or "",
+                    "student_name": full_name,
+                    "email": student.email or "",
+                    "phone": student.contact_no or "",
+                    "contact_no": student.contact_no or "",
+                    "courses": courses_list,
+                    "batches": batches_list,
+                    "total_course_fee": total_course_fee,
+                    "discount": discount,
+                    "total_after_discount": total_after_discount,
+                    "total_paid_amount": total_paid_amount,
+                    "total_pending_amount": total_pending_amount,
+                    "status": status_str,
+                    "payment_history": payment_history
+                })
+
+            response_payload = {
+                "success": True,
+                "courses": all_courses,
+                "batches": all_batches,
+                "results": results
+            }
+
+            if page is not None:
+                response_payload["meta"] = {
+                    "total_records": paginator.page.paginator.count,
+                    "total_pages": paginator.page.paginator.num_pages,
+                    "current_page": paginator.page.number,
+                    "page_size": paginator.get_page_size(request)
+                }
+                return Response(response_payload, status=status.HTTP_200_OK)
+
+            response_payload["meta"] = {
+                "total_records": len(results),
+                "total_pages": 1,
+                "current_page": 1,
+                "page_size": len(results)
+            }
+            return Response(response_payload, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.exception("Error in StudentPaymentHistoryReportView")
+            return Response(
+                {
+                    "success": False,
+                    "message": "An unexpected error occurred while generating student payment history report."
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class TutorPaymentReportView(APIView):
+    """
+    Secure, production-grade report API endpoint for Tutor Payments.
+    Enforces BOLA role verification, strict input sanitization/validation against SQLi,
+    and database optimization using select_related and pagination.
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [CustomJWTAuthentication]
+    pagination_class = TutorPaymentReportPagination
+
+    def get(self, request):
+        try:
+            # 1. BOLA & Access Control: Restricted to super_admin and admin
+            user = request.user
+            user_type = getattr(user, "user_type", "")
+            if user_type not in ["super_admin", "admin"]:
+                return Response(
+                    {"success": False, "message": "Unauthorized access."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            # 2. Input Validation & Sanitization (OWASP)
+            raw_course_id = request.query_params.get("course_id")
+            raw_batch_id = request.query_params.get("batch_id")
+            raw_tutor_id = request.query_params.get("tutor_id")
+            raw_status = request.query_params.get("payment_status")
+            raw_from_date = request.query_params.get("from_date")
+            raw_to_date = request.query_params.get("to_date")
+            search_term = request.query_params.get("search")
+
+            course_id = None
+            if raw_course_id is not None and str(raw_course_id).strip():
+                try:
+                    course_id = int(str(raw_course_id).strip())
+                    if course_id <= 0:
+                        raise ValueError
+                except ValueError:
+                    return Response(
+                        {"success": False, "message": "Invalid course_id format. Must be a positive integer."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            batch_id = None
+            if raw_batch_id is not None and str(raw_batch_id).strip():
+                try:
+                    batch_id = int(str(raw_batch_id).strip())
+                    if batch_id <= 0:
+                        raise ValueError
+                except ValueError:
+                    return Response(
+                        {"success": False, "message": "Invalid batch_id format. Must be a positive integer."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            tutor_id = None
+            if raw_tutor_id is not None and str(raw_tutor_id).strip():
+                try:
+                    tutor_id = int(str(raw_tutor_id).strip())
+                    if tutor_id <= 0:
+                        raise ValueError
+                except ValueError:
+                    return Response(
+                        {"success": False, "message": "Invalid tutor_id format. Must be a positive integer."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            from_date = None
+            if raw_from_date is not None and str(raw_from_date).strip():
+                try:
+                    from_date = datetime.strptime(str(raw_from_date).strip(), "%Y-%m-%d").date()
+                except ValueError:
+                    return Response(
+                        {"success": False, "message": "Invalid from_date format. Must be YYYY-MM-DD."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            to_date = None
+            if raw_to_date is not None and str(raw_to_date).strip():
+                try:
+                    to_date = datetime.strptime(str(raw_to_date).strip(), "%Y-%m-%d").date()
+                except ValueError:
+                    return Response(
+                        {"success": False, "message": "Invalid to_date format. Must be YYYY-MM-DD."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            payment_status = None
+            if raw_status is not None and str(raw_status).strip():
+                payment_status = str(raw_status).strip().lower()
+
+            # 3. Metadata Dropdowns (Optimized via .values())
+            all_courses = list(
+                Course.objects.filter(is_archived=False)
+                .values("course_id", "course_name")
+                .order_by("course_name")
+            )
+
+            batches_qs = NewBatch.objects.filter(is_archived=False)
+            if course_id:
+                batches_qs = batches_qs.filter(course_id=course_id)
+
+            all_batches = list(
+                batches_qs.values(
+                    "batch_id",
+                    "title",
+                    "course_id"
+                ).order_by("title")
+            )
+
+            all_tutors = list(
+                Trainer.objects.all()
+                .values("trainer_id", "full_name")
+                .order_by("full_name")
+            )
+
+            # 4. Database Queryset Optimization (Avoid N+1 with select_related)
+            payments_qs = TutorPayment.objects.select_related("tutor", "course", "batch")
+
+            if course_id:
+                payments_qs = payments_qs.filter(course_id=course_id)
+
+            if batch_id:
+                payments_qs = payments_qs.filter(batch_id=batch_id)
+
+            if tutor_id:
+                payments_qs = payments_qs.filter(tutor_id=tutor_id)
+
+            if payment_status:
+                payments_qs = payments_qs.filter(payment_status__iexact=payment_status)
+
+            if from_date:
+                payments_qs = payments_qs.filter(payment_date__gte=from_date)
+
+            if to_date:
+                payments_qs = payments_qs.filter(payment_date__lte=to_date)
+
+            if search_term and str(search_term).strip():
+                term = str(search_term).strip()
+                payments_qs = payments_qs.filter(
+                    Q(tutor__full_name__icontains=term) |
+                    Q(tutor__username__icontains=term) |
+                    Q(course__course_name__icontains=term) |
+                    Q(batch__title__icontains=term)
+                )
+
+            # Indexed field sorting
+            payments_qs = payments_qs.order_by("-payment_date", "-id")
+
+            # 5. Pagination & Explicit Whitelisted Serialization
+            paginator = self.pagination_class()
+            page = paginator.paginate_queryset(payments_qs, request, view=self)
+            target_qs = page if page is not None else payments_qs
+
+            results = []
+            for p in target_qs:
+                tutor_name = p.tutor.full_name if p.tutor and p.tutor.full_name else (
+                    getattr(p.tutor, "username", "") if p.tutor else "N/A"
+                )
+                course_name = p.course.course_name if p.course and p.course.course_name else "N/A"
+                batch_title = (
+                    p.batch.title if p.batch and getattr(p.batch, "title", None)
+                    else (getattr(p.batch, "batch_name", None) or f"Batch {p.batch_id}" if p.batch else "N/A")
+                )
+
+                results.append({
+                    "id": p.id,
+                    "tutor_id": p.tutor_id,
+                    "tutor_name": tutor_name,
+                    "course_id": p.course_id,
+                    "course_name": course_name,
+                    "batch_id": p.batch_id,
+                    "batch_title": batch_title,
+                    "payment_type": p.payment_type or "N/A",
+                    "payment_date": str(p.payment_date) if p.payment_date else None,
+                    "amount": float(p.tutor_payment or 0),
+                    "course_fee": float(p.course_fee or 0),
+                    "payment_status": p.payment_status or "pending",
+                    "notes": p.notes or ""
+                })
+
+            response_payload = {
+                "success": True,
+                "courses": all_courses,
+                "batches": all_batches,
+                # "tutors": all_tutors,
+                "results": results
+            }
+
+            if page is not None:
+                response_payload["meta"] = {
+                    "total_records": paginator.page.paginator.count,
+                    "total_pages": paginator.page.paginator.num_pages,
+                    "current_page": paginator.page.number,
+                    "page_size": paginator.get_page_size(request)
+                }
+                return Response(response_payload, status=status.HTTP_200_OK)
+
+            response_payload["meta"] = {
+                "total_records": len(results),
+                "total_pages": 1,
+                "current_page": 1,
+                "page_size": len(results)
+            }
+            return Response(response_payload, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.exception("Error in TutorPaymentReportView")
+            return Response(
+                {"success": False, "message": "An error occurred generating tutor payment report."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 
 
 
