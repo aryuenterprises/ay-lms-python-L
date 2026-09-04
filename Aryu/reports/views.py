@@ -368,96 +368,115 @@ class AryuReportView(APIView):
 
 class StudentEnrollmentReportView(APIView):
     """
-    Performant API Endpoint for Student Enrollment Report Table.
-    Supports pagination (page, limit), case-insensitive search on student name,
-    course_id filter, batch_id filter, date filtering (from_date, to_date),
-    sorting (sort_by, sort_order), batch hyphen fallback, and returns student_id.
+    Production-grade API Endpoint for Student Enrollment Report.
+    Supports role enforcement, input sanitization, batch lifecycle status filtering
+    (current, completed, future), and database-level pagination.
     """
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
 
+    _VALID_BATCH_STATUSES = {"current", "ongoing", "completed", "past", "future", "upcoming"}
+
+    @staticmethod
+    def _build_batch_lifecycle_query(batch_status, now_dt):
+        today = now_dt.date()
+        current_time = now_dt.time()
+
+        if batch_status in ("current", "ongoing"):
+            cond = (
+                (Q(start_date__lt=today) & Q(end_date__gt=today)) |
+                Q(start_date=today, end_date__gt=today, start_time__lte=current_time) |
+                Q(start_date__lt=today, end_date=today, end_time__gte=current_time) |
+                Q(start_date=today, end_date=today, start_time__lte=current_time, end_time__gte=current_time)
+            )
+        elif batch_status in ("completed", "past"):
+            cond = Q(end_date__lt=today) | Q(end_date=today, end_time__lt=current_time)
+        elif batch_status in ("future", "upcoming"):
+            cond = Q(start_date__gt=today) | Q(start_date=today, start_time__gt=current_time)
+        else:
+            return Q()
+
+        matching = NewBatch.objects.filter(cond)
+        return (
+            Q(new_batches__is_archived=False, new_batches__in=matching) |
+            Q(student_courses__batch__is_archived=False, student_courses__batch__in=matching)
+        )
+
     def get(self, request):
         try:
-            # 1. Parse Pagination Parameters
+            # 1. RBAC
+            user = request.user
+            if getattr(user, "user_type", "") not in ["super_admin", "admin"]:
+                return Response({"success": False, "message": "Unauthorized access."}, status=status.HTTP_403_FORBIDDEN)
+
+            # 2. Bounded Pagination (OWASP A04)
             try:
-                page = int(request.GET.get("page", 1))
-                if page < 1:
-                    page = 1
+                page = max(1, int(request.GET.get("page", 1)))
             except (ValueError, TypeError):
                 page = 1
-
             try:
-                limit = int(request.GET.get("limit", 50))
-                if limit < 1:
-                    limit = 50
-                elif limit > 500:
-                    limit = 500
+                limit = min(100, max(1, int(request.GET.get("limit", 50))))
             except (ValueError, TypeError):
                 limit = 50
 
-            # 2. Parse Search & Filter Parameters
+            # 3. Input Sanitization
             search = request.GET.get("search", "").strip()
             course_id = request.GET.get("course_id", "").strip()
             batch_id = request.GET.get("batch_id", "").strip()
+            batch_status = request.GET.get("batch_status", "").strip().lower()
             from_date_str = request.GET.get("from_date", "").strip()
             to_date_str = request.GET.get("to_date", "").strip()
             sort_by = request.GET.get("sort_by", "created_at").strip().lower()
             sort_order = request.GET.get("sort_order", "desc").strip().lower()
 
-            # Reset Rule for batch_id: If batch_id does not belong to course_id, discard batch_id
+            # Whitelist batch_status
+            if batch_status not in self._VALID_BATCH_STATUSES:
+                batch_status = ""
+
+            # Cascade check
             if course_id and batch_id:
-                valid_batch_exists = NewBatch.objects.filter(
-                    batch_id=batch_id,
-                    course_id=course_id,
-                    is_archived=False
-                ).exists() or StudentCourse.objects.filter(
-                    batch_id=batch_id,
-                    course_id=course_id
-                ).exists()
-                if not valid_batch_exists:
+                valid = (
+                    NewBatch.objects.filter(batch_id=batch_id, course_id=course_id, is_archived=False).exists() or
+                    StudentCourse.objects.filter(batch_id=batch_id, course_id=course_id).exists()
+                )
+                if not valid:
                     batch_id = ""
 
-            # Base queryset: Active/non-archived students enrolled in at least one course or batch
+            # 4. Base QuerySet
             students_qs = Student.objects.filter(
-                is_archived=False,
-                status=True
-            ).filter(
-                Q(student_courses__isnull=False) | Q(new_batches__isnull=False)
-            ).distinct()
+                is_archived=False, status=True
+            ).filter(Q(student_courses__isnull=False) | Q(new_batches__isnull=False))
 
-            # Case-insensitive search on student name (and registration_id/email)
             if search:
                 students_qs = students_qs.filter(
-                    Q(first_name__icontains=search) |
-                    Q(last_name__icontains=search) |
-                    Q(email__icontains=search) |
-                    Q(registration_id__icontains=search) |
+                    Q(first_name__icontains=search) | Q(last_name__icontains=search) |
+                    Q(email__icontains=search) | Q(registration_id__icontains=search) |
                     Q(student_courses__course__course_name__icontains=search) |
                     Q(student_courses__batch__title__icontains=search) |
                     Q(new_batches__course__course_name__icontains=search) |
                     Q(new_batches__title__icontains=search)
                 )
-
-            # Filter by course_id
             if course_id:
                 students_qs = students_qs.filter(
-                    Q(student_courses__course_id=course_id) |
-                    Q(new_batches__course_id=course_id)
+                    Q(student_courses__course_id=course_id) | Q(new_batches__course_id=course_id)
                 )
-
-            # Filter by batch_id
             if batch_id:
                 students_qs = students_qs.filter(
-                    Q(student_courses__batch_id=batch_id) |
-                    Q(new_batches__batch_id=batch_id)
+                    Q(student_courses__batch_id=batch_id) | Q(new_batches__batch_id=batch_id)
                 )
 
-            # Date Range Filter on student enrollment / created_at date
+            # 5. Batch Lifecycle Filter
+            now_dt = timezone.now()
+            if batch_status:
+                students_qs = students_qs.filter(
+                    self._build_batch_lifecycle_query(batch_status, now_dt)
+                )
+
+            # 6. Date Filters
             if from_date_str:
                 parsed_from = parse_date_bound_from(from_date_str)
                 if parsed_from:
                     students_qs = students_qs.filter(created_at__gte=parsed_from)
-
             if to_date_str:
                 parsed_to, lookup = parse_date_bound_to(to_date_str)
                 if parsed_to:
@@ -466,50 +485,33 @@ class StudentEnrollmentReportView(APIView):
                     else:
                         students_qs = students_qs.filter(created_at__lte=parsed_to)
 
-            # 3. Sorting Field Mapping
+            # 7. Sorting
             sort_map = {
-                "created_at": "created_at",
-                "enrolled_at": "created_at",
-                "student_name": "first_name",
-                "name": "first_name",
-                "first_name": "first_name",
-                "last_name": "last_name",
-                "registration_id": "registration_id",
-                "student_id": "registration_id",
+                "created_at": "created_at", "enrolled_at": "created_at",
+                "student_name": "first_name", "name": "first_name",
+                "first_name": "first_name", "last_name": "last_name",
+                "registration_id": "registration_id", "student_id": "registration_id",
             }
-            db_sort_field = sort_map.get(sort_by, "created_at")
+            order_field = sort_map.get(sort_by, "created_at")
+            order_expr = order_field if sort_order == "asc" else f"-{order_field}"
 
-            if sort_order == "asc":
-                order_expr = db_sort_field
-            else:
-                order_expr = f"-{db_sort_field}"
-
-            # Distinct before counting and slicing
             students_qs = students_qs.distinct()
             total_count = students_qs.count()
 
-            # 4. Database-level Pagination Slicing with Prefetching
+            # 8. Slice & Prefetch
             offset = (page - 1) * limit
             sliced_students = students_qs.order_by(order_expr, "-student_id").prefetch_related(
-                Prefetch(
-                    "student_courses",
-                    queryset=StudentCourse.objects.select_related("course", "batch")
-                ),
-                Prefetch(
-                    "new_batches",
-                    queryset=NewBatch.objects.select_related("course")
-                )
+                Prefetch("student_courses", queryset=StudentCourse.objects.select_related("course", "batch")),
+                Prefetch("new_batches", queryset=NewBatch.objects.select_related("course"))
             )[offset:offset + limit]
 
-            # 5. Fetch Active Courses matching Course Management criteria (/api/courses)
+            # 9. Active courses for filter options & validation
             active_courses = list(
                 Course.objects.filter(is_archived=False)
                 .exclude(status__iexact="Inactive")
-                .values("course_id", "course_name")
-                .order_by("course_name")
+                .values("course_id", "course_name").order_by("course_name")
             )
-            valid_active_course_map = {c["course_id"]: c["course_name"] for c in active_courses if c["course_name"]}
-            valid_active_course_ids = set(valid_active_course_map.keys())
+            valid_active_course_ids = {c["course_id"] for c in active_courses if c["course_name"]}
 
             # 6. Build Response Data List
             data = []
@@ -594,6 +596,17 @@ class StudentEnrollmentReportView(APIView):
 
                 schedule = extract_batch_schedule(primary_batch, primary_course)
 
+                # Compute batch lifecycle badge
+                computed_status = "N/A"
+                if primary_batch and getattr(primary_batch, "start_date", None) and getattr(primary_batch, "end_date", None):
+                    t_date = now_dt.date()
+                    if primary_batch.end_date < t_date:
+                        computed_status = "Completed"
+                    elif primary_batch.start_date > t_date:
+                        computed_status = "Future"
+                    else:
+                        computed_status = "Current"
+
                 data.append({
                     "id": str(s.student_id),
                     "student_id": s.registration_id or f"std_{s.student_id}",
@@ -613,6 +626,7 @@ class StudentEnrollmentReportView(APIView):
                     "batch_ids": batch_ids,
                     "batch_title": batch_names,
                     "batch": batch_val,
+                    "batch_status": computed_status,
                     "batch_duration": schedule["batch_duration"],
                     "start_time": schedule["start_time"],
                     "end_time": schedule["end_time"],
