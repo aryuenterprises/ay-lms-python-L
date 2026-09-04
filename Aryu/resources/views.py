@@ -127,7 +127,7 @@ class ResourcesViewSet(viewsets.ModelViewSet):
                     "course_interested_in": validated_data.get("course_interested_in") or None,
                     "interested": validated_data.get("interested", True),
                     "source": validated_data.get("source") or "Resource Download",
-                    "source_campaign": f"Downloaded: {resource.title}",
+                    "source_campaign": f"{resource.slug}",
                     "status": "fresh",
                 }
 
