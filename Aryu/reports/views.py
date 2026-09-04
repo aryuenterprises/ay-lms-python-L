@@ -25,6 +25,7 @@ from payments.services.invoice_service import InvoiceService
 from courses.models import Course, CourseCategory
 from reports.models import GoogleReview
 from reports.pagination import TutorPaymentReportPagination
+from reports.serializers import GoogleReviewSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,22 @@ def extract_filename_or_relative_path(input_val):
     if not cleaned:
         return None
     return cleaned.rstrip("/").split("/")[-1]
+
+
+def parse_bool(val):
+    """
+    Safely coerce multipart/form-data string values to Python booleans.
+    Returns None if value is absent/unrecognised so callers can skip the field.
+    """
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    if str(val).strip().lower() in ["true", "1", "yes"]:
+        return True
+    if str(val).strip().lower() in ["false", "0", "no"]:
+        return False
+    return None
 
 
 def resolve_screenshot_url(review, request=None):
@@ -1182,57 +1199,63 @@ class GoogleReviewReportView(APIView):
 
             data = []
             for s in sliced_students:
-                full_name = f"{s.first_name or ''} {s.last_name or ''}".strip()
                 review = s.google_reviews.first()
 
-                courses_map = {}
-                batches_map = {}
+                if review:
+                    # Serialize the review record directly — includes all platforms & URLs
+                    serialized = GoogleReviewSerializer(review, context={"request": request}).data
+                else:
+                    # Student has no review yet — build a stub entry with enrollment metadata
+                    courses_map = {}
+                    batches_map = {}
 
-                for sc in s.student_courses.all():
-                    if sc.course and sc.course.course_name:
-                        courses_map[sc.course.course_id] = sc.course.course_name
-                    if sc.batch:
-                        b_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
-                        if b_title:
-                            batches_map[sc.batch.batch_id] = b_title
+                    for sc in s.student_courses.all():
+                        if sc.course and sc.course.course_name:
+                            courses_map[sc.course.course_id] = sc.course.course_name
+                        if sc.batch:
+                            b_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
+                            if b_title:
+                                batches_map[sc.batch.batch_id] = b_title
 
-                for nb in s.new_batches.all():
-                    if nb.course and nb.course.course_name:
-                        courses_map[nb.course.course_id] = nb.course.course_name
-                    if nb.title:
-                        batches_map[nb.batch_id] = nb.title
+                    for nb in s.new_batches.all():
+                        if nb.course and nb.course.course_name:
+                            courses_map[nb.course.course_id] = nb.course.course_name
+                        if nb.title:
+                            batches_map[nb.batch_id] = nb.title
 
-                course_names = list(courses_map.values())
-                course_ids = list(courses_map.keys())
-                batch_names = list(batches_map.values())
-                batch_ids = list(batches_map.keys())
+                    course_ids = list(courses_map.keys())
+                    course_names = list(courses_map.values())
+                    batch_ids = list(batches_map.keys())
+                    batch_names = list(batches_map.values())
 
-                course_val = course_names[0] if course_names else "-"
-                course_id_val = course_ids[0] if course_ids else None
-                batch_val = batch_names[0] if batch_names else "-"
-                batch_id_val = batch_ids[0] if batch_ids else None
+                    serialized = {
+                        "id": None,
+                        "review_id": None,
+                        "student": s.student_id,
+                        "student_id": s.registration_id or f"std_{s.student_id}",
+                        "raw_student_id": s.student_id,
+                        "student_name": f"{s.first_name or ''} {s.last_name or ''}".strip(),
+                        "email": s.email,
+                        "course": course_ids[0] if course_ids else None,
+                        "course_id": course_ids[0] if course_ids else None,
+                        "course_name": course_names[0] if course_names else "-",
+                        "batch": batch_ids[0] if batch_ids else None,
+                        "batch_id": batch_ids[0] if batch_ids else None,
+                        "batch_name": batch_names[0] if batch_names else "-",
+                        "is_google_review": False,
+                        "review_date": None,
+                        "screenshot_url": None,
+                        "linkedin_review": False,
+                        "linkedin_screenshot_url": None,
+                        "facebook_review": False,
+                        "facebook_screenshot_url": None,
+                        "trustpilot_review": False,
+                        "trustpilot_screenshot_url": None,
+                        "created_at": s.created_at.isoformat() if s.created_at else None,
+                        "updated_at": None,
+                    }
 
-                review_id = review.id if review else None
-                is_rev = review.is_google_review if review else False
-                rev_date = review.review_date.strftime("%Y-%m-%d") if (review and review.review_date) else None
-                screenshot_url = resolve_screenshot_url(review, request)
-
-                data.append({
-                    "id": review_id or str(s.student_id),
-                    "review_id": review_id,
-                    "student_id": s.registration_id or f"std_{s.student_id}",
-                    "raw_student_id": s.student_id,
-                    "student_name": full_name,
-                    "email": s.email,
-                    "is_google_review": is_rev,
-                    "review_date": rev_date,
-                    "screenshot_url": screenshot_url,
-                    "course_name": course_val,
-                    "course_id": course_id_val,
-                    "batch_name": batch_val,
-                    "batch_id": batch_id_val,
-                    "created_at": s.created_at.isoformat() if s.created_at else None
-                })
+                data.append(serialized)
 
             # 4. Fetch Active Filter Options for Dropdowns
             active_courses = list(
@@ -1423,28 +1446,12 @@ class GoogleReviewReportView(APIView):
 
                 review.save()
 
-            screenshot_url = resolve_screenshot_url(review, request)
-
+            serializer = GoogleReviewSerializer(review, context={"request": request})
             resp_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
             return Response({
                 "success": True,
                 "message": "Google review created successfully." if created else "Google review updated successfully.",
-                "data": {
-                    "id": review.id,
-                    "student_id": student.registration_id or f"std_{student.student_id}",
-                    "raw_student_id": student.student_id,
-                    "student_name": f"{student.first_name or ''} {student.last_name or ''}".strip(),
-                    "email": student.email,
-                    "is_google_review": review.is_google_review,
-                    "review_date": review.review_date.strftime("%Y-%m-%d") if review.review_date else None,
-                    "screenshot_url": screenshot_url,
-                    "course_name": course.course_name,
-                    "course_id": course.course_id,
-                    "batch_name": batch.title,
-                    "batch_id": batch.batch_id,
-                    "created_at": review.created_at.isoformat() if review.created_at else None,
-                    "updated_at": review.updated_at.isoformat() if review.updated_at else None
-                }
+                "data": serializer.data
             }, status=resp_status)
 
         except Exception as e:
@@ -1508,20 +1515,25 @@ class GoogleReviewDetailView(APIView):
 
             # 2. Extract & Parse update data
             data = request.data
-            is_google_review = data.get("is_google_review")
-            review_date = data.get("review_date")
-            screenshot = request.FILES.get("screenshot")
-            raw_screenshot_input = data.get("screenshot_url") or data.get("screenshot")
-            cleaned_url = clean_and_extract_url(raw_screenshot_input) if isinstance(raw_screenshot_input, str) else None
-            stored_file_name = extract_filename_or_relative_path(raw_screenshot_input) if isinstance(raw_screenshot_input, str) else None
+            files = request.FILES
+
+            # --- Boolean fields (all platforms) ---
+            is_google_review   = parse_bool(data.get("is_google_review"))
+            is_linkedin_review = parse_bool(data.get("linkedin_review"))
+            is_facebook_review = parse_bool(data.get("facebook_review"))
+            is_trustpilot_review = parse_bool(data.get("trustpilot_review"))
 
             if is_google_review is not None:
-                if isinstance(is_google_review, bool):
-                    review.is_google_review = is_google_review
-                elif str(is_google_review).lower() in ["true", "yes", "1"]:
-                    review.is_google_review = True
-                elif str(is_google_review).lower() in ["false", "no", "0"]:
-                    review.is_google_review = False
+                review.is_google_review = is_google_review
+            if is_linkedin_review is not None:
+                review.linkedin_review = is_linkedin_review
+            if is_facebook_review is not None:
+                review.facebook_review = is_facebook_review
+            if is_trustpilot_review is not None:
+                review.trustpilot_review = is_trustpilot_review
+
+            # --- Review date ---
+            review_date = data.get("review_date")
 
             # Validation Rule: If is_google_review is true and review_date is null/empty
             if review.is_google_review and not review.review_date and not review_date:
@@ -1533,47 +1545,50 @@ class GoogleReviewDetailView(APIView):
             if review_date:
                 parsed_d = parse_date(str(review_date)) or parse_datetime(str(review_date))
                 if parsed_d:
-                    if isinstance(parsed_d, datetime):
-                        review.review_date = parsed_d.date()
-                    else:
-                        review.review_date = parsed_d
+                    review.review_date = parsed_d.date() if isinstance(parsed_d, datetime) else parsed_d
 
-            if screenshot and not isinstance(screenshot, str):
-                review.screenshot = screenshot
+            # --- Screenshot file uploads (all platforms) ---
+            # Support both plain field name and *_url alias (e.g. "linkedin_screenshot" or "linkedin_screenshot_url")
+            platform_file_keys = {
+                "screenshot":            ["screenshot", "screenshot_url"],
+                "linkedin_screenshot":   ["linkedin_screenshot", "linkedin_screenshot_url"],
+                "facebook_screenshot":   ["facebook_screenshot", "facebook_screenshot_url"],
+                "trustpilot_screenshot": ["trustpilot_screenshot", "trustpilot_screenshot_url"],
+            }
 
-            if cleaned_url and not screenshot:
-                url_validator = URLValidator()
-                try:
-                    url_validator(cleaned_url)
-                except ValidationError:
-                    return Response(
-                        {"success": False, "message": "Field 'screenshot_url' must be a valid URI format.", "error_code": "VALIDATION_ERROR"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                review.screenshot_url = stored_file_name or cleaned_url
+            for model_field, possible_keys in platform_file_keys.items():
+                file_obj = None
+                for key in possible_keys:
+                    if key in files:
+                        file_obj = files[key]
+                        break
+                if file_obj:
+                    setattr(review, model_field, file_obj)
+
+            # Fallback: persist Google screenshot_url string if no file was uploaded
+            if not files.get("screenshot") and not files.get("screenshot_url"):
+                raw_screenshot_input = data.get("screenshot_url") or data.get("screenshot")
+                if isinstance(raw_screenshot_input, str):
+                    cleaned_url = clean_and_extract_url(raw_screenshot_input)
+                    if cleaned_url:
+                        url_validator = URLValidator()
+                        try:
+                            url_validator(cleaned_url)
+                        except ValidationError:
+                            return Response(
+                                {"success": False, "message": "Field 'screenshot_url' must be a valid URI format.", "error_code": "VALIDATION_ERROR"},
+                                status=status.HTTP_400_BAD_REQUEST
+                            )
+                        review.screenshot_url = extract_filename_or_relative_path(raw_screenshot_input) or cleaned_url
 
             review.save()
 
-            screenshot_url = resolve_screenshot_url(review, request)
+            serializer = GoogleReviewSerializer(review, context={"request": request})
 
             return Response({
                 "success": True,
                 "message": "Google review updated successfully.",
-                "data": {
-                    "id": review.id,
-                    "student_id": review.student.registration_id or f"std_{review.student.student_id}",
-                    "raw_student_id": review.student.student_id,
-                    "student_name": f"{review.student.first_name or ''} {review.student.last_name or ''}".strip(),
-                    "email": review.student.email,
-                    "is_google_review": review.is_google_review,
-                    "review_date": review.review_date.strftime("%Y-%m-%d") if review.review_date else None,
-                    "screenshot_url": screenshot_url,
-                    "course_name": review.course.course_name if review.course else "-",
-                    "course_id": review.course.course_id if review.course else None,
-                    "batch_name": review.batch.title if review.batch else "-",
-                    "batch_id": review.batch.batch_id if review.batch else None,
-                    "updated_at": review.updated_at.isoformat() if review.updated_at else None
-                }
+                "data": serializer.data
             }, status=status.HTTP_200_OK)
 
         except Exception as e:
