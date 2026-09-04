@@ -227,6 +227,7 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
                 "priority",
                 "lead_stage",
                 "source",
+                "source_type",
                 "created_at",
                 "followup_date",
                 "next_followup_date",
