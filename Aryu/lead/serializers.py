@@ -581,6 +581,13 @@ class PublicLeadCreateSerializer(serializers.ModelSerializer):
     - Public APIs
     """
 
+    captcha_token = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        write_only=True,
+    )
+
     class Meta:
         model = Lead
 
@@ -596,7 +603,7 @@ class PublicLeadCreateSerializer(serializers.ModelSerializer):
             "source_type",
             "created_by",
             "created_by_type",
-           
+            "captcha_token",
         ]
 
     def validate_phone(self, value):
@@ -611,6 +618,12 @@ class PublicLeadCreateSerializer(serializers.ModelSerializer):
         return cleaned
 
     def create(self, validated_data):
+
+        # Ensure CAPTCHA / Turnstile token is never passed to Lead model
+        validated_data.pop("captcha_token", None)
+        validated_data.pop("turnstile_token", None)
+        validated_data.pop("turnstileToken", None)
+        validated_data.pop("cf-turnstile-response", None)
 
         validated_data.setdefault(
             "status",
