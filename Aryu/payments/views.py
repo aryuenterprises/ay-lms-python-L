@@ -983,6 +983,180 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
 
         
+# class TutorPaymentViewSet(viewsets.ModelViewSet):
+#     queryset = TutorPayment.objects.all().select_related('tutor', 'course', 'batch')
+
+#     def get_serializer_class(self):
+#         if self.action in ['list', 'retrieve']:
+#             return TutorPaymentReadSerializer
+#         return TutorPaymentWriteSerializer
+
+#     def list(self, request):
+#         queryset = self.get_queryset()
+        
+#         # Get query parameters
+#         trainer_id = request.query_params.get('trainer_id') or request.query_params.get('tutor_id')
+#         from_date = request.query_params.get('from_date')
+#         to_date = request.query_params.get('to_date')
+#         course_id = request.query_params.get('course')
+#         batch_id = request.query_params.get('batch')
+#         payment_status = request.query_params.get('payment_status')
+#         search_query = request.query_params.get('search')
+        
+#         # Fetch courses for the specific trainer with fee as string AND their batches
+#         course = None
+#         if trainer_id:
+#             # Get courses with their batches
+#             course_qs = Course.objects.filter(
+#                 trainer_courses__trainer_id=trainer_id,
+#                 is_archived=False
+#             ).distinct()
+            
+#             course = []
+#             for c in course_qs:
+#                 # Get all batches for this course assigned to this trainer
+#                 batch_qs = NewBatch.objects.filter(
+#                     course=c,
+#                     trainers__trainer_id=trainer_id,
+#                     status=True,
+#                     is_archived=False
+#                 ).values("batch_id", "title")
+                
+#                 course_dict = {
+#                     "course_id": c.course_id,
+#                     "course_name": c.course_name,
+#                     "fee": str(c.fee) if c.fee is not None else "0.0",
+#                     "batches": [
+#                         {
+#                             "batch_id": batch["batch_id"],
+#                             "batch_name": batch["title"],
+#                             "title": batch["title"]
+#                         }
+#                         for batch in batch_qs
+#                     ]
+#                 }
+#                 course.append(course_dict)
+#         else:
+#             # If no trainer_id, get all active courses with their batches
+#             course_qs = Course.objects.filter(
+#                 is_archived=False
+#             ).distinct()
+            
+#             course = []
+#             for c in course_qs:
+#                 # Get all active batches for this course
+#                 batch_qs = NewBatch.objects.filter(
+#                     course=c,
+#                     status=True,
+#                     is_archived=False
+#                 ).values("batch_id", "title")
+                
+#                 course_dict = {
+#                     "course_id": c.course_id,
+#                     "course_name": c.course_name,
+#                     "fee": str(c.fee) if c.fee is not None else "0.0",
+#                     "batches": [
+#                         {
+#                             "batch_id": batch["batch_id"],
+#                             "batch_name": batch["title"],
+#                             "title": batch["title"]
+#                         }
+#                         for batch in batch_qs
+#                     ]
+#                 }
+#                 course.append(course_dict)
+        
+#         # Apply filters to the main queryset
+#         if trainer_id:
+#             queryset = queryset.filter(tutor_id=trainer_id)
+        
+#         if from_date:
+#             queryset = queryset.filter(payment_date__gte=from_date)
+#         if to_date:
+#             queryset = queryset.filter(payment_date__lte=to_date)
+        
+#         if course_id:
+#             queryset = queryset.filter(course_id=course_id)
+#         if batch_id:
+#             queryset = queryset.filter(batch_id=batch_id)
+#         if payment_status and payment_status.lower() != 'all':
+#             queryset = queryset.filter(payment_status__iexact=payment_status)
+        
+#         if search_query:
+#             queryset = queryset.filter(
+#                 Q(course__course_name__icontains=search_query) |
+#                 Q(batch__title__icontains=search_query) |
+#                 Q(notes__icontains=search_query) |
+#                 Q(payment_type__icontains=search_query)
+#             )
+        
+#         # Order by
+#         queryset = queryset.order_by('-payment_date', '-created_at')
+        
+#         # Trainer Header Details (with proper error handling)
+#         trainer_details = None
+#         if trainer_id:
+#             try:
+#                 trainer_obj = Trainer.objects.get(employee_id=trainer_id)
+#                 trainer_details = TrainerHeaderSerializer(trainer_obj).data
+#             except Trainer.DoesNotExist:
+#                 trainer_details = None
+        
+#         # Fetch Active Courses for dropdown (optimized)
+#         active_courses = Course.objects.filter(
+#             is_archived=False
+#         ).exclude(status__iexact='inactive')
+#         courses_data = CourseOptionSerializer(active_courses, many=True).data
+        
+#         # Build Course-Grouped Batches for dropdown
+#         active_courses_with_batches = active_courses.prefetch_related(
+#             Prefetch(
+#                 'batches',
+#                 queryset=NewBatch.objects.filter(status=True, is_archived=False),
+#                 to_attr='active_batches_list'
+#             )
+#         )
+        
+#         batches_by_course = [
+#             {
+#                 "course_id": course.course_id,
+#                 "course_name": course.course_name,
+#                 "batches": [
+#                     {
+#                         "batch_id": getattr(batch, 'batch_id', getattr(batch, 'id', None)),
+#                         "title": batch.title
+#                     }
+#                     for batch in getattr(course, 'active_batches_list', [])
+#                 ]
+#             }
+#             for course in active_courses_with_batches
+#         ]
+        
+#         # Prepare response data
+#         response_data = {
+#             'trainer_details': trainer_details,
+#             'courses_with_batches': course,  # Now contains courses with their batches
+#             'active_courses': courses_data,  # For dropdown filters
+#             'all_batches': batches_by_course,  # For batch dropdown filters
+#         }
+        
+#         # Paginated Response
+#         page = self.paginate_queryset(queryset)
+#         if page is not None:
+#             serializer = self.get_serializer(page, many=True)
+#             response = self.get_paginated_response(serializer.data)
+#             # Add extra data to paginated response
+#             response.data.update(response_data)
+#             return response
+        
+#         # Non-paginated Response
+#         serializer = self.get_serializer(queryset, many=True)
+#         response_data['results'] = serializer.data
+#         return Response(response_data, status=status.HTTP_200_OK)
+    
+
+
+
 class TutorPaymentViewSet(viewsets.ModelViewSet):
     queryset = TutorPayment.objects.all().select_related('tutor', 'course', 'batch')
 
@@ -991,94 +1165,88 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
             return TutorPaymentReadSerializer
         return TutorPaymentWriteSerializer
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        created_instances = serializer.save()
+
+        # Handle single vs multiple created instances response
+        if isinstance(created_instances, list):
+            read_serializer = TutorPaymentReadSerializer(created_instances, many=True)
+            return Response(read_serializer.data, status=status.HTTP_201_CREATED)
+        
+        read_serializer = TutorPaymentReadSerializer(created_instances)
+        return Response(read_serializer.data, status=status.HTTP_201_CREATED)
+
     def list(self, request):
         queryset = self.get_queryset()
         
-        # Get query parameters
+        # Query parameters
         trainer_id = request.query_params.get('trainer_id') or request.query_params.get('tutor_id')
         from_date = request.query_params.get('from_date')
         to_date = request.query_params.get('to_date')
         course_id = request.query_params.get('course')
-        batch_id = request.query_params.get('batch')
+        
+        # Supports both single ID and comma-separated IDs (e.g., ?batch=25,26 or multiple ?batch=25&batch=26)
+        batch_ids = request.query_params.getlist('batch')
+        if len(batch_ids) == 1 and ',' in batch_ids[0]:
+            batch_ids = batch_ids[0].split(',')
+
         payment_status = request.query_params.get('payment_status')
         search_query = request.query_params.get('search')
         
-        # Fetch courses for the specific trainer with fee as string AND their batches
-        course = None
+        # Build course list with nested batches based on trainer filter
         if trainer_id:
-            # Get courses with their batches
             course_qs = Course.objects.filter(
                 trainer_courses__trainer_id=trainer_id,
                 is_archived=False
             ).distinct()
-            
-            course = []
-            for c in course_qs:
-                # Get all batches for this course assigned to this trainer
-                batch_qs = NewBatch.objects.filter(
-                    course=c,
-                    trainers__trainer_id=trainer_id,
-                    status=True,
-                    is_archived=False
-                ).values("batch_id", "title")
-                
-                course_dict = {
-                    "course_id": c.course_id,
-                    "course_name": c.course_name,
-                    "fee": str(c.fee) if c.fee is not None else "0.0",
-                    "batches": [
-                        {
-                            "batch_id": batch["batch_id"],
-                            "batch_name": batch["title"],
-                            "title": batch["title"]
-                        }
-                        for batch in batch_qs
-                    ]
-                }
-                course.append(course_dict)
         else:
-            # If no trainer_id, get all active courses with their batches
             course_qs = Course.objects.filter(
                 is_archived=False
             ).distinct()
             
-            course = []
-            for c in course_qs:
-                # Get all active batches for this course
-                batch_qs = NewBatch.objects.filter(
-                    course=c,
-                    status=True,
-                    is_archived=False
-                ).values("batch_id", "title")
-                
-                course_dict = {
-                    "course_id": c.course_id,
-                    "course_name": c.course_name,
-                    "fee": str(c.fee) if c.fee is not None else "0.0",
-                    "batches": [
-                        {
-                            "batch_id": batch["batch_id"],
-                            "batch_name": batch["title"],
-                            "title": batch["title"]
-                        }
-                        for batch in batch_qs
-                    ]
-                }
-                course.append(course_dict)
-        
-        # Apply filters to the main queryset
+        course = []
+        for c in course_qs:
+            batch_filter = {
+                "course": c,
+                "status": True,
+                "is_archived": False
+            }
+            if trainer_id:
+                batch_filter["trainers__trainer_id"] = trainer_id
+
+            batch_qs = NewBatch.objects.filter(**batch_filter).values("batch_id", "title")
+            
+            course_dict = {
+                "course_id": c.course_id,
+                "course_name": c.course_name,
+                "fee": str(c.fee) if c.fee is not None else "0.0",
+                "batches": [
+                    {
+                        "batch_id": batch["batch_id"],
+                        "batch_name": batch["title"],
+                        "title": batch["title"]
+                    }
+                    for batch in batch_qs
+                ]
+            }
+            course.append(course_dict)
+
+        # Apply Queryset Filters
         if trainer_id:
             queryset = queryset.filter(tutor_id=trainer_id)
-        
         if from_date:
             queryset = queryset.filter(payment_date__gte=from_date)
         if to_date:
             queryset = queryset.filter(payment_date__lte=to_date)
-        
         if course_id:
             queryset = queryset.filter(course_id=course_id)
-        if batch_id:
-            queryset = queryset.filter(batch_id=batch_id)
+            
+        # Support array filtering for batches
+        if batch_ids:
+            queryset = queryset.filter(batch_id__in=batch_ids)
+
         if payment_status and payment_status.lower() != 'all':
             queryset = queryset.filter(payment_status__iexact=payment_status)
         
@@ -1090,10 +1258,9 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
                 Q(payment_type__icontains=search_query)
             )
         
-        # Order by
         queryset = queryset.order_by('-payment_date', '-created_at')
         
-        # Trainer Header Details (with proper error handling)
+        # Trainer Header Details
         trainer_details = None
         if trainer_id:
             try:
@@ -1102,13 +1269,12 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
             except Trainer.DoesNotExist:
                 trainer_details = None
         
-        # Fetch Active Courses for dropdown (optimized)
+        # Dropdown options
         active_courses = Course.objects.filter(
             is_archived=False
         ).exclude(status__iexact='inactive')
         courses_data = CourseOptionSerializer(active_courses, many=True).data
         
-        # Build Course-Grouped Batches for dropdown
         active_courses_with_batches = active_courses.prefetch_related(
             Prefetch(
                 'batches',
@@ -1119,25 +1285,24 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         
         batches_by_course = [
             {
-                "course_id": course.course_id,
-                "course_name": course.course_name,
+                "course_id": c.course_id,
+                "course_name": c.course_name,
                 "batches": [
                     {
-                        "batch_id": getattr(batch, 'batch_id', getattr(batch, 'id', None)),
-                        "title": batch.title
+                        "batch_id": getattr(b, 'batch_id', getattr(b, 'id', None)),
+                        "title": b.title
                     }
-                    for batch in getattr(course, 'active_batches_list', [])
+                    for b in getattr(c, 'active_batches_list', [])
                 ]
             }
-            for course in active_courses_with_batches
+            for c in active_courses_with_batches
         ]
         
-        # Prepare response data
         response_data = {
             'trainer_details': trainer_details,
-            'courses_with_batches': course,  # Now contains courses with their batches
-            'active_courses': courses_data,  # For dropdown filters
-            'all_batches': batches_by_course,  # For batch dropdown filters
+            'courses_with_batches': course,
+            'active_courses': courses_data,
+            'all_batches': batches_by_course,
         }
         
         # Paginated Response
@@ -1145,7 +1310,6 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             response = self.get_paginated_response(serializer.data)
-            # Add extra data to paginated response
             response.data.update(response_data)
             return response
         
@@ -1153,7 +1317,6 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         response_data['results'] = serializer.data
         return Response(response_data, status=status.HTTP_200_OK)
-    
 class StripePaymentViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['post'])
