@@ -326,6 +326,41 @@ class LeadSecurityMixin:
             )
             return False, "CAPTCHA verification failed. Please try again."
 
+    def validate_request_captcha(self, request, client_ip: str | None = None) -> Response | None:
+        """
+        Validates Cloudflare Turnstile CAPTCHA if token is provided in request.
+        Returns None if verification succeeds or if no token was provided.
+        Returns a DRF Response with HTTP 400 if token was provided but is invalid/expired/error.
+        """
+        if not self.has_captcha_token(request):
+            return None
+
+        captcha_token = self.extract_captcha_token(request)
+        if not captcha_token:
+            return Response(
+                {
+                    "success": False,
+                    "message": "CAPTCHA verification failed. Please try again.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        client_ip = client_ip or self.get_client_ip(request)
+        is_valid, error_message = self.verify_turnstile_token(
+            captcha_token,
+            client_ip=client_ip
+        )
+        if not is_valid:
+            return Response(
+                {
+                    "success": False,
+                    "message": error_message or "CAPTCHA verification failed. Please try again.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return None
+
 
 
 # =========================================================
@@ -1565,29 +1600,9 @@ class PublicLeadViewSet(
         # =====================================
         # When captcha_token is provided -> validate with Cloudflare
         # When captcha_token is NOT provided -> continue existing flow unchanged
-        if self.has_captcha_token(request):
-            captcha_token = self.extract_captcha_token(request)
-            if not captcha_token:
-                return Response(
-                    {
-                        "success": False,
-                        "message": "CAPTCHA verification failed. Please try again."
-                    },
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            is_valid, error_message = self.verify_turnstile_token(
-                captcha_token,
-                client_ip=client_ip
-            )
-            if not is_valid:
-                return Response(
-                    {
-                        "success": False,
-                        "message": error_message or "CAPTCHA verification failed. Please try again."
-                    },
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+        captcha_error = self.validate_request_captcha(request, client_ip=client_ip)
+        if captcha_error:
+            return captcha_error
 
         # Exclude CAPTCHA / Turnstile token keys from data passed to serializer / model creation
         lead_data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
