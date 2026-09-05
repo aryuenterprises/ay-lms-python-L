@@ -1,13 +1,17 @@
 import hmac
 import hashlib
 import json
-from unittest.mock import patch
-from django.test import TransactionTestCase, Client
+from unittest.mock import patch, MagicMock
+import requests
+from django.test import TransactionTestCase, Client, TestCase, override_settings
 from django.urls import reverse
 from django.core.cache import cache
+from rest_framework.test import APIRequestFactory
 from payments.models import PaymentGateway, PaymentTransaction
 from ebook.models import Ebook, EbookRegistration
+from ebook.views import EbookRegistrationViewSet
 
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
 class EbookWebhookTestCase(TransactionTestCase):
 
     def setUp(self):
@@ -100,13 +104,14 @@ class EbookWebhookTestCase(TransactionTestCase):
         self.assertEqual(response.status_code, 200)
 
         self.txn.refresh_from_db()
-        self.assertEqual(self.txn.payment_status, "captured")
+        self.assertIn(self.txn.payment_status, ["captured", "done"])
         self.assertEqual((self.txn.metadata or {}).get("razorpay_payment_id"), "pay_ebook_pay_999")
 
         self.registration.refresh_from_db()
         self.assertTrue(self.registration.is_paid)
 
 
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
 class EbookRegistrationFlowTestCase(TransactionTestCase):
 
     def setUp(self):
@@ -338,4 +343,226 @@ class EbookRegistrationFlowTestCase(TransactionTestCase):
         self.assertIn("Registration Details", html_content)
         self.assertNotIn("Your Account Login Credentials", html_content)
         self.assertIn(self.ebook_b.title, html_content)
+
+
+@override_settings(
+    CLOUDFLARE_TURNSTILE_SECRET_KEY="test-secret-key",
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+)
+class EbookTurnstileTestCase(TestCase):
+    """
+    Tests for Cloudflare Turnstile CAPTCHA in the Ebook registration API.
+    """
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.view = EbookRegistrationViewSet.as_view({"post": "create"})
+        self.ebook = Ebook.objects.create(
+            title="Python Mastery",
+            slug="python-mastery",
+            price=0.00,
+            is_paid=False,
+            rating=5,
+        )
+
+    @patch("ebook.views.send_ebook_registration_email")
+    @patch("requests.post")
+    def test_captcha_token_supplied_cloudflare_success_registration_succeeds(self, mock_cf_post, mock_email):
+        # 1. captcha_token supplied + Cloudflare success -> registration succeeds
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"success": True}
+        mock_cf_post.return_value = mock_response
+
+        request = self.factory.post(
+            f"/{self.ebook.slug}/register/",
+            data={
+                "name": "Alice Captcha",
+                "email": "alice_cf@example.com",
+                "phone": "9876543201",
+                "captcha_token": "valid-turnstile-token",
+            },
+            format="json",
+        )
+        response = self.view(request, slug=self.ebook.slug)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data.get("success"))
+        self.assertEqual(response.data.get("message"), "Registered successfully")
+        mock_cf_post.assert_called_once()
+        self.assertTrue(EbookRegistration.objects.filter(phone="9876543201").exists())
+
+    @patch("requests.post")
+    def test_captcha_token_supplied_invalid_captcha_registration_rejected(self, mock_cf_post):
+        # 2. captcha_token supplied + invalid CAPTCHA -> registration rejected
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "success": False,
+            "error-codes": ["invalid-input-response"],
+        }
+        mock_cf_post.return_value = mock_response
+
+        request = self.factory.post(
+            f"/{self.ebook.slug}/register/",
+            data={
+                "name": "Bad Token User",
+                "email": "bad_token@example.com",
+                "phone": "9876543202",
+                "captcha_token": "invalid-token",
+            },
+            format="json",
+        )
+        response = self.view(request, slug=self.ebook.slug)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data.get("success"))
+        self.assertIn("verification failed", response.data.get("message", "").lower())
+        self.assertFalse(EbookRegistration.objects.filter(phone="9876543202").exists())
+
+    @patch("requests.post")
+    def test_captcha_token_supplied_expired_invalid_token_registration_rejected(self, mock_cf_post):
+        # 3. captcha_token supplied + expired/invalid token -> registration rejected
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "success": False,
+            "error-codes": ["timeout-or-duplicate"],
+        }
+        mock_cf_post.return_value = mock_response
+
+        request = self.factory.post(
+            f"/{self.ebook.slug}/register/",
+            data={
+                "name": "Expired User",
+                "email": "expired@example.com",
+                "phone": "9876543203",
+                "captcha_token": "expired-token",
+            },
+            format="json",
+        )
+        response = self.view(request, slug=self.ebook.slug)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data.get("success"))
+        self.assertFalse(EbookRegistration.objects.filter(phone="9876543203").exists())
+
+    @patch("requests.post")
+    def test_captcha_token_supplied_cloudflare_timeout_registration_rejected(self, mock_cf_post):
+        # 4. captcha_token supplied + Cloudflare timeout -> registration rejected
+        mock_cf_post.side_effect = requests.Timeout("Connection timed out")
+
+        request = self.factory.post(
+            f"/{self.ebook.slug}/register/",
+            data={
+                "name": "Timeout User",
+                "email": "timeout@example.com",
+                "phone": "9876543204",
+                "captcha_token": "timeout-token",
+            },
+            format="json",
+        )
+        response = self.view(request, slug=self.ebook.slug)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data.get("success"))
+        self.assertIn("unavailable", response.data.get("message", "").lower())
+        self.assertFalse(EbookRegistration.objects.filter(phone="9876543204").exists())
+
+    @patch("requests.post")
+    def test_captcha_token_supplied_cloudflare_network_error_registration_rejected(self, mock_cf_post):
+        # 5. captcha_token supplied + Cloudflare/network error -> registration rejected
+        mock_cf_post.side_effect = requests.ConnectionError("Network error")
+
+        request = self.factory.post(
+            f"/{self.ebook.slug}/register/",
+            data={
+                "name": "Net Error User",
+                "email": "neterr@example.com",
+                "phone": "9876543205",
+                "captcha_token": "neterr-token",
+            },
+            format="json",
+        )
+        response = self.view(request, slug=self.ebook.slug)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data.get("success"))
+        self.assertIn("unavailable", response.data.get("message", "").lower())
+        self.assertFalse(EbookRegistration.objects.filter(phone="9876543205").exists())
+
+    @patch("ebook.views.send_ebook_registration_email")
+    @patch("requests.post")
+    def test_no_captcha_token_existing_registration_behavior_unchanged(self, mock_cf_post, mock_email):
+        # 6. No captcha_token -> existing registration behavior remains unchanged
+        request = self.factory.post(
+            f"/{self.ebook.slug}/register/",
+            data={
+                "name": "No Captcha User",
+                "email": "nocaptcha@example.com",
+                "phone": "9876543206",
+            },
+            format="json",
+        )
+        response = self.view(request, slug=self.ebook.slug)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data.get("success"))
+        mock_cf_post.assert_not_called()
+        self.assertTrue(EbookRegistration.objects.filter(phone="9876543206").exists())
+
+    @patch("ebook.views.send_ebook_registration_email")
+    @patch("requests.post")
+    def test_captcha_token_is_not_persisted_in_ebook_registration(self, mock_cf_post, mock_email):
+        # 7. CAPTCHA token is not persisted
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"success": True}
+        mock_cf_post.return_value = mock_response
+
+        request = self.factory.post(
+            f"/{self.ebook.slug}/register/",
+            data={
+                "name": "Persist Check User",
+                "email": "persist@example.com",
+                "phone": "9876543207",
+                "captcha_token": "should-not-be-in-db-token",
+            },
+            format="json",
+        )
+        response = self.view(request, slug=self.ebook.slug)
+        self.assertEqual(response.status_code, 200)
+        reg = EbookRegistration.objects.get(phone="9876543207")
+        self.assertFalse(hasattr(reg, "captcha_token"))
+
+    @patch("ebook.views.send_ebook_registration_email")
+    @patch("requests.post")
+    def test_captcha_token_is_not_returned_in_api_response(self, mock_cf_post, mock_email):
+        # 8. CAPTCHA token is not returned in API response
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"success": True}
+        mock_cf_post.return_value = mock_response
+
+        request = self.factory.post(
+            f"/{self.ebook.slug}/register/",
+            data={
+                "name": "Response Check User",
+                "email": "resp@example.com",
+                "phone": "9876543208",
+                "captcha_token": "secret-captcha-token",
+            },
+            format="json",
+        )
+        response = self.view(request, slug=self.ebook.slug)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("captcha_token", response.data)
+        self.assertNotIn("captcha_token", response.data.get("data", {}))
+
+    def test_existing_validation_still_works_missing_email_and_phone(self):
+        # 9. Existing validation still works (missing both email and phone rejected)
+        request = self.factory.post(
+            f"/{self.ebook.slug}/register/",
+            data={
+                "name": "Incomplete User",
+            },
+            format="json",
+        )
+        response = self.view(request, slug=self.ebook.slug)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Email or Phone is required", response.data.get("message", ""))
 

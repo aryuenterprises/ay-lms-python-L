@@ -15,6 +15,7 @@ from .models import *
 from .serializers import *
 from django.shortcuts import get_object_or_404
 from lead.telecrm import sync_lead_to_telecrm
+from lead.views import LeadSecurityMixin
 from rest_framework.pagination import PageNumberPagination
 logger = logging.getLogger("razorpay_webhook")
 
@@ -47,7 +48,7 @@ class CustomPageNumberPagination(PageNumberPagination):
     page_size_query_param = "page_size" # Allows the client to override page size using ?page_size=50
     max_page_size = 100
 
-class ResourcesViewSet(viewsets.ModelViewSet):
+class ResourcesViewSet(LeadSecurityMixin, viewsets.ModelViewSet):
     queryset = Resources.objects.all().order_by("-id")
     serializer_class = ResourcesSerializer
     permission_classes = [AllowAny]
@@ -99,6 +100,13 @@ class ResourcesViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="download")
     def download(self, request, *args, **kwargs):
         try:
+            # =====================================
+            # CLOUDFLARE TURNSTILE / CAPTCHA CHECK
+            # =====================================
+            captcha_error = self.validate_request_captcha(request)
+            if captcha_error:
+                return captcha_error
+
             resource = self.get_object()
 
             # 1. Process Lead Form if enabled on resource

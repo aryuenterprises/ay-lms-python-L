@@ -17,6 +17,7 @@ class LeadCaptureSerializer(serializers.ModelSerializer):
     course_interested_in = serializers.CharField(max_length=255, required=False, allow_null=True, allow_blank=True)
     interested = serializers.BooleanField(default=True, required=False)
     source = serializers.CharField(max_length=150, default="Resource Download", required=False)
+    captcha_token = serializers.CharField(required=False, allow_null=True, allow_blank=True, write_only=True)
 
     class Meta:
         model = Lead
@@ -29,6 +30,7 @@ class LeadCaptureSerializer(serializers.ModelSerializer):
             "course_interested_in",
             "interested",
             "source",
+            "captcha_token",
         ]
 
     def validate_phone(self, value):

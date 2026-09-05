@@ -312,6 +312,7 @@ class EbookRegistrationSerializer(serializers.ModelSerializer):
     
 
     is_paid = serializers.BooleanField(required=False)
+    captcha_token = serializers.CharField(required=False, allow_null=True, allow_blank=True, write_only=True)
 
     class Meta:
         model = EbookRegistration
@@ -330,9 +331,8 @@ class EbookRegistrationSerializer(serializers.ModelSerializer):
             'slug',
             'title',
             'profile_pic',
-            'created_at'
-           
-            
+            'created_at',
+            'captcha_token',
         ]
         def get_created_at(self,obj):
             return obj.created_at

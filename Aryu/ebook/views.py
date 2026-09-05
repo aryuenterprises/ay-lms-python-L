@@ -33,6 +33,7 @@ from payments.services.razorpay_service import (
     verify_razorpay_signature,
 )
 from rest_framework.authentication import SessionAuthentication
+from lead.views import LeadSecurityMixin
 from .ebook_emails import send_ebook_registration_email
 from .models import *
 from .serializers import *
@@ -610,7 +611,7 @@ class RazorpayPaymentViewSet(viewsets.ViewSet):
 # 6. Ebook Registration ViewSet
 # ─────────────────────────────────────────────────────────────────────────────
 @method_decorator(csrf_exempt, name='dispatch')
-class EbookRegistrationViewSet(viewsets.ViewSet):
+class EbookRegistrationViewSet(LeadSecurityMixin, viewsets.ViewSet):
     
     def get_permissions(self):
         """
@@ -742,6 +743,13 @@ class EbookRegistrationViewSet(viewsets.ViewSet):
         })
 
     def create(self, request, slug=None):
+        # =====================================
+        # CLOUDFLARE TURNSTILE / CAPTCHA CHECK
+        # =====================================
+        captcha_error = self.validate_request_captcha(request)
+        if captcha_error:
+            return captcha_error
+
         ebook = get_object_or_404(Ebook, slug=slug)
 
         email = request.data.get("email")
