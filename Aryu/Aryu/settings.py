@@ -11,7 +11,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 load_dotenv(BASE_DIR.parent / ".env")
 
-TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY")
+TURNSTILE_SECRET_KEY = os.getenv("CLOUDFLARE_TURNSTILE_SECRET_KEY") or os.getenv("TURNSTILE_SECRET_KEY")
+CLOUDFLARE_TURNSTILE_SECRET_KEY = TURNSTILE_SECRET_KEY
+CLOUDFLARE_TURNSTILE_VERIFY_URL = os.getenv(
+    "CLOUDFLARE_TURNSTILE_VERIFY_URL",
+    "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+)
+CLOUDFLARE_TURNSTILE_TIMEOUT = int(os.getenv("CLOUDFLARE_TURNSTILE_TIMEOUT", "10"))
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
     'access-control-allow-origin',

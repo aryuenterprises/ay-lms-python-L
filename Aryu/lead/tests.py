@@ -10,7 +10,7 @@ error resilience, and transaction safety.
 from unittest.mock import MagicMock, patch
 import requests
 from django.db import transaction
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from aryuapp.models import User
@@ -22,7 +22,7 @@ from lead.telecrm import (
     format_telecrm_phone,
     sync_lead_to_telecrm,
 )
-from lead.views import LeadViewSet
+from lead.views import LeadViewSet, PublicLeadViewSet
 
 
 class TeleCRMPayloadAndServiceTestCase(TestCase):
@@ -195,6 +195,7 @@ class LeadSerializersTeleCRMSyncTestCase(TestCase):
         self.assertEqual(lead.created_by_type, "public")
 
 
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
 class LeadViewSetTeleCRMSyncTestCase(TestCase):
     """
     Tests verifying that LeadViewSet CRUD, bulk upload, delete/archive,
@@ -284,6 +285,7 @@ class LeadViewSetTeleCRMSyncTestCase(TestCase):
         self.assertEqual(kwargs.get("action_note"), "Bulk Lead Upload")
 
 
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
 class CrossModuleTeleCRMSyncTestCase(TestCase):
     """
     Tests verifying TeleCRM integration in cross-module contexts:
@@ -443,3 +445,416 @@ class TeleCRMResilienceAndTransactionTestCase(TransactionTestCase):
 
         lead.refresh_from_db()
         self.assertEqual(lead.name, "Resilient Lead")
+
+
+@override_settings(
+    CLOUDFLARE_TURNSTILE_SECRET_KEY="test-secret-key",
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+)
+class PublicLeadTurnstileTestCase(TestCase):
+    """
+    Tests for Cloudflare Turnstile CAPTCHA in the Public Lead POST API.
+    Verifies:
+    1. captcha_token supplied + Cloudflare success -> Lead created.
+    2. captcha_token supplied + Cloudflare rejection -> Lead NOT created.
+    3. captcha_token supplied + expired/invalid response -> Lead NOT created.
+    4. captcha_token supplied + Cloudflare timeout -> Lead NOT created.
+    5. captcha_token supplied + Cloudflare/network error -> Lead NOT created.
+    6. No captcha_token -> existing Lead flow works unchanged.
+    7. No captcha_token with every relevant source/form type -> existing behavior remains unchanged.
+    8. CAPTCHA token is not persisted in Lead.
+    9. CAPTCHA token is not returned in API response.
+    10. Existing Lead validation still works.
+    11. Existing API response format remains unchanged for non-CAPTCHA requests.
+    """
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.view = PublicLeadViewSet.as_view({"post": "create"})
+
+    @patch("lead.serializers.sync_lead_to_telecrm")
+    @patch("requests.post")
+    def test_captcha_token_supplied_cloudflare_success_creates_lead(self, mock_cf_post, mock_sync):
+        """
+        1. captcha_token supplied + Cloudflare success -> Lead created.
+        """
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"success": True}
+        mock_cf_post.return_value = mock_response
+
+        request = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Valid Captcha Lead",
+                "phone": "9876543201",
+                "email": "valid_cf@example.com",
+                "city": "Chennai",
+                "course": "Python Fullstack",
+                "source": "website",
+                "captcha_token": "cf-turnstile-valid-token",
+            },
+            format="json",
+        )
+        response = self.view(request)
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data.get("success"))
+        self.assertIn("lead_id", response.data)
+
+        lead = Lead.objects.get(phone="9876543201")
+        self.assertEqual(lead.name, "Valid Captcha Lead")
+        self.assertEqual(lead.source, "website")
+        mock_sync.assert_called_once()
+        mock_cf_post.assert_called_once()
+
+    @patch("requests.post")
+    def test_captcha_token_supplied_cloudflare_rejection_lead_not_created(self, mock_cf_post):
+        """
+        2. captcha_token supplied + Cloudflare rejection -> Lead NOT created.
+        """
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "success": False,
+            "error-codes": ["invalid-input-response"],
+        }
+        mock_cf_post.return_value = mock_response
+
+        request = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Invalid Captcha Lead",
+                "phone": "9876543202",
+                "email": "invalid_cf@example.com",
+                "source": "website",
+                "captcha_token": "bogus-turnstile-token",
+            },
+            format="json",
+        )
+        response = self.view(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data.get("success"))
+        self.assertIn("verification failed", response.data.get("message", "").lower())
+        self.assertEqual(Lead.objects.filter(phone="9876543202").count(), 0)
+
+    @patch("requests.post")
+    def test_captcha_token_supplied_expired_invalid_response_lead_not_created(self, mock_cf_post):
+        """
+        3. captcha_token supplied + expired/invalid response -> Lead NOT created.
+        """
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "success": False,
+            "error-codes": ["timeout-or-duplicate"],
+        }
+        mock_cf_post.return_value = mock_response
+
+        request = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Expired Captcha Lead",
+                "phone": "9876543203",
+                "email": "expired_cf@example.com",
+                "source": "contact_us",
+                "captcha_token": "expired-token-xyz",
+            },
+            format="json",
+        )
+        response = self.view(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data.get("success"))
+        self.assertEqual(Lead.objects.filter(phone="9876543203").count(), 0)
+
+    @patch("requests.post")
+    def test_captcha_token_supplied_cloudflare_timeout_lead_not_created(self, mock_cf_post):
+        """
+        4. captcha_token supplied + Cloudflare timeout -> Lead NOT created.
+        """
+        mock_cf_post.side_effect = requests.Timeout("Cloudflare connection timed out")
+
+        request = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Timeout Lead",
+                "phone": "9876543204",
+                "source": "landing_page",
+                "captcha_token": "timeout-token-123",
+            },
+            format="json",
+        )
+        response = self.view(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data.get("success"))
+        self.assertIn("unavailable", response.data.get("message", "").lower())
+        self.assertEqual(Lead.objects.filter(phone="9876543204").count(), 0)
+
+    @patch("requests.post")
+    def test_captcha_token_supplied_cloudflare_network_error_lead_not_created(self, mock_cf_post):
+        """
+        5. captcha_token supplied + Cloudflare/network error -> Lead NOT created.
+        """
+        mock_cf_post.side_effect = requests.ConnectionError("Network unreachable")
+
+        request = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Network Error Lead",
+                "phone": "9876543205",
+                "source": "course_form",
+                "captcha_token": "net-err-token",
+            },
+            format="json",
+        )
+        response = self.view(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data.get("success"))
+        self.assertIn("unavailable", response.data.get("message", "").lower())
+        self.assertEqual(Lead.objects.filter(phone="9876543205").count(), 0)
+
+    @patch("lead.serializers.sync_lead_to_telecrm")
+    @patch("requests.post")
+    def test_no_captcha_token_existing_flow_works_unchanged(self, mock_cf_post, mock_sync):
+        """
+        6. No captcha_token -> existing Lead flow works unchanged (Cloudflare is NOT called).
+        """
+        request = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "No Captcha Lead",
+                "phone": "9876543206",
+                "email": "nocaptcha@example.com",
+                "course": "Java Fullstack",
+            },
+            format="json",
+        )
+        response = self.view(request)
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data.get("success"))
+        self.assertEqual(Lead.objects.filter(phone="9876543206").count(), 1)
+        mock_cf_post.assert_not_called()
+        mock_sync.assert_called_once()
+
+    @patch("lead.serializers.sync_lead_to_telecrm")
+    @patch("requests.post")
+    def test_no_captcha_token_with_every_relevant_source_and_form_type(self, mock_cf_post, mock_sync):
+        """
+        7. No captcha_token with every relevant source/form type -> existing behavior remains unchanged.
+        """
+        sources_to_test = [
+            "website",
+            "contact_us",
+            "website_form",
+            "web",
+            "meta_ads",
+            "whatsapp",
+            "landing_page",
+            "course_enquiry",
+            "walk-in",
+            "referral",
+        ]
+        for idx, source_name in enumerate(sources_to_test):
+            phone = f"98765432{idx:02d}"
+            request = self.factory.post(
+                "/api/lead/submit/",
+                data={
+                    "name": f"Lead {source_name}",
+                    "phone": phone,
+                    "source": source_name,
+                    "course": "Python Fullstack",
+                },
+                format="json",
+            )
+            response = self.view(request)
+            self.assertEqual(response.status_code, 201, f"Failed for source={source_name}")
+            self.assertTrue(response.data.get("success"))
+            lead = Lead.objects.get(phone=phone)
+            self.assertEqual(lead.source, source_name)
+
+        # Cloudflare should NEVER be called for any request without a captcha_token
+        mock_cf_post.assert_not_called()
+
+    @patch("lead.serializers.sync_lead_to_telecrm")
+    @patch("requests.post")
+    def test_captcha_token_is_not_persisted_in_lead(self, mock_cf_post, mock_sync):
+        """
+        8. CAPTCHA token is not persisted in Lead model.
+        """
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"success": True}
+        mock_cf_post.return_value = mock_response
+
+        request = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Persistence Check Lead",
+                "phone": "9876543250",
+                "captcha_token": "secret-turnstile-token-not-to-save",
+            },
+            format="json",
+        )
+        response = self.view(request)
+        self.assertEqual(response.status_code, 201)
+
+        lead = Lead.objects.get(phone="9876543250")
+        self.assertFalse(hasattr(lead, "captcha_token"))
+
+    @patch("lead.serializers.sync_lead_to_telecrm")
+    @patch("requests.post")
+    def test_captcha_token_is_not_returned_in_api_response(self, mock_cf_post, mock_sync):
+        """
+        9. CAPTCHA token is not returned in API response.
+        """
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"success": True}
+        mock_cf_post.return_value = mock_response
+
+        request = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Response Check Lead",
+                "phone": "9876543251",
+                "captcha_token": "should-never-appear-in-response",
+            },
+            format="json",
+        )
+        response = self.view(request)
+        self.assertEqual(response.status_code, 201)
+        self.assertNotIn("captcha_token", response.data)
+        self.assertNotIn("turnstile_token", response.data)
+
+    @patch("requests.post")
+    def test_existing_lead_validation_still_works_with_valid_captcha(self, mock_cf_post):
+        """
+        10a. Existing Lead validation still works when captcha is provided.
+        """
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"success": True}
+        mock_cf_post.return_value = mock_response
+
+        # Phone with < 10 digits is invalid per validate_phone()
+        request = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Invalid Phone With Captcha",
+                "phone": "12345",
+                "captcha_token": "valid-token",
+            },
+            format="json",
+        )
+        response = self.view(request)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Lead.objects.filter(name="Invalid Phone With Captcha").count(), 0)
+
+    def test_existing_lead_validation_still_works_without_captcha(self):
+        """
+        10b. Existing Lead validation still works when captcha is not provided.
+        """
+        request = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Invalid Phone Without Captcha",
+                "phone": "12345",
+            },
+            format="json",
+        )
+        response = self.view(request)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Lead.objects.filter(name="Invalid Phone Without Captcha").count(), 0)
+
+    @patch("lead.serializers.sync_lead_to_telecrm")
+    def test_existing_api_response_format_remains_unchanged_for_non_captcha_requests(self, mock_sync):
+        """
+        11. Existing API response format remains unchanged for non-CAPTCHA requests.
+        """
+        request = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Format Check Lead",
+                "phone": "9876543252",
+            },
+            format="json",
+        )
+        response = self.view(request)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(set(response.data.keys()), {"success", "message", "lead_id"})
+        self.assertTrue(response.data["success"])
+        self.assertEqual(response.data["message"], "Lead submitted successfully.")
+        self.assertIsInstance(response.data["lead_id"], int)
+
+    @patch("lead.serializers.sync_lead_to_telecrm")
+    @patch("requests.post")
+    def test_alternative_turnstile_token_field_names(self, mock_cf_post, mock_sync):
+        """
+        Supports alternative token aliases: turnstile_token, turnstileToken, cf-turnstile-response.
+        """
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"success": True}
+        mock_cf_post.return_value = mock_response
+
+        # Test turnstile_token
+        req1 = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Alt Token 1",
+                "phone": "9876543253",
+                "turnstile_token": "alt-token-1",
+            },
+            format="json",
+        )
+        resp1 = self.view(req1)
+        self.assertEqual(resp1.status_code, 201)
+
+        # Test turnstileToken (camelCase)
+        req2 = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Alt Token 2",
+                "phone": "9876543254",
+                "turnstileToken": "alt-token-2",
+            },
+            format="json",
+        )
+        resp2 = self.view(req2)
+        self.assertEqual(resp2.status_code, 201)
+
+        # Test cf-turnstile-response (Cloudflare form standard)
+        req3 = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Alt Token 3",
+                "phone": "9876543255",
+                "cf-turnstile-response": "alt-token-3",
+            },
+            format="json",
+        )
+        resp3 = self.view(req3)
+        self.assertEqual(resp3.status_code, 201)
+
+    def test_empty_or_whitespace_captcha_token_supplied_is_rejected(self):
+        """
+        Supplying a blank or whitespace captcha_token counts as provided but invalid -> rejected.
+        """
+        request = self.factory.post(
+            "/api/lead/submit/",
+            data={
+                "name": "Blank Token Lead",
+                "phone": "9876543256",
+                "captcha_token": "   ",
+            },
+            format="json",
+        )
+        response = self.view(request)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data.get("success"))
+        self.assertEqual(Lead.objects.filter(phone="9876543256").count(), 0)
