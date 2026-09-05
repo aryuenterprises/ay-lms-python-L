@@ -103,7 +103,7 @@ def process_razorpay_webhook_event(data: dict) -> dict:
             return {"status": "error", "message": "Missing order_id", "processed": False}
 
         with db_transaction.atomic():
-            txn = PaymentTransaction.objects.select_for_update().filter(order_id=order_id).first()
+            txn = PaymentTransaction.objects.select_for_update(of=('self',)).filter(order_id=order_id).first()
 
             if not txn:
                 logger.warning("Razorpay Webhook: No PaymentTransaction found for order_id %s", order_id)
