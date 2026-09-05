@@ -1,11 +1,10 @@
-import os
-from django.conf import settings
 from rest_framework import serializers
-from reports.models import GoogleReview
+from django.conf import settings
+from .models import GoogleReview
 
 
 class GoogleReviewSerializer(serializers.ModelSerializer):
-    review_id = serializers.SerializerMethodField()
+    review_id = serializers.IntegerField(source="id", read_only=True)
     student_id = serializers.SerializerMethodField()
     raw_student_id = serializers.SerializerMethodField()
     student_name = serializers.SerializerMethodField()
@@ -19,6 +18,13 @@ class GoogleReviewSerializer(serializers.ModelSerializer):
     linkedin_screenshot_url = serializers.SerializerMethodField()
     facebook_screenshot_url = serializers.SerializerMethodField()
     trustpilot_screenshot_url = serializers.SerializerMethodField()
+
+    # Explicit DateFields for parsing incoming multipart form-data without defaulting to None
+    review_date = serializers.DateField(required=False, allow_null=True, input_formats=['%Y-%m-%d', 'iso-8601'])
+    linkedin_review_date = serializers.DateField(required=False, allow_null=True, input_formats=['%Y-%m-%d', 'iso-8601'])
+    facebook_review_date = serializers.DateField(required=False, allow_null=True, input_formats=['%Y-%m-%d', 'iso-8601'])
+    trustpilot_review_date = serializers.DateField(required=False, allow_null=True, input_formats=['%Y-%m-%d', 'iso-8601'])
+    youtube_testimonial_date = serializers.DateField(required=False, allow_null=True, input_formats=['%Y-%m-%d', 'iso-8601'])
 
     class Meta:
         model = GoogleReview
@@ -41,10 +47,16 @@ class GoogleReviewSerializer(serializers.ModelSerializer):
             "screenshot_url",
             "linkedin_review",
             "linkedin_screenshot_url",
+            "linkedin_review_date",
             "facebook_review",
             "facebook_screenshot_url",
+            "facebook_review_date",
             "trustpilot_review",
             "trustpilot_screenshot_url",
+            "trustpilot_review_date",
+            "is_youtube_testimonial",
+            "youtube_testimonial_link",
+            "youtube_testimonial_date",
             "created_at",
             "updated_at",
         ]
@@ -72,9 +84,6 @@ class GoogleReviewSerializer(serializers.ModelSerializer):
                 url = url.replace("/media/", "/api/media/")
             return url
         return None
-
-    def get_review_id(self, obj):
-        return getattr(obj, "id", None)
 
     def get_student_id(self, obj):
         if not obj.student:

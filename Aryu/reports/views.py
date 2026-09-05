@@ -1145,11 +1145,28 @@ class AttendanceReportView(APIView):
             )
 
 
+def _parse_incoming_date(date_val):
+    """Helper to parse raw date string or return None if empty/falsy."""
+    if not date_val or str(date_val).strip().lower() in ['', 'null', 'undefined', 'none']:
+        return None
+    parsed = parse_date(str(date_val).strip()) or parse_datetime(str(date_val).strip())
+    if parsed:
+        return parsed.date() if isinstance(parsed, datetime) else parsed
+    return None
+
+
+def _clean_string(val):
+    """Helper to sanitize text and URLs."""
+    if not val or str(val).strip().lower() in ['', 'null', 'undefined', 'none']:
+        return None
+    return str(val).strip()
+
+
 class GoogleReviewReportView(APIView):
     """
     Report 3 - Google Review API.
-    GET /api/v1/reports/google-reviews (or /api/reports/google-reviews)
-    POST /api/v1/reports/google-reviews (Create or Upsert Google Review)
+    GET /api/v1/reports/google-reviews
+    POST /api/v1/reports/google-reviews
     """
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
@@ -1157,7 +1174,7 @@ class GoogleReviewReportView(APIView):
 
     def get(self, request):
         try:
-            # 1. Parse Pagination Parameters
+            # 1. Pagination Parameters
             try:
                 page = int(request.GET.get("page", 1))
                 if page < 1:
@@ -1174,17 +1191,14 @@ class GoogleReviewReportView(APIView):
             except (ValueError, TypeError):
                 limit = 50
 
-            # 2. Parse Filters
+            # 2. Filters
             search = request.GET.get("search", "").strip()
             course_id = request.GET.get("course_id", "").strip()
             batch_id = request.GET.get("batch_id", "").strip()
             from_date_str = request.GET.get("from_date", "").strip()
             to_date_str = request.GET.get("to_date", "").strip()
             is_google_review_param = request.GET.get("is_google_review", "all").strip().lower()
-            sort_by = request.GET.get("sort_by", "review_date").strip().lower()
-            sort_order = request.GET.get("sort_order", "desc").strip().lower()
 
-            # Reset Rule for batch_id if mismatched with course_id
             if course_id and batch_id:
                 valid_batch_exists = NewBatch.objects.filter(
                     batch_id=batch_id, course_id=course_id, is_archived=False
@@ -1194,10 +1208,8 @@ class GoogleReviewReportView(APIView):
                 if not valid_batch_exists:
                     batch_id = ""
 
-            # Base Queryset: Active students
             students_qs = Student.objects.filter(is_archived=False)
 
-            # Search filter (name, email, registration_id)
             if search:
                 students_qs = students_qs.filter(
                     Q(first_name__icontains=search) |
@@ -1206,21 +1218,18 @@ class GoogleReviewReportView(APIView):
                     Q(registration_id__icontains=search)
                 )
 
-            # Course filter
             if course_id:
                 students_qs = students_qs.filter(
                     Q(student_courses__course_id=course_id) |
                     Q(new_batches__course_id=course_id)
                 )
 
-            # Batch filter
             if batch_id:
                 students_qs = students_qs.filter(
                     Q(student_courses__batch_id=batch_id) |
                     Q(new_batches__batch_id=batch_id)
                 )
 
-            # Google Review status filter
             if is_google_review_param in ["yes", "true", "1"]:
                 students_qs = students_qs.filter(google_reviews__is_google_review=True)
             elif is_google_review_param in ["no", "false", "0"]:
@@ -1228,7 +1237,6 @@ class GoogleReviewReportView(APIView):
                     Q(google_reviews__isnull=True) | Q(google_reviews__is_google_review=False)
                 )
 
-            # Date Range Filter against review_date or created_at
             if from_date_str:
                 parsed_from = parse_date_bound_from(from_date_str)
                 if parsed_from:
@@ -1276,10 +1284,8 @@ class GoogleReviewReportView(APIView):
                 review = s.google_reviews.first()
 
                 if review:
-                    # Serialize the review record directly — includes all platforms & URLs
                     serialized = GoogleReviewSerializer(review, context={"request": request}).data
                 else:
-                    # Student has no review yet — build a stub entry with enrollment metadata
                     courses_map = {}
                     batches_map = {}
 
@@ -1321,17 +1327,23 @@ class GoogleReviewReportView(APIView):
                         "screenshot_url": None,
                         "linkedin_review": False,
                         "linkedin_screenshot_url": None,
+                        "linkedin_review_date": None,
                         "facebook_review": False,
                         "facebook_screenshot_url": None,
+                        "facebook_review_date": None,
                         "trustpilot_review": False,
                         "trustpilot_screenshot_url": None,
+                        "trustpilot_review_date": None,
+                        "is_youtube_testimonial": False,
+                        "youtube_testimonial_link": None,
+                        "youtube_testimonial_date": None,
                         "created_at": s.created_at.isoformat() if s.created_at else None,
                         "updated_at": None,
                     }
 
                 data.append(serialized)
 
-            # 4. Fetch Active Filter Options for Dropdowns
+            # 4. Filter Options
             active_courses = list(
                 Course.objects.filter(is_archived=False)
                 .exclude(status__iexact="Inactive")
@@ -1396,8 +1408,7 @@ class GoogleReviewReportView(APIView):
     def post(self, request):
         """
         POST /api/reports/google-reviews
-        Create or Upsert Google Review & multi-platform review records by Student identifier.
-        course_id and batch_id are optional — auto-resolved from student's existing enrolments.
+        Create or Upsert Google Review & multi-platform review records.
         """
         try:
             data = request.data
@@ -1406,14 +1417,12 @@ class GoogleReviewReportView(APIView):
             course_id = data.get("course_id")
             batch_id = data.get("batch_id")
 
-            # 1. Require ONLY Student Identifier
             if not raw_student_id and not student_id_str:
                 return Response(
                     {"success": False, "message": "Field 'student_id' or 'raw_student_id' is required.", "error_code": "VALIDATION_ERROR"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # 2. Lookup Student
             student = None
             if raw_student_id:
                 student = Student.objects.filter(student_id=raw_student_id, is_archived=False).first()
@@ -1429,7 +1438,6 @@ class GoogleReviewReportView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-            # 3. Resolve Course & Batch (auto-populate from student enrolments if not supplied)
             course = None
             batch = None
 
@@ -1454,25 +1462,21 @@ class GoogleReviewReportView(APIView):
                 else:
                     batch = student.new_batches.filter(is_archived=False).first()
 
-            # 4. Extract Review Fields
+            # Date extraction
             is_google_review = parse_bool(data.get("is_google_review")) or False
             review_date_val = data.get("review_date")
             parsed_review_date = None
 
             if is_google_review and not review_date_val:
-                # Default to today when date is omitted but review is flagged true
                 parsed_review_date = timezone.now().date()
             elif review_date_val:
-                parsed_d = parse_date(str(review_date_val)) or parse_datetime(str(review_date_val))
-                if parsed_d:
-                    parsed_review_date = parsed_d.date() if isinstance(parsed_d, datetime) else parsed_d
-                else:
-                    return Response(
-                        {"success": False, "message": "Invalid date format for 'review_date'. Expected YYYY-MM-DD.", "error_code": "VALIDATION_ERROR"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
+                parsed_review_date = _parse_incoming_date(review_date_val)
 
-            # 5. Atomic Upsert (lookup by student only — one review record per student)
+            parsed_linkedin_date = _parse_incoming_date(data.get("linkedin_review_date"))
+            parsed_facebook_date = _parse_incoming_date(data.get("facebook_review_date"))
+            parsed_trustpilot_date = _parse_incoming_date(data.get("trustpilot_review_date"))
+            parsed_youtube_date = _parse_incoming_date(data.get("youtube_testimonial_date"))
+
             with transaction.atomic():
                 review = GoogleReview.objects.select_for_update().filter(student=student).first()
                 created = False
@@ -1485,27 +1489,41 @@ class GoogleReviewReportView(APIView):
                     )
                     created = True
                 else:
-                    # Backfill course/batch on existing record if currently unset
                     if course and not review.course:
                         review.course = course
                     if batch and not review.batch:
                         review.batch = batch
 
-                # Google review fields
+                # Review Status Flags
                 if "is_google_review" in data:
                     review.is_google_review = is_google_review
-                if parsed_review_date is not None:
+                if "review_date" in data:
                     review.review_date = parsed_review_date
 
-                # Multi-platform boolean flags
                 if "linkedin_review" in data:
                     review.linkedin_review = parse_bool(data.get("linkedin_review")) or False
                 if "facebook_review" in data:
                     review.facebook_review = parse_bool(data.get("facebook_review")) or False
                 if "trustpilot_review" in data:
                     review.trustpilot_review = parse_bool(data.get("trustpilot_review")) or False
+                if "is_youtube_testimonial" in data:
+                    review.is_youtube_testimonial = parse_bool(data.get("is_youtube_testimonial")) or False
 
-                # File uploads — all platforms (supports both plain key and *_url alias)
+                # Dates
+                if "linkedin_review_date" in data:
+                    review.linkedin_review_date = parsed_linkedin_date
+                if "facebook_review_date" in data:
+                    review.facebook_review_date = parsed_facebook_date
+                if "trustpilot_review_date" in data:
+                    review.trustpilot_review_date = parsed_trustpilot_date
+                if "youtube_testimonial_date" in data:
+                    review.youtube_testimonial_date = parsed_youtube_date
+
+                # YouTube link
+                if "youtube_testimonial_link" in data:
+                    review.youtube_testimonial_link = _clean_string(data.get("youtube_testimonial_link"))
+
+                # File uploads
                 platform_file_keys = {
                     "screenshot":            ["screenshot", "screenshot_url"],
                     "linkedin_screenshot":   ["linkedin_screenshot", "linkedin_screenshot_url"],
@@ -1540,10 +1558,7 @@ class GoogleReviewReportView(APIView):
 class GoogleReviewDetailView(APIView):
     """
     PATCH / PUT /api/v1/reports/google-reviews/<id>
-    Update Google review status (is_google_review), review_date, and screenshot file upload.
     DELETE /api/v1/reports/google-reviews/<id>
-    Delete / reset Google review record.
-    <id> can be the GoogleReview PK or Student PK/registration_id.
     """
     permission_classes = [IsAuthenticated]
     authentication_classes = [CustomJWTAuthentication]
@@ -1560,7 +1575,6 @@ class GoogleReviewDetailView(APIView):
             review = None
             student = None
 
-            # 1. Look up by GoogleReview PK or Student PK/registration_id
             if str(pk).isdigit():
                 review = GoogleReview.objects.filter(id=int(pk)).first()
 
@@ -1577,7 +1591,6 @@ class GoogleReviewDetailView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-            # If review doesn't exist yet for this student, create it
             if not review and student:
                 sc = StudentCourse.objects.filter(student=student).first()
                 nb = NewBatch.objects.filter(student_courses__student=student).first()
@@ -1587,15 +1600,15 @@ class GoogleReviewDetailView(APIView):
                     batch=sc.batch if (sc and sc.batch) else nb
                 )
 
-            # 2. Extract & Parse update data
             data = request.data
             files = request.FILES
 
-            # --- Boolean fields (all platforms) ---
-            is_google_review   = parse_bool(data.get("is_google_review"))
+            # Booleans
+            is_google_review = parse_bool(data.get("is_google_review"))
             is_linkedin_review = parse_bool(data.get("linkedin_review"))
             is_facebook_review = parse_bool(data.get("facebook_review"))
             is_trustpilot_review = parse_bool(data.get("trustpilot_review"))
+            is_youtube_testimonial = parse_bool(data.get("is_youtube_testimonial"))
 
             if is_google_review is not None:
                 review.is_google_review = is_google_review
@@ -1605,24 +1618,32 @@ class GoogleReviewDetailView(APIView):
                 review.facebook_review = is_facebook_review
             if is_trustpilot_review is not None:
                 review.trustpilot_review = is_trustpilot_review
+            if is_youtube_testimonial is not None:
+                review.is_youtube_testimonial = is_youtube_testimonial
 
-            # --- Review date ---
-            review_date = data.get("review_date")
+            # Dates
+            if "review_date" in data:
+                review.review_date = _parse_incoming_date(data.get("review_date"))
+            if "linkedin_review_date" in data:
+                review.linkedin_review_date = _parse_incoming_date(data.get("linkedin_review_date"))
+            if "facebook_review_date" in data:
+                review.facebook_review_date = _parse_incoming_date(data.get("facebook_review_date"))
+            if "trustpilot_review_date" in data:
+                review.trustpilot_review_date = _parse_incoming_date(data.get("trustpilot_review_date"))
+            if "youtube_testimonial_date" in data:
+                review.youtube_testimonial_date = _parse_incoming_date(data.get("youtube_testimonial_date"))
 
-            # Validation Rule: If is_google_review is true and review_date is null/empty
-            if review.is_google_review and not review.review_date and not review_date:
+            # YouTube link
+            if "youtube_testimonial_link" in data:
+                review.youtube_testimonial_link = _clean_string(data.get("youtube_testimonial_link"))
+
+            if review.is_google_review and not review.review_date:
                 return Response(
                     {"success": False, "message": "Field 'review_date' is required when is_google_review is true.", "error_code": "UNPROCESSABLE_ENTITY"},
                     status=status.HTTP_422_UNPROCESSABLE_ENTITY
                 )
 
-            if review_date:
-                parsed_d = parse_date(str(review_date)) or parse_datetime(str(review_date))
-                if parsed_d:
-                    review.review_date = parsed_d.date() if isinstance(parsed_d, datetime) else parsed_d
-
-            # --- Screenshot file uploads (all platforms) ---
-            # Support both plain field name and *_url alias (e.g. "linkedin_screenshot" or "linkedin_screenshot_url")
+            # Files
             platform_file_keys = {
                 "screenshot":            ["screenshot", "screenshot_url"],
                 "linkedin_screenshot":   ["linkedin_screenshot", "linkedin_screenshot_url"],
@@ -1639,7 +1660,6 @@ class GoogleReviewDetailView(APIView):
                 if file_obj:
                     setattr(review, model_field, file_obj)
 
-            # Fallback: persist Google screenshot_url string if no file was uploaded
             if not files.get("screenshot") and not files.get("screenshot_url"):
                 raw_screenshot_input = data.get("screenshot_url") or data.get("screenshot")
                 if isinstance(raw_screenshot_input, str):
@@ -1674,10 +1694,6 @@ class GoogleReviewDetailView(APIView):
             )
 
     def delete(self, request, pk=None):
-        """
-        DELETE /api/v1/reports/google-reviews/{id}
-        Delete review record or reset student review status.
-        """
         try:
             review = None
             if str(pk).isdigit():
@@ -1699,7 +1715,6 @@ class GoogleReviewDetailView(APIView):
             review_id = review.id
             student_id = review.student.registration_id or f"std_{review.student.student_id}"
 
-            # Delete the GoogleReview DB record (Soft Reset so student appears with is_google_review: false)
             review.delete()
 
             return Response({
@@ -1721,7 +1736,7 @@ class GoogleReviewDetailView(APIView):
                 {"success": False, "message": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
+            
 
 class StudentPaymentHistoryReportPagination(PageNumberPagination):
     page_size = 50
