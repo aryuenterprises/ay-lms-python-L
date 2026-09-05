@@ -100,16 +100,41 @@ class TrainerHeaderSerializer(serializers.ModelSerializer):
 
 
 # 2. Read Serializer (Used for GET - List & Single View)
+# class TutorPaymentReadSerializer(serializers.ModelSerializer):
+#     course_name = serializers.CharField(source='course.course_name', read_only=True)
+#     batch_title = serializers.CharField(source='batch.title', read_only=True)
+#     tutor_name = serializers.CharField(source='tutor.full_name', read_only=True, default=None)
+
+#     class Meta:
+#         model = TutorPayment
+#         fields = [
+#             'id',
+#             'tutor',             # <--- Foreign key field name on TutorPayment model
+#             'tutor_name',
+#             'course',
+#             'course_name',
+#             'batch',
+#             'batch_title',
+#             'course_fee',
+#             'payment_type',
+#             'tutor_payment',
+#             'payment_status',
+#             'payment_date',
+#             'notes',
+#             'created_at',
+#             'updated_at',
+#         ]
+
 class TutorPaymentReadSerializer(serializers.ModelSerializer):
+    tutor_name = serializers.CharField(source='tutor.name', read_only=True)  # Adjust source field name
     course_name = serializers.CharField(source='course.course_name', read_only=True)
     batch_title = serializers.CharField(source='batch.title', read_only=True)
-    tutor_name = serializers.CharField(source='tutor.full_name', read_only=True, default=None)
 
     class Meta:
         model = TutorPayment
         fields = [
             'id',
-            'tutor',             # <--- Foreign key field name on TutorPayment model
+            'tutor',
             'tutor_name',
             'course',
             'course_name',
@@ -127,18 +152,43 @@ class TutorPaymentReadSerializer(serializers.ModelSerializer):
 
 
 # 3. Write Serializer (Used for POST, PUT, PATCH - Add & Edit)
+# class TutorPaymentWriteSerializer(serializers.ModelSerializer):
+#     tutor = serializers.PrimaryKeyRelatedField(queryset=Trainer.objects.all())
+#     course = serializers.PrimaryKeyRelatedField(queryset=Course.objects.all())
+#     batch = serializers.PrimaryKeyRelatedField(queryset=NewBatch.objects.all())
+
+#     class Meta:
+#         model = TutorPayment
+#         fields = [
+#             'id',
+#             'tutor',            # <--- Uses foreign key field 'tutor'
+#             'course',
+#             'batch',
+#             'course_fee',
+#             'payment_type',
+#             'tutor_payment',
+#             'payment_status',
+#             'payment_date',
+#             'notes',
+#         ]
+
 class TutorPaymentWriteSerializer(serializers.ModelSerializer):
     tutor = serializers.PrimaryKeyRelatedField(queryset=Trainer.objects.all())
     course = serializers.PrimaryKeyRelatedField(queryset=Course.objects.all())
-    batch = serializers.PrimaryKeyRelatedField(queryset=NewBatch.objects.all())
+    # Accept a list of batch IDs from the payload e.g. [25, 26]
+    batch = serializers.PrimaryKeyRelatedField(
+        queryset=NewBatch.objects.all(), 
+        many=True, 
+        write_only=True
+    )
 
     class Meta:
         model = TutorPayment
         fields = [
             'id',
-            'tutor',            # <--- Uses foreign key field 'tutor'
+            'tutor',
             'course',
-            'batch',
+            'batch',             # Expects array of IDs
             'course_fee',
             'payment_type',
             'tutor_payment',
@@ -146,6 +196,22 @@ class TutorPaymentWriteSerializer(serializers.ModelSerializer):
             'payment_date',
             'notes',
         ]
+
+    def create(self, validated_data):
+        batches = validated_data.pop('batch', [])
+        
+        # If no batch list is provided, raise validation error
+        if not batches:
+            raise serializers.ValidationError({"batch": "At least one batch must be selected."})
+
+        payments = []
+        # Create a payment record for each selected batch
+        for batch in batches:
+            payment = TutorPayment.objects.create(batch=batch, **validated_data)
+            payments.append(payment)
+
+        # Return the first instance or a representative instance for response serialization
+        return payments[0] if len(payments) == 1 else payments
 class CourseOptionSerializer(serializers.ModelSerializer):
     # Maps 'fee' to 'course_fee' in JSON
     course_fee = serializers.DecimalField(source='fee', max_digits=10, decimal_places=2, read_only=True)
