@@ -23,6 +23,11 @@ import re
 import hashlib
 from django.utils.dateparse import parse_date, parse_datetime
 import openpyxl
+import logging
+import os
+import requests
+
+logger = logging.getLogger(__name__)
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, JSONParser, FormParser
 from rest_framework.authentication import SessionAuthentication
@@ -189,6 +194,138 @@ class LeadSecurityMixin:
             return x_forwarded_for.split(",")[0].strip()
 
         return request.META.get("REMOTE_ADDR")
+
+    # Supported CAPTCHA / Turnstile token keys in request payloads
+    CAPTCHA_TOKEN_KEYS = (
+        "captcha_token",
+        "turnstile_token",
+        "turnstileToken",
+        "cf-turnstile-response",
+    )
+
+    def has_captcha_token(self, request) -> bool:
+        """
+        Checks whether a CAPTCHA/Turnstile token field was supplied in the request.
+        """
+        if not hasattr(request, "data") or not request.data:
+            return False
+        for key in self.CAPTCHA_TOKEN_KEYS:
+            if key in request.data and request.data[key] is not None:
+                return True
+        return False
+
+    def extract_captcha_token(self, request) -> str | None:
+        """
+        Extracts the Cloudflare Turnstile token from the request payload.
+        Checks supported token keys: captcha_token, turnstile_token, turnstileToken, cf-turnstile-response.
+        Returns the stripped token string if non-empty, otherwise None.
+        """
+        if not hasattr(request, "data") or not request.data:
+            return None
+        for key in self.CAPTCHA_TOKEN_KEYS:
+            if key in request.data and request.data[key] is not None:
+                val = request.data[key]
+                if isinstance(val, str):
+                    val = val.strip()
+                    if val:
+                        return val
+                elif val:
+                    val = str(val).strip()
+                    if val:
+                        return val
+        return None
+
+    def verify_turnstile_token(
+        self,
+        token: str,
+        client_ip: str | None = None
+    ) -> tuple[bool, str | None]:
+        """
+        Validates the Cloudflare Turnstile token server-side with Cloudflare's
+        official verification endpoint.
+        Returns (True, None) on success or (False, error_message) on failure.
+        Never logs full token or secret key.
+        """
+        secret_key = (
+            getattr(settings, "CLOUDFLARE_TURNSTILE_SECRET_KEY", None)
+            or getattr(settings, "TURNSTILE_SECRET_KEY", None)
+            or os.getenv("CLOUDFLARE_TURNSTILE_SECRET_KEY")
+            or os.getenv("TURNSTILE_SECRET_KEY")
+        )
+
+        if not secret_key:
+            logger.error(
+                "[Turnstile] Secret key is not configured in settings or environment."
+            )
+            return False, "Security verification service configuration error."
+
+        verify_url = getattr(
+            settings,
+            "CLOUDFLARE_TURNSTILE_VERIFY_URL",
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+        )
+        timeout = getattr(settings, "CLOUDFLARE_TURNSTILE_TIMEOUT", 10)
+
+        payload = {
+            "secret": secret_key,
+            "response": token,
+        }
+        if client_ip:
+            payload["remoteip"] = client_ip
+
+        # Mask token for safe logging without leakage
+        masked_token = f"{token[:4]}...{token[-4:]}" if len(token) > 8 else "***"
+        logger.info(
+            "[Turnstile] Verifying token %s for client IP %s",
+            masked_token,
+            client_ip or "unknown",
+        )
+
+        try:
+            response = requests.post(
+                verify_url,
+                data=payload,
+                timeout=timeout,
+            )
+
+            if response.status_code != 200:
+                logger.warning(
+                    "[Turnstile] Verification endpoint returned HTTP %s",
+                    response.status_code,
+                )
+                return False, "CAPTCHA verification failed. Please try again."
+
+            result = response.json()
+            if not isinstance(result, dict):
+                logger.warning(
+                    "[Turnstile] Unexpected non-dict response from verification endpoint."
+                )
+                return False, "CAPTCHA verification failed. Please try again."
+
+            if result.get("success") is True:
+                logger.info("[Turnstile] Verification succeeded.")
+                return True, None
+
+            error_codes = result.get("error-codes", [])
+            logger.warning(
+                "[Turnstile] Verification rejected with error codes: %s",
+                error_codes,
+            )
+            return False, "CAPTCHA verification failed. Please try again."
+
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            logger.error(
+                "[Turnstile] Network/timeout failure during verification: %s",
+                exc.__class__.__name__,
+            )
+            return False, "Security verification service unavailable. Please try again later."
+        except Exception as exc:
+            logger.error(
+                "[Turnstile] Unexpected verification exception: %s",
+                exc.__class__.__name__,
+            )
+            return False, "CAPTCHA verification failed. Please try again."
+
 
 
 # =========================================================
@@ -968,7 +1105,13 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
             # CACHE INVALIDATION
             # =============================================
 
-            cache.delete_pattern("lead-engine:*")
+            try:
+                if hasattr(cache, "delete_pattern"):
+                    cache.delete_pattern("lead-engine:*")
+                else:
+                    cache.clear()
+            except Exception as exc:
+                logger.debug("Cache clear error in bulk_upload: %s", exc)
 
             return Response(
                 {
@@ -995,7 +1138,10 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
 
         finally:
 
-            cache.delete(cache_key)
+            try:
+                cache.delete(cache_key)
+            except Exception:
+                pass
     
     # =====================================================
     # UPDATE LEAD
@@ -1168,8 +1314,14 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
         # ==========================================
         sync_lead_to_telecrm(lead, action_note="Lead Archived")
 
-        cache.delete_pattern("lead-engine:*")
-        cache.delete(f"lead-detail:{pk}")
+        try:
+            if hasattr(cache, "delete_pattern"):
+                cache.delete_pattern("lead-engine:*")
+            else:
+                cache.clear()
+            cache.delete(f"lead-detail:{pk}")
+        except Exception as exc:
+            logger.debug("Cache clear error in destroy: %s", exc)
 
         return Response(
             {
@@ -1217,7 +1369,10 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
             )
             
             # Invalidate cache so the lead details page updates
-            cache.delete(f"lead-detail:{pk}")
+            try:
+                cache.delete(f"lead-detail:{pk}")
+            except Exception:
+                pass
             
             return Response({
                 "success": True,
@@ -1391,9 +1546,13 @@ class PublicLeadViewSet(
 
         client_ip = self.get_client_ip(request)
 
-        blocked = cache.get(
-            f"blocked-ip:{client_ip}"
-        )
+        try:
+            blocked = cache.get(
+                f"blocked-ip:{client_ip}"
+            )
+        except Exception as exc:
+            logger.debug("Cache read error checking blocked IP: %s", exc)
+            blocked = False
 
         if blocked:
 
@@ -1401,8 +1560,42 @@ class PublicLeadViewSet(
                 "Too many requests."
             )
 
+        # =====================================
+        # CLOUDFLARE TURNSTILE / CAPTCHA CHECK
+        # =====================================
+        # When captcha_token is provided -> validate with Cloudflare
+        # When captcha_token is NOT provided -> continue existing flow unchanged
+        if self.has_captcha_token(request):
+            captcha_token = self.extract_captcha_token(request)
+            if not captcha_token:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "CAPTCHA verification failed. Please try again."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            is_valid, error_message = self.verify_turnstile_token(
+                captcha_token,
+                client_ip=client_ip
+            )
+            if not is_valid:
+                return Response(
+                    {
+                        "success": False,
+                        "message": error_message or "CAPTCHA verification failed. Please try again."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # Exclude CAPTCHA / Turnstile token keys from data passed to serializer / model creation
+        lead_data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        for key in self.CAPTCHA_TOKEN_KEYS:
+            lead_data.pop(key, None)
+
         serializer = PublicLeadCreateSerializer(
-            data=request.data,
+            data=lead_data,
             context={
                 "request": request
             }
@@ -1414,7 +1607,13 @@ class PublicLeadViewSet(
 
         lead = serializer.save()
 
-        cache.delete_pattern("lead-engine:*")
+        try:
+            if hasattr(cache, "delete_pattern"):
+                cache.delete_pattern("lead-engine:*")
+            else:
+                cache.clear()
+        except Exception as exc:
+            logger.debug("Cache clear error after lead creation: %s", exc)
 
         return Response(
             {
