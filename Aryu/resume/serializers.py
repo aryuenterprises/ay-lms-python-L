@@ -60,26 +60,33 @@ class ContactSerializers(serializers.ModelSerializer):
         model = Contact
         fields ="__all__"
 
-class CustomTokenRefreshSerializer(serializers.Serializer):
+class CustomTokenRefreshSerializer(TokenRefreshSerializer):
+    # Make the default input requirement optional since we read from cookies or body
     refresh = serializers.CharField(required=False, allow_null=True)
     refresh_token = serializers.CharField(required=False, allow_null=True)
 
     def validate(self, attrs):
-        refresh_token_string = attrs.get("refresh") or attrs.get("refresh_token")
+        # 1. Grab the token string passed from the view
+        refresh_token_string = attrs.get("refresh")
 
         if not refresh_token_string:
             raise AuthenticationFailed("Refresh token is required.")
 
-        # Cache key for concurrent refresh request handling
-        token_hash = hashlib.sha256(refresh_token_string.encode("utf-8")).hexdigest()
-        cache_key = f"resume_token_refresh_{token_hash}"
-        cached_result = cache.get(cache_key)
-        if cached_result:
-            return cached_result
+        token_str = str(refresh_token_string).strip()
+        token_hash = hashlib.sha256(token_str.encode("utf-8")).hexdigest()
+        cache_key = f"resume_refreshed_token_{token_hash}"
+
+        # Resilient concurrency grace period:
+        # If parallel frontend requests fire simultaneously with the same valid refresh token,
+        # return the freshly rotated tokens from the short-lived cache without erroring.
+        cached_response = cache.get(cache_key)
+        if cached_response:
+            return cached_response
 
         try:
-            refresh = RefreshToken(refresh_token_string)
-            user_id = refresh.get("user_id")
+            # Decode and validate refresh token structure/cryptography
+            refresh = RefreshToken(token_str)
+            user_id = refresh.get("user_id") or refresh.get("id")
 
             # Strictly ensure this is a refresh token and NOT an access token
             token_type = refresh.get("token_type") or refresh.payload.get("token_type")
@@ -88,21 +95,17 @@ class CustomTokenRefreshSerializer(serializers.Serializer):
 
             user_id = refresh.get("user_id") or refresh.get("id")
             if not user_id:
-                raise AuthenticationFailed("Invalid token payload: user_id missing.")
+                raise AuthenticationFailed("Invalid token payload: missing user ID.")
 
             # Validate active, verified, non-deleted user
             user = ResumeRegistration.objects.get(
                 id=user_id,
-                is_deleted=False
+                status=True,
+                is_deleted=False,
+                is_verified=True,
             )
 
-            if not user.status:
-                raise AuthenticationFailed("User account is inactive.")
-
-            if not user.is_verified:
-                raise AuthenticationFailed("User email is not verified.")
-
-            # ROTATE REFRESH TOKEN (Security Best Practice)
+            # ROTATE REFRESH TOKEN: Issue fresh refresh token with all claims
             new_refresh = RefreshToken()
             new_refresh["user_id"] = user.id
             new_refresh["id"] = user.id
@@ -111,38 +114,43 @@ class CustomTokenRefreshSerializer(serializers.Serializer):
             new_refresh["first_name"] = user.first_name
             new_refresh["last_name"] = user.last_name
 
+            new_access_token = str(new_refresh.access_token)
             new_refresh_str = str(new_refresh)
             access_token = str(new_refresh.access_token)
 
             response_data = {
-                "access_token": access_token,
+                "access_token": new_access_token,
+                "access": new_access_token,
                 "refresh_token": new_refresh_str,
+                "refresh": new_refresh_str,
                 "refresh_token_obj": new_refresh,
             }
 
-            # Blacklist old refresh token if rotation blacklisting is configured
+            # Blacklist old refresh token safely if rotation/blacklisting is supported
             try:
-                if getattr(settings, "SIMPLE_JWT", {}).get("BLACKLIST_AFTER_ROTATION", True):
-                    refresh.blacklist()
+                refresh.blacklist()
             except Exception:
                 pass
 
-            # Cache the rotation result for 15 seconds to gracefully handle concurrent frontend requests
-            cache.set(cache_key, {
-                "access_token": access_token,
-                "refresh_token": new_refresh_str,
-            }, timeout=15)
+            # Cache the response for 30 seconds for concurrent request tolerance
+            cache.set(cache_key, response_data, timeout=30)
 
             return response_data
 
         except ResumeRegistration.DoesNotExist:
-            raise AuthenticationFailed("User does not exist or has been deleted.")
+            raise AuthenticationFailed("User does not exist, is inactive, unverified, or deleted.")
         except (TokenError, InvalidToken):
             raise InvalidToken({"detail": "Token is invalid or expired."})
 
 class SubscriptionSerializer(serializers.ModelSerializer):
 
     final_price = serializers.SerializerMethodField()
+    description = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        trim_whitespace=False  
+    )
 
     class Meta:
         model = Subscription
@@ -161,16 +169,9 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         ]
 
     def create(self, validated_data):
-
-        validated_data["final_price"] = (
-            validated_data.get("discount_price")
-            or validated_data.get("price")
-        )
-
         return Subscription.objects.create(**validated_data)
 
     def update(self, instance, validated_data):
-
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
@@ -182,7 +183,6 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         )
 
         instance.save()
-
         return instance
 
     def get_final_price(self, obj):
@@ -300,7 +300,11 @@ class DashboardSubscriptionSerializer(serializers.ModelSerializer):
     )
 
     description = serializers.CharField(
-        source="subscription.description"
+        source="subscription.description",
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        trim_whitespace=False
     )
 
     price = serializers.DecimalField(
@@ -390,7 +394,12 @@ class DashboardSubscriptionSerializer(serializers.ModelSerializer):
 class DashboardCurrentSubscriptionSerializer(serializers.Serializer):
     plan_name = serializers.CharField()
     slug = serializers.CharField()
-    description = serializers.CharField()
+    description = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        trim_whitespace=False
+    )
     price = serializers.DecimalField(max_digits=10, decimal_places=2)
     discount_price = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True)
     billing_type = serializers.CharField()

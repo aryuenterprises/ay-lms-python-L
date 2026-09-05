@@ -17,7 +17,7 @@ from rest_framework.permissions import IsAuthenticated
 import stripe
 from rest_framework.decorators import action, api_view
 from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
-from django.http import HttpResponse
+from django.http import HttpResponse, FileResponse
 from django.utils import timezone
 from django.db.models import OuterRef, Subquery, F, Value, DecimalField,Prefetch,Q
 from django.db.models.functions import Coalesce
@@ -295,9 +295,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                     except Exception as e:
                         logger.error(f"[Payment List] Lazy invoice generation failed for transaction {tx.id}: {str(e)}")
 
-                invoice_url = None
-                if tx.invoice and hasattr(tx.invoice, "url"):
-                    invoice_url = request.build_absolute_uri(tx.invoice.url)
+                invoice_url = InvoiceService.get_invoice_url(tx, request=request)
 
                 payment_mode = tx.payment_mode or (tx.metadata.get("mode") if tx.metadata else "Cash")
                 course_name = tx.course.course_name if tx.course else (tx.description or "General Payment")
@@ -668,9 +666,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 except Exception as e:
                     logger.error(f"Lazy invoice generation failed for transaction {tx.id}: {str(e)}")
 
-            invoice_url = None
-            if tx.invoice and hasattr(tx.invoice, "url"):
-                invoice_url = request.build_absolute_uri(tx.invoice.url)
+            invoice_url = InvoiceService.get_invoice_url(tx, request=request)
 
             payment_logs.append({
                 "course_name": tx.course.course_name if tx.course else (tx.description or "N/A"),
@@ -721,20 +717,13 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
         try:
             # 1. Generate the invoice
-            transaction = InvoiceService.generate_invoice(transaction.id, regenerate=regenerate)
+            transaction = InvoiceService.generate_invoice(transaction.id, regenerate=regenerate, request=request)
             
             # 2. Reload latest DB values into the transaction instance
             transaction.refresh_from_db()
 
-            # 3. Resolve the URL safely for both FileField and CharField/URLField
-            invoice_url = None
-            if transaction.invoice:
-                if hasattr(transaction.invoice, "url"):
-                    # Case: Django FileField / FieldFile
-                    invoice_url = request.build_absolute_uri(transaction.invoice.url)
-                elif isinstance(transaction.invoice, str):
-                    # Case: Saved as a string/relative path
-                    invoice_url = request.build_absolute_uri(transaction.invoice) if not transaction.invoice.startswith("http") else transaction.invoice
+            # 3. Resolve the URL safely via InvoiceService.get_invoice_url
+            invoice_url = InvoiceService.get_invoice_url(transaction, request=request)
 
             return Response({
                 "success": True,
@@ -747,7 +736,85 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 }
             }, status=status.HTTP_200_OK)
         except Exception as e:
+            logger.exception(f"Invoice generation failed for transaction {getattr(transaction, 'id', 'unknown')}: {str(e)}")
             return Response({"success": False, "message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['get'], url_path='download-invoice')
+    def download_invoice(self, request, pk=None):
+        """
+        OWASP-Hardened Invoice Download Endpoint:
+        1. BOLA / IDOR Protection: Validates user ownership or admin rights.
+        2. Path Traversal Protection: Restricts file serving strictly within MEDIA_ROOT.
+        3. On-The-Fly Self-Healing: Regenerates PDF automatically if missing on disk.
+        """
+        try:
+            transaction = PaymentTransaction.objects.filter(pk=pk, is_archived=False).first()
+            if not transaction:
+                transaction = self.get_object()
+        except Exception:
+            transaction = None
+
+        if not transaction:
+            return Response({"success": False, "message": "Transaction not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 1. BOLA / IDOR Protection
+        user = request.user
+        if not user or not user.is_authenticated:
+            return Response({"success": False, "message": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        user_type = str(getattr(user, "user_type", "")).strip().lower()
+        is_admin = getattr(user, "is_staff", False) or getattr(user, "is_superuser", False) or user_type in ["admin", "super_admin", "staff"]
+
+        is_owner = False
+        if transaction.student:
+            if hasattr(transaction.student, "user") and transaction.student.user == user:
+                is_owner = True
+            elif hasattr(transaction.student, "email") and user.email and transaction.student.email.lower() == user.email.lower():
+                is_owner = True
+            elif hasattr(transaction.student, "student_id") and getattr(user, "student_id", None) == transaction.student.student_id:
+                is_owner = True
+
+        if not is_owner and transaction.metadata and isinstance(transaction.metadata, dict):
+            meta_email = transaction.metadata.get("email", "")
+            if user.email and meta_email and meta_email.lower() == user.email.lower():
+                is_owner = True
+
+        if not (is_admin or is_owner):
+            return Response({"success": False, "message": "Unauthorized access to this invoice."}, status=status.HTTP_403_FORBIDDEN)
+
+        # 2. Self-Healing Regeneration Check
+        file_path = None
+        if transaction.invoice:
+            try:
+                if hasattr(transaction.invoice, "path") and transaction.invoice.path:
+                    file_path = transaction.invoice.path
+            except Exception:
+                file_path = None
+
+        if not file_path or not os.path.exists(file_path):
+            try:
+                transaction = InvoiceService.generate_invoice(transaction.id, regenerate=True, request=request)
+                if transaction.invoice and hasattr(transaction.invoice, "path"):
+                    file_path = transaction.invoice.path
+            except Exception as gen_err:
+                logger.error(f"Failed to auto-regenerate invoice for transaction {transaction.id}: {gen_err}")
+                return Response({"success": False, "message": f"Invoice generation failed: {gen_err}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        if not file_path or not os.path.exists(file_path):
+            return Response({"success": False, "message": "Invoice file unavailable on server."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 3. Path Traversal Prevention
+        media_root_abs = os.path.abspath(settings.MEDIA_ROOT)
+        target_path_abs = os.path.abspath(file_path)
+        if not target_path_abs.startswith(media_root_abs):
+            logger.error(f"Path Traversal security violation attempt: {file_path}")
+            return Response({"success": False, "message": "Invalid file path access."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 4. Stream PDF FileResponse
+        filename = f"Invoice_{transaction.invoice_no or transaction.id}.pdf"
+        response = FileResponse(open(target_path_abs, 'rb'), content_type='application/pdf')
+        response['Content-Disposition'] = f'inline; filename="{filename}"'
+        return response
         
             
     @action(detail=False, methods=["post"])

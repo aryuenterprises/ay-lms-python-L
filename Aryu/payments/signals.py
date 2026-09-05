@@ -16,7 +16,16 @@ def sync_student_on_payment_transaction_done(sender, instance, created, **kwargs
     """
     try:
         status_str = str(instance.payment_status or "").strip().lower()
-        if status_str == "done":
+        if status_str in ["done", "paid", "success", "complete", "advanced"]:
+            try:
+                from payments.services.invoice_service import InvoiceService
+                InvoiceService.generate_invoice(instance.id)
+            except Exception as inv_err:
+                logger.error(
+                    "Error generating invoice in post_save signal for PaymentTransaction %s: %s",
+                    instance.id,
+                    inv_err
+                )
             process_successful_bootcamp_payment(instance)
     except Exception as e:
         logger.exception(

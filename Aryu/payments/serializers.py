@@ -79,14 +79,7 @@ class PaymentTransactionDetailSerializer(serializers.ModelSerializer):
         return obj.payment_status if obj.payment_status else "Pending"
     
     def get_invoice_url(self, obj):
-
-        if obj.invoice and hasattr(obj.invoice, "url"):
-            return (
-                settings.MEDIA_BASE_URL
-                + obj.invoice.url
-            )
-
-        return None
+        return InvoiceService.get_invoice_url(obj, request=self.context.get("request"))
 
 class CourseDropdownSerializer(serializers.ModelSerializer):
     class Meta:
@@ -297,14 +290,7 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
     ]
 
     def get_invoice_url(self, obj):
-
-        if obj.invoice and hasattr(obj.invoice, "url"):
-            return (
-                settings.MEDIA_BASE_URL
-                + obj.invoice.url
-            )
-
-        return None
+        return InvoiceService.get_invoice_url(obj, request=self.context.get("request"))
 
     def get_screenshot_url(self, obj):
 
@@ -753,9 +739,7 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
                 except Exception as e:
                     logger.error(f"[Serializer Log] Missing invoice generation failed for tx {tx.id}: {str(e)}")
 
-            invoice_url = None
-            if tx.invoice and hasattr(tx.invoice, "url"):
-                invoice_url = request.build_absolute_uri(tx.invoice.url) if request else tx.invoice.url
+            invoice_url = InvoiceService.get_invoice_url(tx, request=request)
 
             payment_history.append({
                 "transaction_id": tx.transaction_id,

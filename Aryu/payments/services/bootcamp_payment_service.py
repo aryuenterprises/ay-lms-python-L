@@ -173,7 +173,7 @@ def send_welcome_and_invoice_email(student, raw_password, amount, bootcamp_title
     """
     def _email_worker():
         try:
-            frontend_url = getattr(settings, 'FRONTEND_URL', 'https://aylms.aryuprojects.com')
+            frontend_url = getattr(settings, 'FRONTEND_URL', 'https://portal.aryuacademy.com')
             login_url = f"{frontend_url}/login"
 
             full_name = f"{student.first_name} {student.last_name}".strip()
