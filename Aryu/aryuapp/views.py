@@ -4668,7 +4668,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             date__range=(start_dt, end_dt)
         ).order_by('-date')
 
-    def list(self, request, student_id=None):
+    def list(self, request, student_id=None, *args, **kwargs):
         if not student_id:
             student_id = request.query_params.get('student_id') or request.query_params.get('student')
 
@@ -4936,8 +4936,8 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             "batches": batch_data
         }, status=200)
 
-    def create(self, request, *args, **kwargs):
-        student_id = request.data.get('student')
+    def create(self, request, student_id=None, *args, **kwargs):
+        student_id = student_id or request.data.get('student')
         course_id = request.data.get('course')
         new_batch_id = request.data.get('new_batch')
         marked_by = request.data.get('marked_by')
@@ -4949,8 +4949,8 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             }, status=status.HTTP_200_OK)
 
         try:
-            student = Student.objects.get(student_id=student_id)
-        except Student.DoesNotExist:
+            student = Student.objects.filter(student_id=student_id).first() or Student.objects.get(pk=student_id)
+        except (Student.DoesNotExist, ValueError):
             return Response({'message': 'Student not found.', 'success': False}, status=status.HTTP_200_OK)
 
         try:
@@ -5000,6 +5000,7 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             ip_address = x_forwarded.split(',')[0].strip() if x_forwarded else request.META.get('REMOTE_ADDR')
 
         data = request.data.copy()
+        data['student'] = student.pk
         data['new_batch'] = new_batch_id
         data['batch'] = None
         if ip_address:
@@ -5017,9 +5018,9 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         }, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=['post'], url_path='<str:student_id>/adumneoie')
-    def admin_mark_attendance(self, request, student_id=None):
+    def admin_mark_attendance(self, request, student_id=None, *args, **kwargs):
         try:
-            student_id = request.data.get("student")
+            student_id = student_id or request.data.get("student")
             course_id = request.data.get("course")
             new_batch_id = request.data.get("new_batch")
             date_str = request.data.get("date")
@@ -5032,10 +5033,10 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
                 }, status=200)
 
             try:
-                student = Student.objects.get(student_id=student_id)
+                student = Student.objects.filter(student_id=student_id).first() or Student.objects.get(pk=student_id)
                 course = Course.objects.get(pk=course_id)
                 new_batch = NewBatch.objects.get(pk=new_batch_id)
-            except (Student.DoesNotExist, Course.DoesNotExist, NewBatch.DoesNotExist):
+            except (Student.DoesNotExist, Course.DoesNotExist, NewBatch.DoesNotExist, ValueError):
                 return Response({"success": False, "message": "Invalid student/course/new_batch."}, status=200)
 
             scheduled_date = parse_datetime(date_str)
@@ -5085,7 +5086,74 @@ class AttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
         except Exception as e:
             return Response({"success": False, "message": str(e)}, status=200)
 
+    @action(detail=True, methods=['get'], url_path='full_logs')
+    def full_logs(self, request, student_id=None, *args, **kwargs):
+        resolved_id = student_id or kwargs.get('pk') or request.query_params.get('student_id')
+        if not resolved_id:
+            return Response({'success': False, 'message': 'student_id is required.', 'data': []}, status=200)
+
+        student = Student.objects.filter(student_id=resolved_id).first() or Student.objects.filter(pk=resolved_id).first()
+        if not student:
+            return Response({'success': False, 'message': 'Student not found.', 'data': []}, status=200)
+
+        logs = Attendance.objects.filter(student=student).select_related('course', 'batch', 'new_batch').order_by('-date')
+
+        start_date_str = request.query_params.get('start_date')
+        end_date_str = request.query_params.get('end_date')
+        if start_date_str and end_date_str:
+            try:
+                s_d = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                e_d = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+                s_dt = IST.localize(datetime.combine(s_d, time.min))
+                e_dt = IST.localize(datetime.combine(e_d, time.max))
+                logs = logs.filter(date__range=(s_dt, e_dt))
+            except ValueError:
+                pass
+
+        serializer = AttendanceSerializer(logs, many=True)
+        return Response({
+            'success': True,
+            'count': logs.count(),
+            'data': serializer.data
+        }, status=200)
+
+    @action(detail=True, methods=['get'], url_path='status')
+    def attendance_status(self, request, student_id=None, *args, **kwargs):
+        resolved_id = student_id or kwargs.get('pk') or request.query_params.get('student_id')
+        if not resolved_id:
+            return Response({'success': False, 'message': 'student_id is required.'}, status=200)
+
+        student = Student.objects.filter(student_id=resolved_id).first() or Student.objects.filter(pk=resolved_id).first()
+        if not student:
+            return Response({'success': False, 'message': 'Student not found.'}, status=200)
+
+        today_ist = timezone.now().astimezone(IST).date()
+        latest_record = Attendance.objects.filter(
+            student=student,
+            date__date=today_ist
+        ).order_by('-date').first()
+
+        current_status = "Not Marked"
+        is_logged_in = False
+        on_break = False
+
+        if latest_record:
+            raw_status = (latest_record.status or "").lower().strip()
+            current_status = latest_record.status.strip().title()
+            is_logged_in = raw_status in ['login', 'present', 'breakin', 'break in']
+            on_break = raw_status in ['breakout', 'break out']
+
+        return Response({
+            'success': True,
+            'student_id': student.student_id,
+            'date': today_ist.strftime('%Y-%m-%d'),
+            'current_status': current_status,
+            'is_logged_in': is_logged_in,
+            'on_break': on_break,
+            'last_action_at': latest_record.date.isoformat() if latest_record else None
+        }, status=200)
         
+           
 class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
 
     permission_classes = [IsAuthenticated]
