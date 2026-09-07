@@ -467,9 +467,9 @@ CORS_ALLOWED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -480,9 +480,9 @@ CSRF_TRUSTED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
 
 ]
 
@@ -607,7 +607,7 @@ TWILIO_AUTH_TOKEN = "44fbdfc9f0960b464c20a193b797c7f7"
 TWILIO_PHONE_NUMBER = "+15075854260"
 
 
-MEDIA_BASE_URL = "https://portal.aryuacademy.com/api"
+MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api"
 
 # class DisableMigrations:
 #     def __getitem__(self, item):
@@ -816,7 +816,7 @@ LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'Asia/Kolkata'
 
-FRONTEND_URL = 'https://portal.aryuacademy.com'
+FRONTEND_URL = 'https://aylms.aryuprojects.com'
 PORTAL_FRONTEND_URL = FRONTEND_URL
 SITE_URL = FRONTEND_URL
 

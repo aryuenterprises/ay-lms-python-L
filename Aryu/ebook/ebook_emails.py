@@ -12,8 +12,8 @@ def send_ebook_registration_email(registration, password=None):
     """
     logger.info(f"Sending ebook registration success email for: {registration.email}")
     ebook = registration.ebook
-    portal_link = getattr(settings, "PORTAL_URL", "https://portal.aryuacademy.com").rstrip("/")
-    media_base_url = getattr(settings, "MEDIA_BASE_URL", "https://portal.aryuacademy.com").rstrip("/")
+    portal_link = getattr(settings, "PORTAL_URL", "https://aylms.aryuprojects.com").rstrip("/")
+    media_base_url = getattr(settings, "MEDIA_BASE_URL", "https://aylms.aryuprojects.com").rstrip("/")
 
     subject = f"Ebook Registration Successful - {ebook.title}"
 
