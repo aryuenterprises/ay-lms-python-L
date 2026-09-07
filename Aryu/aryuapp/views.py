@@ -5926,7 +5926,7 @@ def generate_secure_password(length=8):
     return "".join(pwd_list)
 
 
-PORTAL_URL = getattr(settings, "PORTAL_URL", "https://aylms.aryuprojects.com/")
+PORTAL_URL = getattr(settings, "PORTAL_URL", "https://portal.aryuacademy.com/")
 
 def send_student_welcome_email(student, raw_password: str):
     """
@@ -8247,24 +8247,6 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             if not batch_obj:
                 return None
             
-            # Create datetime range for today in IST
-            start_ist = ist.localize(datetime.combine(today_ist, datetime.min.time()))
-            end_ist = ist.localize(datetime.combine(today_ist, datetime.max.time()))
-            
-            # Convert to UTC
-            start_utc = start_ist.astimezone(pytz.utc)
-            end_utc = end_ist.astimezone(pytz.utc)
-            
-            queryset = queryset.filter(
-                date__gte=start_utc,
-                date__lte=end_utc
-            )
-
-        # Helper function to get batch name
-        def get_batch_display_name(batch_obj, is_new_batch=True):
-            if not batch_obj:
-                return None
-            
             if is_new_batch:
                 title = batch_obj.title if hasattr(batch_obj, 'title') else None
                 
@@ -8630,6 +8612,7 @@ class TrainerAttendanceViewSet(LoggingMixin, viewsets.ModelViewSet):
             "success": True,
             "message": f"Full attendance logs for {full_name}",
             "data": final_logs,
+            "courses_with_batches": courses_with_batches,
             "course": list(course),
             "batch": all_batches,
             "trainers_list": trainer,
