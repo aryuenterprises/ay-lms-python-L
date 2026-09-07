@@ -125,10 +125,42 @@ class TrainerHeaderSerializer(serializers.ModelSerializer):
 #             'updated_at',
 #         ]
 
+class TutorPaymentWriteSerializer(serializers.ModelSerializer):
+    # Accept batch as an array of integer IDs e.g. [25, 24]
+    batch = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=True,
+        write_only=True
+    )
+
+    class Meta:
+        model = TutorPayment
+        fields = [
+            'id',
+            'tutor',
+            'course',
+            'batch',
+            'course_fee',
+            'payment_type',
+            'tutor_payment',
+            'payment_status',
+            'payment_date',
+            'notes',
+        ]
+
+    def create(self, validated_data):
+        batch_ids = validated_data.pop('batch', [])
+        
+        # Convert list of IDs [25, 24] -> string "25,24"
+        batch_string = ",".join(map(str, batch_ids))
+        
+        return TutorPayment.objects.create(batch=batch_string, **validated_data)
+
+
 class TutorPaymentReadSerializer(serializers.ModelSerializer):
-    tutor_name = serializers.CharField(source='tutor.name', read_only=True)  # Adjust source field name
+    tutor_name = serializers.CharField(source='tutor.name', read_only=True)
     course_name = serializers.CharField(source='course.course_name', read_only=True)
-    batch_title = serializers.CharField(source='batch.title', read_only=True)
+    batch = serializers.SerializerMethodField()
 
     class Meta:
         model = TutorPayment
@@ -162,67 +194,13 @@ class TutorPaymentReadSerializer(serializers.ModelSerializer):
                 
         return [obj.batch]
 
-# 3. Write Serializer (Used for POST, PUT, PATCH - Add & Edit)
-# class TutorPaymentWriteSerializer(serializers.ModelSerializer):
-#     tutor = serializers.PrimaryKeyRelatedField(queryset=Trainer.objects.all())
-#     course = serializers.PrimaryKeyRelatedField(queryset=Course.objects.all())
-#     batch = serializers.PrimaryKeyRelatedField(queryset=NewBatch.objects.all())
 
-#     class Meta:
-#         model = TutorPayment
-#         fields = [
-#             'id',
-#             'tutor',            # <--- Uses foreign key field 'tutor'
-#             'course',
-#             'batch',
-#             'course_fee',
-#             'payment_type',
-#             'tutor_payment',
-#             'payment_status',
-#             'payment_date',
-#             'notes',
-#         ]
 
-class TutorPaymentWriteSerializer(serializers.ModelSerializer):
-    tutor = serializers.PrimaryKeyRelatedField(queryset=Trainer.objects.all())
-    course = serializers.PrimaryKeyRelatedField(queryset=Course.objects.all())
-    # Accept a list of batch IDs from the payload e.g. [25, 26]
-    batch = serializers.PrimaryKeyRelatedField(
-        queryset=NewBatch.objects.all(), 
-        many=True, 
-        write_only=True
-    )
 
-    class Meta:
-        model = TutorPayment
-        fields = [
-            'id',
-            'tutor',
-            'course',
-            'batch',             # Expects array of IDs
-            'course_fee',
-            'payment_type',
-            'tutor_payment',
-            'payment_status',
-            'payment_date',
-            'notes',
-        ]
 
-    def create(self, validated_data):
-        batches = validated_data.pop('batch', [])
-        
-        # If no batch list is provided, raise validation error
-        if not batches:
-            raise serializers.ValidationError({"batch": "At least one batch must be selected."})
 
-        payments = []
-        # Create a payment record for each selected batch
-        for batch in batches:
-            payment = TutorPayment.objects.create(batch=batch, **validated_data)
-            payments.append(payment)
 
-        # Return the first instance or a representative instance for response serialization
-        return payments[0] if len(payments) == 1 else payments
+
 class CourseOptionSerializer(serializers.ModelSerializer):
     # Maps 'fee' to 'course_fee' in JSON
     course_fee = serializers.DecimalField(source='fee', max_digits=10, decimal_places=2, read_only=True)
