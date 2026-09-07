@@ -692,6 +692,11 @@ if 'test' in sys.argv:
             'NAME': ':memory:',
         }
     }
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        }
+    }
     MIGRATION_MODULES = DisableMigrations()
 else:
     DATABASES = {

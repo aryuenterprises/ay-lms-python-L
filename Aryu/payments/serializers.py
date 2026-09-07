@@ -1,9 +1,11 @@
+import logging
 from .models import *
 from rest_framework import serializers
 from django.utils import timezone
 from django.db.models import Sum
+from django.db import transaction as db_transaction
 from courses.models import Course
-from aryuapp.models import Note, Student
+from aryuapp.models import Note, Student, StudentCourse
 from aryuapp.mixins import ContentType
 import datetime, django.utils.timezone as tz
 from django.utils import timezone
@@ -17,7 +19,11 @@ import uuid
 from collections import defaultdict
 from aryuapp.models import Trainer
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
+
 class PaymentGatewaySerializer(serializers.ModelSerializer):
+
     class Meta:
         model = PaymentGateway
         fields = "__all__"
@@ -297,6 +303,22 @@ class GenerateInvoiceSerializer(serializers.Serializer):
 
 class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
 
+    student_id = serializers.IntegerField(
+        required=False,
+        allow_null=True
+    )
+
+    registration_id = serializers.CharField(
+        required=False,
+        allow_null=True,
+        allow_blank=True
+    )
+
+    course_id = serializers.IntegerField(
+        required=False,
+        allow_null=True
+    )
+
     emi_installment_id = serializers.IntegerField(
         required=False,
         allow_null=True
@@ -339,47 +361,93 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
         model = PaymentTransaction
 
         fields = [
-        "student",
-        "course",
-        "amount",
-        "course_fee",
-        "phone",
-        "gateway",
-        "discount",
-        "currency",
-        "payment_status",
-        "payment_mode",
-        "attachment",
-        "description",
-        "metadata",
-        "note",
-        "date",
-        "emi_installment_id",
-        "billing_type",
-        "employer_id",
-        "webinar_registration_id",
-        "invoice",
-        "invoice_date",
-        "invoice_url",
-        "screenshot",
-        "screenshot_url",
-        "transaction_id"
-    ]
+            "student",
+            "student_id",
+            "registration_id",
+            "course",
+            "course_id",
+            "amount",
+            "course_fee",
+            "phone",
+            "gateway",
+            "discount",
+            "currency",
+            "payment_status",
+            "payment_mode",
+            "attachment",
+            "description",
+            "metadata",
+            "note",
+            "date",
+            "emi_installment_id",
+            "billing_type",
+            "employer_id",
+            "webinar_registration_id",
+            "invoice",
+            "invoice_date",
+            "invoice_url",
+            "screenshot",
+            "screenshot_url",
+            "transaction_id"
+        ]
 
     def get_invoice_url(self, obj):
         return InvoiceService.get_invoice_url(obj, request=self.context.get("request"))
 
     def get_screenshot_url(self, obj):
-
         request = self.context.get("request")
-
         if obj.screenshot:
             return request.build_absolute_uri(
                 obj.screenshot.url
             )
-
         return None
-    
+
+    def to_internal_value(self, data):
+        if hasattr(data, "dict"):
+            data = data.dict()
+        elif hasattr(data, "copy"):
+            data = data.copy()
+        else:
+            data = dict(data)
+
+        # 1. Resolve Student
+        student_val = data.get("student")
+        if student_val in [None, "", "null", "undefined"]:
+            student_val = data.get("student_id") or data.get("registration_id")
+
+        if student_val not in [None, "", "null", "undefined"]:
+            student_obj = None
+            if isinstance(student_val, int) or (isinstance(student_val, str) and str(student_val).strip().isdigit()):
+                student_obj = Student.objects.filter(student_id=int(student_val), is_archived=False).first()
+            if not student_obj and isinstance(student_val, str):
+                student_obj = Student.objects.filter(registration_id=student_val.strip(), is_archived=False).first()
+            if student_obj:
+                data["student"] = student_obj.student_id
+
+        # 2. Resolve Course
+        course_val = data.get("course")
+        if course_val in [None, "", "null", "undefined"]:
+            course_val = data.get("course_id")
+
+        if course_val not in [None, "", "null", "undefined"]:
+            course_obj = None
+            if isinstance(course_val, int) or (isinstance(course_val, str) and str(course_val).strip().isdigit()):
+                course_obj = Course.objects.filter(course_id=int(course_val), is_archived=False).first()
+            if course_obj:
+                data["course"] = course_obj.course_id
+        elif data.get("student"):
+            # Auto-resolve course from student enrollments if not specified
+            student_pk = data.get("student")
+            sc = StudentCourse.objects.filter(student_id=student_pk, course__is_archived=False).select_related("course").first()
+            if sc and sc.course:
+                data["course"] = sc.course.course_id
+            else:
+                nb = NewBatch.objects.filter(students__student_id=student_pk, course__is_archived=False, is_archived=False).select_related("course").first()
+                if nb and nb.course:
+                    data["course"] = nb.course.course_id
+
+        return super().to_internal_value(data)
+
     def validate(self, data):
         invoice_date = data.get("invoice_date")
 
@@ -395,68 +463,48 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
 
         # 1. Validation for Course Payments
         if student and course and amount:
-            course_fee = float(getattr(course, "fee", 0))
-            
+            course_fee = float(getattr(course, "fee", 0) or 0)
+
             # Check if a specific transaction discount is provided, otherwise use the student's global discount
             tx_discount = data.get("discount")
             discount = float(tx_discount) if tx_discount is not None else float(getattr(student, "discount", 0) or 0)
-            
-            total_after_discount = course_fee - discount
-            
+
+            total_after_discount = max(course_fee - discount, 0.0)
+
             # Fetch all valid transactions for THIS student and THIS specific course
             existing_paid = PaymentTransaction.objects.filter(
                 student=student,
                 course=course,
                 is_archived=False,
-                payment_status__in=["success", "done", "paid", "pending","complete","advanced"]
+                payment_status__in=["success", "done", "paid", "pending", "complete", "advanced", "captured"]
             ).aggregate(total=Sum('amount'))['total'] or 0
-            
+
             existing_paid = float(existing_paid)
             incoming_amount = float(amount)
 
             # 2. Block if it exceeds the remaining balance
             if (existing_paid + incoming_amount) > total_after_discount:
-                allowed = max(0, total_after_discount - existing_paid)
+                allowed = max(0.0, total_after_discount - existing_paid)
                 raise serializers.ValidationError({
                     "amount": f"Payment exceeds the total course fee after discount. "
                               f"Final fee: ₹{total_after_discount}, Already paid: ₹{existing_paid}. "
                               f"Maximum allowed payment is ₹{allowed}."
                 })
-        
+
         return data
+
     
 
     def create(self, validated_data):
-
-        employer_id = validated_data.pop(
-            "employer_id",
-            None
-        )
-
-        webinar_registration_id = validated_data.pop(
-            "webinar_registration_id",
-            None
-        )
-
-        billing_type = validated_data.pop(
-            "billing_type",
-            "student"
-        )
-
-        note_text = validated_data.pop(
-            "note",
-            None
-        )
-
-        emi_installment_id = validated_data.pop(
-            "emi_installment_id",
-            None
-        )
-
-        date_value = validated_data.pop(
-            "date",
-            None
-        )
+        employer_id = validated_data.pop("employer_id", None)
+        webinar_registration_id = validated_data.pop("webinar_registration_id", None)
+        billing_type = validated_data.pop("billing_type", "student")
+        note_text = validated_data.pop("note", None)
+        emi_installment_id = validated_data.pop("emi_installment_id", None)
+        date_value = validated_data.pop("date", None)
+        validated_data.pop("student_id", None)
+        validated_data.pop("registration_id", None)
+        validated_data.pop("course_id", None)
 
         employer = None
         webinar_registration = None
@@ -464,151 +512,96 @@ class PaymentTransactionCreateSerializer(serializers.ModelSerializer):
         # ====================================
         # COMPANY BILLING
         # ====================================
-
         if billing_type == "company":
-
-            employer = Employer.objects.filter(
-                company_id=employer_id
-            ).first()
-
+            employer = Employer.objects.filter(company_id=employer_id).first()
             if not employer:
-                raise serializers.ValidationError({
-                    "employer_id":
-                    "Valid employer required"
-                })
+                raise serializers.ValidationError({"employer_id": "Valid employer required"})
 
         # ====================================
         # WEBINAR BILLING
         # ====================================
-
         if billing_type == "webinar":
-
-            webinar_registration = (
-                WebinarRegistration.objects.filter(
-                    id=webinar_registration_id
-                ).first()
-            )
-
+            webinar_registration = WebinarRegistration.objects.filter(id=webinar_registration_id).first()
             if not webinar_registration:
-                raise serializers.ValidationError({
-                    "webinar_registration_id":
-                    "Valid webinar registration required"
-                })
+                raise serializers.ValidationError({"webinar_registration_id": "Valid webinar registration required"})
 
         # ====================================
         # TRANSACTION ID
         # ====================================
-
         payment_mode = validated_data.get("payment_mode")
-
         if payment_mode in ["OFFLINE", "CHEQUE"]:
-            # Auto generate transaction id
-            validated_data["transaction_id"] = (
-                f"TXN{uuid.uuid4().hex[:8].upper()}"
-            )
+            validated_data["transaction_id"] = f"TXN{uuid.uuid4().hex[:8].upper()}"
         else:
-            # User must enter transaction id
             transaction_id = validated_data.get("transaction_id")
-
             if not transaction_id:
-                
-                raise serializers.ValidationError({
-                    "transaction_id": "Transaction ID is required for this payment mode."
-                })
-
+                raise serializers.ValidationError({"transaction_id": "Transaction ID is required for this payment mode."})
             validated_data["transaction_id"] = transaction_id
 
         # ====================================
         # DATE
         # ====================================
-
         if date_value:
-
-            metadata = (
-                validated_data.get("metadata")
-                or {}
-            )
-
-            metadata["payment_date"] = str(
-                date_value
-            )
-
+            metadata = validated_data.get("metadata") or {}
+            metadata["payment_date"] = str(date_value)
             validated_data["metadata"] = metadata
 
         # ====================================
-        # CREATE TRANSACTION
+        # CREATE TRANSACTION ATOMICALLY
         # ====================================
+        with db_transaction.atomic():
+            transaction = PaymentTransaction.objects.create(
+                employer=employer,
+                webinar_registration=webinar_registration,
+                billing_type=billing_type,
+                **validated_data
+            )
 
-        transaction = PaymentTransaction.objects.create(
-            employer=employer,
-            webinar_registration=webinar_registration,
-            billing_type=billing_type,
-            **validated_data
-        )
-
-        # ====================================
-        # NOTES
-        # ====================================
-
-        if note_text:
-
-            mixin = NotesMixin()
-
-            mixin.save_notes(
-                transaction,
-                note_text,
-                request=self.context.get(
-                    "request"
+            # NOTES
+            if note_text:
+                mixin = NotesMixin()
+                mixin.save_notes(
+                    transaction,
+                    note_text,
+                    request=self.context.get("request")
                 )
-            )
 
-        # ====================================
-        # EMI
-        # ====================================
+            # EMI
+            if emi_installment_id:
+                installment = (
+                    PaymentEMIInstallment.objects
+                    .select_related("emi_plan")
+                    .get(pk=emi_installment_id)
+                )
+                installment.paid = True
+                installment.paid_amount = transaction.amount
+                installment.payment = transaction
+                installment.paid_at = timezone.now()
+                installment.save()
 
-        if emi_installment_id:
-
-            installment = (
-                PaymentEMIInstallment.objects
-                .select_related("emi_plan")
-                .get(pk=emi_installment_id)
-            )
-
-            installment.paid = True
-            installment.paid_amount = (
-                transaction.amount
-            )
-
-            installment.payment = transaction
-
-            installment.paid_at = timezone.now()
-
-            installment.save()
-
-        # ====================================
-        # AUTO GENERATE INVOICE
-        # ====================================
-
+        # AUTO GENERATE INVOICE IF NOT ALREADY GENERATED
         if (
             transaction.payment_status
-            and transaction.payment_status.lower()
-            in ["success", "done", "paid"]
+            and transaction.payment_status.lower() in ["success", "done", "paid"]
+            and not transaction.invoice
         ):
+            try:
+                InvoiceService.generate_invoice(transaction.id)
+            except Exception as inv_err:
+                logger.error(f"Auto invoice generation failed for transaction {transaction.id}: {inv_err}")
 
-            InvoiceService.generate_invoice(
-                transaction.id
-            )
-
-        return transaction 
+        return transaction
+ 
 
 class PaymentTransactionUpdateSerializer(serializers.ModelSerializer):
     total_course_fee = serializers.SerializerMethodField()
+    course_id = serializers.IntegerField(required=False, allow_null=True)
  
     class Meta:
         model = PaymentTransaction
         fields = [
             "payment_mode",
             "course",
+            "course_id",
             "amount",
             "discount",
             "total_after_discount",
@@ -635,10 +628,28 @@ class PaymentTransactionUpdateSerializer(serializers.ModelSerializer):
             "total_after_discount": {"required": False},
         }
 
+    def to_internal_value(self, data):
+        if hasattr(data, "dict"):
+            data = data.dict()
+        elif hasattr(data, "copy"):
+            data = data.copy()
+        else:
+            data = dict(data)
+        course_val = data.get("course")
+        if course_val in [None, "", "null", "undefined"]:
+            course_val = data.get("course_id")
+        if course_val not in [None, "", "null", "undefined"]:
+            if isinstance(course_val, int) or (isinstance(course_val, str) and str(course_val).strip().isdigit()):
+                course_obj = Course.objects.filter(course_id=int(course_val), is_archived=False).first()
+                if course_obj:
+                    data["course"] = course_obj.course_id
+        return super().to_internal_value(data)
+
     def get_total_course_fee(self, obj):
         if obj.course and hasattr(obj.course, 'fee'):
             return obj.course.fee
         return 0
+
     def validate(self, data):
         # ---------------- Future Date Validation ----------------
         invoice_date = data.get("invoice_date")
@@ -740,27 +751,47 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
         all_txs = [tx for tx in obj.transactions.all() if not tx.is_archived]
 
         # -------------------------------------------------------------
-        # 1. Group transactions by Course (Captures Campaign payments)
+        # 1. Group transactions by Course (keyed by integer course_id)
         # -------------------------------------------------------------
-        course_map = defaultdict(list)
-        for tx in all_txs:
-            if tx.course:
-                course_map[tx.course].append(tx)
+        course_map = {}
 
-        # 2. Add courses from batches, student_courses, & batchcoursetrainer even if no transactions exist yet
+        # Add courses from batches, student_courses, & batchcoursetrainer
         for batch in obj.new_batches.all():
-            if batch.course and batch.course not in course_map:
-                course_map[batch.course] = []
+            if batch.course and batch.course.course_id not in course_map:
+                course_map[batch.course.course_id] = {
+                    "course": batch.course,
+                    "transactions": []
+                }
 
         if hasattr(obj, "student_courses"):
             for sc in obj.student_courses.all():
-                if sc.course and sc.course not in course_map:
-                    course_map[sc.course] = []
+                if sc.course and sc.course.course_id not in course_map:
+                    course_map[sc.course.course_id] = {
+                        "course": sc.course,
+                        "transactions": []
+                    }
 
         if hasattr(obj, "batchcoursetrainer_set"):
             for bct in obj.batchcoursetrainer_set.all():
-                if bct.course and bct.course not in course_map:
-                    course_map[bct.course] = []
+                if bct.course and bct.course.course_id not in course_map:
+                    course_map[bct.course.course_id] = {
+                        "course": bct.course,
+                        "transactions": []
+                    }
+
+        # Associate transactions to courses
+        for tx in all_txs:
+            if tx.course:
+                if tx.course.course_id not in course_map:
+                    course_map[tx.course.course_id] = {
+                        "course": tx.course,
+                        "transactions": []
+                    }
+                course_map[tx.course.course_id]["transactions"].append(tx)
+            elif course_map:
+                # If transaction has no explicit course, associate with student's primary/enrolled course
+                first_course_id = next(iter(course_map))
+                course_map[first_course_id]["transactions"].append(tx)
 
         courses_data = []
         total_course_fee = 0.0
@@ -768,9 +799,11 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
         total_due = 0.0
 
         # -------------------------------------------------------------
-        # 3. Calculate per-course aggregates
+        # 2. Calculate per-course aggregates
         # -------------------------------------------------------------
-        for course, txs in course_map.items():
+        for c_id, c_entry in course_map.items():
+            course = c_entry["course"]
+            txs = c_entry["transactions"]
             txs_sorted = sorted(txs, key=lambda x: x.created_at, reverse=True)
 
             paid_amount = sum(
@@ -805,7 +838,7 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
             })
 
         # -------------------------------------------------------------
-        # 4. Build complete payment history log (Campaigns + Batches)
+        # 3. Build complete payment history log (Campaigns + Batches)
         # -------------------------------------------------------------
         payment_history = []
         for tx in sorted(all_txs, key=lambda x: x.created_at, reverse=True):
@@ -844,6 +877,7 @@ class StudentPaymentSummarySerializer(serializers.ModelSerializer):
         }
 
         return obj._cached_payment_data
+
 
     # -------------------------------------------------------------
     # Serializer Method Fields

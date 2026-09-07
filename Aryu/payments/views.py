@@ -254,12 +254,12 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             "stripe_enabled", "paypal_enabled", "razorpay_enabled"
         ).order_by("-created_at").first()
 
-        # Filter to only students who have at least one course associated with them
+        # Filter to only students who have at least one course associated with them or any transactions
         all_students = all_students.filter(
             Q(student_courses__isnull=False) |
             Q(new_batches__course__isnull=False, new_batches__is_archived=False) |
             Q(batchcoursetrainer__course__isnull=False) |
-            Q(transactions__course__isnull=False, transactions__is_archived=False)
+            Q(transactions__isnull=False, transactions__is_archived=False)
         ).distinct()
 
         # Prefetch transactions with invoices & gateways for students with courses
@@ -273,7 +273,9 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                     is_archived=False
                 ).select_related("course", "gateway").order_by("-created_at")
             )
-        )
+        ).annotate(
+            last_payment=Max("transactions__created_at")
+        ).order_by("-last_payment")
 
         students_response_data = []
 
@@ -285,7 +287,29 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
             all_txs = list(student.transactions.all())
 
             student_payment_history = []
-            course_map = defaultdict(list)
+            course_map = {}
+
+            # Include batch & student courses even if zero transactions exist yet
+            for batch in student.new_batches.all():
+                if batch.course and batch.course.course_id not in course_map:
+                    course_map[batch.course.course_id] = {
+                        "course": batch.course,
+                        "transactions": []
+                    }
+
+            for sc in student.student_courses.all():
+                if sc.course and sc.course.course_id not in course_map:
+                    course_map[sc.course.course_id] = {
+                        "course": sc.course,
+                        "transactions": []
+                    }
+
+            for bct in student.batchcoursetrainer_set.all():
+                if bct.course and bct.course.course_id not in course_map:
+                    course_map[bct.course.course_id] = {
+                        "course": bct.course,
+                        "transactions": []
+                    }
 
             for tx in all_txs:
                 # Lazy-generate missing invoice if status is completed/done
@@ -320,23 +344,20 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 student_payment_history.append(tx_history_entry)
 
                 if tx.course:
-                    course_map[tx.course].append(tx_history_entry)
-
-            # Include batch & student courses even if zero transactions exist yet
-            for batch in student.new_batches.all():
-                if batch.course and batch.course not in course_map:
-                    course_map[batch.course] = []
-
-            for sc in student.student_courses.all():
-                if sc.course and sc.course not in course_map:
-                    course_map[sc.course] = []
-
-            for bct in student.batchcoursetrainer_set.all():
-                if bct.course and bct.course not in course_map:
-                    course_map[bct.course] = []
+                    if tx.course.course_id not in course_map:
+                        course_map[tx.course.course_id] = {
+                            "course": tx.course,
+                            "transactions": []
+                        }
+                    course_map[tx.course.course_id]["transactions"].append(tx_history_entry)
+                elif course_map:
+                    first_course_id = next(iter(course_map))
+                    course_map[first_course_id]["transactions"].append(tx_history_entry)
 
             courses_summary = []
-            for course_obj, tx_logs in course_map.items():
+            for c_id, c_data in course_map.items():
+                course_obj = c_data["course"]
+                tx_logs = c_data["transactions"]
                 txs_sorted = sorted(tx_logs, key=lambda x: x["created_at"], reverse=True)
 
                 paid_amount = sum(
@@ -378,12 +399,8 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
                 "courses": courses_summary,
             })
 
-        # Sort queryset by most recent payment
-        students_qs = students_qs.annotate(
-            last_payment=Max("transactions__created_at")
-        ).order_by("-last_payment")
-
         serializer = StudentPaymentSummarySerializer(students_qs, many=True, context={"request": request})
+
 
         enabled_gateways = []
         if settings:

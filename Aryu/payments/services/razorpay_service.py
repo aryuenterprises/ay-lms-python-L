@@ -109,8 +109,8 @@ def process_razorpay_webhook_event(data: dict) -> dict:
                 logger.warning("Razorpay Webhook: No PaymentTransaction found for order_id %s", order_id)
                 return {"status": "success", "message": "Transaction not found, safe acknowledge", "processed": False}
 
-            # Idempotency check: if transaction is already marked as done/paid/success, skip re-processing
-            if txn.payment_status in ["done", "paid", "success"]:
+            # Idempotency check: if transaction is already marked as done/paid/success/captured, skip re-processing
+            if txn.payment_status in ["done", "paid", "success", "captured"]:
                 logger.info("Razorpay Webhook: Transaction %s already processed (status=%s). Skipping.",
                             order_id, txn.payment_status)
                 metadata = txn.metadata if isinstance(txn.metadata, dict) else {}
@@ -122,8 +122,8 @@ def process_razorpay_webhook_event(data: dict) -> dict:
                         logger.exception("Error in idempotent EbookRegistration check for transaction %s: %s", txn.id, e)
                 return {"status": "success", "message": "Already processed", "processed": True}
 
-            # Update PaymentTransaction status explicitly to "done"
-            txn.payment_status = "done"
+            # Update PaymentTransaction status explicitly
+            txn.payment_status = "captured" if event == "payment.captured" else "done"
             if payment_id:
                 if not isinstance(txn.metadata, dict):
                     txn.metadata = {}
