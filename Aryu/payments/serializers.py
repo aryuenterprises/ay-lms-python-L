@@ -154,13 +154,40 @@ class TutorPaymentWriteSerializer(serializers.ModelSerializer):
             'notes',
         ]
 
+    # def create(self, validated_data):
+    #     batch_ids = validated_data.pop('batch', [])
+        
+    #     # Convert list of IDs [25, 24] -> string "25,24"
+    #     batch_string = ",".join(map(str, batch_ids))
+        
+    #     return TutorPayment.objects.create(batch=batch_string, **validated_data)
+
+    def to_internal_value(self, data):
+        # Handle cases where frontend sends batch as integer, string, or list during edit/create
+        if 'batch' in data:
+            data = data.copy()
+            batch_val = data['batch']
+            if isinstance(batch_val, int):
+                data['batch'] = [batch_val]
+            elif isinstance(batch_val, str):
+                # Clean up any leftover string brackets like "[36]"
+                cleaned = batch_val.replace('[', '').replace(']', '').strip()
+                data['batch'] = [int(b.strip()) for b in cleaned.split(',') if b.strip().isdigit()]
+        return super().to_internal_value(data)
+
     def create(self, validated_data):
         batch_ids = validated_data.pop('batch', [])
-        
-        # Convert list of IDs [25, 24] -> string "25,24"
-        batch_string = ",".join(map(str, batch_ids))
-        
-        return TutorPayment.objects.create(batch=batch_string, **validated_data)
+        # Converts [36] -> "36" or [25, 24] -> "25,24"
+        validated_data['batch'] = ",".join(map(str, batch_ids))
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        if 'batch' in validated_data:
+            batch_ids = validated_data.pop('batch', [])
+            # Ensures clean format "36" instead of "[36]" on PUT/PATCH
+            instance.batch = ",".join(map(str, batch_ids))
+            
+        return super().update(instance, validated_data)
 
 
 class TutorPaymentReadSerializer(serializers.ModelSerializer):
