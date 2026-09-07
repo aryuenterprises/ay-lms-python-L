@@ -1158,7 +1158,8 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
 
 
 class TutorPaymentViewSet(viewsets.ModelViewSet):
-    queryset = TutorPayment.objects.all().select_related('tutor', 'course', 'batch')
+    # Fixed: Removed 'batch' because it is now a CharField, not a ForeignKey
+    queryset = TutorPayment.objects.all().select_related('tutor', 'course')
 
     def get_serializer_class(self):
         if self.action in ['list', 'retrieve']:
@@ -1168,14 +1169,9 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        created_instances = serializer.save()
+        created_instance = serializer.save()
 
-        # Handle single vs multiple created instances response
-        if isinstance(created_instances, list):
-            read_serializer = TutorPaymentReadSerializer(created_instances, many=True)
-            return Response(read_serializer.data, status=status.HTTP_201_CREATED)
-        
-        read_serializer = TutorPaymentReadSerializer(created_instances)
+        read_serializer = TutorPaymentReadSerializer(created_instance)
         return Response(read_serializer.data, status=status.HTTP_201_CREATED)
 
     def list(self, request):
@@ -1187,10 +1183,23 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         to_date = request.query_params.get('to_date')
         course_id = request.query_params.get('course')
         
-        # Supports both single ID and comma-separated IDs (e.g., ?batch=25,26 or multiple ?batch=25&batch=26)
+        # Handle batch filtering for comma-separated values inside CharField
         batch_ids = request.query_params.getlist('batch')
-        if len(batch_ids) == 1 and ',' in batch_ids[0]:
-            batch_ids = batch_ids[0].split(',')
+        if batch_ids:
+            all_batch_ids = []
+            for batch_param in batch_ids:
+                if ',' in batch_param:
+                    all_batch_ids.extend(batch_param.split(','))
+                else:
+                    all_batch_ids.append(batch_param)
+            
+            if all_batch_ids:
+                batch_filter = Q()
+                for batch_id in all_batch_ids:
+                    batch_id = str(batch_id).strip()
+                    # Fixed field reference from 'batch_ids__regex' to 'batch__regex'
+                    batch_filter |= Q(batch__regex=rf'(^|,){batch_id}(,|$)')
+                queryset = queryset.filter(batch_filter)
 
         payment_status = request.query_params.get('payment_status')
         search_query = request.query_params.get('search')
@@ -1208,15 +1217,15 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
             
         course = []
         for c in course_qs:
-            batch_filter = {
+            batch_filter_opts = {
                 "course": c,
                 "status": True,
                 "is_archived": False
             }
             if trainer_id:
-                batch_filter["trainers__trainer_id"] = trainer_id
+                batch_filter_opts["trainers__trainer_id"] = trainer_id
 
-            batch_qs = NewBatch.objects.filter(**batch_filter).values("batch_id", "title")
+            batch_qs = NewBatch.objects.filter(**batch_filter_opts).values("batch_id", "title")
             
             course_dict = {
                 "course_id": c.course_id,
@@ -1242,10 +1251,6 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(payment_date__lte=to_date)
         if course_id:
             queryset = queryset.filter(course_id=course_id)
-            
-        # Support array filtering for batches
-        if batch_ids:
-            queryset = queryset.filter(batch_id__in=batch_ids)
 
         if payment_status and payment_status.lower() != 'all':
             queryset = queryset.filter(payment_status__iexact=payment_status)
@@ -1253,7 +1258,6 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         if search_query:
             queryset = queryset.filter(
                 Q(course__course_name__icontains=search_query) |
-                Q(batch__title__icontains=search_query) |
                 Q(notes__icontains=search_query) |
                 Q(payment_type__icontains=search_query)
             )
@@ -1317,6 +1321,8 @@ class TutorPaymentViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         response_data['results'] = serializer.data
         return Response(response_data, status=status.HTTP_200_OK)
+
+    
 class StripePaymentViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['post'])

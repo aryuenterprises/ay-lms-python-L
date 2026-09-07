@@ -175,11 +175,7 @@ class TutorPayment(models.Model):
         on_delete=models.CASCADE, 
         related_name="tutor_payments"
     )
-    batch = models.ForeignKey(
-        "batches.NewBatch", 
-        on_delete=models.CASCADE, 
-        related_name="tutor_payments"
-    )
+    batch = models.CharField(max_length=255, blank=True, null=True)
     course_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     payment_type = models.CharField(max_length=50)
     tutor_payment = models.DecimalField(max_digits=10, decimal_places=2)  # Amount/Value entered
