@@ -198,6 +198,20 @@ class TutorPayment(models.Model):
 
     def __str__(self):
         return f"{self.tutor} - {self.tutor_payment} ({self.payment_status})"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class PaymentLog(models.Model):
     transaction = models.ForeignKey(PaymentTransaction, on_delete=models.CASCADE, related_name="logs")
     event_type = models.CharField(max_length=100)
