@@ -131,6 +131,7 @@ class CourseListSerializer(serializers.ModelSerializer):
             "course_id",
             "course_name",
             "course_category",
+            "syllabus_title",
             "category_details",
             "course_pic",
             "course_pic_url",
@@ -290,7 +291,7 @@ class CourseSerializer(serializers.ModelSerializer):
         fields = [
             'course_id', 'course_name', 'course_category', 'category_details',
             'course_pic', 'course_pic_url', 'notes', 'currency_type', 'fee_type',
-            'topic', 'syllabus', 'syllabus_url', 'syllabus_thumbnail', 'syllabus_thumbnail_url', 'syllabus_info', 'assignment', 'batches',
+            'topic', 'syllabus', 'syllabus_title', 'syllabus_url', 'syllabus_thumbnail', 'syllabus_thumbnail_url', 'syllabus_info', 'assignment', 'batches',
             'duration_list','mode_of_delivery', 'fee', 'status', 'is_archived', 'is_featured', 'created_by', 'created_at',
             'video_url',
         ]
