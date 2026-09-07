@@ -1068,6 +1068,18 @@ class EbookUserViewSet(viewsets.ViewSet):
     authentication_classes = [CustomJWTAuthentication]
     permission_classes = [IsAuthenticated]
 
+    def _sanitize_pk(self, pk) -> int | None:
+        """
+        DSA Helper: O(1) Time, O(1) Space input validation.
+        Prevents downstream type-casting exceptions.
+        """
+        if not pk or str(pk).strip().lower() in ("undefined", "null", "none", ""):
+            return None
+        try:
+            return int(pk)
+        except (ValueError, TypeError):
+            return None
+
     def list(self, request, slug=None, pk=None):
         if not pk or str(pk) == "undefined":
             return Response(
@@ -1112,6 +1124,50 @@ class EbookUserViewSet(viewsets.ViewSet):
             "data": serializer.data,
             "message": "Password updated successfully"
         })
+
+    def destroy(self, request, slug=None, pk=None):
+        """
+        SOFT DELETE ROUTE (HTTP DELETE)
+        URL: DELETE /api/ebook-users/<pk>/
+        DSA Complexity: O(1) Time, O(1) Space
+        Updates database directly at the engine level without Python object allocation.
+        """
+        valid_pk = self._sanitize_pk(pk)
+        if not valid_pk:
+            return Response(
+                {"success": False, "message": "Invalid user ID supplied"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Direct SQL UPDATE query - O(1) database complexity via Primary Key index
+            updated_count = EbookRegistration.objects.filter(
+                id=valid_pk, 
+                is_deleted=False
+            ).update(is_deleted=True)
+
+            if updated_count == 0:
+                return Response(
+                    {"success": False, "message": "User record not found or already soft-deleted"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            logger.info("Soft-deleted EbookRegistration ID %s by User %s", valid_pk, request.user.id)
+            return Response(
+                {
+                    "success": True,
+                    "message": "User registration soft-deleted successfully",
+                    "id": valid_pk
+                },
+                status=status.HTTP_200_OK
+            )
+
+        except Exception as e:
+            logger.error("Error executing soft deletion on ID %s: %s", valid_pk, str(e), exc_info=True)
+            return Response(
+                {"success": False, "message": "Internal processing error occurred"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

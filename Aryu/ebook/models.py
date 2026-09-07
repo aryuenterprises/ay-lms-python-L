@@ -86,14 +86,15 @@ class EbookRegistration(models.Model):
     is_paid = models.BooleanField(default=False)
 
     payment_transaction = models.ForeignKey(
-    "payments.PaymentTransaction",
-    on_delete=models.CASCADE,
-    related_name="ebook_registrations",
-    null=True,
-    blank=True
-)
+        "payments.PaymentTransaction",
+        on_delete=models.CASCADE,
+        related_name="ebook_registrations",
+        null=True,
+        blank=True
+    )
 
     is_registration_open = models.BooleanField(default=True)
+    is_deleted = models.BooleanField(default=False) 
     registered_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
