@@ -326,6 +326,15 @@ class JobSeekerSerializer(serializers.ModelSerializer):
         fields = ['passed_out_year', 'company_id', 'current_qualification', 'preferred_job_role', 'resume', 'resume_url',]
         extra_kwargs = {
             'student': {'required': False},
+            'passed_out_year': {
+                'error_messages': {'required': 'Year of graduation is required.'}
+            },
+            'current_qualification': {
+                'error_messages': {'required': 'Please select your current qualification.'}
+            },
+            'preferred_job_role': {
+                'error_messages': {'required': 'Preferred job role is required.'}
+            },
         }    
     
     def get_resume_url(self, obj):
@@ -1679,21 +1688,46 @@ class StudentUpdateSerializer(serializers.ModelSerializer):
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
-
         instance.save()
 
         if school_data:
             School_Student.objects.update_or_create(student=instance, defaults=school_data)
         if college_data:
             College_Student.objects.update_or_create(student=instance, defaults=college_data)
+            
         if jobseeker_data:
-            JobSeeker.objects.update_or_create(student=instance, defaults=jobseeker_data)
+            # Check if JobSeeker profile already exists for this student
+            js_instance = JobSeeker.objects.filter(student=instance).first()
+
+            # If it's a new record, enforce required fields (partial=False).
+            # If it already exists, respect the PATCH partial mode.
+            is_partial = js_instance is not None and getattr(self, 'partial', False)
+
+            js_serializer = JobSeekerSerializer(
+                instance=js_instance,
+                data=jobseeker_data,
+                partial=is_partial
+            )
+
+            if not js_serializer.is_valid():
+                # Extract clean list of error strings
+                error_messages = []
+                for field, msgs in js_serializer.errors.items():
+                    if isinstance(msgs, list):
+                        error_messages.extend([str(m) for m in msgs])
+                    else:
+                        error_messages.append(str(msgs))
+                
+                # This raises HTTP 400 with the exact list structure
+                raise serializers.ValidationError(error_messages)
+
+            js_serializer.save(student=instance)
+
         if employee_data:
             Employee.objects.update_or_create(student=instance, defaults=employee_data)
 
         return instance
-
-
+        
 class RecordingSerializer(serializers.ModelSerializer):
     created_date = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
     class Meta:
