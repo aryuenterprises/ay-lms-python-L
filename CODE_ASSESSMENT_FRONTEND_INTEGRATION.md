@@ -1,17 +1,18 @@
 # Online Code Assessment — Frontend Integration Specification
 
-> **Target Audience**: Frontend Engineering Team & AI Coding Agents  
-> **Module Name**: `code_assessment`  
-> **Status**: Production-Ready  
+> **Target Audience**: Frontend Engineering Team & AI Coding Agents
+> **Module Name**: `code_assessment`
+> **Status**: Production-Ready
 > **Version**: `1.0.0`
 
 ---
 
 ## 1. Overview
 
-The **Online Code Assessment Module** is a high-performance, sandboxed coding practice and evaluation platform (similar to LeetCode and HackerRank) built into the ARYU Learning Management System. 
+The **Online Code Assessment Module** is a high-performance, sandboxed coding practice and evaluation platform (similar to LeetCode and HackerRank) built into the ARYU Learning Management System.
 
 It empowers students to:
+
 1. Browse coding problems filtered by course, difficulty, and algorithm topics.
 2. Write solutions directly in an online code editor supporting **Python 3, JavaScript (Node.js), Java, C++, and C**.
 3. **Run Code** instantly against public sample test cases or custom standard input (stdin).
@@ -48,7 +49,7 @@ Configure the backend API base URL using environment variables:
 
 ```env
 # Production
-VITE_API_BASE_URL=https://aylms.aryuprojects.com/api/code-assessment
+VITE_API_BASE_URL=https://portal.aryuacademy.com/api/code-assessment
 
 # Staging
 VITE_API_BASE_URL=https://staging.aryuacademy.com/api/code-assessment
@@ -61,18 +62,18 @@ VITE_API_BASE_URL=http://localhost:8000/api/code-assessment
 
 ## 4. API Endpoints Reference
 
-| Method | Endpoint | Auth Required | Description |
-| :--- | :--- | :---: | :--- |
-| `GET` | `/api/code-assessment/problems/` | Optional | List active problems (with filters & search) |
-| `GET` | `/api/code-assessment/problems/{slug}/` | Optional | Get problem detail + sample test cases |
-| `POST` | `/api/code-assessment/problems/{slug}/run/` | **Yes** | Test run code against sample cases or custom input |
-| `POST` | `/api/code-assessment/problems/{slug}/submit/` | **Yes** | Submit solution for official scoring |
-| `GET` | `/api/code-assessment/submissions/` | **Yes** | List student's own submission history |
-| `GET` | `/api/code-assessment/submissions/{id}/` | **Yes** | Get submission detail (IDOR protected) |
-| `GET` | `/api/code-assessment/submissions/{id}/result/` | **Yes** | Poll evaluation status and test case results |
-| `GET` | `/api/code-assessment/assessments/` | Optional | List active coding assessments |
-| `GET` | `/api/code-assessment/assessments/{slug}/` | Optional | Get assessment details with attached problems |
-| `GET` | `/api/code-assessment/assessments/{slug}/summary/` | **Yes** | Get student's score summary on an assessment |
+| Method   | Endpoint                                             | Auth Required | Description                                        |
+| :------- | :--------------------------------------------------- | :-----------: | :------------------------------------------------- |
+| `GET`  | `/api/code-assessment/problems/`                   |   Optional   | List active problems (with filters & search)       |
+| `GET`  | `/api/code-assessment/problems/{slug}/`            |   Optional   | Get problem detail + sample test cases             |
+| `POST` | `/api/code-assessment/problems/{slug}/run/`        | **Yes** | Test run code against sample cases or custom input |
+| `POST` | `/api/code-assessment/problems/{slug}/submit/`     | **Yes** | Submit solution for official scoring               |
+| `GET`  | `/api/code-assessment/submissions/`                | **Yes** | List student's own submission history              |
+| `GET`  | `/api/code-assessment/submissions/{id}/`           | **Yes** | Get submission detail (IDOR protected)             |
+| `GET`  | `/api/code-assessment/submissions/{id}/result/`    | **Yes** | Poll evaluation status and test case results       |
+| `GET`  | `/api/code-assessment/assessments/`                |   Optional   | List active coding assessments                     |
+| `GET`  | `/api/code-assessment/assessments/{slug}/`         |   Optional   | Get assessment details with attached problems      |
+| `GET`  | `/api/code-assessment/assessments/{slug}/summary/` | **Yes** | Get student's score summary on an assessment       |
 
 ---
 
@@ -81,15 +82,18 @@ VITE_API_BASE_URL=http://localhost:8000/api/code-assessment
 ### 5.1 GET `/api/code-assessment/problems/`
 
 #### Purpose
+
 Retrieve a paginated list of active coding problems.
 
 #### Query Parameters
+
 - `difficulty` *(optional)*: `easy` | `medium` | `hard`
 - `tag` *(optional)*: Topic tag (e.g. `array`, `string`, `dynamic-programming`, `tree`)
 - `course_id` *(optional)*: Integer ID of associated course (e.g. `113` for Python FullStack)
 - `search` *(optional)*: Search string in problem title or description
 
 #### Response Example (`200 OK`)
+
 ```json
 {
   "count": 2,
@@ -129,12 +133,14 @@ Retrieve a paginated list of active coding problems.
 ### 5.2 GET `/api/code-assessment/problems/{slug}/`
 
 #### Purpose
+
 Retrieve full problem description, constraints, supported languages, starter templates, and **visible sample test cases only**.
 
 > [!IMPORTANT]
 > Hidden test cases are strictly guarded server-side and **NEVER** returned by this endpoint.
 
 #### Response Example (`200 OK`)
+
 ```json
 {
   "id": 1,
@@ -184,15 +190,18 @@ Retrieve full problem description, constraints, supported languages, starter tem
 ### 5.3 POST `/api/code-assessment/problems/{slug}/run/`
 
 #### Purpose
+
 Executes student code synchronously against sample test cases OR against custom standard input provided by the student in the UI editor.
 
 #### Request Headers
+
 ```http
 Authorization: Bearer <access_token>
 Content-Type: application/json
 ```
 
 #### Request Body Schema
+
 ```json
 {
   "language": "python",
@@ -200,9 +209,11 @@ Content-Type: application/json
   "custom_input": "" 
 }
 ```
+
 *(Leave `custom_input` empty or omitted to run against all sample test cases)*
 
 #### Response Example: Running Sample Test Cases (`200 OK`)
+
 ```json
 {
   "success": true,
@@ -237,6 +248,7 @@ Content-Type: application/json
 ```
 
 #### Response Example: Running with Custom Input (`200 OK`)
+
 ```json
 {
   "success": true,
@@ -252,6 +264,7 @@ Content-Type: application/json
 ```
 
 #### Response Example: Compile / Syntax Error (`200 OK`)
+
 ```json
 {
   "success": true,
@@ -266,9 +279,11 @@ Content-Type: application/json
 ### 5.4 POST `/api/code-assessment/problems/{slug}/submit/`
 
 #### Purpose
+
 Submits the solution for official grading. The backend stores a `CodeSubmission` in `queued` status and dispatches background sandbox evaluation.
 
 #### Request Body
+
 ```json
 {
   "language": "python",
@@ -278,6 +293,7 @@ Submits the solution for official grading. The backend stores a `CodeSubmission`
 ```
 
 #### Response Example (`201 Created`)
+
 ```json
 {
   "submission_id": 482,
@@ -292,14 +308,17 @@ Submits the solution for official grading. The backend stores a `CodeSubmission`
 ### 5.5 GET `/api/code-assessment/submissions/{id}/result/`
 
 #### Purpose
+
 Polling endpoint to check submission status and retrieve detailed grading results.
 
 #### Polling Logic
+
 - Poll every **1.5 seconds** while `status === 'queued'` or `status === 'running'`.
 - Stop polling once a terminal status is returned: `accepted`, `wrong_answer`, `compile_error`, `runtime_error`, `time_limit_exceeded`, `memory_limit_exceeded`, `system_error`.
 - Maximum timeout: **30 seconds** (if not completed by 30s, display retry prompt).
 
 #### Response Example: Graded Solution (`200 OK`)
+
 ```json
 {
   "id": 482,
@@ -353,9 +372,11 @@ Polling endpoint to check submission status and retrieve detailed grading result
 ### 5.6 GET `/api/code-assessment/assessments/{slug}/`
 
 #### Purpose
+
 Fetch full assessment information and the list of problems assigned to this assessment.
 
 #### Response Example (`200 OK`)
+
 ```json
 {
   "id": 5,
@@ -407,9 +428,11 @@ Fetch full assessment information and the list of problems assigned to this asse
 ### 5.7 GET `/api/code-assessment/assessments/{slug}/summary/`
 
 #### Purpose
+
 Retrieves a student's aggregate progress, score percentage, and passing status for an assessment.
 
 #### Response Example (`200 OK`)
+
 ```json
 {
   "assessment_id": 5,
@@ -429,13 +452,13 @@ Retrieves a student's aggregate progress, score percentage, and passing status f
 
 ## 6. Supported Programming Languages
 
-| Key | Display Name | Standard Runner Environment |
-| :--- | :--- | :--- |
-| `python` | Python 3 | Python 3.10+ |
-| `javascript` | JavaScript (Node.js) | Node.js 18.x+ |
-| `java` | Java (OpenJDK) | OpenJDK 17 |
-| `cpp` | C++ (GCC) | GCC 11 / C++17 |
-| `c` | C (GCC) | GCC 11 / C11 |
+| Key            | Display Name         | Standard Runner Environment |
+| :------------- | :------------------- | :-------------------------- |
+| `python`     | Python 3             | Python 3.10+                |
+| `javascript` | JavaScript (Node.js) | Node.js 18.x+               |
+| `java`       | Java (OpenJDK)       | OpenJDK 17                  |
+| `cpp`        | C++ (GCC)            | GCC 11 / C++17              |
+| `c`          | C (GCC)              | GCC 11 / C11                |
 
 ---
 
@@ -561,6 +584,7 @@ export interface AssessmentSummary {
 ## 9. Frontend UI & UX Best Practices
 
 ### 9.1 IDE Workspace Layout
+
 - **Split Pane**: Problem statement (Left pane, 40% width) | Code Editor & Terminal (Right pane, 60% width).
 - **Tabs in Terminal Panel**:
   - `Testcase`: Shows sample test cases with an interactive tab for "Custom Testcase".
@@ -570,6 +594,7 @@ export interface AssessmentSummary {
   - `Submit` (Primary green button / Shortcut `Ctrl + Enter` or `Cmd + Enter`): Triggers `POST /submit/` and enters polling modal/state.
 
 ### 9.2 Rate Limiting & Debounce Defenses
+
 1. **Button Disabling**: Immediately disable both `Run` and `Submit` buttons upon click to prevent double-submitting.
 2. **Debounce Polling**: Use exponential or 1.5s interval polling for `/submissions/{id}/result/`. Terminate immediately upon reaching any terminal status (`accepted`, `wrong_answer`, `compile_error`, etc.).
 3. **Payload Guard**: Validate locally before transmission:
@@ -577,6 +602,7 @@ export interface AssessmentSummary {
    - `custom_input.length <= 64 * 1024` (64 KB).
 
 ### 9.3 Security Mandate for Frontend
+
 - **Never attempt to execute code in browser JS to calculate results.**
 - **Never assume a problem is passed until the backend evaluation returns `accepted`.**
 - **Hidden test case answers must never be requested or guessed.**

@@ -11,7 +11,7 @@ def send_webinar_registration_email(registration):
     webinar = registration.webinar
     ist_time = timezone.localtime(webinar.scheduled_start)
     subject = f"Registration Confirmed: {webinar.title}"
-    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://aylms.aryuprojects.com')
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://portal.aryuacademy.com')
 
     html_content = f"""
     <!DOCTYPE html>
@@ -73,11 +73,11 @@ def send_webinar_registration_email(registration):
 
                 <p style="font-size:12px; color:#777777; line-height:1.5;">
                   By participating in this webinar, you agree to our
-                  <a href="https://aylms.aryuprojects.com/terms-and-conditions" style="color:#0d6efd; text-decoration:none;">
+                  <a href="https://portal.aryuacademy.com/terms-and-conditions" style="color:#0d6efd; text-decoration:none;">
                     Terms & Conditions
                   </a>
                   and
-                  <a href="https://aylms.aryuprojects.com/privacy-policy" style="color:#0d6efd; text-decoration:none;">
+                  <a href="https://portal.aryuacademy.com/privacy-policy" style="color:#0d6efd; text-decoration:none;">
                     Privacy Policy
                   </a>.
                 </p>
@@ -104,7 +104,7 @@ def send_webinar_registration_email(registration):
 
 def send_webinar_certificate_email(registration, certificate_file):
     webinar = registration.webinar
-    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://aylms.aryuprojects.com')
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://portal.aryuacademy.com')
 
     subject = f"Certificate of Completion - {webinar.title}"
     from_email = settings.DEFAULT_FROM_EMAIL
@@ -166,11 +166,11 @@ Aryu Academy
 
                   <p style="font-size:12px; color:#777777; line-height:1.5;">
                     By accepting this certificate, you agree to our
-                    <a href="https://aylms.aryuprojects.com/terms-and-conditions" style="color:#781b0d; text-decoration:none;">
+                    <a href="https://portal.aryuacademy.com/terms-and-conditions" style="color:#781b0d; text-decoration:none;">
                       Terms & Conditions
                     </a>
                     and
-                    <a href="https://aylms.aryuprojects.com/privacy-policy" style="color:#781b0d; text-decoration:none;">
+                    <a href="https://portal.aryuacademy.com/privacy-policy" style="color:#781b0d; text-decoration:none;">
                       Privacy Policy
                     </a>.
                   </p>

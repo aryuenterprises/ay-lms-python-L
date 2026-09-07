@@ -92,7 +92,7 @@ def get_resume_cookie_settings(request):
 
     return cookie_domain, cookie_secure, cookie_samesite
 
-BASE_PORTAL_URL = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://aylms.aryuprojects.com').rstrip('/')
+BASE_PORTAL_URL = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
 PASSATS_FRONTEND_URL = getattr(settings, 'PASSATS_FRONTEND_URL', 'https://passats.aryuacademy.com').rstrip('/')
 VERIFY_ENDPOINT = f"{BASE_PORTAL_URL}/api/resume/auth/verify-email/"
 LOGIN_SUCCESS_REDIRECT = f"{PASSATS_FRONTEND_URL}/login?verified=true"
@@ -113,7 +113,7 @@ def build_portal_verify_link(request, token):
     if getattr(settings, 'DEBUG', False):
         return f"http://localhost:8000/api/resume/auth/verify-email/?token={token}"
 
-    base_portal = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://aylms.aryuprojects.com').rstrip('/')
+    base_portal = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
     return f"{base_portal}/api/resume/auth/verify-email/?token={token}"
 
 def decode_verification_token(raw_token):
@@ -1064,7 +1064,7 @@ class AuthViewSet(viewsets.ViewSet):
             # SEND EMAIL
             email_message = EmailMultiAlternatives(
                 subject=f"{first_name}, complete your Pass ATS registration",
-                body=f"Hello {first_name},\n\nPlease verify your PassATS account:\n\n{verification_link}\n\nWebsite:\nhttps://aylms.aryuprojects.com\n",
+                body=f"Hello {first_name},\n\nPlease verify your PassATS account:\n\n{verification_link}\n\nWebsite:\nhttps://portal.aryuacademy.com\n",
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 to=[user.email],
             )
@@ -1572,7 +1572,7 @@ class AuthViewSet(viewsets.ViewSet):
                   Product of
 
                   <a
-                    href="https://aylms.aryuprojects.com"
+                    href="https://portal.aryuacademy.com"
                     style="
                       color: #005aef;
                       text-decoration: none;

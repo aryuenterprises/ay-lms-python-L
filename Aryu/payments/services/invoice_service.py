@@ -1,7 +1,13 @@
 import io
-import os
+import ipaddress
 import logging
+import os
+import shutil
+import socket
+import subprocess
+import tempfile
 from decimal import Decimal, ROUND_HALF_UP
+from urllib.parse import urlparse, unquote
 
 from django.conf import settings
 from django.core.files.base import ContentFile
@@ -15,25 +21,239 @@ from num2words import num2words
 from aryuapp.models import Settings
 from payments.models import PaymentTransaction
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("payments")
+
+
+def _safe_weasyprint_url_fetcher(url, timeout=5, ssl_context=None):
+    """
+    Security-hardened URL fetcher for WeasyPrint.
+    - Blocks arbitrary local file read by constraining paths strictly to MEDIA_ROOT, STATIC_ROOT, BASE_DIR.
+    - Blocks SSRF by refusing requests to loopback, link-local, private RFC1918, and multicast IP ranges.
+    - Permits valid data: URIs and public media URLs.
+    """
+    from weasyprint import default_url_fetcher
+
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+
+    if scheme == "data":
+        return default_url_fetcher(url, timeout=timeout, ssl_context=ssl_context)
+
+    if scheme in ("file", ""):
+        path = unquote(parsed.path or url)
+        real_path = os.path.realpath(path)
+        allowed_dirs = [
+            os.path.realpath(settings.MEDIA_ROOT),
+            os.path.realpath(settings.BASE_DIR),
+        ]
+        static_root = getattr(settings, "STATIC_ROOT", None)
+        if static_root:
+            allowed_dirs.append(os.path.realpath(static_root))
+
+        is_allowed = any(
+            real_path == allowed_dir or real_path.startswith(allowed_dir + os.sep)
+            for allowed_dir in allowed_dirs
+        )
+        if not is_allowed:
+            logger.warning(
+                "Blocked unauthorized local file access during PDF rendering: %s",
+                os.path.basename(real_path)
+            )
+            raise PermissionError("Access to unauthorized file path is forbidden.")
+
+        return default_url_fetcher(f"file://{real_path}", timeout=timeout, ssl_context=ssl_context)
+
+    if scheme in ("http", "https"):
+        hostname = parsed.hostname
+        if not hostname:
+            raise PermissionError("Invalid URL hostname in PDF rendering.")
+
+        # Block localhost / link-local / private IPs (SSRF protection)
+        try:
+            ip = ipaddress.ip_address(hostname)
+        except ValueError:
+            try:
+                ip_str = socket.gethostbyname(hostname)
+                ip = ipaddress.ip_address(ip_str)
+            except Exception:
+                ip = None
+
+        if ip and (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast):
+            logger.warning("Blocked SSRF attempt to internal network during PDF generation.")
+            raise PermissionError("Network access to private/internal addresses is forbidden.")
+
+        return default_url_fetcher(url, timeout=min(timeout or 5, 5), ssl_context=ssl_context)
+
+    raise PermissionError(f"URL scheme '{scheme}' is forbidden in PDF rendering.")
+
+
+def _find_browser_binary():
+    """
+    Locates an existing headless Chromium / Chrome browser binary in the deployment environment.
+    Priority:
+    1. Environment variables CHROME_BIN, CHROMIUM_PATH
+    2. System PATH (chrome-headless-shell, chromium, chromium-browser, google-chrome-stable, google-chrome)
+    3. Playwright browser cache (~/.cache/ms-playwright, PLAYWRIGHT_BROWSERS_PATH)
+    4. Playwright Python executable_path if available
+    """
+    env_bin = os.environ.get("CHROME_BIN") or os.environ.get("CHROMIUM_PATH")
+    if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
+        return env_bin
+
+    for name in ("chrome-headless-shell", "chromium", "chromium-browser", "google-chrome-stable", "google-chrome"):
+        bin_path = shutil.which(name)
+        if bin_path:
+            try:
+                resolved = os.path.realpath(bin_path)
+                if os.path.isfile(resolved) and os.access(resolved, os.X_OK):
+                    return resolved
+            except OSError:
+                continue
+
+    cache_dirs = [
+        os.path.expanduser("~/.cache/ms-playwright"),
+        "/root/.cache/ms-playwright",
+    ]
+    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        cache_dirs.insert(0, os.environ["PLAYWRIGHT_BROWSERS_PATH"])
+
+    candidates = []
+    for cache_dir in cache_dirs:
+        if os.path.isdir(cache_dir):
+            for root, _, files in os.walk(cache_dir):
+                for f in files:
+                    if f in ("chrome-headless-shell", "chrome"):
+                        full_path = os.path.join(root, f)
+                        if os.access(full_path, os.X_OK):
+                            priority = 0 if f == "chrome-headless-shell" else 1
+                            candidates.append((priority, full_path))
+    if candidates:
+        candidates.sort(key=lambda x: x[0])
+        return candidates[0][1]
+
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            pw_path = p.chromium.executable_path
+            if pw_path and os.path.isfile(pw_path) and os.access(pw_path, os.X_OK):
+                return pw_path
+    except Exception:
+        pass
+
+    return None
+
+
+def _render_with_browser(html_string, timeout=30):
+    """
+    Renders HTML to PDF using a headless Chromium subprocess.
+    Production requirements:
+    - Safe subprocess: shell=False, strict argument list.
+    - Script execution disabled (--disable-javascript) for security.
+    - No GPU, isolated memory (--disable-dev-shm-usage, --disable-gpu).
+    - Resource timeout to prevent hangs.
+    - Strict tempfile management with cleanup in finally block.
+    """
+    browser_bin = _find_browser_binary()
+    if not browser_bin:
+        raise RuntimeError(
+            "Headless browser binary not found in deployment environment. "
+            "Please configure CHROME_BIN or install chromium / playwright."
+        )
+
+    temp_dir = tempfile.mkdtemp(prefix="invoice_pdf_")
+    html_path = os.path.join(temp_dir, "input.html")
+    pdf_path = os.path.join(temp_dir, "output.pdf")
+
+    try:
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html_string)
+
+        cmd = [
+            browser_bin,
+            "--headless",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-crash-reporter",
+            "--disable-javascript",
+            "--disable-background-networking",
+            "--disable-extensions",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--mute-audio",
+            "--hide-scrollbars",
+            f"--print-to-pdf={pdf_path}",
+            html_path,
+        ]
+
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            shell=False,
+            check=False,
+        )
+
+        if proc.returncode != 0:
+            err_msg = proc.stderr.decode("utf-8", errors="replace")[:300] if proc.stderr else ""
+            raise RuntimeError(
+                f"Headless browser exited with code {proc.returncode}: {err_msg.strip()}"
+            )
+
+        if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
+            raise RuntimeError("Headless browser finished without generating a valid PDF file.")
+
+        with open(pdf_path, "rb") as f:
+            return f.read()
+
+    finally:
+        try:
+            if os.path.exists(html_path):
+                os.unlink(html_path)
+            if os.path.exists(pdf_path):
+                os.unlink(pdf_path)
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        except OSError as cleanup_err:
+            logger.warning(f"Error cleaning up temporary PDF resources: {cleanup_err}")
 
 
 def render_pdf(html_string, base_url=None):
+    """
+    Renders HTML to PDF using WeasyPrint with secure headless browser fallback.
+    xhtml2pdf / pisa has been completely eliminated.
+    """
+    if not html_string or not html_string.strip():
+        raise ValueError("HTML content must not be empty.")
+
+    max_bytes = getattr(settings, "PDF_MAX_HTML_BYTES", 10 * 1024 * 1024)
+    if len(html_string.encode("utf-8")) > max_bytes:
+        raise ValueError(f"HTML payload exceeds maximum allowed size ({max_bytes // (1024 * 1024)} MB).")
+
+    # Primary: WeasyPrint with security-hardened URL fetcher
     try:
         from weasyprint import HTML
-        return HTML(string=html_string, base_url=base_url or settings.BASE_DIR).write_pdf()
-    except Exception as e:
-        logger.warning(f"WeasyPrint PDF rendering failed, attempting xhtml2pdf fallback: {e}")
-        try:
-            from xhtml2pdf import pisa
-            result = io.BytesIO()
-            pisa_status = pisa.CreatePDF(io.BytesIO(html_string.encode("UTF-8")), dest=result)
-            if pisa_status.err:
-                raise Exception(f"xhtml2pdf error code: {pisa_status.err}")
-            return result.getvalue()
-        except Exception as fallback_err:
-            logger.error(f"Both WeasyPrint and xhtml2pdf failed: {fallback_err}")
-            raise fallback_err
+        return HTML(
+            string=html_string,
+            base_url=base_url or settings.BASE_DIR,
+            url_fetcher=_safe_weasyprint_url_fetcher,
+        ).write_pdf()
+    except Exception as wp_err:
+        logger.warning(
+            "Primary WeasyPrint PDF rendering failed, attempting headless browser fallback: %s",
+            wp_err.__class__.__name__
+        )
+
+    # Fallback: Headless Chromium browser renderer
+    try:
+        return _render_with_browser(html_string, timeout=30)
+    except Exception as browser_err:
+        logger.error(
+            "Both WeasyPrint and headless browser fallback failed for PDF rendering: %s",
+            browser_err.__class__.__name__
+        )
+        raise RuntimeError(f"PDF rendering failed across all engines: {browser_err}") from browser_err
 
 
 class InvoiceService:

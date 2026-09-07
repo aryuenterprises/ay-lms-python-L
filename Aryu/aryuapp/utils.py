@@ -182,7 +182,7 @@ def send_otp_email(email, otp):
 
 
 def send_welcome_email(student,plain_password):
-    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://aylms.aryuprojects.com')
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://portal.aryuacademy.com')
     subject = f"🎉 Welcome {student.first_name}! Your Aryu Academy Journey Begins 🚀"
     from_email = settings.DEFAULT_FROM_EMAIL
     to = [student.email]
@@ -193,7 +193,7 @@ Hi {student.first_name},
 Welcome to Aryu Academy! 🎓 We are thrilled to have you join our learning community.
 
 👉 Use the button below to log in and start your journey:
-https://aylms.aryuprojects.com/dashboard
+https://portal.aryuacademy.com/dashboard
 
 📞 For queries, call us at 9685741253.
 
@@ -245,7 +245,7 @@ Team Aryu Academy
 
             <!-- Smaller button -->
             <div style="text-align:center; margin:18px 0;">
-            <a href="https://aylms.aryuprojects.com/dashboard"
+            <a href="https://portal.aryuacademy.com/dashboard"
                 style="display:inline-block; background:linear-gradient(45deg,#b22222,#8b0000);
                         color:#fff; padding:8px 18px; font-size:14px; font-weight:bold;
                         border-radius:6px; text-decoration:none;">

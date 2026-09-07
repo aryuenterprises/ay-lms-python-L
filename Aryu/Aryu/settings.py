@@ -353,7 +353,7 @@ SOCIALACCOUNT_PROVIDERS = {
 
 FASTAPI_URL="https://ai.aryuacademy.com"
 
-TELECRM_TOKEN="2b5fa0b5-b45c-4150-ab6f-09a001575ca01779800797507:0d16d31d-e820-45fa-aafc-869ef640917d"
+TELECRM_TOKEN="244caf30-9bba-4181-a527-c9ce8cedf6811788595808441:86d15a1c-642a-47b8-a35e-6361b158a27a"
 TELECRM_ID="6a13da730fbcb752673e080c"
 TELECRM_API = "https://next-api.telecrm.in"
 
@@ -467,7 +467,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
     "https://portal.aryuacademy.com",
 ]
@@ -480,7 +480,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
     "https://portal.aryuacademy.com",
 
@@ -811,7 +811,7 @@ LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'Asia/Kolkata'
 
-FRONTEND_URL = 'https://aylms.aryuprojects.com'
+FRONTEND_URL = 'https://portal.aryuacademy.com'
 PORTAL_FRONTEND_URL = FRONTEND_URL
 SITE_URL = FRONTEND_URL
 
