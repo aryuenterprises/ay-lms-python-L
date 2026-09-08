@@ -55,7 +55,12 @@ import os
 import requests
 from django.conf import settings
 from .tasks import send_verification_email
-from .pdf_generator import PDFGenerationError, PDFGeneratorService, GeneratePDFSerializer
+from .pdf_generator import (
+    PDFGenerationError,
+    PDFGeneratorService,
+    GeneratePDFSerializer,
+    GenerateResumePDFView,
+)
 import traceback
 
 logger = logging.getLogger(__name__)
@@ -538,6 +543,7 @@ class AuthViewSet(viewsets.ViewSet):
                         width: 200px;
                         max-width: 90%;
                         height: auto;
+                        color: #996ae3;
                         display: block;
                         margin: 0 auto;
                     " />
@@ -727,7 +733,7 @@ class AuthViewSet(viewsets.ViewSet):
             # EMAIL SEND
             # =========================================
 
-            subject = f"{user.first_name}, verify your PassAts account"
+            subject = f"{user.first_name}, Verify your PassATS Account"
             body = f"Please verify your account: {verification_link}"
 
             logger = logging.getLogger(__name__)
@@ -877,6 +883,7 @@ class AuthViewSet(viewsets.ViewSet):
                     max-width: 90%;
                     height: auto;
                     display: block;
+                    color: #996ae3;
                     margin: 0 auto;
                   " />
 
@@ -4486,65 +4493,3 @@ class PaymentHistoryViewset(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
-    
-class GenerateResumePDFView(APIView):
- 
-    parser_classes = [JSONParser]
-    permission_classes = [permissions.IsAuthenticated]
- 
-    def post(self, request) -> HttpResponse:
-        serializer = GeneratePDFSerializer(data=request.data)
-        if not serializer.is_valid():
-            return HttpResponse(
-                content=serializer.errors,
-                content_type="application/json",
-                status=status.HTTP_400_BAD_REQUEST,
-            )
- 
-        html_content: str = serializer.validated_data["html"]
- 
-        t_start = time.perf_counter()
-        try:
-            service = PDFGeneratorService()
-            pdf_bytes = service.generate_pdf(html_content)
-        except PDFGenerationError as exc:
-            logger.error(
-                "PDF generation error for user %s: %s",
-                getattr(request.user, "pk", "anonymous"),
-                exc,
-            )
-            return HttpResponse(
-                content={"detail": str(exc)},
-                content_type="application/json",
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        except Exception as exc:
-            logger.exception(
-                "Unexpected PDF generation failure for user %s",
-                getattr(request.user, "pk", "anonymous"),
-            )
-            return HttpResponse(
-                content={"detail": "An unexpected error occurred while generating the PDF."},
-                content_type="application/json",
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        finally:
-            elapsed = time.perf_counter() - t_start
-            logger.info(
-                "PDF generation completed in %.2fs for user %s",
-                elapsed,
-                getattr(request.user, "pk", "anonymous"),
-            )
- 
-        response = HttpResponse(
-            content=pdf_bytes,
-            content_type="application/pdf",
-            status=status.HTTP_200_OK,
-        )
-        response["Content-Disposition"] = 'attachment; filename="resume.pdf"'
-        response["Content-Length"] = len(pdf_bytes)
-        # Prevent CDN/proxy caching of personal resumes
-        response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response["X-Content-Type-Options"] = "nosniff"
-        return response
-        

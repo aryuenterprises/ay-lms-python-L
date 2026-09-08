@@ -11,13 +11,16 @@ from datetime import timedelta
 
 class AutoLogoutMiddleware(MiddlewareMixin):
     def process_request(self, request):
-        last_cleared = cache.get("last_auto_logout")
-        current_time = now()
+        try:
+            last_cleared = cache.get("last_auto_logout")
+            current_time = now()
 
-        # If cache is empty or 30 minutes passed since last clear
-        if not last_cleared or (current_time - last_cleared) >= timedelta(minutes=30):
-            Session.objects.all().delete()
-            cache.set("last_auto_logout", current_time, timeout=1800)  # 30 minutes
+            # If cache is empty or 30 minutes passed since last clear
+            if not last_cleared or (current_time - last_cleared) >= timedelta(minutes=30):
+                Session.objects.all().delete()
+                cache.set("last_auto_logout", current_time, timeout=1800)  # 30 minutes
+        except Exception:
+            pass
 
         return None
 
