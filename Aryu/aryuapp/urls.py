@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import *
 from django.conf.urls.static import static
-
+# cmt
 urlpatterns = [
    path('settings', SettingsViewSet.as_view({'get': 'list', 'post': 'create', 'patch': 'partial_update', 'put': 'update'})),
    path('pics', SettingsPicsViewSet.as_view({'get': 'list'})),
@@ -106,6 +106,7 @@ urlpatterns = [
    path('replies/<int:pk>/archive', SubmissionReplyViewSet.as_view({'patch': 'is_archived'}), name='reply-archive'),
    path('replies/<int:submission_id>', SubmissionReplyViewSet.as_view({'get': 'list', 'post': 'create'}), name='replies-by-submission'),
    path('alllogs', AdminfullLogViewSet.as_view({'get': 'list'})),
+   # path("tickets/", StudentTicketViewSet.as_view(), name="tickets"),
    path("tickets/", StudentTicketViewSet.as_view(), name="tickets"),
 
    ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
