@@ -497,7 +497,7 @@ ALLOWED_HOSTS = [
     "aylms.aryuprojects.com",
     "ayanew.aryuprojects.com",
     "portal.aryuacademy.com",
-    "portal.aryuacademy.com",
+    "aylms.aryuprojects.com",
 ]  # Allow all hosts for development; change in production
 
 
@@ -519,6 +519,12 @@ CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
     'X-CSRFToken',
+    'Cache-Control',
+    'Pragma',
+    'X-Refresh-Token',
+    'cache-control',
+    'pragma',
+    'x-refresh-token',
 ]
 CORS_EXPOSE_HEADERS = ['Content-Type', 'X-CSRFToken']
 

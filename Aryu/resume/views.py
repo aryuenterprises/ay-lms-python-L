@@ -68,27 +68,37 @@ User = get_user_model()
 SIGNING_SALT = "resume-email-verification"
 
 RESUME_REFRESH_COOKIE_NAME = "refresh_token"
-RESUME_REFRESH_COOKIE_PATH = "/api/resume/token/refresh/"
+RESUME_REFRESH_COOKIE_PATH = "/api/resume/"
+RESUME_LEGACY_REFRESH_COOKIE_PATH = "/api/resume/token/refresh/"
 
 def get_resume_cookie_settings(request):
     """
     Returns (domain, secure, samesite) for resume auth cookies.
     """
     origin = request.headers.get("Origin", "") if request else ""
-    LOCAL_ORIGINS = {
-        "http://localhost:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "http://192.168.0.139:8081",
-    }
-    if origin in LOCAL_ORIGINS or (getattr(settings, "DEBUG", False) and not origin):
+    host = request.get_host().split(":")[0] if request else ""
+
+    is_local = (
+        "localhost" in origin
+        or "127.0.0.1" in origin
+        or "localhost" in host
+        or "127.0.0.1" in host
+        or (getattr(settings, "DEBUG", False) and not ("aryuacademy.com" in origin or "aryuacademy.com" in host))
+    )
+
+    if is_local:
         cookie_domain = None
         cookie_secure = False
         cookie_samesite = "Lax"
-    else:
+    elif "aryuacademy.com" in origin or "aryuacademy.com" in host:
         cookie_domain = ".aryuacademy.com"
         cookie_secure = True
         cookie_samesite = "None"
+    else:
+        cookie_domain = None
+        is_https = (request.is_secure() if request else False) or (request and request.headers.get("X-Forwarded-Proto") == "https")
+        cookie_secure = is_https
+        cookie_samesite = "None" if is_https else "Lax"
 
     return cookie_domain, cookie_secure, cookie_samesite
 
@@ -369,6 +379,10 @@ def verify_email(request):
 class AuthViewSet(viewsets.ViewSet): 
 
     permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get_authenticate_header(self, request):
+        return 'Bearer realm="api"'
 
     # =========================
     # VALIDATORS
@@ -1263,6 +1277,13 @@ class AuthViewSet(viewsets.ViewSet):
             domain=cookie_domain,
             samesite=cookie_samesite,
         )
+        if RESUME_LEGACY_REFRESH_COOKIE_PATH != RESUME_REFRESH_COOKIE_PATH:
+            response.delete_cookie(
+                key=RESUME_REFRESH_COOKIE_NAME,
+                path=RESUME_LEGACY_REFRESH_COOKIE_PATH,
+                domain=cookie_domain,
+                samesite=cookie_samesite,
+            )
 
         return response
     
@@ -1888,7 +1909,11 @@ class AuthViewSet(viewsets.ViewSet):
 
 class CustomTokenRefreshView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     serializer_class = CustomTokenRefreshSerializer
+
+    def get_authenticate_header(self, request):
+        return 'Bearer realm="api"'
 
     def post(self, request, *args, **kwargs):
         # 1. Extract the token from request payload (body / headers) or cookie
@@ -1942,6 +1967,13 @@ class CustomTokenRefreshView(APIView):
                 httponly=True,              # Keeps XSS defense completely locked down
                 samesite=cookie_samesite,
             )
+            if RESUME_LEGACY_REFRESH_COOKIE_PATH != RESUME_REFRESH_COOKIE_PATH:
+                response.delete_cookie(
+                    key=RESUME_REFRESH_COOKIE_NAME,
+                    path=RESUME_LEGACY_REFRESH_COOKIE_PATH,
+                    domain=cookie_domain,
+                    samesite=cookie_samesite,
+                )
 
         return response
 

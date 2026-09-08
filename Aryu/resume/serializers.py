@@ -67,7 +67,7 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
 
     def validate(self, attrs):
         # 1. Grab the token string passed from the view
-        refresh_token_string = attrs.get("refresh")
+        refresh_token_string = attrs.get("refresh") or attrs.get("refresh_token")
 
         if not refresh_token_string:
             raise AuthenticationFailed("Refresh token is required.")
