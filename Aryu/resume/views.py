@@ -55,7 +55,12 @@ import os
 import requests
 from django.conf import settings
 from .tasks import send_verification_email
-from .pdf_generator import PDFGenerationError, PDFGeneratorService, GeneratePDFSerializer
+from .pdf_generator import (
+    PDFGenerationError,
+    PDFGeneratorService,
+    GeneratePDFSerializer,
+    GenerateResumePDFView,
+)
 import traceback
 
 logger = logging.getLogger(__name__)
@@ -68,41 +73,31 @@ User = get_user_model()
 SIGNING_SALT = "resume-email-verification"
 
 RESUME_REFRESH_COOKIE_NAME = "refresh_token"
-RESUME_REFRESH_COOKIE_PATH = "/api/resume/"
-RESUME_LEGACY_REFRESH_COOKIE_PATH = "/api/resume/token/refresh/"
+RESUME_REFRESH_COOKIE_PATH = "/api/resume/token/refresh/"
 
 def get_resume_cookie_settings(request):
     """
     Returns (domain, secure, samesite) for resume auth cookies.
     """
     origin = request.headers.get("Origin", "") if request else ""
-    host = request.get_host().split(":")[0] if request else ""
-
-    is_local = (
-        "localhost" in origin
-        or "127.0.0.1" in origin
-        or "localhost" in host
-        or "127.0.0.1" in host
-        or (getattr(settings, "DEBUG", False) and not ("aryuacademy.com" in origin or "aryuacademy.com" in host))
-    )
-
-    if is_local:
+    LOCAL_ORIGINS = {
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://192.168.0.139:8081",
+    }
+    if origin in LOCAL_ORIGINS or (getattr(settings, "DEBUG", False) and not origin):
         cookie_domain = None
         cookie_secure = False
         cookie_samesite = "Lax"
-    elif "aryuacademy.com" in origin or "aryuacademy.com" in host:
+    else:
         cookie_domain = ".aryuacademy.com"
         cookie_secure = True
         cookie_samesite = "None"
-    else:
-        cookie_domain = None
-        is_https = (request.is_secure() if request else False) or (request and request.headers.get("X-Forwarded-Proto") == "https")
-        cookie_secure = is_https
-        cookie_samesite = "None" if is_https else "Lax"
 
     return cookie_domain, cookie_secure, cookie_samesite
 
-BASE_PORTAL_URL = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://aylms.aryuprojects.com').rstrip('/')
+BASE_PORTAL_URL = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
 PASSATS_FRONTEND_URL = getattr(settings, 'PASSATS_FRONTEND_URL', 'https://passats.aryuacademy.com').rstrip('/')
 VERIFY_ENDPOINT = f"{BASE_PORTAL_URL}/api/resume/auth/verify-email/"
 LOGIN_SUCCESS_REDIRECT = f"{PASSATS_FRONTEND_URL}/login?verified=true"
@@ -123,7 +118,7 @@ def build_portal_verify_link(request, token):
     if getattr(settings, 'DEBUG', False):
         return f"http://localhost:8000/api/resume/auth/verify-email/?token={token}"
 
-    base_portal = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://aylms.aryuprojects.com').rstrip('/')
+    base_portal = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
     return f"{base_portal}/api/resume/auth/verify-email/?token={token}"
 
 def decode_verification_token(raw_token):
@@ -379,10 +374,6 @@ def verify_email(request):
 class AuthViewSet(viewsets.ViewSet): 
 
     permission_classes = [AllowAny]
-    authentication_classes = []
-
-    def get_authenticate_header(self, request):
-        return 'Bearer realm="api"'
 
     # =========================
     # VALIDATORS
@@ -552,6 +543,7 @@ class AuthViewSet(viewsets.ViewSet):
                         width: 200px;
                         max-width: 90%;
                         height: auto;
+                        color: #996ae3;
                         display: block;
                         margin: 0 auto;
                     " />
@@ -741,7 +733,7 @@ class AuthViewSet(viewsets.ViewSet):
             # EMAIL SEND
             # =========================================
 
-            subject = f"{user.first_name}, verify your PassAts account"
+            subject = f"{user.first_name}, Verify your PassATS Account"
             body = f"Please verify your account: {verification_link}"
 
             logger = logging.getLogger(__name__)
@@ -891,6 +883,7 @@ class AuthViewSet(viewsets.ViewSet):
                     max-width: 90%;
                     height: auto;
                     display: block;
+                    color: #996ae3;
                     margin: 0 auto;
                   " />
 
@@ -1078,7 +1071,7 @@ class AuthViewSet(viewsets.ViewSet):
             # SEND EMAIL
             email_message = EmailMultiAlternatives(
                 subject=f"{first_name}, complete your Pass ATS registration",
-                body=f"Hello {first_name},\n\nPlease verify your PassATS account:\n\n{verification_link}\n\nWebsite:\nhttps://aylms.aryuprojects.com\n",
+                body=f"Hello {first_name},\n\nPlease verify your PassATS account:\n\n{verification_link}\n\nWebsite:\nhttps://portal.aryuacademy.com\n",
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 to=[user.email],
             )
@@ -1277,13 +1270,6 @@ class AuthViewSet(viewsets.ViewSet):
             domain=cookie_domain,
             samesite=cookie_samesite,
         )
-        if RESUME_LEGACY_REFRESH_COOKIE_PATH != RESUME_REFRESH_COOKIE_PATH:
-            response.delete_cookie(
-                key=RESUME_REFRESH_COOKIE_NAME,
-                path=RESUME_LEGACY_REFRESH_COOKIE_PATH,
-                domain=cookie_domain,
-                samesite=cookie_samesite,
-            )
 
         return response
     
@@ -1593,7 +1579,7 @@ class AuthViewSet(viewsets.ViewSet):
                   Product of
 
                   <a
-                    href="https://aylms.aryuprojects.com"
+                    href="https://portal.aryuacademy.com"
                     style="
                       color: #005aef;
                       text-decoration: none;
@@ -1909,11 +1895,7 @@ class AuthViewSet(viewsets.ViewSet):
 
 class CustomTokenRefreshView(APIView):
     permission_classes = [AllowAny]
-    authentication_classes = []
     serializer_class = CustomTokenRefreshSerializer
-
-    def get_authenticate_header(self, request):
-        return 'Bearer realm="api"'
 
     def post(self, request, *args, **kwargs):
         # 1. Extract the token from request payload (body / headers) or cookie
@@ -1967,13 +1949,6 @@ class CustomTokenRefreshView(APIView):
                 httponly=True,              # Keeps XSS defense completely locked down
                 samesite=cookie_samesite,
             )
-            if RESUME_LEGACY_REFRESH_COOKIE_PATH != RESUME_REFRESH_COOKIE_PATH:
-                response.delete_cookie(
-                    key=RESUME_REFRESH_COOKIE_NAME,
-                    path=RESUME_LEGACY_REFRESH_COOKIE_PATH,
-                    domain=cookie_domain,
-                    samesite=cookie_samesite,
-                )
 
         return response
 
@@ -4518,65 +4493,3 @@ class PaymentHistoryViewset(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
-    
-class GenerateResumePDFView(APIView):
- 
-    parser_classes = [JSONParser]
-    permission_classes = [permissions.IsAuthenticated]
- 
-    def post(self, request) -> HttpResponse:
-        serializer = GeneratePDFSerializer(data=request.data)
-        if not serializer.is_valid():
-            return HttpResponse(
-                content=serializer.errors,
-                content_type="application/json",
-                status=status.HTTP_400_BAD_REQUEST,
-            )
- 
-        html_content: str = serializer.validated_data["html"]
- 
-        t_start = time.perf_counter()
-        try:
-            service = PDFGeneratorService()
-            pdf_bytes = service.generate_pdf(html_content)
-        except PDFGenerationError as exc:
-            logger.error(
-                "PDF generation error for user %s: %s",
-                getattr(request.user, "pk", "anonymous"),
-                exc,
-            )
-            return HttpResponse(
-                content={"detail": str(exc)},
-                content_type="application/json",
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        except Exception as exc:
-            logger.exception(
-                "Unexpected PDF generation failure for user %s",
-                getattr(request.user, "pk", "anonymous"),
-            )
-            return HttpResponse(
-                content={"detail": "An unexpected error occurred while generating the PDF."},
-                content_type="application/json",
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        finally:
-            elapsed = time.perf_counter() - t_start
-            logger.info(
-                "PDF generation completed in %.2fs for user %s",
-                elapsed,
-                getattr(request.user, "pk", "anonymous"),
-            )
- 
-        response = HttpResponse(
-            content=pdf_bytes,
-            content_type="application/pdf",
-            status=status.HTTP_200_OK,
-        )
-        response["Content-Disposition"] = 'attachment; filename="resume.pdf"'
-        response["Content-Length"] = len(pdf_bytes)
-        # Prevent CDN/proxy caching of personal resumes
-        response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response["X-Content-Type-Options"] = "nosniff"
-        return response
-        
