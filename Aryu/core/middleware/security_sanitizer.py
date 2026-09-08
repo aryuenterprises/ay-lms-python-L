@@ -22,6 +22,7 @@ RICH_TEXT_ALLOWED_TAGS = [
     "hr",
 ]
 
+ 
 RICH_TEXT_ALLOWED_ATTRIBUTES = {
     "a": ["href", "title", "target", "rel"],
     "span": ["class", "contenteditable"],

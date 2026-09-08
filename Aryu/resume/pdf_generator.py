@@ -337,6 +337,7 @@ class PDFGeneratorService:
             max_mb = _MAX_HTML_BYTES // (1024 * 1024)
             raise PDFGenerationError(f"HTML payload exceeds maximum size ({max_mb} MB).")
 
+
     def _sanitize_html(self, html: str) -> str:
         try:
             html = _DANGEROUS_BLOCK_ELEMENTS_REGEX.sub("", html)
