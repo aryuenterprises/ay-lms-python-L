@@ -18,6 +18,8 @@ urlpatterns = [
     path("auth/verify-reset-otp/",AuthViewSet.as_view({"post": "verify_reset_otp"}),name="verify_reset_otp"),
     path("auth/reset-password/",AuthViewSet.as_view({"post": "reset_password"}),name="reset_password"),
 
+    path("auth/google-login/", AuthViewSet.as_view({"post": "google_login"}), name="google-login"),
+
     #dashboard
     path('dashboard', UserDashboardView.as_view(), name='user-dashboard'),
 
