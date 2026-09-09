@@ -132,7 +132,7 @@ ZOOM_TOKEN="7oD_nvdHT3Cia3ChbahPLw"
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://:35l1VUx9@49.207.178.161:6379/0",
+        "LOCATION": "redis://127.0.0.1:6379/0",
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         }
@@ -143,7 +143,7 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": ["redis://:35l1VUx9@49.207.178.161:6379/1"],
+            "hosts": ["redis://127.0.0.1:6379/1"],
             "capacity": 1500,
             "expiry": 10,
         },
@@ -153,8 +153,8 @@ CHANNEL_LAYERS = {
 # CELERY_BROKER_URL = "redis://127.0.0.1:6379/2"
 # CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/4"
 
-CELERY_BROKER_URL = "redis://:35l1VUx9@49.207.178.161:6379/3"
-CELERY_RESULT_BACKEND = "redis://:35l1VUx9@49.207.178.161:6379/5"
+CELERY_BROKER_URL = "redis://127.0.0.1:6379/3"
+CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/5"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
@@ -740,7 +740,7 @@ else:
             'NAME': 'aylms_live',  
             'USER': 'aylms_live',
             'PASSWORD':'KfdW543FDdfg',
-            'HOST': '187.127.178.144',   
+            'HOST': '127.0.0.1',   
             'PORT': '5432',  
             'AUTOCOMMIT': True,
             'CONN_MAX_AGE': 60,
