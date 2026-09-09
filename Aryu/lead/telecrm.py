@@ -24,7 +24,7 @@ logger = logging.getLogger("leads")
 # Fallback credentials matching settings.py
 DEFAULT_TELECRM_API = "https://next-api.telecrm.in"
 DEFAULT_TELECRM_ID = "6a13da730fbcb752673e080c"
-DEFAULT_TELECRM_TOKEN = "244caf30-9bba-4181-a527-c9ce8cedf6811788595808441:86d15a1c-642a-47b8-a35e-6361b158a27a"
+DEFAULT_TELECRM_TOKEN = "39843dff-b661-41c7-89fb-f15df2e8ff6b1788957320815:ba9c4edd-0f75-450f-8516-2f1d97a67a14"
 DEFAULT_TIMEOUT = 10
 
 

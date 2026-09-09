@@ -353,13 +353,13 @@ SOCIALACCOUNT_PROVIDERS = {
 
 FASTAPI_URL="https://ai.aryuacademy.com"
 
-TELECRM_TOKEN="244caf30-9bba-4181-a527-c9ce8cedf6811788595808441:86d15a1c-642a-47b8-a35e-6361b158a27a"
+TELECRM_TOKEN="39843dff-b661-41c7-89fb-f15df2e8ff6b1788957320815:ba9c4edd-0f75-450f-8516-2f1d97a67a14"
 TELECRM_ID="6a13da730fbcb752673e080c"
 TELECRM_API = "https://next-api.telecrm.in"
 
 
 
-SERVER_ROOT = Path("/var/www/ay-lms-python-L") if Path("/var/www/ay-lms-python-L/logs").exists() else BASE_DIR.parent
+SERVER_ROOT = Path("/var/www/ay-lms-python-L/logs") if Path("/var/www/ay-lms-python-L/logs").exists() else BASE_DIR.parent
 # SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L") if Path("/home/aryu_user/Arun/ay-lms-python-L/logs").exists() else BASE_DIR.parent
 # SERVER_ROOT = Path("/var/www/python-staging") if Path("/var/www/python-staging/logs").exists() else BASE_DIR.parent
 
