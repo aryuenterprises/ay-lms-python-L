@@ -23,7 +23,7 @@ pipeline {
                         env.VENV_PY  = "/var/www/ay-lms-python-L/venv/bin/python"
                         env.VENV_PIP = "/var/www/ay-lms-python-L/venv/bin/pip"
 
-                        env.SERVICE_NAME = "aylms.service"
+                        env.SERVICE_NAME = "aylms-uvicorn.service"
 
                     } else if (env.BRANCH_NAME == "staging") {
 
