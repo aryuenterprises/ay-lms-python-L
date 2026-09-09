@@ -9,7 +9,7 @@ from core.views import secure_throttle
 from django.contrib.auth.hashers import make_password, check_password
 from django.conf import settings
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from urllib.parse import quote, unquote
@@ -34,6 +34,8 @@ from django.core import signing
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 from django.shortcuts import redirect
 from datetime import timedelta
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token
 from django.contrib.auth.hashers import (
     make_password,
     check_password
@@ -45,20 +47,25 @@ from io import BytesIO
 from django.http import FileResponse
 import logging
 from rest_framework.exceptions import ValidationError
-# from weasyprint import HTML, CSS
+from weasyprint import HTML, CSS
 from django.db.models import Q
 from django.utils.timezone import now
-# from celery import shared_task
+from celery import shared_task
 from collections import defaultdict
 import time
 import os
 import requests
 from django.conf import settings
 from .tasks import send_verification_email
-from .pdf_generator import PDFGenerationError, PDFGeneratorService, GeneratePDFSerializer
+from .pdf_generator import (
+    PDFGenerationError,
+    PDFGeneratorService,
+    GeneratePDFSerializer,
+    GenerateResumePDFView,
+)
 import traceback
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('resume')
 
 
 from django.contrib.auth import get_user_model
@@ -68,41 +75,31 @@ User = get_user_model()
 SIGNING_SALT = "resume-email-verification"
 
 RESUME_REFRESH_COOKIE_NAME = "refresh_token"
-RESUME_REFRESH_COOKIE_PATH = "/api/resume/"
-RESUME_LEGACY_REFRESH_COOKIE_PATH = "/api/resume/token/refresh/"
+RESUME_REFRESH_COOKIE_PATH = "/api/resume/token/refresh/"
 
 def get_resume_cookie_settings(request):
     """
     Returns (domain, secure, samesite) for resume auth cookies.
     """
     origin = request.headers.get("Origin", "") if request else ""
-    host = request.get_host().split(":")[0] if request else ""
-
-    is_local = (
-        "localhost" in origin
-        or "127.0.0.1" in origin
-        or "localhost" in host
-        or "127.0.0.1" in host
-        or (getattr(settings, "DEBUG", False) and not ("aryuacademy.com" in origin or "aryuacademy.com" in host))
-    )
-
-    if is_local:
+    LOCAL_ORIGINS = {
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://192.168.0.139:8081",
+    }
+    if origin in LOCAL_ORIGINS or (getattr(settings, "DEBUG", False) and not origin):
         cookie_domain = None
         cookie_secure = False
         cookie_samesite = "Lax"
-    elif "aryuacademy.com" in origin or "aryuacademy.com" in host:
+    else:
         cookie_domain = ".aryuacademy.com"
         cookie_secure = True
         cookie_samesite = "None"
-    else:
-        cookie_domain = None
-        is_https = (request.is_secure() if request else False) or (request and request.headers.get("X-Forwarded-Proto") == "https")
-        cookie_secure = is_https
-        cookie_samesite = "None" if is_https else "Lax"
 
     return cookie_domain, cookie_secure, cookie_samesite
 
-BASE_PORTAL_URL = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://aylms.aryuprojects.com').rstrip('/')
+BASE_PORTAL_URL = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
 PASSATS_FRONTEND_URL = getattr(settings, 'PASSATS_FRONTEND_URL', 'https://passats.aryuacademy.com').rstrip('/')
 VERIFY_ENDPOINT = f"{BASE_PORTAL_URL}/api/resume/auth/verify-email/"
 LOGIN_SUCCESS_REDIRECT = f"{PASSATS_FRONTEND_URL}/login?verified=true"
@@ -123,7 +120,7 @@ def build_portal_verify_link(request, token):
     if getattr(settings, 'DEBUG', False):
         return f"http://localhost:8000/api/resume/auth/verify-email/?token={token}"
 
-    base_portal = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://aylms.aryuprojects.com').rstrip('/')
+    base_portal = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
     return f"{base_portal}/api/resume/auth/verify-email/?token={token}"
 
 def decode_verification_token(raw_token):
@@ -375,14 +372,92 @@ def verify_email(request):
             'message': f"Verification error: {str(e)}"
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+def generate_resume_tokens(user):
+            refresh = RefreshToken()
+    
+            refresh["user_id"] = user.id
+            refresh["id"] = user.id
+            refresh["email"] = user.email
+            refresh["user_type"] = "resume_user"
+            refresh["first_name"] = user.first_name
+            refresh["last_name"] = user.last_name
+    
+            return refresh
+
+def build_authenticated_response(request, user, message):
+    refresh = generate_resume_tokens(user)
+
+    response = Response(
+        {
+            "message": message,
+            "access_token": str(refresh.access_token),
+            "refresh_token": str(refresh),
+            "user": {
+                "id": user.id,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "email": user.email,
+                "user": "resume_user",
+            },
+        },
+        status=status.HTTP_200_OK,
+    )
+
+    cookie_domain, cookie_secure, cookie_samesite = (
+        get_resume_cookie_settings(request)
+    )
+
+    response.set_cookie(
+        key=RESUME_REFRESH_COOKIE_NAME,
+        value=str(refresh),
+        max_age=30 * 24 * 60 * 60,
+        expires=None,
+        path=RESUME_REFRESH_COOKIE_PATH,
+        domain=cookie_domain,
+        secure=cookie_secure,
+        httponly=True,
+        samesite=cookie_samesite,
+    )
+
+    return response
+
+def verify_google_id_token(credential: str) -> dict:
+    """
+    Validates the OAuth2 ID token using official Google Auth client library.
+    Checks audience, expiration, issuer, and email verification status.
+    """
+    client_id = getattr(settings, "GOOGLE_CLIENT_ID", None)
+    if not client_id:
+        raise RuntimeError("GOOGLE_CLIENT_ID is not configured in Django settings.")
+
+    try:
+        claims = id_token.verify_oauth2_token(
+            credential,
+            google_requests.Request(),
+            client_id,
+        )
+    except ValueError as exc:
+        raise ValueError("Invalid or expired Google authentication token") from exc
+
+    issuer = claims.get("iss")
+    if issuer not in ("accounts.google.com", "https://accounts.google.com"):
+        raise ValueError("Invalid Google token issuer")
+
+    if claims.get("aud") != client_id:
+        raise ValueError("Invalid Google token audience")
+
+    if not claims.get("email"):
+        raise ValueError("Google account email is missing")
+
+    if not claims.get("email_verified"):
+        raise ValueError("Google email address is not verified by Google")
+
+    return claims
 
 class AuthViewSet(viewsets.ViewSet): 
 
     permission_classes = [AllowAny]
-    authentication_classes = []
 
-    def get_authenticate_header(self, request):
-        return 'Bearer realm="api"'
 
     # =========================
     # VALIDATORS
@@ -552,6 +627,7 @@ class AuthViewSet(viewsets.ViewSet):
                         width: 200px;
                         max-width: 90%;
                         height: auto;
+                        color: #996ae3;
                         display: block;
                         margin: 0 auto;
                     " />
@@ -741,7 +817,7 @@ class AuthViewSet(viewsets.ViewSet):
             # EMAIL SEND
             # =========================================
 
-            subject = f"{user.first_name}, verify your PassAts account"
+            subject = f"{user.first_name}, Verify your PassATS Account"
             body = f"Please verify your account: {verification_link}"
 
             logger = logging.getLogger(__name__)
@@ -891,6 +967,7 @@ class AuthViewSet(viewsets.ViewSet):
                     max-width: 90%;
                     height: auto;
                     display: block;
+                    color: #996ae3;
                     margin: 0 auto;
                   " />
 
@@ -1078,7 +1155,7 @@ class AuthViewSet(viewsets.ViewSet):
             # SEND EMAIL
             email_message = EmailMultiAlternatives(
                 subject=f"{first_name}, complete your Pass ATS registration",
-                body=f"Hello {first_name},\n\nPlease verify your PassATS account:\n\n{verification_link}\n\nWebsite:\nhttps://aylms.aryuprojects.com\n",
+                body=f"Hello {first_name},\n\nPlease verify your PassATS account:\n\n{verification_link}\n\nWebsite:\nhttps://portal.aryuacademy.com\n",
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 to=[user.email],
             )
@@ -1207,13 +1284,7 @@ class AuthViewSet(viewsets.ViewSet):
         if not user.is_verified:
             return Response({"error": "Please verify your email first"}, status=status.HTTP_403_FORBIDDEN)
 
-        refresh = RefreshToken()
-        refresh["user_id"] = user.id
-        refresh["id"] = user.id
-        refresh["email"] = user.email
-        refresh["user_type"] = "resume_user"
-        refresh["first_name"] = user.first_name
-        refresh["last_name"] = user.last_name
+        refresh = generate_resume_tokens(user)
 
         response = Response(
             {
@@ -1248,6 +1319,165 @@ class AuthViewSet(viewsets.ViewSet):
         )
 
         return response
+
+    @action(detail=False, methods=["post"], url_path="google-login")
+    @secure_throttle(rate_limit=10, period=60)
+    def google_login(self, request):
+        serializer = GoogleLoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        credential = serializer.validated_data["credential"]
+
+        # 1. Verify ID Token with Google
+        try:
+            claims = verify_google_id_token(credential)
+        except ValueError as exc:
+            return Response(
+                {"success": False, "error": str(exc)},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        except RuntimeError as exc:
+            logger.exception("Google auth configuration error")
+            return Response(
+                {"success": False, "error": "Google authentication is misconfigured on the server."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        google_sub = claims.get("sub")
+        email = claims.get("email", "").strip().lower()
+        first_name = claims.get("given_name", "").strip()
+        last_name = claims.get("family_name", "").strip()
+        picture_url = claims.get("picture", "").strip()
+
+        if not google_sub or not email:
+            return Response(
+                {"success": False, "error": "Invalid payload received from Google."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # 2. Database Sync (Atomic Transaction)
+        try:
+            with transaction.atomic():
+                # Query by google_sub first, lock row
+                user = (
+                    ResumeRegistration.objects.select_for_update()
+                    .filter(google_sub=google_sub, is_deleted=False)
+                    .first()
+                )
+
+                # Fallback query by verified email
+                if user is None:
+                    user = (
+                        ResumeRegistration.objects.select_for_update()
+                        .filter(email=email, is_deleted=False)
+                        .first()
+                    )
+
+                if user:
+                    # Existing user update logic
+                    update_fields = []
+
+                    if not user.is_verified:
+                        user.is_verified = True
+                        update_fields.append("is_verified")
+
+                    if not user.google_sub:
+                        user.google_sub = google_sub
+                        update_fields.append("google_sub")
+
+                    if not user.first_name and first_name:
+                        user.first_name = first_name
+                        update_fields.append("first_name")
+
+                    if not user.last_name and last_name:
+                        user.last_name = last_name
+                        update_fields.append("last_name")
+
+                    if picture_url and getattr(user, "picture_url", None) != picture_url:
+                        user.picture_url = picture_url
+                        update_fields.append("picture_url")
+
+                    user.last_login = timezone.now()
+                    update_fields.append("last_login")
+
+                    if update_fields:
+                        user.save(update_fields=update_fields)
+
+                else:
+                    # New user provisioning logic
+                    free_plan = Subscription.objects.filter(
+                        name__iexact="Free", is_active=True, is_deleted=False
+                    ).first()
+
+                    if not free_plan:
+                        logger.error("Google authentication failed: Free subscription plan missing.")
+                        return Response(
+                            {"success": False, "error": "Default account subscription tier not configured."},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        )
+
+                    user = ResumeRegistration.objects.create(
+                        first_name=first_name,
+                        last_name=last_name,
+                        email=email,
+                        phone="",
+                        password=make_password(secrets.token_urlsafe(48)),
+                        is_verified=True,
+                        google_sub=google_sub,
+                        picture_url=picture_url,
+                        auth_provider="google",
+                        last_login=timezone.now(),
+                    )
+
+                    start_date = timezone.now()
+                    duration_str = str(free_plan.duration_days).strip().lower()
+
+                    if duration_str == "lifetime":
+                        end_date = None
+                    else:
+                        days = int(duration_str.split()[0]) if duration_str else 30
+                        end_date = start_date + timedelta(days=days)
+
+                    user_subscription = UserSubscription.objects.create(
+                        user=user,
+                        subscription=free_plan,
+                        start_date=start_date,
+                        end_date=end_date,
+                        status="active",
+                    )
+
+                    user.current_subscription = user_subscription
+                    user.save(update_fields=["current_subscription"])
+
+                    PaymentHistory.objects.create(
+                        user=user,
+                        plan_name="Free",
+                        price=0,
+                        payment_status="free",
+                    )
+
+        except IntegrityError:
+            # Race condition recovery for concurrent signups
+            logger.warning("Concurrent Google registration detected for %s", email)
+            user = ResumeRegistration.objects.filter(email=email, is_deleted=False).first()
+            if not user:
+                return Response(
+                    {"success": False, "error": "Conflict handling request. Please try again."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+        except Exception as e:
+            logger.exception("Unexpected exception during Google Authentication flow.")
+            return Response(
+                {"success": False, "error": "Authentication system failure."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # 3. Generate Auth Tokens and Return HTTP Response
+        return build_authenticated_response(
+            request=request,
+            user=user,
+            message="Google authentication successful",
+        )
     
     @action(detail=False, methods=["post"], url_path="logout")
     @secure_throttle(rate_limit=5, period=60)
@@ -1277,13 +1507,6 @@ class AuthViewSet(viewsets.ViewSet):
             domain=cookie_domain,
             samesite=cookie_samesite,
         )
-        if RESUME_LEGACY_REFRESH_COOKIE_PATH != RESUME_REFRESH_COOKIE_PATH:
-            response.delete_cookie(
-                key=RESUME_REFRESH_COOKIE_NAME,
-                path=RESUME_LEGACY_REFRESH_COOKIE_PATH,
-                domain=cookie_domain,
-                samesite=cookie_samesite,
-            )
 
         return response
     
@@ -1593,7 +1816,7 @@ class AuthViewSet(viewsets.ViewSet):
                   Product of
 
                   <a
-                    href="https://aylms.aryuprojects.com"
+                    href="https://portal.aryuacademy.com"
                     style="
                       color: #005aef;
                       text-decoration: none;
@@ -1909,11 +2132,7 @@ class AuthViewSet(viewsets.ViewSet):
 
 class CustomTokenRefreshView(APIView):
     permission_classes = [AllowAny]
-    authentication_classes = []
     serializer_class = CustomTokenRefreshSerializer
-
-    def get_authenticate_header(self, request):
-        return 'Bearer realm="api"'
 
     def post(self, request, *args, **kwargs):
         # 1. Extract the token from request payload (body / headers) or cookie
@@ -1967,13 +2186,6 @@ class CustomTokenRefreshView(APIView):
                 httponly=True,              # Keeps XSS defense completely locked down
                 samesite=cookie_samesite,
             )
-            if RESUME_LEGACY_REFRESH_COOKIE_PATH != RESUME_REFRESH_COOKIE_PATH:
-                response.delete_cookie(
-                    key=RESUME_REFRESH_COOKIE_NAME,
-                    path=RESUME_LEGACY_REFRESH_COOKIE_PATH,
-                    domain=cookie_domain,
-                    samesite=cookie_samesite,
-                )
 
         return response
 
@@ -4518,65 +4730,3 @@ class PaymentHistoryViewset(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
-    
-class GenerateResumePDFView(APIView):
- 
-    parser_classes = [JSONParser]
-    permission_classes = [permissions.IsAuthenticated]
- 
-    def post(self, request) -> HttpResponse:
-        serializer = GeneratePDFSerializer(data=request.data)
-        if not serializer.is_valid():
-            return HttpResponse(
-                content=serializer.errors,
-                content_type="application/json",
-                status=status.HTTP_400_BAD_REQUEST,
-            )
- 
-        html_content: str = serializer.validated_data["html"]
- 
-        t_start = time.perf_counter()
-        try:
-            service = PDFGeneratorService()
-            pdf_bytes = service.generate_pdf(html_content)
-        except PDFGenerationError as exc:
-            logger.error(
-                "PDF generation error for user %s: %s",
-                getattr(request.user, "pk", "anonymous"),
-                exc,
-            )
-            return HttpResponse(
-                content={"detail": str(exc)},
-                content_type="application/json",
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        except Exception as exc:
-            logger.exception(
-                "Unexpected PDF generation failure for user %s",
-                getattr(request.user, "pk", "anonymous"),
-            )
-            return HttpResponse(
-                content={"detail": "An unexpected error occurred while generating the PDF."},
-                content_type="application/json",
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        finally:
-            elapsed = time.perf_counter() - t_start
-            logger.info(
-                "PDF generation completed in %.2fs for user %s",
-                elapsed,
-                getattr(request.user, "pk", "anonymous"),
-            )
- 
-        response = HttpResponse(
-            content=pdf_bytes,
-            content_type="application/pdf",
-            status=status.HTTP_200_OK,
-        )
-        response["Content-Disposition"] = 'attachment; filename="resume.pdf"'
-        response["Content-Length"] = len(pdf_bytes)
-        # Prevent CDN/proxy caching of personal resumes
-        response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response["X-Content-Type-Options"] = "nosniff"
-        return response
-        

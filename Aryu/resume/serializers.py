@@ -26,7 +26,14 @@ class ResumeRegistrationSerializers(serializers.ModelSerializer):
         model = ResumeRegistration
         fields = "__all__"
 
-
+class GoogleLoginSerializer(serializers.Serializer):
+    credential = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        trim_whitespace=True,
+        help_text="Google ID Token credential returned by Google Identity Services GIS SDK."
+    )
+    
 class SecureLoginSerializer(serializers.Serializer):
     email = serializers.EmailField(required=True)
     password = serializers.CharField(required=True)

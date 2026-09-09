@@ -3,57 +3,56 @@ from django.db import models
 
 
 class ResumeRegistration(models.Model):
-    first_name = models.CharField(max_length = 250)
-    last_name = models.CharField(max_length = 250)
-    email = models.EmailField(null = True , blank = True)
-    phone = models.CharField(max_length = 50 , null = True , blank = True)
-    password = models.CharField(max_length = 150 , null = True , blank = True)
-    city = models.CharField(max_length = 100 , null = True , blank = True)
-    state = models.CharField(max_length = 100 , null = True , blank = True)
-    country = models.CharField(max_length = 100 , null = True , blank = True)
+    first_name = models.CharField(max_length=250, blank=True, default="")
+    last_name = models.CharField(max_length=250, blank=True, default="")
+    email = models.EmailField(unique=True, db_index=True)
+    phone = models.CharField(max_length=50, null=True, blank=True)
+    password = models.CharField(max_length=150, null=True, blank=True)
+    city = models.CharField(max_length=100, null=True, blank=True)
+    state = models.CharField(max_length=100, null=True, blank=True)
+    country = models.CharField(max_length=100, null=True, blank=True)
     is_verified = models.BooleanField(default=False)
+    
+    auth_provider = models.CharField(
+        max_length=50,
+        default="email",
+        help_text="Primary provider used during user registration (e.g., 'email', 'google')"
+    )
+    picture_url = models.URLField(max_length=500, null=True, blank=True)
+
     current_subscription = models.ForeignKey(
         "UserSubscription",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="active_users"
+        related_name="active_users",
     )
-    last_login = models.DateTimeField(
+    google_sub = models.CharField(
+        max_length=255,
+        unique=True,
         null=True,
-        blank=True
+        blank=True,
+        db_index=True,
     )
+    last_login = models.DateTimeField(null=True, blank=True)
     status = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_deleted = models.BooleanField(default=False)
 
-    reset_otp_hash = models.CharField(
-        max_length=255,
-        null=True,
-        blank=True
-    )
-
-    reset_otp_expiry = models.DateTimeField(
-        null=True,
-        blank=True
-    )
-
-    reset_otp_attempts = models.IntegerField(
-        default=0
-    )
-
-    reset_verified = models.BooleanField(
-        default=False
-    )
+    reset_otp_hash = models.CharField(max_length=255, null=True, blank=True)
+    reset_otp_expiry = models.DateTimeField(null=True, blank=True)
+    reset_otp_attempts = models.IntegerField(default=0)
+    reset_verified = models.BooleanField(default=False)
 
     class Meta:
         indexes = [
             models.Index(fields=["email"]),
             models.Index(fields=["is_verified"]),
+            models.Index(fields=["google_sub"]),
         ]
 
     def __str__(self):
-        return self.first_name
+        return f"{self.email} ({self.first_name} {self.last_name})"
     
 class Contact(models.Model):
     full_name = models.CharField(max_length = 100)
