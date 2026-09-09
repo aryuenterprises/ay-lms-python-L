@@ -19,7 +19,7 @@ from django.conf import settings
 from django.db import transaction
 
 # Dedicated telecrm logger configured in settings.py (writes to logs/telecrm.log and console)
-logger = logging.getLogger("telecrm")
+logger = logging.getLogger("leads")
 
 # Fallback credentials matching settings.py
 DEFAULT_TELECRM_API = "https://next-api.telecrm.in"

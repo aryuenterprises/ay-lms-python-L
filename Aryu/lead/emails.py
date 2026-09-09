@@ -15,7 +15,7 @@ from django.core.mail import EmailMultiAlternatives
 from django.db import transaction
 from django.template.loader import render_to_string
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("leads")
 
 
 def get_brand_logo_url() -> str:
