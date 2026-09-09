@@ -95,7 +95,7 @@ from .serializers import (
     UserAssignmentReportSerializer,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("leads")
 
 # ---------------------------------------------------------------------------
 # Lazy model imports (avoids circular imports in some project layouts)

@@ -27,7 +27,7 @@ import logging
 import os
 import requests
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("leads")
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, JSONParser, FormParser
 from rest_framework.authentication import SessionAuthentication
