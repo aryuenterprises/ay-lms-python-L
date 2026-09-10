@@ -2837,6 +2837,8 @@ class TicketReplySerializer(serializers.ModelSerializer):
         if obj.trainer: return obj.trainer.full_name or obj.trainer.username
         if obj.super_admin: return "Super Admin"
         return "Unknown"
+    
+from django.core.exceptions import ObjectDoesNotExist
 
 class StudentTicketSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
