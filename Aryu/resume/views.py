@@ -1154,7 +1154,7 @@ class AuthViewSet(viewsets.ViewSet):
 
             # SEND EMAIL
             email_message = EmailMultiAlternatives(
-                subject=f"{first_name}, complete your Pass ATS registration",
+                subject=f"{first_name}, Complete your Pass ATS registration",
                 body=f"Hello {first_name},\n\nPlease verify your PassATS account:\n\n{verification_link}\n\nWebsite:\nhttps://portal.aryuacademy.com\n",
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 to=[user.email],
