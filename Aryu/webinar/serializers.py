@@ -10,6 +10,7 @@ import json
 from aryuapp.models import StudentTicket, TicketAttachment, TicketReply, Certificate
 from lead.models import Lead, LeadStatusHistory
 from lead.telecrm import sync_lead_to_telecrm
+from rest_framework.validators import UniqueValidator
 from django.utils.text import slugify
 import requests
 import logging
@@ -299,6 +300,17 @@ class WebinarSerializer(serializers.ModelSerializer):
     scheduled_start = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
     created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", read_only=True)
     updated_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", read_only=True)
+
+    # Allow re-creation of soft-deleted titles by filtering is_deleted=False
+    title = serializers.CharField(
+        validators=[
+            UniqueValidator(
+                queryset=Webinar.objects.filter(is_deleted=False),
+                message="An active webinar with this title already exists.",
+            )
+        ]
+    )
+
     webinar_image_url = serializers.SerializerMethodField()
     participants = serializers.SerializerMethodField()
     participants_count = serializers.SerializerMethodField()
@@ -308,81 +320,117 @@ class WebinarSerializer(serializers.ModelSerializer):
     metadata = WebinarMetadataSerializer(many=True, read_only=True)
     faqs = WebinarFAQSerializer(many=True, read_only=True)
     pending_seats = serializers.SerializerMethodField()
-    is_full = serializers.SerializerMethodField() 
+    is_full = serializers.SerializerMethodField()
 
     class Meta:
         model = Webinar
         fields = "__all__"
-        read_only_fields = ("created_by", "created_by_type")
+        read_only_fields = (
+            "created_by",
+            "created_by_type",
+            "zoom_meeting_id",
+            "zoom_join_url",
+            "zoom_link",
+            "slug",
+        )
+
+    def validate_title(self, value):
+        """
+        Validate slug collision against active records only.
+        If slug is auto-generated from title, ensures unique active slug.
+        """
+        generated_slug = slugify(value)
+        queryset = Webinar.objects.filter(slug=generated_slug, is_deleted=False)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+
+        if queryset.exists():
+            raise serializers.ValidationError(
+                "A webinar with a similar title/slug already exists."
+            )
+        return value
 
     def get_webinar_image_url(self, obj):
-        if obj.webinar_image and hasattr(obj.webinar_image, 'url'):
+        if obj.webinar_image and hasattr(obj.webinar_image, "url"):
             return settings.MEDIA_BASE_URL + obj.webinar_image.url
         return None
-    
-    def get_total_amount_received(self, obj):
-        return float(getattr(obj, "_total_amount_received", None) or 0)
-        
-    def get_participants(self, obj):
-        result = []
 
+    def get_total_amount_received(self, obj):
+        return float(getattr(obj, "total_amount_received", 0) or 0)
+
+    def get_participants(self, obj):
+        # Prevent N+1 queries by relying on prefetched objects in memory
+        if not hasattr(obj, "_prefetched_objects_cache") or "registrations" not in obj._prefetched_objects_cache:
+            return []
+
+        result = []
         for r in obj.registrations.all():
             summary = getattr(r, "attendance_summary", None)
             txn = getattr(r, "payment_transaction", None)
             certificate = getattr(r, "certificate", None)
+            feedback = getattr(r, "feedback", None)
 
             result.append({
                 "id": r.id,
-                "uuid": r.uuid,
+                "uuid": str(r.uuid),
                 "email": r.email,
                 "name": r.name,
                 "phone": r.phone,
-                "waba_link": r.webinar.waba_link if r.webinar else None,
-                "webinar_title": r.webinar.title if r.webinar else None,
+                "waba_link": obj.waba_link,
+                "webinar_title": obj.title,
                 "course": r.course,
                 "profession": r.profession,
                 "payment_status": txn.payment_status if txn else "free",
                 "certificate_url": (
                     settings.MEDIA_BASE_URL + certificate.certificate_file.url
-                    if certificate and certificate.certificate_file else None
+                    if certificate and getattr(certificate, "certificate_file", None)
+                    else None
                 ),
-                "feedback": WebinarFeedbackSerializer(r.feedback).data if getattr(r, "feedback", None) else None,
-                "total_duration_minutes": summary.total_duration_seconds // 60 if summary else 0,
-                "total_hours_participated": round(summary.total_duration_seconds / 3600, 2) if summary else 0,
+                "feedback": WebinarFeedbackSerializer(feedback).data if feedback else None,
+                "total_duration_minutes": (summary.total_duration_seconds // 60) if summary else 0,
+                "total_hours_participated": round(summary.total_duration_seconds / 3600.0, 2) if summary else 0,
                 "join_count": summary.join_count if summary else 0,
                 "eligible_for_certificate": summary.eligible_for_certificate if summary else False,
                 "logs": [
                     {
-                        "join_time": l.join_time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "leave_time": l.leave_time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "duration_minutes": l.duration_seconds // 60
+                        "join_time": l.join_time.strftime("%Y-%m-%d %H:%M:%S") if l.join_time else None,
+                        "leave_time": l.leave_time.strftime("%Y-%m-%d %H:%M:%S") if l.leave_time else None,
+                        "duration_minutes": (l.duration_seconds // 60) if l.duration_seconds else 0,
                     }
                     for l in r.attendance_logs.all()
                 ],
-                "registered_at": r.registered_at,
+                "registered_at": r.registered_at.strftime("%Y-%m-%d %H:%M:%S") if r.registered_at else None,
                 "certificate_sent": r.certificate_sent,
             })
 
         return result
 
     def get_participants_count(self, obj):
-        return obj.registrations.filter(
-            payment_transaction__payment_status="done"
-        ).count()
+        # Prefer annotated count to avoid triggering redundant SQL DB queries
+        if hasattr(obj, "participants_count"):
+            return obj.participants_count
+        return obj.registrations.filter(payment_transaction__payment_status="done").count()
 
     def get_pending_seats(self, obj):
-        registered = getattr(obj, "participants_count", 0)
-        return max(obj.seats_available - registered, 0)
+        registered = self.get_participants_count(obj)
+        seats = obj.seats_available or 0
+        return max(seats - registered, 0)
 
     def get_is_full(self, obj):
-        return getattr(obj, "participants_count", 0) >= obj.seats_available
+        registered = self.get_participants_count(obj)
+        seats = obj.seats_available or 0
+        return registered >= seats
 
+    @transaction.atomic
     def create(self, validated_data):
         price = validated_data.get("price")
         regular_price = validated_data.get("regular_price")
         request = self.context.get("request")
-        user = request.user
 
+        if not request or not request.user:
+            raise serializers.ValidationError({"auth": "Authentication context required."})
+
+        user = request.user
         role = getattr(user, "user_type", None)
 
         if role in ("tutor", "admin"):
@@ -395,10 +443,15 @@ class WebinarSerializer(serializers.ModelSerializer):
             creator_id = getattr(user, "id", None)
 
         if not creator_id or not role:
-            raise serializers.ValidationError("Invalid authenticated user")
+            raise serializers.ValidationError({"user": "Invalid authenticated user role or ID."})
 
         validated_data["created_by"] = str(creator_id)
         validated_data["created_by_type"] = role
+
+        # Ensure slug is calculated and does not clash with active records
+        base_slug = slugify(validated_data.get("title", ""))
+        validated_data["slug"] = base_slug
+
         if price is not None:
             validated_data["price"] = Decimal(str(price)).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -409,12 +462,32 @@ class WebinarSerializer(serializers.ModelSerializer):
                 Decimal("0.01"), rounding=ROUND_HALF_UP
             )
 
-        # 1) Save webinar instance in DB
+        # 1) Create Zoom meeting FIRST before committing the DB object
+        # (Prevents saving orphaned DB records if external services fail)
+        from .services.zoom_service import create_zoom_meeting
+
+        try:
+            zoom_data = create_zoom_meeting(
+                topic=validated_data.get("title"),
+                start_time=validated_data.get("scheduled_start"),
+                duration_minutes=60,
+            )
+        except Exception as e:
+            logger.exception("Zoom meeting creation failed")
+            raise serializers.ValidationError({"zoom": f"Failed to schedule Zoom meeting: {str(e)}"})
+
+        validated_data["zoom_meeting_id"] = zoom_data["meeting_id"]
+        validated_data["zoom_join_url"] = zoom_data["join_url"]
+        validated_data["zoom_link"] = zoom_data["join_url"]
+        validated_data["status"] = "SCHEDULED"
+
+        # 2) Save webinar instance in DB
         webinar = super().create(validated_data)
 
-        # 2) CREATE COURSE ONLY IF TYPE IS FALSE (BOOTCAMP)
+        # 3) CREATE COURSE ONLY IF TYPE IS FALSE (BOOTCAMP)
         if not webinar.type:
             from django.apps import apps
+            Course = apps.get_model("courses", "Course")  # Dynamic import to avoid circular dependencies
 
             course = Course.objects.create(
                 course_name=webinar.title,
@@ -424,39 +497,13 @@ class WebinarSerializer(serializers.ModelSerializer):
                 created_by_type=webinar.created_by_type,
             )
 
-            # Link course back to the webinar if the foreign key exists on the model
             if hasattr(webinar, "course"):
                 webinar.course = course
                 webinar.save(update_fields=["course"])
 
-        # 3) Create Zoom meeting
-        from .services.zoom_service import create_zoom_meeting
-        try:
-            zoom_data = create_zoom_meeting(
-                topic=webinar.title,
-                start_time=webinar.scheduled_start,
-                duration_minutes=60
-            )
-        except Exception as e:
-            webinar.delete()
-            logger.exception("Zoom meeting creation failed")
-            raise serializers.ValidationError({"zoom": str(e)})
-
-        webinar.zoom_meeting_id = zoom_data["meeting_id"]
-        webinar.zoom_join_url = zoom_data["join_url"]
-        webinar.zoom_link = zoom_data["join_url"]
-        webinar.status = "SCHEDULED"
-
-        webinar.save(update_fields=[
-            "zoom_meeting_id",
-            "zoom_join_url",
-            "zoom_link",
-            "status"
-        ])
-
         return webinar
-    def update(self, instance, validated_data):
 
+    def update(self, instance, validated_data):
         if "price" in validated_data and validated_data["price"] is not None:
             validated_data["price"] = Decimal(str(validated_data["price"])).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
