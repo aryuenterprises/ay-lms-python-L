@@ -21,7 +21,7 @@ from django.db.models import Q, QuerySet
 
 from .constants import MSG_INVALID_DATE_FORMAT
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("leads")
 
 
 # ---------------------------------------------------------------------------
