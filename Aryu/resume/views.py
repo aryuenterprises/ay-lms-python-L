@@ -960,7 +960,7 @@ class AuthViewSet(viewsets.ViewSet):
                   padding: 45px 5px;
                 ">
                 <img
-                  src="{settings.MEDIA_BASE_URL}/media/logos/passats.png"
+                  src="{settings.MEDIA_BASE_URL}/media/logos/pass-ats-logo.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -1654,7 +1654,7 @@ class AuthViewSet(viewsets.ViewSet):
                 ">
 
                 <img
-                  src="{settings.MEDIA_BASE_URL}/media/logos/passats.png"
+                  src="{settings.MEDIA_BASE_URL}/media/logos/pass-ats-logo.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
