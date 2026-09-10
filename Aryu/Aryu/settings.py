@@ -325,16 +325,13 @@ SIMPLE_JWT = {
 
 }
 
+GOOGLE_CLIENT_ID = os.environ["GOOGLE_CLIENT_ID"]
+GOOGLE_CLIENT_SECRET = os.environ.get(
+    "GOOGLE_CLIENT_SECRET",
+    "",
+)
+
 SOCIALACCOUNT_PROVIDERS = {
-    "github": {
-        "SCOPE": ["user:email"],
-        "VERIFIED_EMAIL": True,
-        "APP": {
-            "client_id": "Ov23liv2hQNjYO3xLdwn",
-            "secret": "c022f82b1ba78bff67ea1ceafb623a9c3b6afd82",
-            "key": "",
-        }
-    },
     "google": {
         "SCOPE": [
             "profile",
@@ -344,8 +341,8 @@ SOCIALACCOUNT_PROVIDERS = {
             "access_type": "online",
         },
         "APP": {
-            "client_id": "454548779156-ntr8e0vv52001oiejk0ee3knggtula8m.apps.googleusercontent.com",
-            "secret": "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",
+            "client_id": GOOGLE_CLIENT_ID,
+            "secret": GOOGLE_CLIENT_SECRET,
             "key": "",
         },
     },
@@ -359,9 +356,9 @@ TELECRM_API = "https://next-api.telecrm.in"
 
 
 
-SERVER_ROOT = Path("/var/www/ay-lms-python-L") if Path("/var/www/ay-lms-python-L/logs").exists() else BASE_DIR.parent
+# SERVER_ROOT = Path("/var/www/ay-lms-python-L") if Path("/var/www/ay-lms-python-L/logs").exists() else BASE_DIR.parent
 # SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L") if Path("/home/aryu_user/Arun/ay-lms-python-L/logs").exists() else BASE_DIR.parent
-# SERVER_ROOT = Path("/var/www/python-staging") if Path("/var/www/python-staging/logs").exists() else BASE_DIR.parent
+SERVER_ROOT = Path("/var/www/python-staging") if Path("/var/www/python-staging/logs").exists() else BASE_DIR.parent
 
 LOGGING = {
     "version": 1,
@@ -467,9 +464,9 @@ CORS_ALLOWED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -480,9 +477,9 @@ CSRF_TRUSTED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com",
+    "https://aylms.aryuprojects.com",
 
 ]
 
@@ -497,7 +494,7 @@ ALLOWED_HOSTS = [
     "aylms.aryuprojects.com",
     "ayanew.aryuprojects.com",
     "portal.aryuacademy.com",
-    "portal.aryuacademy.com",
+    "aylms.aryuprojects.com",
 ]  # Allow all hosts for development; change in production
 
 
@@ -519,6 +516,12 @@ CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
     'X-CSRFToken',
+    'Cache-Control',
+    'Pragma',
+    'X-Refresh-Token',
+    'cache-control',
+    'pragma',
+    'x-refresh-token',
 ]
 CORS_EXPOSE_HEADERS = ['Content-Type', 'X-CSRFToken']
 
@@ -560,10 +563,9 @@ CSRF_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_AGE = 1800  # 30 minutes in seconds
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 
-GOOGLE_CLIENT_ID = "1004056077681-qfeuc4edcpob49o1gk4168a3ap7lrnqs.apps.googleusercontent.com"
-GOOGLE_CLIENT_SECRET = "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"
-GOOGLE_REDIRECT_URI = "http://127.0.0.1:8000/api/oauth2callback/"
-
+GOOGLE_CLIENT_ID = os.environ["GOOGLE_CLIENT_ID"]
+GOOGLE_CLIENT_SECRET = os.environ["GOOGLE_CLIENT_SECRET"]
+GOOGLE_REDIRECT_URI = "https://passats.aryuacademy.com"
 
 ACCOUNT_LOGIN_METHODS = {'email'}
 ACCOUNT_SIGNUP_FIELDS = ['email*', 'password1*', 'password2*']
@@ -596,54 +598,7 @@ TWILIO_AUTH_TOKEN = "44fbdfc9f0960b464c20a193b797c7f7"
 TWILIO_PHONE_NUMBER = "+15075854260"
 
 
-MEDIA_BASE_URL = "https://portal.aryuacademy.com/api"
-
-# class DisableMigrations:
-#     def __getitem__(self, item):
-#         return None
-#     def __contains__(self, item):
-#         return True
-
-# if 'test' in sys.argv:
-#     import django.contrib.postgres.fields
-#     import django.db.models
-#     from django.db.backends.sqlite3.schema import DatabaseSchemaEditor
-
-#     class DummyArrayField(django.db.models.JSONField):
-#         def __init__(self, *args, **kwargs):
-#             kwargs.pop('base_field', None)
-#             kwargs.pop('size', None)
-#             super().__init__(*args, **kwargs)
-
-#     django.contrib.postgres.fields.ArrayField = DummyArrayField
-
-#     orig_quote_name = DatabaseSchemaEditor.quote_name
-#     def safe_quote_name(self, name):
-#         if "." in name:
-#             name = name.split(".")[-1].strip('"')
-#         return orig_quote_name(self, name)
-#     DatabaseSchemaEditor.quote_name = safe_quote_name
-
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.sqlite3',
-#             'NAME': ':memory:',
-#         }
-#     }
-#     MIGRATION_MODULES = DisableMigrations()
-# else:
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.postgresql',
-#             'NAME': 'aylms_live',  
-#             'USER': 'aylms_live',
-#             'PASSWORD':'KfdW543FDdfg',
-#             'HOST': '187.127.178.144',   
-#             'PORT': '5432',  
-#             'AUTOCOMMIT': True,
-#             'CONN_MAX_AGE': 60,
-#         },
-#     }
+MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api"
 
 # class DisableMigrations:
 #     def __getitem__(self, item):
@@ -694,6 +649,7 @@ MEDIA_BASE_URL = "https://portal.aryuacademy.com/api"
 #             }
 #         },
 #     }
+
 
 class DisableMigrations:
     def __getitem__(self, item):
@@ -749,103 +705,6 @@ else:
             }
         },
     }
-
-# class DisableMigrations:
-#     def __getitem__(self, item):
-#         return None
-#     def __contains__(self, item):
-#         return True
-
-# if 'test' in sys.argv:
-#     import django.contrib.postgres.fields
-#     import django.db.models
-#     from django.db.backends.sqlite3.schema import DatabaseSchemaEditor
-
-#     class DummyArrayField(django.db.models.JSONField):
-#         def __init__(self, *args, **kwargs):
-#             kwargs.pop('base_field', None)
-#             kwargs.pop('size', None)
-#             super().__init__(*args, **kwargs)
-
-#     django.contrib.postgres.fields.ArrayField = DummyArrayField
-
-#     orig_quote_name = DatabaseSchemaEditor.quote_name
-#     def safe_quote_name(self, name):
-#         if "." in name:
-#             name = name.split(".")[-1].strip('"')
-#         return orig_quote_name(self, name)
-#     DatabaseSchemaEditor.quote_name = safe_quote_name
-
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.sqlite3',
-#             'NAME': ':memory:',
-#         }
-#     }
-#     MIGRATION_MODULES = DisableMigrations()
-# else:
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.postgresql',
-#             'NAME': 'aylms_live',  
-#             'USER': 'aylms_live',
-#             'PASSWORD':'KfdW543FDdfg',
-#             'HOST': '187.127.178.144',   
-#             'PORT': '5432',  
-#             'AUTOCOMMIT': True,
-#             'CONN_MAX_AGE': 60,
-#         },
-#     }
-
-# class DisableMigrations:
-#     def __getitem__(self, item):
-#         return None
-#     def __contains__(self, item):
-#         return True
-
-# if 'test' in sys.argv:
-#     import django.contrib.postgres.fields
-#     import django.db.models
-#     from django.db.backends.sqlite3.schema import DatabaseSchemaEditor
-
-#     class DummyArrayField(django.db.models.JSONField):
-#         def __init__(self, *args, **kwargs):
-#             kwargs.pop('base_field', None)
-#             kwargs.pop('size', None)
-#             super().__init__(*args, **kwargs)
-
-#     django.contrib.postgres.fields.ArrayField = DummyArrayField
-
-#     orig_quote_name = DatabaseSchemaEditor.quote_name
-#     def safe_quote_name(self, name):
-#         if "." in name:
-#             name = name.split(".")[-1].strip('"')
-#         return orig_quote_name(self, name)
-#     DatabaseSchemaEditor.quote_name = safe_quote_name
-
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.sqlite3',
-#             'NAME': ':memory:',
-#         }
-#     }
-#     MIGRATION_MODULES = DisableMigrations()
-# else:
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.postgresql',
-#             'NAME': 'aylms_staging',
-#             'USER': 'aryu_user',
-#             'PASSWORD':'YUra@2025',
-#             'HOST': '49.207.178.161',
-#             'PORT': '5432',
-#             'AUTOCOMMIT': True,
-#             'CONN_MAX_AGE': 60,
-#             'OPTIONS': {
-#                 'options': '-c search_path=livequiz,public'
-#             }
-#         },
-#     }
 
 # DATABASES = {
 #     'default': {
@@ -948,7 +807,7 @@ LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'Asia/Kolkata'
 
-FRONTEND_URL = 'https://portal.aryuacademy.com'
+FRONTEND_URL = 'https://aylms.aryuprojects.com'
 PORTAL_FRONTEND_URL = FRONTEND_URL
 SITE_URL = FRONTEND_URL
 

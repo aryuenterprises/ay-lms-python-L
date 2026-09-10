@@ -9,7 +9,7 @@ from core.views import secure_throttle
 from django.contrib.auth.hashers import make_password, check_password
 from django.conf import settings
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from urllib.parse import quote, unquote
@@ -34,6 +34,8 @@ from django.core import signing
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 from django.shortcuts import redirect
 from datetime import timedelta
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token
 from django.contrib.auth.hashers import (
     make_password,
     check_password
@@ -45,10 +47,10 @@ from io import BytesIO
 from django.http import FileResponse
 import logging
 from rest_framework.exceptions import ValidationError
-# from weasyprint import HTML, CSS
+from weasyprint import HTML, CSS
 from django.db.models import Q
 from django.utils.timezone import now
-# from celery import shared_task
+from celery import shared_task
 from collections import defaultdict
 import time
 import os
@@ -63,7 +65,7 @@ from .pdf_generator import (
 )
 import traceback
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('resume')
 
 
 from django.contrib.auth import get_user_model
@@ -370,10 +372,92 @@ def verify_email(request):
             'message': f"Verification error: {str(e)}"
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+def generate_resume_tokens(user):
+            refresh = RefreshToken()
+    
+            refresh["user_id"] = user.id
+            refresh["id"] = user.id
+            refresh["email"] = user.email
+            refresh["user_type"] = "resume_user"
+            refresh["first_name"] = user.first_name
+            refresh["last_name"] = user.last_name
+    
+            return refresh
+
+def build_authenticated_response(request, user, message):
+    refresh = generate_resume_tokens(user)
+
+    response = Response(
+        {
+            "message": message,
+            "access_token": str(refresh.access_token),
+            "refresh_token": str(refresh),
+            "user": {
+                "id": user.id,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "email": user.email,
+                "user": "resume_user",
+            },
+        },
+        status=status.HTTP_200_OK,
+    )
+
+    cookie_domain, cookie_secure, cookie_samesite = (
+        get_resume_cookie_settings(request)
+    )
+
+    response.set_cookie(
+        key=RESUME_REFRESH_COOKIE_NAME,
+        value=str(refresh),
+        max_age=30 * 24 * 60 * 60,
+        expires=None,
+        path=RESUME_REFRESH_COOKIE_PATH,
+        domain=cookie_domain,
+        secure=cookie_secure,
+        httponly=True,
+        samesite=cookie_samesite,
+    )
+
+    return response
+
+def verify_google_id_token(credential: str) -> dict:
+    """
+    Validates the OAuth2 ID token using official Google Auth client library.
+    Checks audience, expiration, issuer, and email verification status.
+    """
+    client_id = getattr(settings, "GOOGLE_CLIENT_ID", None)
+    if not client_id:
+        raise RuntimeError("GOOGLE_CLIENT_ID is not configured in Django settings.")
+
+    try:
+        claims = id_token.verify_oauth2_token(
+            credential,
+            google_requests.Request(),
+            client_id,
+        )
+    except ValueError as exc:
+        raise ValueError("Invalid or expired Google authentication token") from exc
+
+    issuer = claims.get("iss")
+    if issuer not in ("accounts.google.com", "https://accounts.google.com"):
+        raise ValueError("Invalid Google token issuer")
+
+    if claims.get("aud") != client_id:
+        raise ValueError("Invalid Google token audience")
+
+    if not claims.get("email"):
+        raise ValueError("Google account email is missing")
+
+    if not claims.get("email_verified"):
+        raise ValueError("Google email address is not verified by Google")
+
+    return claims
 
 class AuthViewSet(viewsets.ViewSet): 
 
     permission_classes = [AllowAny]
+
 
     # =========================
     # VALIDATORS
@@ -1200,13 +1284,7 @@ class AuthViewSet(viewsets.ViewSet):
         if not user.is_verified:
             return Response({"error": "Please verify your email first"}, status=status.HTTP_403_FORBIDDEN)
 
-        refresh = RefreshToken()
-        refresh["user_id"] = user.id
-        refresh["id"] = user.id
-        refresh["email"] = user.email
-        refresh["user_type"] = "resume_user"
-        refresh["first_name"] = user.first_name
-        refresh["last_name"] = user.last_name
+        refresh = generate_resume_tokens(user)
 
         response = Response(
             {
@@ -1241,6 +1319,165 @@ class AuthViewSet(viewsets.ViewSet):
         )
 
         return response
+
+    @action(detail=False, methods=["post"], url_path="google-login")
+    @secure_throttle(rate_limit=10, period=60)
+    def google_login(self, request):
+        serializer = GoogleLoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        credential = serializer.validated_data["credential"]
+
+        # 1. Verify ID Token with Google
+        try:
+            claims = verify_google_id_token(credential)
+        except ValueError as exc:
+            return Response(
+                {"success": False, "error": str(exc)},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        except RuntimeError as exc:
+            logger.exception("Google auth configuration error")
+            return Response(
+                {"success": False, "error": "Google authentication is misconfigured on the server."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        google_sub = claims.get("sub")
+        email = claims.get("email", "").strip().lower()
+        first_name = claims.get("given_name", "").strip()
+        last_name = claims.get("family_name", "").strip()
+        picture_url = claims.get("picture", "").strip()
+
+        if not google_sub or not email:
+            return Response(
+                {"success": False, "error": "Invalid payload received from Google."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # 2. Database Sync (Atomic Transaction)
+        try:
+            with transaction.atomic():
+                # Query by google_sub first, lock row
+                user = (
+                    ResumeRegistration.objects.select_for_update()
+                    .filter(google_sub=google_sub, is_deleted=False)
+                    .first()
+                )
+
+                # Fallback query by verified email
+                if user is None:
+                    user = (
+                        ResumeRegistration.objects.select_for_update()
+                        .filter(email=email, is_deleted=False)
+                        .first()
+                    )
+
+                if user:
+                    # Existing user update logic
+                    update_fields = []
+
+                    if not user.is_verified:
+                        user.is_verified = True
+                        update_fields.append("is_verified")
+
+                    if not user.google_sub:
+                        user.google_sub = google_sub
+                        update_fields.append("google_sub")
+
+                    if not user.first_name and first_name:
+                        user.first_name = first_name
+                        update_fields.append("first_name")
+
+                    if not user.last_name and last_name:
+                        user.last_name = last_name
+                        update_fields.append("last_name")
+
+                    if picture_url and getattr(user, "picture_url", None) != picture_url:
+                        user.picture_url = picture_url
+                        update_fields.append("picture_url")
+
+                    user.last_login = timezone.now()
+                    update_fields.append("last_login")
+
+                    if update_fields:
+                        user.save(update_fields=update_fields)
+
+                else:
+                    # New user provisioning logic
+                    free_plan = Subscription.objects.filter(
+                        name__iexact="Free", is_active=True, is_deleted=False
+                    ).first()
+
+                    if not free_plan:
+                        logger.error("Google authentication failed: Free subscription plan missing.")
+                        return Response(
+                            {"success": False, "error": "Default account subscription tier not configured."},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        )
+
+                    user = ResumeRegistration.objects.create(
+                        first_name=first_name,
+                        last_name=last_name,
+                        email=email,
+                        phone="",
+                        password=make_password(secrets.token_urlsafe(48)),
+                        is_verified=True,
+                        google_sub=google_sub,
+                        picture_url=picture_url,
+                        auth_provider="google",
+                        last_login=timezone.now(),
+                    )
+
+                    start_date = timezone.now()
+                    duration_str = str(free_plan.duration_days).strip().lower()
+
+                    if duration_str == "lifetime":
+                        end_date = None
+                    else:
+                        days = int(duration_str.split()[0]) if duration_str else 30
+                        end_date = start_date + timedelta(days=days)
+
+                    user_subscription = UserSubscription.objects.create(
+                        user=user,
+                        subscription=free_plan,
+                        start_date=start_date,
+                        end_date=end_date,
+                        status="active",
+                    )
+
+                    user.current_subscription = user_subscription
+                    user.save(update_fields=["current_subscription"])
+
+                    PaymentHistory.objects.create(
+                        user=user,
+                        plan_name="Free",
+                        price=0,
+                        payment_status="free",
+                    )
+
+        except IntegrityError:
+            # Race condition recovery for concurrent signups
+            logger.warning("Concurrent Google registration detected for %s", email)
+            user = ResumeRegistration.objects.filter(email=email, is_deleted=False).first()
+            if not user:
+                return Response(
+                    {"success": False, "error": "Conflict handling request. Please try again."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+        except Exception as e:
+            logger.exception("Unexpected exception during Google Authentication flow.")
+            return Response(
+                {"success": False, "error": "Authentication system failure."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # 3. Generate Auth Tokens and Return HTTP Response
+        return build_authenticated_response(
+            request=request,
+            user=user,
+            message="Google authentication successful",
+        )
     
     @action(detail=False, methods=["post"], url_path="logout")
     @secure_throttle(rate_limit=5, period=60)

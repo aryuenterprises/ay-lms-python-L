@@ -23,7 +23,7 @@ def get_brand_logo_url() -> str:
     Resolves the official logo URL using the secondary_logo field from the Settings model.
     Optimized for O(1) performance using database-level field projection.
     """
-    media_base_url = getattr(settings, "MEDIA_BASE_URL", "https://portal.aryuacademy.com/api").rstrip("/")
+    media_base_url = getattr(settings, "MEDIA_BASE_URL", "https://aylms.aryuprojects.com/api").rstrip("/")
 
     try:
         # Fetch only the secondary_logo field value without loading the full model object into memory

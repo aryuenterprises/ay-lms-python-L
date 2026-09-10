@@ -27,15 +27,33 @@ class GoogleReview(models.Model):
         blank=True,
         related_name='google_reviews'
     )
+
+    # 1. Google Review
     is_google_review = models.BooleanField(default=False)
     review_date = models.DateField(null=True, blank=True, db_index=True)
-    screenshot =  models.ImageField(upload_to="google_reviews/", null=True, blank=True)
+    screenshot = models.ImageField(upload_to="google_reviews/", null=True, blank=True)
+
+    # 2. LinkedIn Review
     linkedin_review = models.BooleanField(default=False)
+    linkedin_review_date = models.DateField(null=True, blank=True, db_index=True)
     linkedin_screenshot = models.ImageField(upload_to="linkedin_reviews/", null=True, blank=True)
+
+    # 3. Facebook Review
     facebook_review = models.BooleanField(default=False)
+    facebook_review_date = models.DateField(null=True, blank=True, db_index=True)
     facebook_screenshot = models.ImageField(upload_to="facebook_reviews/", null=True, blank=True)
+
+    # 4. Trustpilot Review
     trustpilot_review = models.BooleanField(default=False)
+    trustpilot_review_date = models.DateField(null=True, blank=True, db_index=True)
     trustpilot_screenshot = models.ImageField(upload_to="trustpilot_reviews/", null=True, blank=True)
+
+    # 5. YouTube Testimonial
+    is_youtube_testimonial = models.BooleanField(default=False)
+    youtube_testimonial_link = models.URLField(max_length=500, null=True, blank=True)
+    youtube_testimonial_date = models.DateField(null=True, blank=True, db_index=True)
+
+    # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

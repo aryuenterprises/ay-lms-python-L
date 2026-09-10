@@ -26,7 +26,14 @@ class ResumeRegistrationSerializers(serializers.ModelSerializer):
         model = ResumeRegistration
         fields = "__all__"
 
-
+class GoogleLoginSerializer(serializers.Serializer):
+    credential = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        trim_whitespace=True,
+        help_text="Google ID Token credential returned by Google Identity Services GIS SDK."
+    )
+    
 class SecureLoginSerializer(serializers.Serializer):
     email = serializers.EmailField(required=True)
     password = serializers.CharField(required=True)
@@ -67,7 +74,7 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
 
     def validate(self, attrs):
         # 1. Grab the token string passed from the view
-        refresh_token_string = attrs.get("refresh")
+        refresh_token_string = attrs.get("refresh") or attrs.get("refresh_token")
 
         if not refresh_token_string:
             raise AuthenticationFailed("Refresh token is required.")

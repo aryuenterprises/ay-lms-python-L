@@ -326,6 +326,15 @@ class JobSeekerSerializer(serializers.ModelSerializer):
         fields = ['passed_out_year', 'company_id', 'current_qualification', 'preferred_job_role', 'resume', 'resume_url',]
         extra_kwargs = {
             'student': {'required': False},
+            'passed_out_year': {
+                'error_messages': {'required': 'Year of graduation is required.'}
+            },
+            'current_qualification': {
+                'error_messages': {'required': 'Please select your current qualification.'}
+            },
+            'preferred_job_role': {
+                'error_messages': {'required': 'Preferred job role is required.'}
+            },
         }    
     
     def get_resume_url(self, obj):
@@ -1658,42 +1667,49 @@ class StudentUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Please enter a valid email domain (e.g., gmail.com, yahoo.com).")
         return value
 
-    def update(self, instance, validated_data):
-        deactivation_reason = validated_data.pop('deactivation_reason', None)
-        course_ids_raw = validated_data.pop('course_ids', None)
-        # Handle JSON array string
-        course_ids = []
-        if course_ids_raw:
-            try:
-                parsed = json.loads(course_ids_raw)
-                if isinstance(parsed, list):
-                    course_ids = [int(id) for id in parsed]
-            except (json.JSONDecodeError, ValueError, TypeError):
-                raise serializers.ValidationError({'course_ids': 'Invalid format. Use JSON array like [1, 2].'})
+    def to_internal_value(self, data):
+        # Handle dot notation from multipart/form-data payloads
+        ret = super().to_internal_value(data)
+        
+        jobseeker_data = {}
+        for key in list(data.keys()):
+            # Catches both jobseeker.* and accidental jobseekar.*
+            if key.startswith(('jobseeker.', 'jobseekar.')):
+                field_name = key.split('.', 1)[1]
+                jobseeker_data[field_name] = data.get(key)
 
-        school_data = validated_data.pop('school_student', None)
-        college_data = validated_data.pop('college_student', None)
-        jobseeker_data = validated_data.pop('jobseeker', None)
-        employee_data = validated_data.pop('employee', None)
-
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-
-
-        instance.save()
-
-        if school_data:
-            School_Student.objects.update_or_create(student=instance, defaults=school_data)
-        if college_data:
-            College_Student.objects.update_or_create(student=instance, defaults=college_data)
         if jobseeker_data:
-            JobSeeker.objects.update_or_create(student=instance, defaults=jobseeker_data)
-        if employee_data:
-            Employee.objects.update_or_create(student=instance, defaults=employee_data)
+            ret['jobseeker'] = jobseeker_data
+
+        return ret
+
+    def update(self, instance, validated_data):
+        jobseeker_data = validated_data.pop('jobseeker', None)
+        instance = super().update(instance, validated_data)
+
+        if jobseeker_data:
+            js_instance = JobSeeker.objects.filter(student=instance).first()
+            is_partial = js_instance is not None and getattr(self, 'partial', False)
+
+            js_serializer = JobSeekerSerializer(
+                instance=js_instance,
+                data=jobseeker_data,
+                partial=is_partial
+            )
+
+            if not js_serializer.is_valid():
+                clean_errors = []
+                for msgs in js_serializer.errors.values():
+                    if isinstance(msgs, list):
+                        clean_errors.extend([str(m) for m in msgs])
+                    else:
+                        clean_errors.append(str(msgs))
+                raise serializers.ValidationError({"message": clean_errors})
+
+            js_serializer.save(student=instance)
 
         return instance
-
-
+        
 class RecordingSerializer(serializers.ModelSerializer):
     created_date = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
     class Meta:
