@@ -9,11 +9,13 @@ from rest_framework import viewsets, permissions, status, mixins
 from rest_framework.views import APIView
 from .tasks import send_certificate_task
 from .services.scheduler import schedule_webinar_messages
+from django.core.exceptions import ValidationError as DjangoValidationError
 from .services.certificate_generation import generate_and_send_certificate_pdf
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .services.whatsapp import send_webinar_reminder, send_webinar_welcome_whatsapp, send_webinar_joining_whatsapp
 from payments.models import PaymentGateway, PaymentTransaction
 from aryuapp.models import Certificate
+from rest_framework.exceptions import ValidationError
 from django.conf import settings
 import razorpay
 from rest_framework.viewsets import ReadOnlyModelViewSet
@@ -588,43 +590,76 @@ class WebinarViewSet(
             context={"request": request}
         )
         serializer.is_valid(raise_exception=True)
-        webinar = serializer.save()
 
-        # ---------- TOOLS ----------
-        i = 0
-        while f"tools[{i}][tools_title]" in request.data:
-            WebinarTool.objects.create(
-                webinar=webinar,
-                tools_title=request.data.get(f"tools[{i}][tools_title]"),
-                tools_image=request.FILES.get(f"tools[{i}][tools_image]")
-            )
-            i += 1
+        # Wrap child object creation in a single DB transaction to ensure atomicity
+        try:
+            with transaction.atomic():
+                webinar = serializer.save()
 
-        # ---------- METADATA ----------
-        j = 0
-        while f"metadata[{j}][meta_title]" in request.data:
-            webinar_metadata.objects.create(
-                webinar=webinar,
-                meta_title=request.data.get(f"metadata[{j}][meta_title]"),
-                meta_description=request.data.get(f"metadata[{j}][meta_description]"),
-                meta_image=request.FILES.get(f"metadata[{j}][meta_image]")
-            )
-            j += 1
+                # ---------- TOOLS ----------
+                i = 0
+                tools_to_create = []
+                while f"tools[{i}][tools_title]" in request.data:
+                    title = request.data.get(f"tools[{i}][tools_title]")
+                    image = request.FILES.get(f"tools[{i}][tools_image]")
+                    if title:
+                        tools_to_create.append(
+                            WebinarTool(
+                                webinar=webinar,
+                                tools_title=title,
+                                tools_image=image
+                            )
+                        )
+                    i += 1
+                if tools_to_create:
+                    WebinarTool.objects.bulk_create(tools_to_create)
 
-        # --------- FAQ ----------
-        faqs_data = request.data.get("faqs")
+                # ---------- METADATA ----------
+                j = 0
+                metadata_to_create = []
+                while f"metadata[{j}][meta_title]" in request.data:
+                    title = request.data.get(f"metadata[{j}][meta_title]")
+                    desc = request.data.get(f"metadata[{j}][meta_description]")
+                    image = request.FILES.get(f"metadata[{j}][meta_image]")
+                    if title:
+                        metadata_to_create.append(
+                            webinar_metadata(
+                                webinar=webinar,
+                                meta_title=title,
+                                meta_description=desc,
+                                meta_image=image
+                            )
+                        )
+                    j += 1
+                if metadata_to_create:
+                    webinar_metadata.objects.bulk_create(metadata_to_create)
 
-        if faqs_data:
-            try:
-                faqs_data = json.loads(faqs_data)
-                for faq in faqs_data:
-                    Webinar_FAQ.objects.create(
-                        webinar=webinar,
-                        question=faq.get("question"),
-                        answer=faq.get("answer")
-                    )
-            except json.JSONDecodeError:
-                pass
+                # --------- FAQ ----------
+                faqs_data = request.data.get("faqs")
+                if faqs_data:
+                    if isinstance(faqs_data, str):
+                        try:
+                            faqs_data = json.loads(faqs_data)
+                        except json.JSONDecodeError:
+                            raise ValidationError({"faqs": "Invalid JSON format."})
+
+                    if isinstance(faqs_data, list):
+                        faqs_to_create = [
+                            Webinar_FAQ(
+                                webinar=webinar,
+                                question=faq.get("question"),
+                                answer=faq.get("answer")
+                            )
+                            for faq in faqs_data if faq.get("question")
+                        ]
+                        if faqs_to_create:
+                            Webinar_FAQ.objects.bulk_create(faqs_to_create)
+
+        except DjangoValidationError as e:
+            raise ValidationError(e.message_dict)
+
+        # Invalidate cache on new webinar creation
+        cache.delete("webinar_list_v1")
 
         return Response({
             "status": True,
