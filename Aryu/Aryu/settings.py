@@ -464,9 +464,8 @@ CORS_ALLOWED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://portal.aryuacademy.com/",
+    "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com/",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -477,9 +476,8 @@ CSRF_TRUSTED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://portal.aryuacademy.com/",
+    "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com/",
 
 ]
 
