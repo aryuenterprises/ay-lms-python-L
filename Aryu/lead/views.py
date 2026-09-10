@@ -730,6 +730,22 @@ class LeadViewSet(LeadSecurityMixin, viewsets.ViewSet):
 
         lead = serializer.save()
 
+        # -----------------------------------------------------
+        # TeleCRM Synchronization
+        # -----------------------------------------------------
+        try:
+            # Trigger TeleCRM sync; on_commit ensures DB transaction safety.
+            sync_lead_to_telecrm(
+                lead=lead,
+                action_type="ACTION_1001",  # default action type for lead creation
+                action_note="Website Leads",
+            )
+        except Exception as sync_err:
+            # Log the error but do not affect the lead creation response.
+            logger.error(
+                f"[TeleCRM Sync Error] Failed to sync lead ID={getattr(lead, 'id', None)}: {sync_err}"
+            )
+
         # =====================================
         # CACHE INVALIDATION
         # =====================================
