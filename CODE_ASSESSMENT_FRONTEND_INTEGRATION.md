@@ -49,7 +49,7 @@ Configure the backend API base URL using environment variables:
 
 ```env
 # Production
-VITE_API_BASE_URL=https://portal.aryuacademy.com//api/code-assessment
+VITE_API_BASE_URL=https://portal.aryuacademy.com/api/code-assessment
 
 # Staging
 VITE_API_BASE_URL=https://staging.aryuacademy.com/api/code-assessment

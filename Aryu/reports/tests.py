@@ -528,7 +528,7 @@ class GoogleReviewTestCase(TestCase):
         self.assertTrue(response.data["success"])
         self.assertEqual(
             response.data["data"]["screenshot_url"],
-            "https://portal.aryuacademy.com//api/media/AYA0826066_review.png"
+            "https://portal.aryuacademy.com/api/media/AYA0826066_review.png"
         )
 
 
