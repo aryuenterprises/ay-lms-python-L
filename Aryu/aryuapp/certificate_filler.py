@@ -63,10 +63,10 @@ def fit_font(draw, text, font_path, max_width, start_size):
 def generate_certificate_image_and_save(certificate):
     template_candidates = [
         Path(settings.MEDIA_ROOT) / "certificates" / "course_completion_certificate.png",
-        Path(settings.MEDIA_ROOT) / "certificates" / "AK20.png",
+        Path(settings.MEDIA_ROOT) / "certificates" / "AdhhK20.png",
         Path(settings.MEDIA_ROOT) / "certificates" / "aryu-certificate.png",
-        Path(settings.MEDIA_ROOT) / "certificates" / "Ak2.png",
-        Path(settings.MEDIA_ROOT) / "certificates" / "4016369-ai.png",
+        Path(settings.MEDIA_ROOT) / "certificates" / "Akdgbh2.png",
+        Path(settings.MEDIA_ROOT) / "certificates" / "40163dhxh69-ai.png",
     ]
 
     template_path = None
