@@ -3365,82 +3365,101 @@ class ResumePaymentViewSet(viewsets.ViewSet):
                 status=404
             )
 
-        # =========================================
-        # UPDATE TRANSACTION
-        # =========================================
+        with transaction.atomic():
 
-        txn.payment_status = "done"
-        txn.transaction_id = payment_id
-        if not txn.payment_mode:
-            txn.payment_mode = "razorpay"
+            # Check idempotency: if already processed (e.g. by webhook)
+            existing_sub = UserSubscription.objects.filter(
+                payment_transaction=txn
+            ).first()
 
-        txn.save()
-        PaymentHistory.objects.create(
-            user=user,
-            plan_name=txn.subscription.name,  # adjust field name
-            price=txn.amount,
-            payment_status="done"
-        )
+            if existing_sub:
+                return Response(
+                    {
+                        "success": True,
+                        "message": "Subscription activated successfully",
+                        "subscription_id": existing_sub.id
+                    }
+                )
 
-        # =========================================
-        # EXPIRE OLD ACTIVE SUBSCRIPTIONS
-        # =========================================
+            # =========================================
+            # UPDATE TRANSACTION
+            # =========================================
 
-        UserSubscription.objects.filter(
-            user=user,
-            status="active"
-        ).update(
-            status="expired"
-        )
+            txn.payment_status = "done"
+            txn.transaction_id = payment_id
+            if not txn.payment_mode:
+                txn.payment_mode = "razorpay"
 
-        # =========================================
-        # CALCULATE END DATE
-        # =========================================
+            txn.save()
 
-        duration_value = str(txn.subscription.duration_days).strip()
-
-        if duration_value.lower() in ["lifetime", "life time"]:
-            end_date = None
-        else:
-            duration = int(
-                duration_value
-                .replace("Days", "")
-                .replace("Day", "")
-                .strip()
+            PaymentHistory.objects.create(
+                user=user,
+                plan_name=txn.subscription.name,
+                price=txn.amount,
+                payment_status="done"
             )
 
-            end_date = timezone.now() + timedelta(days=duration)
+            # =========================================
+            # EXPIRE OLD ACTIVE SUBSCRIPTIONS
+            # =========================================
 
-        # =========================================
-        # CREATE NEW ACTIVE SUBSCRIPTION
-        # =========================================
+            UserSubscription.objects.filter(
+                user=user,
+                status="active"
+            ).update(
+                status="expired"
+            )
 
-        new_subscription = UserSubscription.objects.create(
-            user=user,
-            subscription=txn.subscription,
-            payment_transaction=txn,
-            status="active",
-            start_date=timezone.now(),
-            end_date=end_date
-        )
+            # =========================================
+            # CALCULATE END DATE
+            # =========================================
 
-        # =========================================
-        # UPDATE USER CURRENT PLAN
-        # =========================================
+            duration_value = str(txn.subscription.duration_days or "").strip()
 
-        user.current_subscription = new_subscription
+            if duration_value.lower() in ["lifetime", "life time"]:
+                end_date = None
+            else:
+                try:
+                    duration = int(
+                        duration_value
+                        .replace("Days", "")
+                        .replace("Day", "")
+                        .strip()
+                    )
+                    end_date = timezone.now() + timedelta(days=duration)
+                except Exception:
+                    end_date = timezone.now() + timedelta(days=30)
 
-        user.save(
-            update_fields=["current_subscription"]
-        )
+            # =========================================
+            # CREATE NEW ACTIVE SUBSCRIPTION
+            # =========================================
 
-        return Response(
-            {
-                "success": True,
-                "message": "Subscription activated successfully",
-                "subscription_id": new_subscription.id
-            }
-        )
+            new_subscription = UserSubscription.objects.create(
+                user=user,
+                subscription=txn.subscription,
+                payment_transaction=txn,
+                status="active",
+                start_date=timezone.now(),
+                end_date=end_date
+            )
+
+            # =========================================
+            # UPDATE USER CURRENT PLAN
+            # =========================================
+
+            user.current_subscription = new_subscription
+
+            user.save(
+                update_fields=["current_subscription"]
+            )
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "Subscription activated successfully",
+                    "subscription_id": new_subscription.id
+                }
+            )
     
 @csrf_exempt
 @api_view(["POST"])
@@ -3554,35 +3573,39 @@ def resume_razorpay_webhook(request):
                 payment_transaction=txn
             ).exists()
 
-            if not already_exists:
+            if not already_exists and txn.resume_registration and txn.subscription:
 
                 start_date = timezone.now()
+                duration_value = str(txn.subscription.duration_days or "").strip()
 
-                end_date = None
-
-                if not txn.subscription.is_lifetime:
-
-                    end_date = (
-                        start_date +
-                        timedelta(
-                            days=txn.subscription.duration_days
+                if duration_value.lower() in ["lifetime", "life time"]:
+                    end_date = None
+                else:
+                    try:
+                        duration = int(
+                            duration_value
+                            .replace("Days", "")
+                            .replace("Day", "")
+                            .strip()
                         )
-                    )
+                        end_date = start_date + timedelta(days=duration)
+                    except Exception:
+                        end_date = start_date + timedelta(days=30)
+
+                # Expire old active subscriptions
+                UserSubscription.objects.filter(
+                    user=txn.resume_registration,
+                    status="active"
+                ).update(
+                    status="expired"
+                )
 
                 user_subscription = UserSubscription.objects.create(
-
                     user=txn.resume_registration,
-
                     subscription=txn.subscription,
-
                     payment_transaction=txn,
-
                     start_date=start_date,
-
                     end_date=end_date,
-
-                    is_lifetime=txn.subscription.is_lifetime,
-
                     status="active"
                 )
 
@@ -3592,6 +3615,13 @@ def resume_razorpay_webhook(request):
 
                 txn.resume_registration.save(
                     update_fields=["current_subscription"]
+                )
+
+                PaymentHistory.objects.create(
+                    user=txn.resume_registration,
+                    plan_name=txn.subscription.name,
+                    price=txn.amount,
+                    payment_status="done"
                 )
 
     # =========================================

@@ -438,8 +438,11 @@ class DashboardCurrentSubscriptionSerializer(serializers.Serializer):
 class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
 
     plan_name = serializers.CharField(
-        source="subscription.name"
+        source="subscription.name",
+        read_only=True
     )
+
+    transaction_id = serializers.SerializerMethodField()
 
     amount = serializers.SerializerMethodField()
 
@@ -453,6 +456,9 @@ class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
 
     invoice_date = serializers.SerializerMethodField()
 
+    created_date = serializers.SerializerMethodField()
+
+    created_at = serializers.SerializerMethodField()
 
     class Meta:
 
@@ -460,6 +466,7 @@ class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
 
         fields = [
             "id",
+            "transaction_id",
             "plan_name",
             "amount",
             "currency",
@@ -467,7 +474,23 @@ class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
             "payment_mode",
             "invoice_no",
             "invoice_date",
+            "created_date",
+            "created_at",
         ]
+
+    # ----------------------------------------
+    # TRANSACTION ID
+    # ----------------------------------------
+
+    def get_transaction_id(self, obj):
+
+        if obj.payment_transaction and obj.payment_transaction.transaction_id:
+            return obj.payment_transaction.transaction_id
+
+        if obj.payment_transaction:
+            return str(obj.payment_transaction.id)
+
+        return None
 
     # ----------------------------------------
     # AMOUNT
@@ -537,6 +560,26 @@ class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
 
         if obj.start_date:
             return obj.start_date.date() if hasattr(obj.start_date, 'date') else obj.start_date
+
+        return None
+
+    # ----------------------------------------
+    # CREATED AT / CREATED DATE
+    # ----------------------------------------
+
+    def get_created_at(self, obj):
+
+        if obj.payment_transaction and obj.payment_transaction.created_at:
+            return obj.payment_transaction.created_at
+
+        return obj.created_at
+
+    def get_created_date(self, obj):
+
+        dt = self.get_created_at(obj)
+
+        if dt:
+            return dt.date() if hasattr(dt, 'date') else dt
 
         return None
     

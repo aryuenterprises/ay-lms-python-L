@@ -12,7 +12,8 @@ from rest_framework.test import APIClient
 from rest_framework import status
 from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
 
-from payments.models import PaymentTransaction
+from payments.models import PaymentTransaction, PaymentGateway
+from unittest.mock import patch, MagicMock
 from .models import (
     ResumeRegistration,
     Subscription,
@@ -843,6 +844,116 @@ class ResumeHTMLAndAuthTestCase(TestCase):
         self.assertEqual(free_txn["currency"], "INR")
         self.assertEqual(free_txn["payment_status"], "free")
         self.assertEqual(free_txn["payment_mode"], "free")
+        self.assertIn("transaction_id", free_txn)
+        self.assertIn("created_date", free_txn)
+        self.assertIn("created_at", free_txn)
+
+    def test_complete_paid_subscription_flow_and_dashboard_retrieval(self):
+        """
+        Tests the complete end-to-end flow:
+        1. Resume App -> Payment Initiation (/api/resume/payment/create-order/)
+        2. PaymentTransaction created with payment_status='created'
+        3. Payment Gateway verification callback (/api/resume/payment/verify-payment/)
+        4. PaymentTransaction updated to 'done' and linked to UserSubscription
+        5. Dashboard API returns full transaction details with all required fields
+        """
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        gateway = PaymentGateway.objects.create(
+            gatway_name="Razorpay Test",
+            public_key="rzp_test_public_key",
+            secret_key="rzp_test_secret_key",
+            webhook_secret="test_webhook_secret",
+            is_archived=False,
+        )
+
+        plan = Subscription.objects.create(
+            name="Premium Plan",
+            slug="premium-plan",
+            price=999.00,
+            discount_price=799.00,
+            billing_type="yearly",
+            duration_days="365",
+            limit="premium",
+            is_active=True,
+        )
+
+        # 1. Initiate Order
+        with patch("razorpay.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
+            mock_client.order.create.return_value = {
+                "id": "order_test_12345",
+                "amount": 79900,
+                "currency": "INR",
+            }
+
+            order_resp = self.client.post(
+                "/api/resume/payment/create-order/",
+                data={"subscription_id": plan.id},
+                format="json",
+            )
+            self.assertEqual(order_resp.status_code, status.HTTP_200_OK)
+            self.assertTrue(order_resp.data["success"])
+            self.assertEqual(order_resp.data["order_id"], "order_test_12345")
+
+        # Verify PaymentTransaction created
+        txn = PaymentTransaction.objects.get(order_id="order_test_12345")
+        self.assertEqual(txn.resume_registration_id, self.user.id)
+        self.assertEqual(txn.subscription_id, plan.id)
+        self.assertEqual(txn.amount, 799.00)
+        self.assertEqual(txn.payment_status, "created")
+
+        # 2. Verify Payment
+        with patch("razorpay.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
+            mock_client.utility.verify_payment_signature.return_value = True
+
+            verify_resp = self.client.post(
+                "/api/resume/payment/verify-payment/",
+                data={
+                    "razorpay_order_id": "order_test_12345",
+                    "razorpay_payment_id": "pay_test_98765",
+                    "razorpay_signature": "test_valid_signature",
+                },
+                format="json",
+            )
+            self.assertEqual(verify_resp.status_code, status.HTTP_200_OK)
+            self.assertTrue(verify_resp.data["success"])
+
+        # Verify DB records updated and linked
+        txn.refresh_from_db()
+        self.assertEqual(txn.payment_status, "done")
+        self.assertEqual(txn.transaction_id, "pay_test_98765")
+        self.assertEqual(txn.payment_mode, "razorpay")
+        self.assertIsNotNone(txn.invoice_no)
+        self.assertIsNotNone(txn.invoice_date)
+
+        user_sub = UserSubscription.objects.get(payment_transaction=txn)
+        self.assertEqual(user_sub.user_id, self.user.id)
+        self.assertEqual(user_sub.subscription_id, plan.id)
+        self.assertEqual(user_sub.status, "active")
+
+        # 3. Retrieve Dashboard API
+        dash_resp = self.client.get("/api/resume/dashboard")
+        self.assertEqual(dash_resp.status_code, status.HTTP_200_OK)
+        dash_data = dash_resp.data
+
+        txns_list = dash_data["transactions"]
+        self.assertEqual(dash_data["statistics"]["total_transactions"], len(txns_list))
+
+        paid_item = next(t for t in txns_list if t["transaction_id"] == "pay_test_98765")
+        self.assertEqual(paid_item["plan_name"], "Premium Plan")
+        self.assertEqual(str(paid_item["amount"]), "799.00")
+        self.assertEqual(paid_item["currency"], "INR")
+        self.assertEqual(paid_item["payment_status"], "done")
+        self.assertEqual(paid_item["payment_mode"], "razorpay")
+        self.assertEqual(paid_item["invoice_no"], txn.invoice_no)
+        self.assertEqual(str(paid_item["invoice_date"]), str(txn.invoice_date))
+        self.assertIsNotNone(paid_item["created_date"])
+        self.assertIsNotNone(paid_item["created_at"])
 
 
 class SubscriptionDescriptionRawHTMLTestCase(TestCase):
