@@ -2204,93 +2204,63 @@ from .tasks import send_verification_email
 
 
 class ResumeRegistrationViewset(viewsets.ModelViewSet):
-
-    queryset = ResumeRegistration.objects.all().order_by("-id")
+    """
+    ViewSet for Resume Registration.
+    - create: Public registration.
+    - list / destroy: Restricted to admin/super_admin.
+    - destroy: Performs production-safe soft delete (is_deleted=True).
+    - Queryset strictly filters out soft-deleted users (is_deleted=False).
+    """
+    queryset = ResumeRegistration.objects.filter(is_deleted=False).order_by("-id")
     serializer_class = ResumeRegistrationSerializers
     authentication_classes = [CustomJWTAuthentication]
     permission_classes = [AllowAny]
 
-    # =====================================================
-    # TURNSTILE VERIFICATION METHOD
-    # =====================================================
-    
-    # def verify_turnstile_token(self, token: str, client_ip: str = None) -> dict:
-    #     secret_key = settings.TURNSTILE_SECRET_KEY
+    def get_queryset(self):
+        return ResumeRegistration.objects.filter(is_deleted=False).order_by("-id")
 
-        
-    #     verification_data = {
-    #         "secret": secret_key,
-    #         "response": token,
-    #     }
+    def get_client_ip(self, request):
+        """Extract client IP address from request."""
+        x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(",")[0]
+        else:
+            ip = request.META.get("REMOTE_ADDR")
+        return ip
 
-    #     try:
-    #         verify_start = time.perf_counter()
-
-    #         response = requests.post(
-    #             "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-    #             data=verification_data,
-    #             timeout=10
-    #         )
-
-    #         logger.info(
-    #             f"Cloudflare API call took "
-    #             f"{time.perf_counter() - verify_start:.4f} seconds"
-    #         )
-           
-
-    #         result = response.json()
-
-            
-
-    #         return result
-
-    #     except requests.exceptions.Timeout:
-            
-    #         return {
-    #             "success": False,
-    #             "error": "Verification timeout"
-    #         }
-
-    #     except Exception as e:
-            
-    #         return {
-    #             "success": False,
-    #             "error": str(e)
-    #         }
-        
-        # from django.conf import settings
+    def verify_turnstile_token(self, token: str, client_ip: str = None) -> dict:
+        """Verify Turnstile security token."""
+        secret_key = getattr(settings, "TURNSTILE_SECRET_KEY", "")
+        verification_data = {
+            "secret": secret_key,
+            "response": token,
+        }
+        try:
+            response = requests.post(
+                "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                data=verification_data,
+                timeout=10
+            )
+            return response.json()
+        except requests.exceptions.Timeout:
+            return {"success": False, "error": "Verification timeout"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     @secure_throttle(rate_limit=5, period=60)
     def create(self, request, *args, **kwargs):
-
-        start = time.perf_counter()
-
-        # =====================================
-        # STEP 1: TURNSTILE VERIFICATION
-        # =====================================
-
         client_ip = self.get_client_ip(request)
 
         if settings.DEBUG:
             logger.info("Turnstile verification skipped (DEBUG=True)")
-
-            verification_result = {
-                "success": True,
-                "score": 1.0,
-                "hostname": "localhost"
-            }
-
+            verification_result = {"success": True}
         else:
             turnstile_token = request.data.get("turnstileToken")
-
             if not turnstile_token:
                 return Response(
                     {
                         "status": False,
-                        "message": (
-                            "Security verification required. "
-                            "Please complete the verification check."
-                        )
+                        "message": "Security verification required. Please complete the verification check."
                     },
                     status=status.HTTP_403_FORBIDDEN
                 )
@@ -2299,79 +2269,18 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
                 turnstile_token,
                 client_ip
             )
-
             if not verification_result.get("success"):
                 return Response(
                     {
                         "status": False,
-                        "message": (
-                            "Security check failed. "
-                            "Please refresh the page and try again."
-                        )
+                        "message": "Security check failed. Please refresh the page and try again."
                     },
                     status=status.HTTP_403_FORBIDDEN
                 )
 
-            score = verification_result.get("score", 0)
-
-            if score < 0.7:
-                return Response(
-                    {
-                        "status": False,
-                        "message": (
-                            "Suspicious activity detected. "
-                            "Please try again."
-                        )
-                    },
-                    status=status.HTTP_403_FORBIDDEN
-                )
-
-            expected_hostnames = [
-                "aylms.aryuprojects.com",
-                "localhost",
-                "yourdomain.com"
-            ]
-
-            hostname = verification_result.get("hostname")
-
-            if hostname not in expected_hostnames:
-                return Response(
-                    {
-                        "status": False,
-                        "message": "Invalid request source."
-                    },
-                    status=status.HTTP_403_FORBIDDEN
-                )
-
-        # =====================================
-        # STEP 2: REGISTRATION
-        # =====================================
-
-        serializer = self.get_serializer(
-            data=request.data
-        )
-
-        validation_start = time.perf_counter()
-
-        serializer.is_valid(
-            raise_exception=True
-        )
-
-        logger.info(
-            f"Validation Time: "
-            f"{time.perf_counter() - validation_start:.4f}s"
-        )
-
-        save_start = time.perf_counter()
-
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         registration = serializer.save()
-
-        logger.info(
-            f"Registration Save Time: "
-            f"{time.perf_counter() - save_start:.4f}s"
-        )
-
-        payment_start = time.perf_counter()
 
         PaymentHistory.objects.create(
             user=registration,
@@ -2380,388 +2289,95 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
             payment_status="free"
         )
 
-        logger.info(
-            f"Payment History Time: "
-            f"{time.perf_counter() - payment_start:.4f}s"
-        )
-
-        celery_start = time.perf_counter()
-
-        send_verification_email.delay(
-            registration.id
-        )
-
-        logger.info(
-            f"Celery Trigger Time: "
-            f"{time.perf_counter() - celery_start:.4f}s"
-        )
-
-        logger.info(
-            f"TOTAL API TIME: "
-            f"{time.perf_counter() - start:.4f}s"
-        )
+        send_verification_email.delay(registration.id)
 
         return Response(
             {
                 "status": True,
-                "message": (
-                    "Resume registration created successfully"
-                ),
+                "message": "Resume registration created successfully",
                 "data": serializer.data
             },
             status=status.HTTP_201_CREATED
         )
-    
-    def get_client_ip(self, request):
-        """Extract client IP address from request"""
-        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-        if x_forwarded_for:
-            ip = x_forwarded_for.split(',')[0]
-        else:
-            ip = request.META.get('REMOTE_ADDR')
-        return ip
 
-    # =====================================================
-    # CREATE (REGISTRATION) - WITH TURNSTILE
-    # =====================================================
+    def list(self, request, *args, **kwargs):
+        user = request.user
+        allowed_types = ["super_admin", "admin"]
 
-    # @secure_throttle(rate_limit=5, period=60)
-    # def create(self, request, *args, **kwargs):
+        if not user or not getattr(user, "is_authenticated", False) or getattr(user, "user_type", None) not in allowed_types:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unable to process request."
+                },
+                status=status.HTTP_403_FORBIDDEN if getattr(user, "is_authenticated", False) else status.HTTP_401_UNAUTHORIZED
+            )
 
-    #     start = time.perf_counter()
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
 
-    #     # Turnstile Verification
-    #     turnstile_token = request.data.get("turnstileToken")
+        return Response(
+            {
+                "status": True,
+                "message": "Resume registration list",
+                "data": serializer.data
+            },
+            status=status.HTTP_200_OK
+        )
 
-    #     if not turnstile_token:
-    #         return Response(
-    #             {
-    #                 "status": False,
-    #                 "message": "Security verification required. Please complete the verification check."
-    #             },
-    #             status=status.HTTP_403_FORBIDDEN
-    #         )
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
 
-    #     client_ip = self.get_client_ip(request)
+        serializer = self.get_serializer(
+            instance,
+            data=request.data,
+            partial=True
+        )
 
-    #     verify_start = time.perf_counter()
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                {
+                    "status": True,
+                    "message": "Resume registration updated successfully",
+                    "data": serializer.data
+                },
+                status=status.HTTP_200_OK
+            )
 
-    #     verification_result = self.verify_turnstile_token(
-    #         turnstile_token,
-    #         client_ip
-    #     )
-
-    #     logger.info(
-    #         f"Turnstile verification took "
-    #         f"{time.perf_counter() - verify_start:.4f} seconds"
-    #     )
-
-    #     if not verification_result.get("success"):
-    #         return Response(
-    #             {
-    #                 "status": False,
-    #                 "message": "Security check failed. Please refresh the page and try again."
-    #             },
-    #             status=status.HTTP_403_FORBIDDEN
-    #         )
-
-    #     serializer = self.get_serializer(data=request.data)
-
-    #     validation_start = time.perf_counter()
-
-    #     serializer.is_valid(raise_exception=True)
-
-    #     logger.info(
-    #         f"Serializer validation took "
-    #         f"{time.perf_counter() - validation_start:.4f} seconds"
-    #     )
-
-    #     save_start = time.perf_counter()
-
-    #     registration = serializer.save()
-
-    #     logger.info(
-    #         f"User save took "
-    #         f"{time.perf_counter() - save_start:.4f} seconds"
-    #     )
-
-    #     payment_start = time.perf_counter()
-
-    #     PaymentHistory.objects.create(
-    #         user=registration,
-    #         plan_name="Free",
-    #         price=0,
-    #         payment_status="free"
-    #     )
-
-    #     logger.info(
-    #         f"PaymentHistory create took "
-    #         f"{time.perf_counter() - payment_start:.4f} seconds"
-    #     )
-
-    #     celery_start = time.perf_counter()
-
-    #     resume_reg.delay(registration.id)
-
-    #     logger.info(
-    #         f"Celery trigger took "
-    #         f"{time.perf_counter() - celery_start:.4f} seconds"
-    #     )
-
-    #     logger.info(
-    #         f"TOTAL REGISTRATION API TIME: "
-    #         f"{time.perf_counter() - start:.4f} seconds"
-    #     )
-
-    #     return Response(
-    #         {
-    #             "status": True,
-    #             "message": "Resume registration created successfully",
-    #             "data": serializer.data
-    #         },
-    #         status=status.HTTP_201_CREATED
-    #     )
-
-    #     # =====================================================
-    #     # LIST (UNCHANGED)
-    #     # =====================================================
-        
-    #     def list(self, request, *args, **kwargs):
-            
-    #         user = request.user
-            
-    #         allowed_types = ["super_admin", "admin"]
-
-    #         if user.user_type not in allowed_types:
-    #             return Response({
-    #                 "success": False,
-    #                 "message": "Unable to process request."
-    #             }, status=status.HTTP_403_FORBIDDEN)
-                
-
-    #         queryset = self.get_queryset()
-    #         serializer = self.get_serializer(queryset, many=True)
-
-    #         return Response(
-    #             {
-    #                 "status": True,
-    #                 "message": "Resume registration list",
-    #                 "data": serializer.data
-    #             },
-    #             status=status.HTTP_200_OK
-    #         )
-        
-
-    #     # =====================================================
-    #     # UPDATE (UNCHANGED)
-    #     # =====================================================
-
-    #     def partial_update(self, request, *args, **kwargs):
-
-    #         instance = self.get_object()
-
-    #         serializer = self.get_serializer(
-    #             instance,
-    #             data=request.data,
-    #             partial=True
-    #         )
-
-    #         if serializer.is_valid():
-    #             serializer.save()
-
-    #             return Response(
-    #                 {
-    #                     "status": True,
-    #                     "message": "Resume registration updated successfully",
-    #                     "data": serializer.data
-    #                 },
-    #                 status=status.HTTP_200_OK
-    #             )
-
-    #         return Response(
-    #             {
-    #                 "status": False,
-    #                 "message": "Validation error",
-    #                 "errors": serializer.errors
-    #             },
-    #             status=status.HTTP_400_BAD_REQUEST
-    #         )
-
-
-    #     # =====================================================
-    #     # DELETE (UNCHANGED)
-    #     # =====================================================
-        
-    #     @secure_throttle(rate_limit=5, period=60)
-    #     def destroy(self, request, *args, **kwargs):
-    #         user = request.user
-
-    #         allowed_types = ["super_admin", "admin"]
-
-    #         if user.user_type not in allowed_types:
-    #             return Response({
-    #                 "success": False,
-    #                 "message": "Unable to process request."
-    #             }, status=status.HTTP_403_FORBIDDEN)
-
-    #         instance = self.get_object()
-    #         instance.delete()
-
-    #         return Response(
-    #             {
-    #                 "status": True,
-    #                 "message": "Resume registration deleted successfully"
-    #             },
-    #             status=status.HTTP_200_OK
-    #         )
-        
+        return Response(
+            {
+                "status": False,
+                "message": "Validation error",
+                "errors": serializer.errors
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
     @secure_throttle(rate_limit=5, period=60)
-    def create(self, request, *args, **kwargs):
+    def destroy(self, request, *args, **kwargs):
+        user = request.user
+        allowed_types = ["super_admin", "admin"]
 
-        start = time.perf_counter()
-
-        client_ip = self.get_client_ip(request)
-
-        # =====================================
-        # TURNSTILE VERIFICATION
-        # =====================================
-
-        if settings.DEBUG:
-
-            logger.info(
-                "Turnstile verification skipped (DEBUG=True)"
+        if not user or not getattr(user, "is_authenticated", False) or getattr(user, "user_type", None) not in allowed_types:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Unable to process request."
+                },
+                status=status.HTTP_403_FORBIDDEN if getattr(user, "is_authenticated", False) else status.HTTP_401_UNAUTHORIZED
             )
 
-            verification_result = {
-                "success": True
-            }
-
-        else:
-
-            turnstile_token = request.data.get(
-                "turnstileToken"
-            )
-
-            if not turnstile_token:
-                return Response(
-                    {
-                        "status": False,
-                        "message": (
-                            "Security verification required. "
-                            "Please complete the verification check."
-                        )
-                    },
-                    status=status.HTTP_403_FORBIDDEN
-                )
-
-            verify_start = time.perf_counter()
-
-            verification_result = self.verify_turnstile_token(
-                turnstile_token,
-                client_ip
-            )
-
-            logger.info(
-                f"Turnstile verification took "
-                f"{time.perf_counter() - verify_start:.4f} seconds"
-            )
-
-            if not verification_result.get("success"):
-                return Response(
-                    {
-                        "status": False,
-                        "message": (
-                            "Security check failed. "
-                            "Please refresh the page and try again."
-                        )
-                    },
-                    status=status.HTTP_403_FORBIDDEN
-                )
-
-        # =====================================
-        # SERIALIZER VALIDATION
-        # =====================================
-
-        serializer = self.get_serializer(
-            data=request.data
-        )
-
-        validation_start = time.perf_counter()
-
-        serializer.is_valid(
-            raise_exception=True
-        )
-
-        logger.info(
-            f"Serializer validation took "
-            f"{time.perf_counter() - validation_start:.4f} seconds"
-        )
-
-        # =====================================
-        # USER SAVE
-        # =====================================
-
-        save_start = time.perf_counter()
-
-        registration = serializer.save()
-
-        logger.info(
-            f"User save took "
-            f"{time.perf_counter() - save_start:.4f} seconds"
-        )
-
-        # =====================================
-        # PAYMENT HISTORY
-        # =====================================
-
-        payment_start = time.perf_counter()
-
-        PaymentHistory.objects.create(
-            user=registration,
-            plan_name="Free",
-            price=0,
-            payment_status="free"
-        )
-
-        logger.info(
-            f"PaymentHistory create took "
-            f"{time.perf_counter() - payment_start:.4f} seconds"
-        )
-
-        # =====================================
-        # CELERY TASK
-        # =====================================
-
-        celery_start = time.perf_counter()
-
-        send_verification_email.delay(
-            registration.id
-        )
-
-        logger.info(
-            f"Celery trigger took "
-            f"{time.perf_counter() - celery_start:.4f} seconds"
-        )
-
-        # =====================================
-        # TOTAL TIME
-        # =====================================
-
-        logger.info(
-            f"TOTAL REGISTRATION API TIME: "
-            f"{time.perf_counter() - start:.4f} seconds"
-        )
+        instance = self.get_object()
+        instance.is_deleted = True
+        instance.save(update_fields=["is_deleted"])
 
         return Response(
             {
                 "status": True,
-                "message": (
-                    "Resume registration created successfully"
-                ),
-                "data": serializer.data
+                "message": "Resume registration deleted successfully"
             },
-            status=status.HTTP_201_CREATED
+            status=status.HTTP_200_OK
         )
     
     
