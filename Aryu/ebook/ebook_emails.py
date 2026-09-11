@@ -161,7 +161,7 @@ def send_ebook_registration_email(registration, password=None):
                     padding: 45px 5px;
                     ">
                     <img
-                    src="{media_base_url}/media/logos/passats.png"
+                    src="{media_base_url}/media/logos/pass-ats-logo-white.png"
                     alt="Aryu Academy"
                     style="
                         width: 200px;
