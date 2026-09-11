@@ -75,7 +75,7 @@ urlpatterns = [
    path('trainers/<str:employee_id>/archive',TrainerViewSet.as_view({'patch': 'archive_trainer'})),
    path('trainer_attendance/<str:employee_id>', TrainerAttendanceViewSet.as_view({'get': 'list', 'post': 'create'})),
    path('trainer_attendance/<str:employee_id>/adumneoie', TrainerAttendanceViewSet.as_view({'post': 'admin_mark_attendance'})),
-   path('trainer_attendance/<str:employee_id>/full_logs', TrainerAttendanceViewSet.as_view({'get': 'full_logs'})),
+   path('<str:employee_id>/full_logs', TrainerAttendanceViewSet.as_view({'get': 'full_logs'})),
    path('trainer_list', TrainerListAPIView.as_view(), name='trainer_list'),
    path('trainer_expenses/<str:trainer_id>', TrainerTravelExpenseViewSet.as_view({'get': 'list', 'post': 'create'})),
    path('trainer_expenses/<str:trainer_id>/<str:expense_id>', TrainerTravelExpenseViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update',})),

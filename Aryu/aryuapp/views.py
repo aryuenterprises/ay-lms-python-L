@@ -60,6 +60,7 @@ from batches.serializers import BatchRecordingSerializer
 from rest_framework.pagination import CursorPagination
 from core.views import secure_throttle
 from django.utils.decorators import method_decorator
+
 class IsAdminOrSuperAdmin(BasePermission):
     def has_permission(self, request, view):
         return getattr(request.user, "user_type", "") in ["admin", "super_admin"]
