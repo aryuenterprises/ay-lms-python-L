@@ -45,7 +45,7 @@ urlpatterns = [
 
     #Contact urls
     path('contact',ContactViewset.as_view({'get':'list','post':'create'})),
-    path('contact/<int:pk>',ContactViewset.as_view({'delete':'destroy'})),
+    path('contact/<int:pk>',ContactViewset.as_view({'get': 'retrieve','put':'update','patch':'update','delete':'destroy'})),
 
     #Subscription Urls
     path("plans/",SubscriptionViewSet.as_view({"get": "plans"}),name="subscription-plans"),
