@@ -965,7 +965,7 @@ class EbookRegistrationViewSet(LeadSecurityMixin, viewsets.ViewSet):
 
         qs = (
             EbookRegistration.objects
-            .filter(ebook__slug=slug)
+            .filter(ebook__slug=slug, is_deleted=False)
             .select_related('ebook', 'payment_transaction')
             .order_by('-registered_at')
         )
@@ -975,7 +975,35 @@ class EbookRegistrationViewSet(LeadSecurityMixin, viewsets.ViewSet):
             "success": True,
             "data": serializer.data
         })
+    def destroy(self, request, *args, **kwargs):
+        # Accept whatever lookup DRF uses (pk or slug)
+        lookup_value = kwargs.get('pk') or kwargs.get('slug')
 
+        registration = EbookRegistration.objects.filter(
+            id=lookup_value,
+            is_deleted=False
+        ).first()
+
+        if not registration:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Registration not found"
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        registration.is_deleted = True
+        registration.save(update_fields=["is_deleted"])
+
+        return Response(
+            {
+                "success": True,
+                "message": "Registration deleted successfully",
+                "id": registration.id
+            },
+            status=status.HTTP_200_OK
+        )
     @action(detail=False, methods=["get"], url_path="all-transactions")
     def all_transactions(self, request):
         queryset = PaymentTransaction.objects.select_related(
@@ -1274,5 +1302,3 @@ class ReviewDetailView(APIView):
             "status": True, 
             "message": "Review deleted successfully"
         }, status=status.HTTP_200_OK)
-
-        
