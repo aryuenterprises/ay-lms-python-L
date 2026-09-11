@@ -438,8 +438,11 @@ class DashboardCurrentSubscriptionSerializer(serializers.Serializer):
 class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
 
     plan_name = serializers.CharField(
-        source="subscription.name"
+        source="subscription.name",
+        read_only=True
     )
+
+    transaction_id = serializers.SerializerMethodField()
 
     amount = serializers.SerializerMethodField()
 
@@ -453,6 +456,9 @@ class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
 
     invoice_date = serializers.SerializerMethodField()
 
+    created_date = serializers.SerializerMethodField()
+
+    created_at = serializers.SerializerMethodField()
 
     class Meta:
 
@@ -460,6 +466,7 @@ class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
 
         fields = [
             "id",
+            "transaction_id",
             "plan_name",
             "amount",
             "currency",
@@ -467,7 +474,23 @@ class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
             "payment_mode",
             "invoice_no",
             "invoice_date",
+            "created_date",
+            "created_at",
         ]
+
+    # ----------------------------------------
+    # TRANSACTION ID
+    # ----------------------------------------
+
+    def get_transaction_id(self, obj):
+
+        if obj.payment_transaction and obj.payment_transaction.transaction_id:
+            return obj.payment_transaction.transaction_id
+
+        if obj.payment_transaction:
+            return str(obj.payment_transaction.id)
+
+        return None
 
     # ----------------------------------------
     # AMOUNT
@@ -475,7 +498,7 @@ class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
 
     def get_amount(self, obj):
 
-        if obj.payment_transaction:
+        if obj.payment_transaction and obj.payment_transaction.amount is not None:
             return obj.payment_transaction.amount
 
         return "0.00"
@@ -486,7 +509,7 @@ class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
 
     def get_currency(self, obj):
 
-        if obj.payment_transaction:
+        if obj.payment_transaction and obj.payment_transaction.currency:
             return obj.payment_transaction.currency
 
         return "INR"
@@ -497,7 +520,7 @@ class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
 
     def get_payment_status(self, obj):
 
-        if obj.payment_transaction:
+        if obj.payment_transaction and obj.payment_transaction.payment_status:
             return obj.payment_transaction.payment_status
 
         return "free"
@@ -508,8 +531,11 @@ class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
 
     def get_payment_mode(self, obj):
 
-        if obj.payment_transaction:
+        if obj.payment_transaction and obj.payment_transaction.payment_mode:
             return obj.payment_transaction.payment_mode
+
+        if obj.payment_transaction:
+            return "razorpay"
 
         return "free"
 
@@ -519,10 +545,10 @@ class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
 
     def get_invoice_no(self, obj):
 
-        if obj.payment_transaction:
+        if obj.payment_transaction and obj.payment_transaction.invoice_no:
             return obj.payment_transaction.invoice_no
 
-        return "free"
+        return "free" if not obj.payment_transaction else None
 
     def get_invoice_date(self, obj):
 
@@ -532,7 +558,30 @@ class DashboardSubscriptionHistorySerializer(serializers.ModelSerializer):
         ):
             return obj.payment_transaction.invoice_date
 
-        return obj.start_date
+        if obj.start_date:
+            return obj.start_date.date() if hasattr(obj.start_date, 'date') else obj.start_date
+
+        return None
+
+    # ----------------------------------------
+    # CREATED AT / CREATED DATE
+    # ----------------------------------------
+
+    def get_created_at(self, obj):
+
+        if obj.payment_transaction and obj.payment_transaction.created_at:
+            return obj.payment_transaction.created_at
+
+        return obj.created_at
+
+    def get_created_date(self, obj):
+
+        dt = self.get_created_at(obj)
+
+        if dt:
+            return dt.date() if hasattr(dt, 'date') else dt
+
+        return None
     
 class DashboardTransactionSerializer(serializers.ModelSerializer):
     """Returns safe transaction history for the user."""
