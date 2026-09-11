@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Certificate of Completion</title>
+    <style>
+        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f6f9; margin: 0; padding: 0; color: #333333; }
+        .container { max-width: 600px; margin: 40px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.08); }
+        .header { background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: #ffffff; padding: 30px; text-align: center; }
+        .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
+        .header p { margin: 8px 0 0; color: #dbe5ff; font-size: 14px; }
+        .content { padding: 30px; line-height: 1.6; }
+        .cert-badge { text-align: center; margin: 15px 0 25px; }
+        .cert-badge span { display: inline-block; background-color: #eef2f7; color: #1e3c72; padding: 8px 20px; border-radius: 20px; font-weight: bold; font-size: 14px; border: 1px solid #c7d6eb; }
+        .details-box { background: #f8fafc; border-left: 4px solid #2a5298; padding: 20px; border-radius: 4px; margin: 20px 0; }
+        .details-box p { margin: 8px 0; font-size: 14px; color: #444444; }
+        .details-box strong { color: #1e3c72; }
+        .attachment-note { background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 14px 18px; margin: 20px 0; color: #166534; font-size: 14px; }
+        .footer { background: #f4f6f9; padding: 20px; text-align: center; font-size: 12px; color: #777777; border-top: 1px solid #eeeeee; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Certificate of Completion</h1>
+            <p>Aryu Academy</p>
+        </div>
+        <div class="content">
+            <p>Dear <strong>{{ student_name }}</strong>,</p>
+            <p>Congratulations! We are pleased to award you this certificate in recognition of your successful completion of the course.</p>
+            
+            <div class="cert-badge">
+                <span>🎓 {{ course_name }}</span>
+            </div>
+
+            <div class="details-box">
+                <h3 style="margin-top: 0; color: #1e3c72; font-size: 16px;">Certificate Details</h3>
+                <p><strong>Certificate No:</strong> {{ certificate_number }}</p>
+                <p><strong>Course:</strong> {{ course_name }}</p>
+                {% if course_duration %}
+                <p><strong>Duration:</strong> {{ course_duration }}</p>
+                {% endif %}
+                {% if issued_date %}
+                <p><strong>Issued Date:</strong> {{ issued_date }}</p>
+                {% endif %}
+                {% if organization_name %}
+                <p><strong>Issued By:</strong> {{ organization_name }}</p>
+                {% endif %}
+                {% if notes %}
+                <p><strong>Notes:</strong> {{ notes }}</p>
+                {% endif %}
+            </div>
+
+            <div class="attachment-note">
+                📄 <strong>Attached:</strong> Your official Certificate of Completion is attached to this email as a PDF document.
+            </div>
+
+            <p style="margin-top: 25px;">We wish you the very best in your future endeavors!</p>
+
+            <p>Warm regards,<br>
+            <strong>Aryu Academy Team</strong><br>
+            <a href="https://portal.aryuacademy.com" style="color: #2a5298; text-decoration: none;">portal.aryuacademy.com</a></p>
+        </div>
+        <div class="footer">
+            <p>&copy; 2026 Aryu Academy. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

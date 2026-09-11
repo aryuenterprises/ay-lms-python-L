@@ -6526,6 +6526,82 @@ class CertificateViewSet(viewsets.ModelViewSet):
             "data": serializer.data
         }, status=status.HTTP_200_OK)
     
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        student_val = serializer.validated_data.get("student")
+        course_name_val = serializer.validated_data.get("course_name")
+        webinar_reg_val = serializer.validated_data.get("webinar_registration")
+
+        # Prevent duplicate generation / duplicate emails if already issued
+        existing_cert = None
+        if webinar_reg_val:
+            existing_cert = Certificate.objects.filter(webinar_registration=webinar_reg_val).first()
+        elif student_val and course_name_val:
+            existing_cert = Certificate.objects.filter(
+                student=student_val,
+                course_name__iexact=course_name_val.strip(),
+                is_archived=False
+            ).first()
+
+        if existing_cert and existing_cert.certificate_file:
+            logger.info(
+                "Certificate already exists for student %s and course %s (Certificate No: %s)",
+                getattr(existing_cert.student, "student_id", "N/A"),
+                existing_cert.course_name,
+                existing_cert.certificate_number
+            )
+            return Response({
+                "success": True,
+                "message": "Certificate already exists and was previously issued",
+                "data": self.get_serializer(existing_cert).data
+            }, status=status.HTTP_200_OK)
+
+        certificate = serializer.save()
+
+        # 1. Generate certificate PDF
+        try:
+            from .certificate_filler import generate_and_send_certificate_pdf
+            generate_and_send_certificate_pdf(certificate)
+            certificate.refresh_from_db()
+        except Exception as gen_err:
+            logger.error(
+                "Failed to generate certificate PDF for certificate %s: %s",
+                certificate.certificate_number,
+                gen_err
+            )
+
+        # 2. Determine recipient email and send certificate email
+        recipient_email = None
+        if certificate.student and getattr(certificate.student, "email", None):
+            recipient_email = certificate.student.email
+        elif certificate.webinar_registration and getattr(certificate.webinar_registration, "email", None):
+            recipient_email = certificate.webinar_registration.email
+        elif request.data.get("email"):
+            recipient_email = request.data.get("email")
+
+        if recipient_email:
+            try:
+                send_certificate_email(recipient_email, certificate)
+            except Exception as mail_err:
+                logger.error(
+                    "Failed to send certificate email for certificate %s: %s",
+                    certificate.certificate_number,
+                    mail_err
+                )
+        else:
+            logger.warning(
+                "No recipient email found to send certificate %s",
+                certificate.certificate_number
+            )
+
+        return Response({
+            "success": True,
+            "message": "Certificate created and sent successfully",
+            "data": self.get_serializer(certificate).data
+        }, status=status.HTTP_201_CREATED)
+
     @action(detail=False, methods=['get'], url_path='<student_id>' )
     def student_certificates(self, request, student_id=None):
         certificates = Certificate.objects.filter(student=student_id)
@@ -6536,30 +6612,73 @@ class CertificateViewSet(viewsets.ModelViewSet):
             "data": serializer.data
         }, status=status.HTTP_200_OK)
     
-# def send_certificate_email(student_email, certificate):
-#     """
-#     Send course completion certificate to student via email
-#     """
-#     subject = f"Your Certificate for {certificate.course_name}"
-#     # Render a HTML template with certificate info
-#     message = render_to_string('emails/certificate_email.html', {
-#         'student_name': certificate.student_name,
-#         'course_name': certificate.course_name,
-#         'certificate_number': certificate.certificate_number,
-#         'issued_date': certificate.issued_date,
-#         'course_duration': certificate.course_duration,
-#         'organization_name': certificate.organization_name,
-#         'notes': certificate.notes,
-#     })
+def send_certificate_email(student_email, certificate):
+    import os
+    from django.core.mail import EmailMultiAlternatives
+    from django.template.loader import render_to_string
+    """
+    Send course completion certificate to student via email with PDF attachment
+    """
+    if not student_email:
+        logger.warning(
+            "[Certificate Email Skipped] No recipient email for certificate %s",
+            getattr(certificate, "certificate_number", "N/A")
+        )
+        return False
+
+    subject = f"Your Certificate for {certificate.course_name}"
+    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "support@aryuacademy.com")
+
+    # Render a HTML template with certificate info
+    context = {
+        'student_name': certificate.student_name,
+        'course_name': certificate.course_name,
+        'certificate_number': certificate.certificate_number,
+        'issued_date': certificate.issued_date,
+        'course_duration': certificate.course_duration,
+        'organization_name': certificate.organization_name,
+        'notes': certificate.notes,
+    }
     
-#     email = EmailMessage(
-#         subject,
-#         message,
-#         settings.DEFAULT_FROM_EMAIL,
-#         [student_email]
-#     )
-#     email.content_subtype = "html"
-#     email.send(fail_silently=False)    
+    try:
+        html_message = render_to_string('emails/certificate_email.html', context)
+    except Exception as t_err:
+        logger.warning("Failed to render 'emails/certificate_email.html': %s", t_err)
+        html_message = f"<p>Dear {certificate.student_name},</p><p>Your certificate for {certificate.course_name} (Certificate No: {certificate.certificate_number}) is attached.</p>"
+
+    text_content = (
+        f"Dear {certificate.student_name},\n\n"
+        f"Congratulations on completing {certificate.course_name}!\n"
+        f"Your certificate (Certificate No: {certificate.certificate_number}) is attached.\n\n"
+        f"Aryu Academy Team"
+    )
+
+    email = EmailMultiAlternatives(
+        subject=subject,
+        body=text_content,
+        from_email=from_email,
+        to=[student_email]
+    )
+    email.attach_alternative(html_message, "text/html")
+
+    if certificate.certificate_file:
+        try:
+            if hasattr(certificate.certificate_file, "path") and os.path.exists(certificate.certificate_file.path):
+                email.attach_file(certificate.certificate_file.path)
+            elif hasattr(certificate.certificate_file, "read"):
+                certificate.certificate_file.open("rb")
+                email.attach(
+                    f"{certificate.certificate_number}.pdf",
+                    certificate.certificate_file.read(),
+                    "application/pdf"
+                )
+        except Exception as attach_err:
+            logger.error("Failed to attach certificate file to email: %s", attach_err)
+
+    email.send(fail_silently=False)
+    logger.info("Certificate email sent successfully to %s for certificate %s", student_email, certificate.certificate_number)
+    return True
+    
 
 
 class RegisterThrottle(AnonRateThrottle):

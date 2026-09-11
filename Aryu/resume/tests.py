@@ -12,6 +12,7 @@ from rest_framework.test import APIClient
 from rest_framework import status
 from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
 
+from payments.models import PaymentTransaction
 from .models import (
     ResumeRegistration,
     Subscription,
@@ -25,6 +26,7 @@ from .views import (
     build_portal_verify_link,
     LOGIN_SUCCESS_REDIRECT,
     LOGIN_ERROR_REDIRECT,
+    EMAIL_VERIFIED_SUCCESS_REDIRECT,
 )
 
 
@@ -640,7 +642,7 @@ class ResumeHTMLAndAuthTestCase(TestCase):
             HTTP_ACCEPT="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         )
         self.assertEqual(verify_resp.status_code, status.HTTP_302_FOUND)
-        self.assertTrue(verify_resp.url.startswith("https://passats.aryuacademy.com/login?verified=true"))
+        self.assertEqual(verify_resp.url, "https://passats.aryuacademy.com/email-verified")
 
         unverified_user.refresh_from_db()
         self.assertTrue(unverified_user.is_verified)
@@ -740,6 +742,107 @@ class ResumeHTMLAndAuthTestCase(TestCase):
         )
         self.assertEqual(resp2.status_code, status.HTTP_200_OK)
         self.assertEqual(resp2.data.get("message"), "Account already verified")
+
+    # =========================================================================
+    # PART 4: USER DASHBOARD TRANSACTIONS TESTS
+    # =========================================================================
+
+    def test_user_dashboard_transactions_history(self):
+        """
+        Verify that /api/resume/dashboard returns full transaction history:
+        1. Does not drop transactions with the same plan name.
+        2. Correctly populates amount, currency, payment_status, payment_mode, invoice_no, invoice_date.
+        3. Safely handles free plan subscriptions without payment transaction.
+        4. Matches statistics.total_transactions to returned transaction list count.
+        """
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        pro_plan = Subscription.objects.create(
+            name="Pro Plan",
+            slug="pro-plan",
+            price=499.00,
+            discount_price=399.00,
+            billing_type="monthly",
+            duration_days="30",
+            limit="pro",
+            is_active=True,
+        )
+
+        # 1. Paid transaction 1
+        txn1 = PaymentTransaction.objects.create(
+            resume_registration=self.user,
+            subscription=pro_plan,
+            amount=399.00,
+            currency="INR",
+            payment_status="done",
+            payment_mode="razorpay",
+            invoice_no="INV-2026-001",
+            invoice_date="2026-02-01",
+            transaction_id="pay_test_001",
+        )
+        user_sub_pro1 = UserSubscription.objects.create(
+            user=self.user,
+            subscription=pro_plan,
+            payment_transaction=txn1,
+            start_date="2026-02-01T00:00:00Z",
+            end_date="2026-03-03T00:00:00Z",
+            status="expired",
+        )
+
+        # 2. Paid transaction 2 (Renewal of the exact same plan name "Pro Plan")
+        txn2 = PaymentTransaction.objects.create(
+            resume_registration=self.user,
+            subscription=pro_plan,
+            amount=399.00,
+            currency="INR",
+            payment_status="done",
+            payment_mode="razorpay",
+            invoice_no="INV-2026-002",
+            invoice_date="2026-03-03",
+            transaction_id="pay_test_002",
+        )
+        user_sub_pro2 = UserSubscription.objects.create(
+            user=self.user,
+            subscription=pro_plan,
+            payment_transaction=txn2,
+            start_date="2026-03-03T00:00:00Z",
+            end_date="2026-04-02T00:00:00Z",
+            status="active",
+        )
+
+        resp = self.client.get("/api/resume/dashboard")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+        data = resp.data
+        self.assertIn("transactions", data)
+        self.assertIn("statistics", data)
+
+        transactions = data["transactions"]
+        # Total subscriptions for this user = 3 (Free setup in setUp, Pro 1, Pro 2)
+        self.assertEqual(len(transactions), 3)
+        self.assertEqual(data["statistics"]["total_transactions"], 3)
+
+        # Ensure both Pro Plan transactions are present (not deduped by plan name)
+        pro_txns = [t for t in transactions if t["plan_name"] == "Pro Plan"]
+        self.assertEqual(len(pro_txns), 2)
+
+        # Validate paid transaction details
+        tx2_data = next(t for t in pro_txns if t["id"] == user_sub_pro2.id)
+        self.assertEqual(str(tx2_data["amount"]), "399.00")
+        self.assertEqual(tx2_data["currency"], "INR")
+        self.assertEqual(tx2_data["payment_status"], "done")
+        self.assertEqual(tx2_data["payment_mode"], "razorpay")
+        self.assertEqual(tx2_data["invoice_no"], "INV-2026-002")
+        self.assertEqual(str(tx2_data["invoice_date"]), "2026-03-03")
+
+        # Validate free transaction details
+        free_txn = next(t for t in transactions if t["id"] == self.user_sub.id)
+        self.assertEqual(free_txn["plan_name"], "Free")
+        self.assertEqual(str(free_txn["amount"]), "0.00")
+        self.assertEqual(free_txn["currency"], "INR")
+        self.assertEqual(free_txn["payment_status"], "free")
+        self.assertEqual(free_txn["payment_mode"], "free")
 
 
 class SubscriptionDescriptionRawHTMLTestCase(TestCase):
@@ -877,4 +980,5 @@ class SubscriptionDescriptionRawHTMLTestCase(TestCase):
 
         sub.refresh_from_db()
         self.assertEqual(sub.description, new_raw_html)
+
 
