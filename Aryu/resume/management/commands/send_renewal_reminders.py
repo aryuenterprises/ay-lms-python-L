@@ -136,7 +136,7 @@ class Command(BaseCommand):
     ">
 
 <img
-    src="{settings.MEDIA_BASE_URL}/media/logos/pass-ats-logo.png"
+    src="{settings.MEDIA_BASE_URL}/media/logos/pass-ats-logo-white.png"
     alt="Pass ATS"
     style="
       width: 200px;
