@@ -4625,56 +4625,66 @@ class UserResumeViewSet(viewsets.ViewSet):
         return Response({"message": "Resume permanently deleted successfully."}, status=status.HTTP_204_NO_CONTENT)
 
 class ContactViewset(viewsets.ModelViewSet):
-
+    """
+    Public Landing Page Contact Us submission for non-registered/unauthenticated visitors.
+    Administrative management (list, retrieve, update, delete) is restricted to admin/super_admin.
+    """
     queryset = Contact.objects.all().order_by("-id")
     serializer_class = ContactSerializers
     permission_classes = [AllowAny]
-    authentication_classes = []
-    #List
+    authentication_classes = [CustomJWTAuthentication]
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
+
+    def _is_admin(self, user):
+        if not user or not getattr(user, "is_authenticated", False):
+            return False
+        return getattr(user, "user_type", None) in ["super_admin", "admin"] or getattr(user, "is_staff", False)
+
+    # LIST (Admin only)
     def list(self, request, *args, **kwargs):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
+        if not self._is_admin(request.user):
             return Response({
                 "success": False,
                 "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
+            }, status=status.HTTP_403_FORBIDDEN if getattr(request.user, "is_authenticated", False) else status.HTTP_401_UNAUTHORIZED)
 
         queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, many=True)
 
+        search = request.query_params.get("search", "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(full_name__icontains=search) |
+                Q(email__icontains=search) |
+                Q(phone__icontains=search) |
+                Q(message__icontains=search)
+            )
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
         return Response(
             {
                 "status": True,
                 "message": "Contact list",
+                "count": queryset.count(),
                 "data": serializer.data
             },
             status=status.HTTP_200_OK
         )
-  
-    # CREATE
+
+    # CREATE (Public submission for landing page non-registered visitors)
     def create(self, request, *args, **kwargs):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-
         serializer = self.get_serializer(data=request.data)
 
         if serializer.is_valid():
             serializer.save()
-
             return Response(
                 {
                     "status": True,
-                    "message": "Subscription created successfully",
+                    "message": "Contact inquiry submitted successfully",
                     "data": serializer.data
                 },
                 status=status.HTTP_201_CREATED
@@ -4688,17 +4698,64 @@ class ContactViewset(viewsets.ModelViewSet):
             },
             status=status.HTTP_400_BAD_REQUEST
         )
-    # DELETE
-    def destroy(self, request, *args, **kwargs):
-        user = request.user
 
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
+    # RETRIEVE (Admin only)
+    def retrieve(self, request, *args, **kwargs):
+        if not self._is_admin(request.user):
             return Response({
                 "success": False,
                 "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
+            }, status=status.HTTP_403_FORBIDDEN if getattr(request.user, "is_authenticated", False) else status.HTTP_401_UNAUTHORIZED)
+
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response(
+            {
+                "status": True,
+                "message": "Contact details",
+                "data": serializer.data
+            },
+            status=status.HTTP_200_OK
+        )
+
+    # UPDATE (Admin only)
+    def update(self, request, *args, **kwargs):
+        if not self._is_admin(request.user):
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN if getattr(request.user, "is_authenticated", False) else status.HTTP_401_UNAUTHORIZED)
+
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                {
+                    "status": True,
+                    "message": "Contact updated successfully",
+                    "data": serializer.data
+                },
+                status=status.HTTP_200_OK
+            )
+
+        return Response(
+            {
+                "status": False,
+                "message": "Validation error",
+                "errors": serializer.errors
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # DELETE (Admin only)
+    def destroy(self, request, *args, **kwargs):
+        if not self._is_admin(request.user):
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN if getattr(request.user, "is_authenticated", False) else status.HTTP_401_UNAUTHORIZED)
 
         instance = self.get_object()
         instance.delete()
@@ -4710,6 +4767,7 @@ class ContactViewset(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
+
     
 class PaymentHistoryViewset(viewsets.ModelViewSet):
     queryset = PaymentHistory.objects.select_related(

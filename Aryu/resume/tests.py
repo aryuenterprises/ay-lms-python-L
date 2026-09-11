@@ -16,6 +16,7 @@ from payments.models import PaymentTransaction, PaymentGateway
 from unittest.mock import patch, MagicMock
 from .models import (
     ResumeRegistration,
+    Contact,
     Subscription,
     UserSubscription,
     ResumeTemplate,
