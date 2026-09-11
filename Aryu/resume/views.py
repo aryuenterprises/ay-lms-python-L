@@ -102,7 +102,8 @@ def get_resume_cookie_settings(request):
 BASE_PORTAL_URL = getattr(settings, 'PORTAL_FRONTEND_URL', 'https://portal.aryuacademy.com').rstrip('/')
 PASSATS_FRONTEND_URL = getattr(settings, 'PASSATS_FRONTEND_URL', 'https://passats.aryuacademy.com').rstrip('/')
 VERIFY_ENDPOINT = f"{BASE_PORTAL_URL}/api/resume/auth/verify-email/"
-LOGIN_SUCCESS_REDIRECT = f"{PASSATS_FRONTEND_URL}/login?verified=true"
+EMAIL_VERIFIED_SUCCESS_REDIRECT = f"{PASSATS_FRONTEND_URL}/email-verified"
+LOGIN_SUCCESS_REDIRECT = EMAIL_VERIFIED_SUCCESS_REDIRECT
 LOGIN_ERROR_REDIRECT = f"{PASSATS_FRONTEND_URL}/login?verified=false&error="
 
 def build_portal_verify_link(request, token):
@@ -277,8 +278,7 @@ def verify_email(request):
         if getattr(user, 'is_verified', False) or getattr(user, 'is_email_verified', False):
             logger.info(f"[verify_email Idempotent] User ID {user.id} is already verified.")
             if is_browser:
-                msg = quote('Email already verified')
-                return HttpResponseRedirect(f"{LOGIN_SUCCESS_REDIRECT}&message={msg}")
+                return HttpResponseRedirect(EMAIL_VERIFIED_SUCCESS_REDIRECT)
             return Response({
                 'success': True,
                 'message': 'Account is already verified. You can now log in.',
@@ -342,8 +342,7 @@ def verify_email(request):
         logger.info(f"[verify_email Success] User ID {user.id} ({getattr(user, 'email', 'no-email')}) successfully verified.")
 
         if is_browser:
-            msg = quote('Email verified successfully')
-            return HttpResponseRedirect(f"{LOGIN_SUCCESS_REDIRECT}&message={msg}")
+            return HttpResponseRedirect(EMAIL_VERIFIED_SUCCESS_REDIRECT)
 
         return Response({
             'success': True,
@@ -2130,7 +2129,18 @@ class AuthViewSet(viewsets.ViewSet):
             )
 
 
+from rest_framework.authentication import BaseAuthentication
+
+class RefreshAuthentication(BaseAuthentication):
+    def authenticate_header(self, request):
+        return 'Bearer realm="api"'
+
+    def authenticate(self, request):
+        return None
+
+
 class CustomTokenRefreshView(APIView):
+    authentication_classes = [RefreshAuthentication]
     permission_classes = [AllowAny]
     serializer_class = CustomTokenRefreshSerializer
 
@@ -2875,11 +2885,9 @@ class UserDashboardView(APIView):
         ).filter(
             user=user
         ).order_by(
-            "subscription__name",
-            "-created_at"
-        ).distinct(
-            "subscription__name"
-            )   
+            "-created_at",
+            "-id"
+        )   
 
         transaction_data = DashboardSubscriptionHistorySerializer(
             transactions,
@@ -3357,82 +3365,101 @@ class ResumePaymentViewSet(viewsets.ViewSet):
                 status=404
             )
 
-        # =========================================
-        # UPDATE TRANSACTION
-        # =========================================
+        with transaction.atomic():
 
-        txn.payment_status = "done"
+            # Check idempotency: if already processed (e.g. by webhook)
+            existing_sub = UserSubscription.objects.filter(
+                payment_transaction=txn
+            ).first()
 
-        # only if field exists
-        # txn.payment_id = payment_id
+            if existing_sub:
+                return Response(
+                    {
+                        "success": True,
+                        "message": "Subscription activated successfully",
+                        "subscription_id": existing_sub.id
+                    }
+                )
 
-        txn.save()
-        PaymentHistory.objects.create(
-            user=user,
-            plan_name=txn.subscription.name,  # adjust field name
-            price=txn.amount,
-            payment_status="done"
-        )
+            # =========================================
+            # UPDATE TRANSACTION
+            # =========================================
 
-        # =========================================
-        # EXPIRE OLD ACTIVE SUBSCRIPTIONS
-        # =========================================
+            txn.payment_status = "done"
+            txn.transaction_id = payment_id
+            if not txn.payment_mode:
+                txn.payment_mode = "razorpay"
 
-        UserSubscription.objects.filter(
-            user=user,
-            status="active"
-        ).update(
-            status="expired"
-        )
+            txn.save()
 
-        # =========================================
-        # CALCULATE END DATE
-        # =========================================
-
-        duration_value = str(txn.subscription.duration_days).strip()
-
-        if duration_value.lower() in ["lifetime", "life time"]:
-            end_date = None
-        else:
-            duration = int(
-                duration_value
-                .replace("Days", "")
-                .replace("Day", "")
-                .strip()
+            PaymentHistory.objects.create(
+                user=user,
+                plan_name=txn.subscription.name,
+                price=txn.amount,
+                payment_status="done"
             )
 
-            end_date = timezone.now() + timedelta(days=duration)
+            # =========================================
+            # EXPIRE OLD ACTIVE SUBSCRIPTIONS
+            # =========================================
 
-        # =========================================
-        # CREATE NEW ACTIVE SUBSCRIPTION
-        # =========================================
+            UserSubscription.objects.filter(
+                user=user,
+                status="active"
+            ).update(
+                status="expired"
+            )
 
-        new_subscription = UserSubscription.objects.create(
-            user=user,
-            subscription=txn.subscription,
-            payment_transaction=txn,
-            status="active",
-            start_date=timezone.now(),
-            end_date=end_date
-        )
+            # =========================================
+            # CALCULATE END DATE
+            # =========================================
 
-        # =========================================
-        # UPDATE USER CURRENT PLAN
-        # =========================================
+            duration_value = str(txn.subscription.duration_days or "").strip()
 
-        user.current_subscription = new_subscription
+            if duration_value.lower() in ["lifetime", "life time"]:
+                end_date = None
+            else:
+                try:
+                    duration = int(
+                        duration_value
+                        .replace("Days", "")
+                        .replace("Day", "")
+                        .strip()
+                    )
+                    end_date = timezone.now() + timedelta(days=duration)
+                except Exception:
+                    end_date = timezone.now() + timedelta(days=30)
 
-        user.save(
-            update_fields=["current_subscription"]
-        )
+            # =========================================
+            # CREATE NEW ACTIVE SUBSCRIPTION
+            # =========================================
 
-        return Response(
-            {
-                "success": True,
-                "message": "Subscription activated successfully",
-                "subscription_id": new_subscription.id
-            }
-        )
+            new_subscription = UserSubscription.objects.create(
+                user=user,
+                subscription=txn.subscription,
+                payment_transaction=txn,
+                status="active",
+                start_date=timezone.now(),
+                end_date=end_date
+            )
+
+            # =========================================
+            # UPDATE USER CURRENT PLAN
+            # =========================================
+
+            user.current_subscription = new_subscription
+
+            user.save(
+                update_fields=["current_subscription"]
+            )
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "Subscription activated successfully",
+                    "subscription_id": new_subscription.id
+                }
+            )
     
 @csrf_exempt
 @api_view(["POST"])
@@ -3546,35 +3573,39 @@ def resume_razorpay_webhook(request):
                 payment_transaction=txn
             ).exists()
 
-            if not already_exists:
+            if not already_exists and txn.resume_registration and txn.subscription:
 
                 start_date = timezone.now()
+                duration_value = str(txn.subscription.duration_days or "").strip()
 
-                end_date = None
-
-                if not txn.subscription.is_lifetime:
-
-                    end_date = (
-                        start_date +
-                        timedelta(
-                            days=txn.subscription.duration_days
+                if duration_value.lower() in ["lifetime", "life time"]:
+                    end_date = None
+                else:
+                    try:
+                        duration = int(
+                            duration_value
+                            .replace("Days", "")
+                            .replace("Day", "")
+                            .strip()
                         )
-                    )
+                        end_date = start_date + timedelta(days=duration)
+                    except Exception:
+                        end_date = start_date + timedelta(days=30)
+
+                # Expire old active subscriptions
+                UserSubscription.objects.filter(
+                    user=txn.resume_registration,
+                    status="active"
+                ).update(
+                    status="expired"
+                )
 
                 user_subscription = UserSubscription.objects.create(
-
                     user=txn.resume_registration,
-
                     subscription=txn.subscription,
-
                     payment_transaction=txn,
-
                     start_date=start_date,
-
                     end_date=end_date,
-
-                    is_lifetime=txn.subscription.is_lifetime,
-
                     status="active"
                 )
 
@@ -3584,6 +3615,13 @@ def resume_razorpay_webhook(request):
 
                 txn.resume_registration.save(
                     update_fields=["current_subscription"]
+                )
+
+                PaymentHistory.objects.create(
+                    user=txn.resume_registration,
+                    plan_name=txn.subscription.name,
+                    price=txn.amount,
+                    payment_status="done"
                 )
 
     # =========================================
