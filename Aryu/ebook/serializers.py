@@ -333,6 +333,7 @@ class EbookRegistrationSerializer(serializers.ModelSerializer):
             'profile_pic',
             'created_at',
             'captcha_token',
+            'is_deleted'
         ]
         def get_created_at(self,obj):
             return obj.created_at

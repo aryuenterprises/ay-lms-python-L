@@ -31,8 +31,12 @@ urlpatterns = [
         ),
     path(
         'ebook-registrations/<slug:slug>/',
-        EbookRegistrationViewSet.as_view({'get': 'list'})
-    ),
+        EbookRegistrationViewSet.as_view({'get': 'list','delete': 'destroy'})
+    ),  
+   path(
+           'ebook-registrations-delete/<int:pk>/',
+           EbookRegistrationViewSet.as_view({'delete': 'destroy'})
+       ),  
 
     path('reg/<int:pk>/',EbookUserViewSet.as_view({'get':'list','patch':'partial_update','delete':'destroy'}),name='ebook-reg'),
     path("payments/", RazorpayPaymentViewSet.as_view({"post": "create"}), name="ebook-payment-create"),
