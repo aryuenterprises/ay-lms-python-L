@@ -48,8 +48,9 @@ from django.http import FileResponse
 import logging
 from rest_framework.exceptions import ValidationError
 from weasyprint import HTML, CSS
-from django.db.models import Q
+from django.db.models import Q, Count, Case, When, IntegerField, Prefetch
 from django.utils.timezone import now
+from aryuapp.models import StudentTicket, TicketReply, TicketAttachment
 from celery import shared_task
 from collections import defaultdict
 import time
@@ -620,7 +621,7 @@ class AuthViewSet(viewsets.ViewSet):
                     padding: 45px 5px;
                     ">
                     <img
-                    src="{settings.MEDIA_BASE_URL}/media/logos/passats.png"
+                    src="{settings.MEDIA_BASE_URL}/media/logos/pass-ats-logo.png"
                     alt="Pass ATS"
                     style="
                         width: 200px;
@@ -4624,56 +4625,66 @@ class UserResumeViewSet(viewsets.ViewSet):
         return Response({"message": "Resume permanently deleted successfully."}, status=status.HTTP_204_NO_CONTENT)
 
 class ContactViewset(viewsets.ModelViewSet):
-
+    """
+    Public Landing Page Contact Us submission for non-registered/unauthenticated visitors.
+    Administrative management (list, retrieve, update, delete) is restricted to admin/super_admin.
+    """
     queryset = Contact.objects.all().order_by("-id")
     serializer_class = ContactSerializers
     permission_classes = [AllowAny]
-    authentication_classes = []
-    #List
+    authentication_classes = [CustomJWTAuthentication]
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
+
+    def _is_admin(self, user):
+        if not user or not getattr(user, "is_authenticated", False):
+            return False
+        return getattr(user, "user_type", None) in ["super_admin", "admin"] or getattr(user, "is_staff", False)
+
+    # LIST (Admin only)
     def list(self, request, *args, **kwargs):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
+        if not self._is_admin(request.user):
             return Response({
                 "success": False,
                 "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
+            }, status=status.HTTP_403_FORBIDDEN if getattr(request.user, "is_authenticated", False) else status.HTTP_401_UNAUTHORIZED)
 
         queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, many=True)
 
+        search = request.query_params.get("search", "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(full_name__icontains=search) |
+                Q(email__icontains=search) |
+                Q(phone__icontains=search) |
+                Q(message__icontains=search)
+            )
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
         return Response(
             {
                 "status": True,
                 "message": "Contact list",
+                "count": queryset.count(),
                 "data": serializer.data
             },
             status=status.HTTP_200_OK
         )
-  
-    # CREATE
+
+    # CREATE (Public submission for landing page non-registered visitors)
     def create(self, request, *args, **kwargs):
-        user = request.user
-
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
-            return Response({
-                "success": False,
-                "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
-
         serializer = self.get_serializer(data=request.data)
 
         if serializer.is_valid():
             serializer.save()
-
             return Response(
                 {
                     "status": True,
-                    "message": "Subscription created successfully",
+                    "message": "Contact inquiry submitted successfully",
                     "data": serializer.data
                 },
                 status=status.HTTP_201_CREATED
@@ -4687,17 +4698,64 @@ class ContactViewset(viewsets.ModelViewSet):
             },
             status=status.HTTP_400_BAD_REQUEST
         )
-    # DELETE
-    def destroy(self, request, *args, **kwargs):
-        user = request.user
 
-        allowed_types = ["super_admin", "admin"]
-
-        if user.user_type not in allowed_types:
+    # RETRIEVE (Admin only)
+    def retrieve(self, request, *args, **kwargs):
+        if not self._is_admin(request.user):
             return Response({
                 "success": False,
                 "message": "Unable to process request."
-            }, status=status.HTTP_403_FORBIDDEN)
+            }, status=status.HTTP_403_FORBIDDEN if getattr(request.user, "is_authenticated", False) else status.HTTP_401_UNAUTHORIZED)
+
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response(
+            {
+                "status": True,
+                "message": "Contact details",
+                "data": serializer.data
+            },
+            status=status.HTTP_200_OK
+        )
+
+    # UPDATE (Admin only)
+    def update(self, request, *args, **kwargs):
+        if not self._is_admin(request.user):
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN if getattr(request.user, "is_authenticated", False) else status.HTTP_401_UNAUTHORIZED)
+
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                {
+                    "status": True,
+                    "message": "Contact updated successfully",
+                    "data": serializer.data
+                },
+                status=status.HTTP_200_OK
+            )
+
+        return Response(
+            {
+                "status": False,
+                "message": "Validation error",
+                "errors": serializer.errors
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # DELETE (Admin only)
+    def destroy(self, request, *args, **kwargs):
+        if not self._is_admin(request.user):
+            return Response({
+                "success": False,
+                "message": "Unable to process request."
+            }, status=status.HTTP_403_FORBIDDEN if getattr(request.user, "is_authenticated", False) else status.HTTP_401_UNAUTHORIZED)
 
         instance = self.get_object()
         instance.delete()
@@ -4709,6 +4767,7 @@ class ContactViewset(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
+
     
 class PaymentHistoryViewset(viewsets.ModelViewSet):
     queryset = PaymentHistory.objects.select_related(
@@ -4769,3 +4828,286 @@ class PaymentHistoryViewset(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
+
+
+# =========================================================================
+# RESUME TICKET / SUPPORT VIEWSET (INTEGRATED WITH ARYUAPP TICKET SYSTEM)
+# =========================================================================
+
+class ResumeTicketViewSet(viewsets.ViewSet):
+    """
+    Production-ready ViewSet for Resume users to interact with the support ticket system.
+    Reuses the core aryuapp StudentTicket, TicketReply, and TicketAttachment models
+    while strictly isolating data to the authenticated Resume user.
+    """
+    authentication_classes = [CustomJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def _get_resume_user(self, request):
+        return ResumeRegistration.objects.filter(
+            id=request.user.id,
+            is_deleted=False
+        ).first()
+
+    def _get_base_queryset(self, user):
+        return (
+            StudentTicket.objects
+            .filter(resume_user=user)
+            .select_related("resume_user")
+            .prefetch_related(
+                "attachments",
+                Prefetch(
+                    "replies",
+                    queryset=TicketReply.objects.select_related(
+                        "student",
+                        "trainer",
+                        "super_admin",
+                        "resume_user"
+                    ).order_by("created_at")
+                )
+            )
+            .annotate(
+                replies_count=Count("replies", distinct=True)
+            )
+            .order_by("-ticket_id")
+        )
+
+    # -------------------------------------------------------------------------
+    # GET /api/resume/tickets/ - List user's tickets with status aggregations
+    # -------------------------------------------------------------------------
+    def list(self, request):
+        user = self._get_resume_user(request)
+        if not user:
+            return Response(
+                {"success": False, "message": "User account not found or inactive."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        queryset = self._get_base_queryset(user)
+
+        # Optional filters
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            queryset = queryset.filter(status__iexact=status_filter.strip())
+
+        ticket_type_filter = request.query_params.get("ticket_type")
+        if ticket_type_filter:
+            queryset = queryset.filter(ticket_type__iexact=ticket_type_filter.strip())
+
+        # Single SQL aggregate query for status counts
+        all_user_tickets = StudentTicket.objects.filter(resume_user=user)
+        counts = all_user_tickets.aggregate(
+            new=Count(Case(When(status__iexact="new", then=1), output_field=IntegerField())),
+            in_progress=Count(Case(When(status__iexact="in_progress", then=1), output_field=IntegerField())),
+            closed=Count(Case(When(status__iexact="closed", then=1), output_field=IntegerField())),
+        )
+
+        serializer = ResumeTicketListSerializer(
+            queryset,
+            many=True,
+            context={"request": request}
+        )
+
+        return Response({
+            "success": True,
+            "counts": {
+                "new": counts["new"] or 0,
+                "in_progress": counts["in_progress"] or 0,
+                "closed": counts["closed"] or 0,
+                "total": all_user_tickets.count(),
+            },
+            "tickets": serializer.data
+        }, status=status.HTTP_200_OK)
+
+    # -------------------------------------------------------------------------
+    # POST /api/resume/tickets/ - Create a new support ticket
+    # -------------------------------------------------------------------------
+    def create(self, request):
+        user = self._get_resume_user(request)
+        if not user:
+            return Response(
+                {"success": False, "message": "User account not found or inactive."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        serializer = ResumeTicketCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        validated_data = serializer.validated_data
+        subject = validated_data["subject"]
+        message = validated_data["message"]
+        ticket_type = validated_data.get("ticket_type", "support")
+        priority = validated_data.get("priority", "Low").capitalize()
+
+        with transaction.atomic():
+            ticket = StudentTicket.objects.create(
+                resume_user=user,
+                name=f"{user.first_name} {user.last_name}".strip() or user.email,
+                email=user.email,
+                phone=user.phone,
+                ticket_type=ticket_type,
+                subject=subject,
+                message=message,
+                priority=priority,
+                status="New",
+            )
+
+            # Handle file attachments
+            uploaded_files = []
+            if hasattr(request, "FILES"):
+                uploaded_files.extend(request.FILES.getlist("attachments"))
+                uploaded_files.extend(request.FILES.getlist("file"))
+                uploaded_files.extend(request.FILES.getlist("attachment"))
+
+            for f in uploaded_files:
+                if f:
+                    TicketAttachment.objects.create(ticket=ticket, file=f)
+
+        # Refresh with prefetched relations
+        fresh_ticket = self._get_base_queryset(user).filter(ticket_id=ticket.ticket_id).first()
+
+        return Response({
+            "success": True,
+            "message": "Ticket created successfully",
+            "data": ResumeTicketDetailSerializer(fresh_ticket, context={"request": request}).data
+        }, status=status.HTTP_201_CREATED)
+
+    # -------------------------------------------------------------------------
+    # GET /api/resume/tickets/<pk>/ - Retrieve ticket details, replies, and attachments
+    # -------------------------------------------------------------------------
+    def retrieve(self, request, pk=None):
+        user = self._get_resume_user(request)
+        if not user:
+            return Response(
+                {"success": False, "message": "User account not found or inactive."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            ticket_id = int(pk)
+        except (ValueError, TypeError):
+            return Response(
+                {"success": False, "message": "Invalid ticket ID."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        ticket = self._get_base_queryset(user).filter(ticket_id=ticket_id).first()
+        if not ticket:
+            return Response(
+                {"success": False, "message": "Ticket not found or access denied."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response({
+            "success": True,
+            "data": ResumeTicketDetailSerializer(ticket, context={"request": request}).data
+        }, status=status.HTTP_200_OK)
+
+    # -------------------------------------------------------------------------
+    # POST /api/resume/tickets/<pk>/reply/ - Reply to a ticket
+    # -------------------------------------------------------------------------
+    @action(detail=True, methods=["post"], url_path="reply")
+    def reply(self, request, pk=None):
+        user = self._get_resume_user(request)
+        if not user:
+            return Response(
+                {"success": False, "message": "User account not found or inactive."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            ticket_id = int(pk)
+        except (ValueError, TypeError):
+            return Response(
+                {"success": False, "message": "Invalid ticket ID."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        ticket = StudentTicket.objects.filter(
+            ticket_id=ticket_id,
+            resume_user=user
+        ).first()
+
+        if not ticket:
+            return Response(
+                {"success": False, "message": "Ticket not found or access denied."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if str(ticket.status).lower() == "closed":
+            return Response(
+                {"success": False, "message": "Cannot reply to a closed ticket."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = ResumeTicketReplyCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        message = serializer.validated_data["message"]
+
+        with transaction.atomic():
+            reply = TicketReply.objects.create(
+                ticket=ticket,
+                resume_user=user,
+                message=message
+            )
+
+            # Re-open or mark in progress
+            ticket.status = "in_progress"
+            ticket.save(update_fields=["status", "updated_at"])
+
+            # Handle reply attachments if any
+            uploaded_files = []
+            if hasattr(request, "FILES"):
+                uploaded_files.extend(request.FILES.getlist("attachments"))
+                uploaded_files.extend(request.FILES.getlist("file"))
+
+            for f in uploaded_files:
+                if f:
+                    TicketAttachment.objects.create(ticket=ticket, file=f)
+
+        return Response({
+            "success": True,
+            "message": "Reply sent successfully",
+            "data": ResumeTicketReplySerializer(reply, context={"request": request}).data
+        }, status=status.HTTP_201_CREATED)
+
+    # -------------------------------------------------------------------------
+    # POST /api/resume/tickets/<pk>/close/ - Close a ticket
+    # -------------------------------------------------------------------------
+    @action(detail=True, methods=["post"], url_path="close")
+    def close(self, request, pk=None):
+        user = self._get_resume_user(request)
+        if not user:
+            return Response(
+                {"success": False, "message": "User account not found or inactive."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            ticket_id = int(pk)
+        except (ValueError, TypeError):
+            return Response(
+                {"success": False, "message": "Invalid ticket ID."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        ticket = StudentTicket.objects.filter(
+            ticket_id=ticket_id,
+            resume_user=user
+        ).first()
+
+        if not ticket:
+            return Response(
+                {"success": False, "message": "Ticket not found or access denied."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        ticket.status = "closed"
+        ticket.save(update_fields=["status", "updated_at"])
+
+        return Response({
+            "success": True,
+            "message": "Ticket closed successfully"
+        }, status=status.HTTP_200_OK)

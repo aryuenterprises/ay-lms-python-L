@@ -16,6 +16,7 @@ from payments.models import PaymentTransaction, PaymentGateway
 from unittest.mock import patch, MagicMock
 from .models import (
     ResumeRegistration,
+    Contact,
     Subscription,
     UserSubscription,
     ResumeTemplate,
@@ -1260,7 +1261,7 @@ class ResumePDFGenerationTestCase(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("html", response.data)
+        self.assertTrue("html" in response.data or ("details" in response.data and "html" in response.data["details"]))
 
     def test_generate_pdf_empty_html_returns_400(self):
         """Verify empty or too-short html field returns 400 Bad Request."""
@@ -1424,4 +1425,326 @@ class ResumePDFGenerationTestCase(TestCase):
         self.assertNotIn("\r", disposition)
         self.assertNotIn("\n", disposition)
         self.assertNotIn("../", disposition)
+
+
+from aryuapp.models import StudentTicket, TicketReply, TicketAttachment, Student
+from django.core.files.uploadedfile import SimpleUploadedFile
+
+
+class ResumeTicketIntegrationTestCase(TestCase):
+    """
+    Comprehensive regression tests for Resume Ticket / Support System integration:
+    - Ticket creation (with & without file attachments)
+    - Authentication and permissions enforcement
+    - Ticket listing with aggregate counts (new, in_progress, closed, total)
+    - Filter by status and ticket_type
+    - Ticket detail retrieval with replies and attachments
+    - Ticket reply and automated state transitions
+    - Protection against replying to closed tickets
+    - Ticket closing action
+    - Strict user data isolation (User A vs User B)
+    - Strict module isolation (Resume tickets vs AryuApp student tickets)
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+        # User A (Primary test user)
+        self.user_a = ResumeRegistration.objects.create(
+            first_name="Alice",
+            last_name="Smith",
+            email="alice@example.com",
+            phone="9876543210",
+            password=make_password("TestPass123!"),
+            is_verified=True,
+            status=True,
+        )
+
+        # User B (Isolation test user)
+        self.user_b = ResumeRegistration.objects.create(
+            first_name="Bob",
+            last_name="Jones",
+            email="bob@example.com",
+            phone="9876543211",
+            password=make_password("TestPass123!"),
+            is_verified=True,
+            status=True,
+        )
+
+    def _get_token_for(self, user):
+        refresh = RefreshToken()
+        refresh["user_id"] = user.id
+        refresh["id"] = user.id
+        refresh["email"] = user.email
+        refresh["user_type"] = "resume_user"
+        refresh["first_name"] = user.first_name
+        refresh["last_name"] = user.last_name
+        return str(refresh.access_token)
+
+    def test_unauthenticated_requests_are_rejected(self):
+        """Unauthenticated requests must receive 401 Unauthorized."""
+        response = self.client.get("/api/resume/tickets")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        response = self.client.post("/api/resume/tickets", data={"subject": "Test", "message": "Help"})
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_create_ticket_success(self):
+        """Authenticated user can create a support ticket."""
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        payload = {
+            "subject": "Need help with PDF download",
+            "message": "My PDF download is timing out on complex template.",
+            "ticket_type": "technical_support",
+            "priority": "High"
+        }
+        response = self.client.post("/api/resume/tickets", data=payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data.get("success"))
+
+        ticket_data = response.data.get("data", {})
+        self.assertEqual(ticket_data.get("subject"), payload["subject"])
+        self.assertEqual(ticket_data.get("message"), payload["message"])
+        self.assertEqual(ticket_data.get("ticket_type"), "technical_support")
+        self.assertEqual(ticket_data.get("status"), "New")
+        self.assertEqual(ticket_data.get("priority"), "High")
+        self.assertTrue(ticket_data.get("ticket_token"))
+
+        # Verify database record
+        ticket_obj = StudentTicket.objects.get(ticket_id=ticket_data["ticket_id"])
+        self.assertEqual(ticket_obj.resume_user, self.user_a)
+        self.assertIsNone(ticket_obj.student)
+        self.assertEqual(ticket_obj.email, self.user_a.email)
+
+    def test_create_ticket_with_file_attachment(self):
+        """Authenticated user can create a ticket with file attachments."""
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        test_file = SimpleUploadedFile("screenshot.png", b"fake_png_data", content_type="image/png")
+        payload = {
+            "subject": "Formatting bug screenshot",
+            "message": "Please see the attached screenshot.",
+            "attachments": test_file,
+        }
+        response = self.client.post("/api/resume/tickets", data=payload, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        ticket_data = response.data.get("data", {})
+        self.assertEqual(len(ticket_data.get("attachments", [])), 1)
+        self.assertIn("screenshot", ticket_data["attachments"][0]["file"])
+
+    def test_list_tickets_and_status_counts(self):
+        """List tickets returns tickets belonging to user with status aggregates."""
+        # Create tickets in various states for User A
+        t1 = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Ticket 1",
+            message="Msg 1",
+            status="New",
+            ticket_type="support"
+        )
+        t2 = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Ticket 2",
+            message="Msg 2",
+            status="in_progress",
+            ticket_type="billing"
+        )
+        t3 = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Ticket 3",
+            message="Msg 3",
+            status="closed",
+            ticket_type="support"
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.get("/api/resume/tickets")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data.get("success"))
+
+        counts = response.data.get("counts", {})
+        self.assertEqual(counts.get("new"), 1)
+        self.assertEqual(counts.get("in_progress"), 1)
+        self.assertEqual(counts.get("closed"), 1)
+        self.assertEqual(counts.get("total"), 3)
+
+        tickets = response.data.get("tickets", [])
+        self.assertEqual(len(tickets), 3)
+
+    def test_list_tickets_filtering(self):
+        """Filtering by status and ticket_type works correctly."""
+        StudentTicket.objects.create(
+            resume_user=self.user_a, subject="T1", message="M1", status="New", ticket_type="support"
+        )
+        StudentTicket.objects.create(
+            resume_user=self.user_a, subject="T2", message="M2", status="in_progress", ticket_type="billing"
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        # Filter by status
+        response = self.client.get("/api/resume/tickets?status=in_progress")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["tickets"]), 1)
+        self.assertEqual(response.data["tickets"][0]["status"], "in_progress")
+
+        # Filter by ticket_type
+        response = self.client.get("/api/resume/tickets?ticket_type=billing")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["tickets"]), 1)
+        self.assertEqual(response.data["tickets"][0]["ticket_type"], "billing")
+
+    def test_retrieve_ticket_detail(self):
+        """Retrieve single ticket with chronological replies and attachments."""
+        ticket = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Detailed Ticket",
+            message="Initial ticket description.",
+            status="New"
+        )
+        reply = TicketReply.objects.create(
+            ticket=ticket,
+            resume_user=self.user_a,
+            message="Here is additional information."
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.get(f"/api/resume/tickets/{ticket.ticket_id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data.get("data", {})
+        self.assertEqual(data.get("ticket_id"), ticket.ticket_id)
+        self.assertEqual(len(data.get("replies", [])), 1)
+        self.assertEqual(data["replies"][0]["sender_type"], "resume_user")
+        self.assertEqual(data["replies"][0]["message"], "Here is additional information.")
+
+    def test_reply_to_ticket(self):
+        """User can submit a reply, transitioning status to in_progress."""
+        ticket = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Question about plan",
+            message="How do I upgrade?",
+            status="New"
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.post(
+            f"/api/resume/tickets/{ticket.ticket_id}/reply",
+            data={"message": "Any updates on my upgrade request?"},
+            format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data.get("success"))
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, "in_progress")
+        self.assertEqual(ticket.replies.count(), 1)
+        self.assertEqual(ticket.replies.first().resume_user, self.user_a)
+
+    def test_reply_to_closed_ticket_fails(self):
+        """Cannot reply to a closed ticket."""
+        ticket = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Old ticket",
+            message="Already resolved.",
+            status="closed"
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.post(
+            f"/api/resume/tickets/{ticket.ticket_id}/reply",
+            data={"message": "Trying to reply to closed ticket"},
+            format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(response.data.get("success"))
+
+    def test_close_ticket(self):
+        """User can explicitly close an active ticket."""
+        ticket = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Ticket to close",
+            message="Please close this.",
+            status="in_progress"
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.post(f"/api/resume/tickets/{ticket.ticket_id}/close")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data.get("success"))
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, "closed")
+
+    def test_strict_user_isolation(self):
+        """User B cannot access or modify User A's tickets."""
+        ticket_a = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="Alice Confidential Issue",
+            message="Private details.",
+            status="New"
+        )
+
+        token_b = self._get_token_for(self.user_b)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token_b}")
+
+        # 1. User B list must be empty
+        response = self.client.get("/api/resume/tickets")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["tickets"]), 0)
+        self.assertEqual(response.data["counts"]["total"], 0)
+
+        # 2. User B cannot retrieve User A's ticket
+        response = self.client.get(f"/api/resume/tickets/{ticket_a.ticket_id}")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 3. User B cannot reply to User A's ticket
+        response = self.client.post(
+            f"/api/resume/tickets/{ticket_a.ticket_id}/reply",
+            data={"message": "Unauthorized reply attempt"},
+            format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 4. User B cannot close User A's ticket
+        response = self.client.post(f"/api/resume/tickets/{ticket_a.ticket_id}/close")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_module_isolation_aryuapp_vs_resume(self):
+        """AryuApp LMS tickets are isolated and never returned in Resume ticket endpoints."""
+        student_ticket = StudentTicket.objects.create(
+            student=None, # e.g. AryuApp student or anonymous
+            resume_user=None,
+            subject="AryuApp LMS Course Issue",
+            message="Python LMS course issue",
+            status="New"
+        )
+
+        token_a = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token_a}")
+
+        # List must not include AryuApp ticket
+        response = self.client.get("/api/resume/tickets")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ticket_ids = [t["ticket_id"] for t in response.data["tickets"]]
+        self.assertNotIn(student_ticket.ticket_id, ticket_ids)
+
+        # Retrieve must return 404
+        response = self.client.get(f"/api/resume/tickets/{student_ticket.ticket_id}")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 

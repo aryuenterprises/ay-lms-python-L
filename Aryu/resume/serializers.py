@@ -7,6 +7,7 @@ import re
 import hashlib
 from django.core.cache import cache
 from payments.models import PaymentTransaction
+from aryuapp.models import StudentTicket, TicketReply, TicketAttachment
 from .models import ResumeRegistration,Contact,Subscription,PaymentHistory, UserSubscription, UserResume, ResumeTemplate
 from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
@@ -625,3 +626,124 @@ class PaymentHistorySerializers(serializers.ModelSerializer):
 
     def get_user_name(self, obj):
         return f"{obj.user.first_name} {obj.user.last_name}"
+
+
+# =========================================================================
+# RESUME APP TICKET / SUPPORT SERIALIZERS (REUSING ARYUAPP TICKET MODELS)
+# =========================================================================
+
+class ResumeTicketAttachmentSerializer(serializers.ModelSerializer):
+    file = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
+
+    class Meta:
+        model = TicketAttachment
+        fields = ["attachment_id", "file", "created_at"]
+
+    def get_file(self, obj):
+        if obj.file and hasattr(obj.file, 'url'):
+            media_base = getattr(settings, 'MEDIA_BASE_URL', '')
+            if media_base:
+                return media_base.rstrip('/') + obj.file.url
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.file.url)
+            return obj.file.url
+        return None
+
+
+class ResumeTicketReplySerializer(serializers.ModelSerializer):
+    sender_type = serializers.SerializerMethodField()
+    sender_name = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
+
+    class Meta:
+        model = TicketReply
+        fields = ["reply_id", "sender_type", "sender_name", "message", "created_at"]
+
+    def get_sender_type(self, obj):
+        if getattr(obj, "resume_user", None):
+            return "resume_user"
+        if obj.student:
+            return "student"
+        if obj.trainer:
+            return "admin"
+        if obj.super_admin:
+            return "super_admin"
+        return "user"
+
+    def get_sender_name(self, obj):
+        if getattr(obj, "resume_user", None):
+            name = f"{getattr(obj.resume_user, 'first_name', '')} {getattr(obj.resume_user, 'last_name', '')}".strip()
+            return name or getattr(obj.resume_user, 'email', 'Resume User')
+        if obj.student:
+            return f"{obj.student.first_name} {obj.student.last_name}".strip()
+        if obj.trainer:
+            return obj.trainer.full_name or obj.trainer.username
+        if obj.super_admin:
+            return "Support Team"
+        return "User"
+
+
+class ResumeTicketListSerializer(serializers.ModelSerializer):
+    attachments = ResumeTicketAttachmentSerializer(many=True, read_only=True)
+    replies_count = serializers.IntegerField(read_only=True, default=0)
+    created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
+    updated_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
+
+    class Meta:
+        model = StudentTicket
+        fields = [
+            "ticket_id",
+            "ticket_token",
+            "subject",
+            "message",
+            "ticket_type",
+            "status",
+            "priority",
+            "replies_count",
+            "attachments",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class ResumeTicketDetailSerializer(serializers.ModelSerializer):
+    attachments = ResumeTicketAttachmentSerializer(many=True, read_only=True)
+    replies = ResumeTicketReplySerializer(many=True, read_only=True)
+    created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
+    updated_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
+
+    class Meta:
+        model = StudentTicket
+        fields = [
+            "ticket_id",
+            "ticket_token",
+            "subject",
+            "message",
+            "ticket_type",
+            "status",
+            "priority",
+            "name",
+            "email",
+            "phone",
+            "attachments",
+            "replies",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class ResumeTicketCreateSerializer(serializers.Serializer):
+    subject = serializers.CharField(max_length=255, required=True, allow_blank=False)
+    message = serializers.CharField(required=True, allow_blank=False)
+    ticket_type = serializers.CharField(max_length=30, default="support", required=False)
+    priority = serializers.ChoiceField(
+        choices=["Low", "Medium", "High", "low", "medium", "high"],
+        default="Low",
+        required=False
+    )
+
+
+class ResumeTicketReplyCreateSerializer(serializers.Serializer):
+    message = serializers.CharField(required=True, allow_blank=False)
