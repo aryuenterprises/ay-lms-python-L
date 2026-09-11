@@ -2830,12 +2830,14 @@ class TicketReplySerializer(serializers.ModelSerializer):
         if obj.student: return "student"
         if obj.trainer: return "admin"
         if obj.super_admin: return "super_admin"
+        if getattr(obj, "resume_user", None): return "resume_user"
         return "unknown"
 
     def get_sender_name(self, obj):
         if obj.student: return f"{obj.student.first_name} {obj.student.last_name}"
         if obj.trainer: return obj.trainer.full_name or obj.trainer.username
         if obj.super_admin: return "Super Admin"
+        if getattr(obj, "resume_user", None): return f"{obj.resume_user.first_name} {obj.resume_user.last_name}".strip() or obj.resume_user.email
         return "Unknown"
 
 class StudentTicketSerializer(serializers.ModelSerializer):
@@ -2870,6 +2872,9 @@ class StudentTicketSerializer(serializers.ModelSerializer):
         if obj.webinar_participant:
             return obj.webinar_participant.phone
 
+        if getattr(obj, "resume_user", None):
+            return getattr(obj.resume_user, "phone", None)
+
         return None
     
     def get_email(self, obj):
@@ -2878,6 +2883,9 @@ class StudentTicketSerializer(serializers.ModelSerializer):
 
         if obj.webinar_participant:
             return obj.webinar_participant.email
+
+        if getattr(obj, "resume_user", None):
+            return getattr(obj.resume_user, "email", None)
 
         return None
     
@@ -2936,6 +2944,9 @@ class StudentTicketSerializer(serializers.ModelSerializer):
 
         if obj.webinar_participant:
             return obj.webinar_participant.name
+
+        if getattr(obj, "resume_user", None):
+            return f"{obj.resume_user.first_name}".strip() or obj.resume_user.email
 
         return "Unknown"
     

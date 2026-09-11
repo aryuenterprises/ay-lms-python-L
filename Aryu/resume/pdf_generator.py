@@ -8,6 +8,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import os
 import re
 import socket
 import time
@@ -289,6 +290,21 @@ class GeneratePDFSerializer(serializers.Serializer):
             )
 
         return value
+
+    def validate_filename(self, value: str) -> str:
+        if not value:
+            return "resume.pdf"
+        # Sanitize CRLF and header injection characters
+        cleaned = re.sub(r"[\r\n\t\x00-\x1f]", "", value).strip()
+        # Remove directory traversal
+        cleaned = os.path.basename(cleaned)
+        # Remove any remaining dangerous chars
+        cleaned = re.sub(r'[^a-zA-Z0-9._\- ]', '_', cleaned)
+        if not cleaned:
+            return "resume.pdf"
+        if not cleaned.lower().endswith(".pdf"):
+            cleaned += ".pdf"
+        return cleaned[:100]
 
 
 class PDFGenerationError(Exception):

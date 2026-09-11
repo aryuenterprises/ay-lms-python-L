@@ -930,6 +930,9 @@ class StudentTicket(models.Model):
     webinar_participant = models.ForeignKey(
         WebinarRegistration, on_delete=models.CASCADE, null=True, blank=True
     )
+    resume_user = models.ForeignKey(
+        "resume.ResumeRegistration", on_delete=models.CASCADE, null=True, blank=True, related_name="tickets"
+    )
     name = models.CharField(max_length=100, blank=True, null=True)
     email = models.EmailField(blank=True, null=True)
     phone = models.CharField(max_length=20, blank=True, null=True)
@@ -959,6 +962,9 @@ class TicketReply(models.Model):
     student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True, blank=True)
     trainer = models.ForeignKey(Trainer, on_delete=models.SET_NULL, null=True, blank=True)
     super_admin = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    resume_user = models.ForeignKey(
+        "resume.ResumeRegistration", on_delete=models.SET_NULL, null=True, blank=True, related_name="ticket_replies"
+    )
     message = models.TextField()
     created_at = models.DateTimeField(default=timezone.now)
 

@@ -60,4 +60,14 @@ urlpatterns = [
     #PaymentHistoru Urls
     path('paymenthistory',PaymentHistoryViewset.as_view({'get':'list'})),
 
+    # Ticket / Support URLs (reusing core ticket infrastructure)
+    path('tickets', ResumeTicketViewSet.as_view({'get': 'list', 'post': 'create'}), name='resume-tickets'),
+    path('tickets/<int:pk>', ResumeTicketViewSet.as_view({'get': 'retrieve'}), name='resume-ticket-detail'),
+    path('tickets/<int:pk>/reply', ResumeTicketViewSet.as_view({'post': 'reply'}), name='resume-ticket-reply'),
+    path('tickets/<int:pk>/close', ResumeTicketViewSet.as_view({'post': 'close'}), name='resume-ticket-close'),
+    path('tickets/', ResumeTicketViewSet.as_view({'get': 'list', 'post': 'create'}), name='resume-tickets-slash'),
+    path('tickets/<int:pk>/', ResumeTicketViewSet.as_view({'get': 'retrieve'}), name='resume-ticket-detail-slash'),
+    path('tickets/<int:pk>/reply/', ResumeTicketViewSet.as_view({'post': 'reply'}), name='resume-ticket-reply-slash'),
+    path('tickets/<int:pk>/close/', ResumeTicketViewSet.as_view({'post': 'close'}), name='resume-ticket-close-slash'),
+
 ]
