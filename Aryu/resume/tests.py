@@ -1748,3 +1748,123 @@ class ResumeTicketIntegrationTestCase(TestCase):
         response = self.client.get(f"/api/resume/tickets/{student_ticket.ticket_id}")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+
+class ResumeRegistrationSoftDeleteTestCase(TestCase):
+    """
+    Validation and regression tests for ResumeRegistration soft delete:
+    - DELETE sets is_deleted=True instead of physical deletion
+    - Database record remains preserved
+    - Soft-deleted users are excluded from list/partial_update/destroy
+    - Permission checks (401/403 for unauthorized users)
+    - Active users remain functional
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+        self.user = ResumeRegistration.objects.create(
+            first_name="John",
+            last_name="Doe",
+            email="john.doe@example.com",
+            phone="1234567890",
+            password=make_password("Secret123!"),
+            is_verified=True,
+            status=True,
+            is_deleted=False,
+        )
+
+    def _get_admin_token(self):
+        refresh = RefreshToken()
+        refresh["user_id"] = 999
+        refresh["id"] = 999
+        refresh["email"] = "admin@aryu.com"
+        refresh["user_type"] = "admin"
+        refresh["first_name"] = "Admin"
+        refresh["last_name"] = "User"
+        return str(refresh.access_token)
+
+    def _get_user_token(self):
+        refresh = RefreshToken()
+        refresh["user_id"] = self.user.id
+        refresh["id"] = self.user.id
+        refresh["email"] = self.user.email
+        refresh["user_type"] = "resume_user"
+        refresh["first_name"] = self.user.first_name
+        refresh["last_name"] = self.user.last_name
+        return str(refresh.access_token)
+
+    def test_unauthorized_user_cannot_delete(self):
+        """Unauthenticated and non-admin requests cannot delete registration."""
+        # 1. Unauthenticated
+        response = self.client.delete(f"/api/resume/registered-user/{self.user.id}")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # 2. Regular user
+        user_token = self._get_user_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {user_token}")
+        response = self.client.delete(f"/api/resume/registered-user/{self.user.id}")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_soft_delete_preserves_record(self):
+        """Admin delete marks is_deleted=True and preserves database record."""
+        admin_token = self._get_admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_token}")
+
+        response = self.client.delete(f"/api/resume/registered-user/{self.user.id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data.get("status"))
+
+        # 1. Database record still exists physically
+        self.assertTrue(ResumeRegistration.objects.filter(id=self.user.id).exists())
+
+        # 2. Field is_deleted is now True
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_deleted)
+
+    def test_soft_deleted_user_excluded_from_list(self):
+        """Soft-deleted users are omitted from list queries."""
+        admin_token = self._get_admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_token}")
+
+        # Mark user as deleted
+        self.user.is_deleted = True
+        self.user.save(update_fields=["is_deleted"])
+
+        # Create active user
+        active_user = ResumeRegistration.objects.create(
+            first_name="Active",
+            last_name="User",
+            email="active@example.com",
+            password=make_password("Secret123!"),
+            is_deleted=False,
+        )
+
+        response = self.client.get("/api/resume/registraion")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        user_ids = [u["id"] for u in response.data.get("data", [])]
+        self.assertNotIn(self.user.id, user_ids)
+        self.assertIn(active_user.id, user_ids)
+
+    def test_soft_deleted_user_cannot_be_updated_or_redeleted(self):
+        """Soft-deleted users return 404 on subsequent update and delete attempts."""
+        admin_token = self._get_admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_token}")
+
+        # Mark user as deleted
+        self.user.is_deleted = True
+        self.user.save(update_fields=["is_deleted"])
+
+        # Attempt patch
+        response = self.client.patch(
+            f"/api/resume/registered-user/{self.user.id}",
+            data={"first_name": "NewName"},
+            format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # Attempt delete
+        response = self.client.delete(f"/api/resume/registered-user/{self.user.id}")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
