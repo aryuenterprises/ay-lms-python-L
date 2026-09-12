@@ -1575,14 +1575,11 @@ class GoogleReviewDetailView(APIView):
             review = None
             student = None
 
-            if str(pk).isdigit():
-                  review = GoogleReview.objects.filter(pk=int(pk)).first()
-
-       # If not found, fallback to student lookup and auto-create review
-            if not review:
-                  student = Student.objects.filter(
-                  Q(student_id=pk) | Q(registration_id=pk)
-                  ).first()
+            student = Student.objects.filter(
+                Q(student_id=pk) | Q(registration_id=pk)
+                ).first()
+            if student:
+                review = GoogleReview.objects.filter(student=student).first()
     
             if student:
                         review, _ = GoogleReview.objects.get_or_create(
