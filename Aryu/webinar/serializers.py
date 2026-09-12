@@ -287,8 +287,8 @@ class WebinarMetadataSerializer(serializers.ModelSerializer):
     def get_image_url(self, obj):
         # 1. Access the actual FileField/ImageField attribute on the model (e.g., obj.image)
         # 2. Safely verify that the file exists and has a .url property
-        if hasattr(obj, 'image') and obj.image and hasattr(obj.image, 'url'):
-            return settings.MEDIA_BASE_URL + obj.image.url
+        if obj.meta_image:
+            return settings.MEDIA_BASE_URL + obj.meta_image.url
         return None
 
 class WebinarFAQSerializer(serializers.ModelSerializer):
