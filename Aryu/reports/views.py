@@ -1576,15 +1576,30 @@ class GoogleReviewDetailView(APIView):
             student = None
 
             if str(pk).isdigit():
-                review = GoogleReview.objects.filter(id=int(pk)).first()
+                  review = GoogleReview.objects.filter(pk=int(pk)).first()
 
+       # If not found, fallback to student lookup and auto-create review
             if not review:
-                student = Student.objects.filter(
-                    Q(student_id=pk) | Q(registration_id=pk)
-                ).first()
-                if student:
-                    review = GoogleReview.objects.filter(student=student).first()
-
+                  student = Student.objects.filter(
+                  Q(student_id=pk) | Q(registration_id=pk)
+                  ).first()
+    
+            if student:
+                        review, _ = GoogleReview.objects.get_or_create(
+                        student=student,
+                        defaults={
+                        "course": (
+                         StudentCourse.objects.filter(student=student).first().course 
+                         if StudentCourse.objects.filter(student=student).exists() 
+                         else None
+                     ),
+                     "batch": (
+                         StudentCourse.objects.filter(student=student).first().batch 
+                         if StudentCourse.objects.filter(student=student).exists() 
+                         else NewBatch.objects.filter(student_courses__student=student).first()
+                     )
+                 }
+             )
             if not review and not student:
                 return Response(
                     {"success": False, "message": f"Review or Student with identifier '{pk}' not found.", "error_code": "NOT_FOUND"},
