@@ -5,7 +5,7 @@ from django.db import models
 class ResumeRegistration(models.Model):
     first_name = models.CharField(max_length=250, blank=True, default="")
     last_name = models.CharField(max_length=250, blank=True, default="")
-    email = models.EmailField(unique=True, db_index=True)
+    email = models.EmailField(db_index=True)
     phone = models.CharField(max_length=50, null=True, blank=True)
     password = models.CharField(max_length=150, null=True, blank=True)
     city = models.CharField(max_length=100, null=True, blank=True)
