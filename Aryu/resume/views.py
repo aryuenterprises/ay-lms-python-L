@@ -758,7 +758,7 @@ class AuthViewSet(viewsets.ViewSet):
                         text-decoration: none;
                         font-weight: 600;
                         ">
-                        Aryu Academy Pvt.
+                        Aryu Academy Pvt Ltd.
                     </a>
                     </p>
 
@@ -1823,7 +1823,7 @@ class AuthViewSet(viewsets.ViewSet):
                       font-weight: 600;
                     ">
 
-                    Aryu Academy Pvt.
+                    Aryu Academy Pvt Ltd.
 
                   </a>
 

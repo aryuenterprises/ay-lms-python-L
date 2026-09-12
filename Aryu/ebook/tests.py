@@ -311,7 +311,7 @@ class EbookRegistrationFlowTestCase(TransactionTestCase):
         self.assertIn("Your Account Login Credentials", html_content)
         self.assertIn(self.ebook_a.title, html_content)
         self.assertIn("Product of", html_content)
-        self.assertIn("Aryu Academy Pvt.", html_content)
+        self.assertIn("Aryu Academy Pvt Ltd.", html_content)
 
         # Verify no Resume-specific text leaked
         self.assertNotIn("PassATS account", html_content)
