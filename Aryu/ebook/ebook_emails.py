@@ -287,7 +287,7 @@ def send_ebook_registration_email(registration, password=None):
                         text-decoration: none;
                         font-weight: 600;
                         ">
-                        Aryu Academy Pvt.
+                        Aryu Academy Pvt Ltd.
                     </a>
                     </p>
 
