@@ -241,7 +241,7 @@ Expired
     ">
 
 <a
-    href="https://passats.aryuacademy.com/pricing"
+    href="https://passats.aryuacademy.com/choose-plan"
     target="_blank"
     style="
       display: inline-block;
