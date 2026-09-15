@@ -345,7 +345,7 @@ def send_ebook_registration_email(registration, password=None):
     email_msg = EmailMultiAlternatives(
         subject=subject,
         body=f"Your ebook registration for {ebook.title} is successful.",
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=settings.ARYU_ACADEMY_FROM_EMAIL,
         to=[registration.email],
     )
 

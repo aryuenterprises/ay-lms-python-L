@@ -109,7 +109,7 @@ def send_contact_us_thank_you_email(lead: Any, run_on_commit: bool = True) -> bo
 
     context = build_contact_us_email_context(lead)
     subject = "Thank You for Contacting Aryu Academy"
-    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "support@aryuacademy.com")
+    from_email = getattr(settings, "ARYU_ACADEMY_FROM_EMAIL", "support@aryuacademy.com")
 
     # Plain text version
     course_line = f"Course / Interest: {context['course']}\n" if context["course"] else ""

@@ -55,7 +55,7 @@ def send_bonus_email(reg, webinar, bonus_files):
     email = EmailMultiAlternatives(
         subject=f"Bonus Materials - {webinar.title}",
         body="",
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=settings.ARYU_ACADEMY_FROM_EMAIL,
         to=[reg.email],
     )
 

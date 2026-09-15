@@ -542,6 +542,8 @@ EMAIL_HOST_USER = "support@aryuacademy.com"
 EMAIL_HOST_PASSWORD = "A/cMu5nqYs16"
 DEFAULT_FROM_EMAIL = "support@aryuacademy.com"
 SUPPORT_EMAIL = "support@aryuacademy.com"
+ARYU_ACADEMY_FROM_EMAIL = "Aryu Academy Pvt Ltd <support@aryuacademy.com>"
+PASS_ATS_FROM_EMAIL = "Pass ATS <support@aryuacademy.com>"
 
 
 SITE_ID = 1

@@ -419,7 +419,7 @@ Hello {sub.user.first_name},
 Your subscription has expired.
                     """,
 
-                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    from_email=settings.PASS_ATS_FROM_EMAIL,
 
                     to=[sub.user.email]
                 )

@@ -95,7 +95,7 @@ def send_webinar_registration_email(registration):
     email_msg = EmailMultiAlternatives(
         subject=subject,
         body="Your webinar registration has been confirmed.",
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=settings.ARYU_ACADEMY_FROM_EMAIL,
         to=[registration.email],
     )
     email_msg.attach_alternative(html_content, "text/html")
@@ -107,7 +107,7 @@ def send_webinar_certificate_email(registration, certificate_file):
     frontend_url = getattr(settings, 'FRONTEND_URL', 'https://portal.aryuacademy.com/')
 
     subject = f"Certificate of Completion - {webinar.title}"
-    from_email = settings.DEFAULT_FROM_EMAIL
+    from_email = settings.ARYU_ACADEMY_FROM_EMAIL
     to = [registration.email]
 
     # Plain text fallback (important for deliverability)
@@ -381,7 +381,7 @@ def send_student_credentials_email(student, password=None, transaction_id=None):
     from payments.models import PaymentTransaction
     
     subject = "Welcome to Aryu LMS - Registration & Invoice Receipt"
-    from_email = settings.DEFAULT_FROM_EMAIL
+    from_email = settings.ARYU_ACADEMY_FROM_EMAIL
     to = [student.email]
     
     frontend_url = getattr(settings, 'FRONTEND_URL', 'https://portal.aryuacademy.com/')
