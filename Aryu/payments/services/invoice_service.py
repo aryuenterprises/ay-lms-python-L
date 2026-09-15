@@ -31,7 +31,12 @@ def _safe_weasyprint_url_fetcher(url, timeout=5, ssl_context=None):
     - Blocks SSRF by refusing requests to loopback, link-local, private RFC1918, and multicast IP ranges.
     - Permits valid data: URIs and public media URLs.
     """
-    from weasyprint import default_url_fetcher
+    try:
+        from weasyprint import default_url_fetcher
+    except ImportError:
+        from weasyprint.urls import URLFetcher
+        def default_url_fetcher(url: str, timeout: int = 5, ssl_context=None):
+            return URLFetcher(timeout=timeout, ssl_context=ssl_context)(url)
 
     parsed = urlparse(url)
     scheme = parsed.scheme.lower()
