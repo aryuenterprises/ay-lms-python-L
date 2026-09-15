@@ -35,7 +35,7 @@ def send_verification_email(
     email_message = EmailMultiAlternatives(
         subject=subject,
         body=body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=settings.PASS_ATS_FROM_EMAIL,
         to=[recipient],
     )
 

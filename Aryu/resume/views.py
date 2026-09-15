@@ -1156,7 +1156,7 @@ class AuthViewSet(viewsets.ViewSet):
             email_message = EmailMultiAlternatives(
                 subject=f"{first_name}, Complete your Pass ATS registration",
                 body=f"Hello {first_name},\n\nPlease verify your PassATS account:\n\n{verification_link}\n\nWebsite:\nhttps://portal.aryuacademy.com\n",
-                from_email=settings.DEFAULT_FROM_EMAIL,
+                from_email=settings.PASS_ATS_FROM_EMAIL,
                 to=[user.email],
             )
 
@@ -1906,7 +1906,7 @@ class AuthViewSet(viewsets.ViewSet):
             email_message = EmailMultiAlternatives(
                 subject="Secure Password Reset OTP",
                 body=f"Hello {first_name},\n\nYour OTP is: {otp}\n\nThis OTP expires in 5 minutes.",
-                from_email=settings.DEFAULT_FROM_EMAIL,
+                from_email=settings.PASS_ATS_FROM_EMAIL,
                 to=[user.email],
             )
 
