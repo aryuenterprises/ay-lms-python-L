@@ -567,9 +567,24 @@ class AuthViewSet(viewsets.ViewSet):
                 price=0,
                 payment_status="free"
             )
+            logger.info(
+                "Resume registration completed for user_id=%s, email=%s",
+                user.id,
+                user.email,
+            )
 
             token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
+
+            logger.info(
+                "Verification token generated for user_id=%s",
+                user.id,
+            )
+
             verification_link = build_portal_verify_link(request, token)
+            logger.info(
+                "Verification link generated for user_id=%s",
+                user.id,
+            )
 
             html_message = f"""
     <!DOCTYPE html>
@@ -820,28 +835,71 @@ class AuthViewSet(viewsets.ViewSet):
             subject = f"{user.first_name}, Verify your PassATS Account"
             body = f"Please verify your account: {verification_link}"
 
-            logger = logging.getLogger(__name__)
+            logger.info(
+                "Preparing verification email for user_id=%s, email=%s, subject=%s",
+                user.id,
+                user.email,
+                subject,
+            )
 
             def queue_email():
-                print("queue_email called")
+                logger.info(
+                    "transaction.on_commit triggered for verification email. "
+                    "user_id=%s, email=%s, DEBUG=%s",
+                    user.id,
+                    user.email,
+                    settings.DEBUG,
+                )
+                try:
+                    if settings.DEBUG:
+                        logger.info(
+                            "DEBUG=True. Calling send_verification_email.run() directly "
+                            "for user_id=%s",
+                            user.id,
+                        )
 
-                if settings.DEBUG:
-                    print("Calling task directly")
-                    send_verification_email.run(
-                        subject,
-                        body,
-                        html_message,
-                        user.email
+                        result=send_verification_email.run(
+                            subject,
+                            body,
+                            html_message,
+                            user.email
+                        )
+                        logger.info(
+                            "Direct verification email task completed successfully. "
+                            "user_id=%s, email=%s, result=%s",
+                            user.id,
+                            user.email,
+                            result,
+                        )
+                    else:
+                        logger.info(
+                            "DEBUG=False. Queueing send_verification_email Celery task. "
+                            "user_id=%s, email=%s",
+                            user.id,
+                            user.email,
+                        )
+
+                        task = send_verification_email.delay(
+                            subject,
+                            body,
+                            html_message,
+                            user.email
+                        )
+
+                        logger.info(
+                            "Verification email Celery task queued successfully. "
+                            "user_id=%s, email=%s, task_id=%s",
+                            user.id,
+                            user.email,
+                            task.id,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Failed to send/queue verification email. "
+                        "user_id=%s, email=%s",
+                        user.id,
+                        user.email,
                     )
-                else:
-                    print("Queueing Celery task")
-                    task = send_verification_email.delay(
-                        subject,
-                        body,
-                        html_message,
-                        user.email
-                    )
-                    print("Task ID:", task.id)
 
             transaction.on_commit(queue_email)
 
