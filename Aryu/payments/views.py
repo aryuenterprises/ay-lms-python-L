@@ -981,7 +981,7 @@ class PaymentTransactionViewSet(viewsets.ViewSet):
         email = EmailMessage(
             subject=subject,
             body=body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
+            from_email=settings.ARYU_ACADEMY_FROM_EMAIL,
             to=[recipient_email]
         )
         email.content_subtype = "html"

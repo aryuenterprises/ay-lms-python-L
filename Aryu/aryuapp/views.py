@@ -6035,7 +6035,7 @@ Aryu Academy Team
     msg = EmailMultiAlternatives(
         subject=subject,
         body=text_content,
-        from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "support@aryuacademy.com"),
+        from_email=settings.ARYU_ACADEMY_FROM_EMAIL,
         to=[recipient_email],
     )
     msg.attach_alternative(html_content, "text/html")
@@ -6628,7 +6628,7 @@ def send_certificate_email(student_email, certificate):
         return False
 
     subject = f"Your Certificate for {certificate.course_name}"
-    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "support@aryuacademy.com")
+    from_email = settings.ARYU_ACADEMY_FROM_EMAIL
 
     # Render a HTML template with certificate info
     context = {

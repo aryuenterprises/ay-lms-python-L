@@ -203,7 +203,7 @@ def send_welcome_and_invoice_email(student, raw_password, amount, bootcamp_title
             email_msg = EmailMessage(
                 subject=f"Registration Confirmed & Invoice - {bootcamp_title}",
                 body=html_message,
-                from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'support@aryuacademy.com'),
+                from_email=getattr(settings, 'ARYU_ACADEMY_FROM_EMAIL', 'support@aryuacademy.com'),
                 to=[student.email]
             )
             email_msg.content_subtype = "html"

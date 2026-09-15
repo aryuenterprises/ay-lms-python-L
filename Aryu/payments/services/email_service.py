@@ -25,7 +25,7 @@ class PaymentEmailService:
         email = EmailMultiAlternatives(
             subject=subject,
             body="Invoice Attached",
-            from_email=settings.DEFAULT_FROM_EMAIL,
+            from_email=settings.ARYU_ACADEMY_FROM_EMAIL,
             to=[transaction.student.email]
         )
 
