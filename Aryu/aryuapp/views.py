@@ -60,6 +60,7 @@ from batches.serializers import BatchRecordingSerializer
 from rest_framework.pagination import CursorPagination
 from core.views import secure_throttle
 from django.utils.decorators import method_decorator
+
 class IsAdminOrSuperAdmin(BasePermission):
     def has_permission(self, request, view):
         return getattr(request.user, "user_type", "") in ["admin", "super_admin"]
@@ -5095,6 +5096,16 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
     lookup_field = 'student_id'    
     lookup_url_kwarg = 'student_id'
 
+    def _find_student(self, queryset, student_id):
+        if not student_id:
+            return None
+        student_id_str = str(student_id).strip()
+        if student_id_str.isdigit():
+            student = queryset.filter(student_id=int(student_id_str)).first()
+            if student:
+                return student
+        return queryset.filter(registration_id=student_id_str).first()
+
     def get_queryset(self):
         user = self.request.user
         user_type = getattr(user, 'user_type', None)
@@ -5130,13 +5141,21 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
 
         # STUDENT → only own record
         if user_type == 'student':
-            return base_qs.filter(student_id=user.student_id)
+            student_pk = getattr(user, 'student_id', None)
+            reg_id = getattr(user, 'registration_id', None)
+            student_filter = Q()
+            if student_pk and str(student_pk).isdigit():
+                student_filter |= Q(student_id=int(student_pk))
+            if reg_id:
+                student_filter |= Q(registration_id=str(reg_id))
+            return base_qs.filter(student_filter) if student_filter else Student.objects.none()
 
         # TRAINER → students in their batches (optimized with distinct)
         if user_type in ['tutor', 'trainer']:
+            trainer_id = getattr(user, 'trainer_id', None)
             trainer_student_ids = (
                 NewBatch.objects.filter(
-                    trainers__trainer_id=user.trainer_id,
+                    trainers__trainer_id=trainer_id,
                     is_archived=False
                 )
                 .values_list('students__student_id', flat=True)
@@ -5146,16 +5165,18 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
 
         # ADMIN → scoped students
         if user_type == 'admin':
+            admin_id = getattr(user, 'trainer_id', None) or getattr(user, 'user_id', None) or getattr(user, 'id', None)
             return base_qs.filter(
-                created_by=str(user.trainer_id),
+                created_by=str(admin_id),
                 created_by_type='admin'
             )
 
-        # SUPER ADMIN → include admins + own created students
+        # SUPER ADMIN → include admins + own created students + public/system students
         if user_type == 'super_admin':
+            user_id = getattr(user, 'user_id', None) or getattr(user, 'id', None)
             admin_ids = (
                 Trainer.objects.filter(
-                    created_by=user.user_id,
+                    created_by=user_id,
                     created_by_type='super_admin',
                     is_archived=False
                 )
@@ -5163,8 +5184,9 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
             )
 
             return base_qs.filter(
-                Q(created_by=str(user.user_id), created_by_type='super_admin') |
-                Q(created_by__in=[str(i) for i in admin_ids], created_by_type='admin')
+                Q(created_by=str(user_id), created_by_type='super_admin') |
+                Q(created_by__in=[str(i) for i in admin_ids], created_by_type='admin') |
+                Q(created_by__isnull=True)
             )
 
         return Student.objects.none()
@@ -5173,25 +5195,23 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
     def retrieve(self, request, student_id=None):
         user = request.user
         user_type = getattr(user, 'user_type', None)
-        print("USER:", user)
-        print("USER TYPE:", user_type)
-        print("USER STUDENT ID:", getattr(user, "student_id", None))
-        print("REQUESTED STUDENT ID:", student_id)
-        try:
-            student = self.get_queryset().get(student_id=int(student_id))
-        except Student.DoesNotExist:
+
+        student = self._find_student(self.get_queryset(), student_id)
+        if not student:
             return Response(
                 {"success": False, "message": "Not found or access denied."},
-                status=404
+                status=status.HTTP_404_NOT_FOUND
             )
 
-        
-        if user_type == "student" and str(student.student_id) != str(user.student_id):
-            return Response(
-                {"success": False, "message": "You are not allowed to access this resource."},
-                status=403
-            )
-        
+        if user_type == "student":
+            user_student_id = str(getattr(user, "student_id", "") or "")
+            user_reg_id = str(getattr(user, "registration_id", "") or "")
+            if str(student.student_id) != user_student_id and str(student.registration_id) != user_reg_id:
+                return Response(
+                    {"success": False, "message": "You are not allowed to access this resource."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
         try:
             serializer = StudentProfileSerializer(
                 student,
@@ -5207,10 +5227,8 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
 
     @transaction.atomic
     def partial_update(self, request, student_id=None):
-        try:
-            # Fetches based on user role security restrictions defined in your get_queryset
-            student = self.get_queryset().get(student_id=student_id)
-        except Student.DoesNotExist:
+        student = self._find_student(self.get_queryset(), student_id)
+        if not student:
             return Response(
                 {"success": False, "message": "Not found or access denied."},
                 status=status.HTTP_404_NOT_FOUND
@@ -5274,7 +5292,9 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
         url_path=r'(?P<student_id>[^/]+)/archive'
     )
     def archive_student(self, request, student_id=None):
-        student = Student.objects.get(student_id=student_id)
+        student = self._find_student(Student.objects.all(), student_id)
+        if not student:
+            return Response({"success": False, "message": "Student not found."}, status=status.HTTP_404_NOT_FOUND)
         student.is_archived = True
         student.save()
 
@@ -5285,9 +5305,8 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['patch'], permission_classes=[IsAuthenticated], url_path='change_password')
     def change_password(self, request, student_id=None):
-        try:
-            student = Student.objects.get(student_id=student_id)
-        except Student.DoesNotExist:
+        student = self._find_student(Student.objects.all(), student_id)
+        if not student:
             return Response({"success": False, "message": "Student not found"}, status=status.HTTP_404_NOT_FOUND)
 
         old_password = request.data.get("old_password")
@@ -5310,11 +5329,10 @@ class StudentProfileViewSet(LoggingMixin, NotesMixin, viewsets.ModelViewSet):
     def admin_reset_password(self, request, *args, **kwargs):
 
         # Extract student_id from URL manually (IMPORTANT)
-        student_id = kwargs.get(self.lookup_url_kwarg)
+        student_id = kwargs.get(self.lookup_url_kwarg) or kwargs.get('student_id')
 
-        try:
-            student = Student.objects.get(student_id=student_id)
-        except Student.DoesNotExist:
+        student = self._find_student(Student.objects.all(), student_id)
+        if not student:
             return Response({"success": False, "message": "Student not found."}, status=200)
 
         # Authenticate admin
@@ -5359,12 +5377,19 @@ class StudentCourseViewSet(LoggingMixin, NotesMixin, viewsets.ViewSet):
     # Helper: Get student (optimized)
     # ----------------------------------
     def _get_student(self, student_id):
-        return (
+        if not student_id:
+            return None
+        student_id_str = str(student_id).strip()
+        qs = (
             Student.objects
-            .only("student_id", "first_name", "last_name", "discount")
-            .filter(student_id=student_id, is_archived=False)
-            .first()
+            .only("student_id", "registration_id", "first_name", "last_name", "discount")
+            .filter(is_archived=False)
         )
+        if student_id_str.isdigit():
+            student = qs.filter(student_id=int(student_id_str)).first()
+            if student:
+                return student
+        return qs.filter(registration_id=student_id_str).first()
 
     # ----------------------------------
     # GET: List courses (optimized query)

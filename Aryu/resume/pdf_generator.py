@@ -24,7 +24,19 @@ from rest_framework import permissions, serializers, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from weasyprint import HTML, default_url_fetcher
+from weasyprint import HTML
+try:
+    from weasyprint import default_url_fetcher
+except ImportError:
+    from weasyprint.urls import URLFetcher
+    def default_url_fetcher(url: str, timeout: int = 10, ssl_context=None):
+        return URLFetcher(timeout=timeout, ssl_context=ssl_context)(url)
+
+try:
+    from weasyprint.urls import URLFetcherResponse
+except ImportError:
+    URLFetcherResponse = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +201,11 @@ def safe_weasyprint_url_fetcher(url: str, timeout: int = _RESOURCE_FETCH_TIMEOUT
             logger.warning("[PDF URL Fetcher Blocked] Unapproved external domain: %s", hostname)
             raise PermissionError(f"External domain '{hostname}' is not in the allowed resources list.")
 
+        def _fallback_response():
+            if URLFetcherResponse is not None:
+                return URLFetcherResponse(url, body=b"/* font fallback */", headers={"Content-Type": "text/css"})
+            return {"string": b"/* font fallback */", "mime_type": "text/css"}
+
         try:
             port = parsed.port or (443 if scheme == "https" else 80)
             addr_info = socket.getaddrinfo(hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
@@ -201,7 +218,7 @@ def safe_weasyprint_url_fetcher(url: str, timeout: int = _RESOURCE_FETCH_TIMEOUT
         except socket.gaierror:
             logger.warning("[PDF URL Fetcher Warning] Failed to resolve hostname: %s", hostname)
             if "fonts.googleapis.com" in hostname or "fonts.gstatic.com" in hostname:
-                return {"string": b"/* font fallback */", "mime_type": "text/css"}
+                return _fallback_response()
             raise PermissionError(f"Failed to resolve host '{hostname}'.")
 
         try:
@@ -213,7 +230,7 @@ def safe_weasyprint_url_fetcher(url: str, timeout: int = _RESOURCE_FETCH_TIMEOUT
         except Exception as fetch_err:
             logger.warning("[PDF URL Fetcher Failed] Resource fetch error %s: %s", url[:100], fetch_err)
             if "fonts.googleapis.com" in hostname or "fonts.gstatic.com" in hostname:
-                return {"string": b"/* font fallback */", "mime_type": "text/css"}
+                return _fallback_response()
             raise PermissionError(f"Resource fetch failed: {fetch_err}") from fetch_err
 
     raise PermissionError(f"URL scheme '{scheme}' is forbidden in PDF rendering.")
