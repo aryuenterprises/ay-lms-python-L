@@ -2293,3 +2293,177 @@ class ResumeAuthAuditAndAdminTicketTestCase(TestCase):
         self.assertEqual(ticket.status, "closed")
         self.assertEqual(ticket.updated_by, self.admin)
 
+    def test_resume_ticket_independent_from_student_trainer_models(self):
+        """Resume tickets operate with 100% independence from Student, Trainer, Batch, and Course models."""
+        from aryuapp.models import Student, Trainer
+        # Assert database has zero students and zero trainers
+        self.assertEqual(Student.objects.count(), 0)
+        self.assertEqual(Trainer.objects.count(), 0)
+
+        # 1. Resume user creates ticket
+        user_token = self._get_user_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {user_token}")
+
+        create_resp = self.client.post(
+            "/api/resume/tickets",
+            data={
+                "subject": "Resume Builder Formatting Help",
+                "message": "My resume columns are misaligned.",
+                "ticket_type": "technical_support",
+                "priority": "High"
+            },
+            format="json"
+        )
+        self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED)
+        ticket_id = create_resp.data["data"]["ticket_id"]
+
+        # 2. Aryu Admin replies to ticket
+        admin_token = self._get_admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_token}")
+
+        reply_resp = self.client.post(
+            f"/api/resume/tickets/{ticket_id}/reply/",
+            data={"message": "We have corrected your resume template alignment."},
+            format="json"
+        )
+        self.assertEqual(reply_resp.status_code, status.HTTP_201_CREATED)
+        reply_data = reply_resp.data["data"]
+        self.assertEqual(reply_data["sender_type"], "admin")
+        self.assertEqual(reply_data["sender"]["type"], "admin")
+        self.assertEqual(reply_data["sender"]["email"], self.admin.email)
+
+        # 3. Resume user retrieves ticket and verifies replies without any student/trainer involvement
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {user_token}")
+        get_resp = self.client.get(f"/api/resume/tickets/{ticket_id}")
+        self.assertEqual(get_resp.status_code, status.HTTP_200_OK)
+        ticket_data = get_resp.data["data"]
+
+        self.assertEqual(ticket_data["raised_by"]["id"], self.user.id)
+        self.assertEqual(ticket_data["raised_by"]["email"], self.user.email)
+        self.assertEqual(ticket_data["raised_by"]["name"], f"{self.user.first_name} {self.user.last_name}".strip())
+        self.assertEqual(len(ticket_data["replies"]), 1)
+        self.assertEqual(ticket_data["replies"][0]["sender_type"], "admin")
+        self.assertEqual(ticket_data["replies"][0]["sender"]["email"], self.admin.email)
+        self.assertEqual(ticket_data["reply_count"], 1)
+        self.assertNotIn("replies_count", ticket_data)
+
+    def test_inactive_user_cannot_access_tickets(self):
+        """Inactive Resume user (status=False) cannot access tickets."""
+        inactive_user = ResumeRegistration.objects.create(
+            first_name="Inactive",
+            last_name="User",
+            email="inactive.user@example.com",
+            password=make_password("Pass123!"),
+            is_verified=True,
+            status=False,
+            is_deleted=False,
+        )
+        token = self._get_user_token(inactive_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.get("/api/resume/tickets")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_deleted_user_cannot_access_tickets(self):
+        """Deleted Resume user (is_deleted=True) cannot access tickets."""
+        deleted_user = ResumeRegistration.objects.create(
+            first_name="Deleted",
+            last_name="User",
+            email="deleted.user@example.com",
+            password=make_password("Pass123!"),
+            is_verified=True,
+            status=True,
+            is_deleted=True,
+        )
+        token = self._get_user_token(deleted_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.get("/api/resume/tickets")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_unverified_user_cannot_access_tickets(self):
+        """Unverified Resume user (is_verified=False) cannot access tickets."""
+        unverified_user = ResumeRegistration.objects.create(
+            first_name="Unverified",
+            last_name="User",
+            email="unverified.tickets@example.com",
+            password=make_password("Pass123!"),
+            is_verified=False,
+            status=True,
+            is_deleted=False,
+        )
+        token = self._get_user_token(unverified_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.get("/api/resume/tickets")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_multiple_admin_replies_and_empty_replies_handling(self):
+        """Ticket with no replies returns [] and 0; multiple admin replies return ordered list with correct metadata."""
+        user_token = self._get_user_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {user_token}")
+
+        # 1. Create ticket
+        create_resp = self.client.post(
+            "/api/resume/tickets",
+            data={
+                "subject": "Multiple Reply Test",
+                "message": "Testing multiple replies.",
+                "ticket_type": "support",
+                "priority": "Medium"
+            },
+            format="json"
+        )
+        self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED)
+        ticket_id = create_resp.data["data"]["ticket_id"]
+
+        # 2. Get ticket when empty replies
+        get_empty = self.client.get(f"/api/resume/tickets/{ticket_id}")
+        self.assertEqual(get_empty.status_code, status.HTTP_200_OK)
+        self.assertEqual(get_empty.data["data"]["replies"], [])
+        self.assertEqual(get_empty.data["data"]["reply_count"], 0)
+        self.assertNotIn("replies_count", get_empty.data["data"])
+
+        # 3. Admin sends 2 replies
+        admin_token = self._get_admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_token}")
+
+        r1 = self.client.post(
+            f"/api/resume/tickets/{ticket_id}/reply/",
+            data={"message": "Reply 1: Under investigation."},
+            format="json"
+        )
+        self.assertEqual(r1.status_code, status.HTTP_201_CREATED)
+
+        r2 = self.client.post(
+            f"/api/resume/tickets/{ticket_id}/reply/",
+            data={"message": "Reply 2: Investigation complete."},
+            format="json"
+        )
+        self.assertEqual(r2.status_code, status.HTTP_201_CREATED)
+
+        # 4. User views ticket detail with multiple replies
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {user_token}")
+        get_resp = self.client.get(f"/api/resume/tickets/{ticket_id}")
+        self.assertEqual(get_resp.status_code, status.HTTP_200_OK)
+        ticket_data = get_resp.data["data"]
+        self.assertEqual(len(ticket_data["replies"]), 2)
+        self.assertEqual(ticket_data["reply_count"], 2)
+        self.assertNotIn("replies_count", ticket_data)
+        self.assertEqual(ticket_data["replies"][0]["message"], "Reply 1: Under investigation.")
+        self.assertEqual(ticket_data["replies"][1]["message"], "Reply 2: Investigation complete.")
+        self.assertEqual(ticket_data["replies"][0]["sender_type"], "admin")
+        self.assertEqual(ticket_data["replies"][1]["sender_type"], "admin")
+
+        # 5. User views ticket list with replies array and single reply_count
+        list_resp = self.client.get("/api/resume/tickets")
+        self.assertEqual(list_resp.status_code, status.HTTP_200_OK)
+        list_tickets = list_resp.data["tickets"]
+        self.assertEqual(len(list_tickets), 1)
+        self.assertEqual(list_tickets[0]["reply_count"], 2)
+        self.assertNotIn("replies_count", list_tickets[0])
+        self.assertEqual(len(list_tickets[0]["replies"]), 2)
+        self.assertEqual(list_tickets[0]["replies"][0]["message"], "Reply 1: Under investigation.")
+        self.assertEqual(list_tickets[0]["replies"][1]["message"], "Reply 2: Investigation complete.")
+
+
