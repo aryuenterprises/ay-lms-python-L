@@ -523,12 +523,11 @@ class AuthViewSet(viewsets.ViewSet):
             password = validated_data["password"]
 
             existing_user = ResumeRegistration.objects.filter(
-                email=email,
+                email__iexact=email,
                 is_deleted=False
             ).first()
 
             if existing_user:
-
                 # Already verified → don't allow signup
                 if existing_user.is_verified:
                     return Response(
@@ -536,8 +535,14 @@ class AuthViewSet(viewsets.ViewSet):
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-                # Existing but NOT verified → reuse the same record
-                existing_user.delete()
+                # Existing but NOT verified → return verification_pending
+                return Response(
+                    {
+                        "error": "verification_pending",
+                        "message": "This email is already registered. Email verification is pending. Please verify your email to continue."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
             free_plan = Subscription.objects.filter(
                 name__iexact="Free",
