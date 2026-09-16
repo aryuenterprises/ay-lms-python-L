@@ -69,32 +69,54 @@ import traceback
 logger = logging.getLogger('resume')
 
 
-from django.contrib.auth import get_user_model
+from aryuapp.models import User
 
-User = get_user_model()
 
 SIGNING_SALT = "resume-email-verification"
 
 RESUME_REFRESH_COOKIE_NAME = "refresh_token"
-RESUME_REFRESH_COOKIE_PATH = "/api/resume/token/refresh/"
+RESUME_REFRESH_COOKIE_PATH = "/api/resume/"
 
 def get_resume_cookie_settings(request):
     """
     Returns (domain, secure, samesite) for resume auth cookies.
     """
     origin = request.headers.get("Origin", "") if request else ""
-    LOCAL_ORIGINS = {
-        "http://localhost:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "http://192.168.0.139:8081",
-    }
-    if origin in LOCAL_ORIGINS or (getattr(settings, "DEBUG", False) and not origin):
+    host = ""
+    if request:
+        try:
+            host = request.get_host().split(":")[0].lower()
+        except Exception:
+            host = ""
+
+    is_local = (
+        origin in {
+            "http://localhost:3000",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            "http://127.0.0.1:3000",
+            "http://192.168.0.139:8081",
+        }
+        or origin.startswith("http://localhost:")
+        or origin.startswith("http://127.0.0.1:")
+        or host in {"localhost", "127.0.0.1"}
+        or (getattr(settings, "DEBUG", False) and not origin)
+    )
+
+    if is_local:
         cookie_domain = None
         cookie_secure = False
         cookie_samesite = "Lax"
-    else:
+    elif host.endswith("aryuprojects.com") or origin.endswith("aryuprojects.com"):
+        cookie_domain = ".aryuprojects.com"
+        cookie_secure = True
+        cookie_samesite = "None"
+    elif host.endswith("aryuacademy.com") or origin.endswith("aryuacademy.com"):
         cookie_domain = ".aryuacademy.com"
+        cookie_secure = True
+        cookie_samesite = "None"
+    else:
+        cookie_domain = None
         cookie_secure = True
         cookie_samesite = "None"
 
@@ -636,7 +658,7 @@ class AuthViewSet(viewsets.ViewSet):
                     padding: 45px 5px;
                     ">
                     <img
-                    src="{settings.MEDIA_BASE_URL}/media/logos/pass-ats-logo-white.png.png"
+                    src="{settings.MEDIA_BASE_URL}/media/logos/pass-ats-logo-white.png"
                     alt="Pass ATS"
                     style="
                         width: 200px;
@@ -1018,7 +1040,7 @@ class AuthViewSet(viewsets.ViewSet):
                   padding: 45px 5px;
                 ">
                 <img
-                  src="{settings.MEDIA_BASE_URL}/media/logos/pass-ats-logo-white.png.png"
+                  src="{settings.MEDIA_BASE_URL}/media/logos/pass-ats-logo-white.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -1712,7 +1734,7 @@ class AuthViewSet(viewsets.ViewSet):
                 ">
 
                 <img
-                  src="{settings.MEDIA_BASE_URL}/media/logos/pass-ats-logo-white.png.png"
+                  src="{settings.MEDIA_BASE_URL}/media/logos/pass-ats-logo-white.png"
                   alt="Pass ATS"
                   style="
                     width: 200px;
@@ -2204,33 +2226,64 @@ class CustomTokenRefreshView(APIView):
     serializer_class = CustomTokenRefreshSerializer
 
     def post(self, request, *args, **kwargs):
+        logger.info("[RESUME REFRESH] Request received")
+
         # 1. Extract the token from request payload (body / headers) or cookie
         refresh_token = None
+        token_source = "missing"
+
         if isinstance(request.data, dict):
-            refresh_token = request.data.get("refresh") or request.data.get("refresh_token")
+            body_token = request.data.get("refresh") or request.data.get("refresh_token")
+            if body_token:
+                refresh_token = body_token
+                token_source = "body"
 
         if not refresh_token and request.COOKIES:
-            refresh_token = request.COOKIES.get(RESUME_REFRESH_COOKIE_NAME)
+            cookie_token = request.COOKIES.get(RESUME_REFRESH_COOKIE_NAME)
+            if cookie_token:
+                refresh_token = cookie_token
+                token_source = "cookie"
 
         if not refresh_token:
             auth_header = request.headers.get("Authorization", "")
             if auth_header.startswith("Bearer "):
                 refresh_token = auth_header.split(" ")[1]
+                token_source = "header"
             else:
-                refresh_token = request.headers.get("X-Refresh-Token")
+                x_refresh = request.headers.get("X-Refresh-Token")
+                if x_refresh:
+                    refresh_token = x_refresh
+                    token_source = "header"
+
+        logger.info("[RESUME REFRESH] Token source: %s", token_source)
+        logger.info("[RESUME REFRESH] Token received: %s", "true" if bool(refresh_token) else "false")
 
         if not refresh_token:
+            logger.warning("[RESUME REFRESH] Refresh failed: missing refresh token")
             return Response(
-                {"error": "Refresh token is required."},
+                {"error": "Refresh token is required.", "code": "missing_refresh_token"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        logger.info("[RESUME REFRESH] Token validation started")
         serializer = self.serializer_class(data={"refresh": refresh_token})
-        serializer.is_valid(raise_exception=True)
+
+        try:
+            serializer.is_valid(raise_exception=True)
+        except Exception as exc:
+            reason = "invalid token"
+            if hasattr(exc, "detail"):
+                if isinstance(exc.detail, dict):
+                    reason = exc.detail.get("detail", str(exc.detail))
+                else:
+                    reason = str(exc.detail)
+            else:
+                reason = str(exc)
+            logger.warning("[RESUME REFRESH] Refresh failed: %s", reason)
+            raise
 
         validated_data = serializer.validated_data
-        new_refresh_obj = validated_data.get("refresh_token_obj")
-        new_refresh_str = validated_data.get("refresh_token")
+        new_refresh_str = validated_data.get("refresh_token") or validated_data.get("refresh")
 
         response_data = {
             "access_token": validated_data["access_token"],
@@ -2241,7 +2294,7 @@ class CustomTokenRefreshView(APIView):
         response = Response(response_data, status=status.HTTP_200_OK)
 
         # 2. Bake the newly rotated refresh token back into cookie
-        cookie_val = str(new_refresh_obj or new_refresh_str or "")
+        cookie_val = str(new_refresh_str or "")
         if cookie_val:
             cookie_domain, cookie_secure, cookie_samesite = get_resume_cookie_settings(request)
             response.set_cookie(
@@ -2256,6 +2309,7 @@ class CustomTokenRefreshView(APIView):
                 samesite=cookie_samesite,
             )
 
+        logger.info("[RESUME REFRESH] Refresh successful")
         return response
 
 from .tasks import send_verification_email
@@ -4493,6 +4547,7 @@ class PaymentHistoryViewset(viewsets.ModelViewSet):
                 "transactions": transactions
             })
 
+
         return Response(
             {
                 "status": True,
@@ -4509,25 +4564,43 @@ class PaymentHistoryViewset(viewsets.ModelViewSet):
 
 class ResumeTicketViewSet(viewsets.ViewSet):
     """
-    Production-ready ViewSet for Resume users to interact with the support ticket system.
-    Reuses the core aryuapp StudentTicket, TicketReply, and TicketAttachment models
-    while strictly isolating data to the authenticated Resume user.
+    Production-ready ViewSet for Resume users and Aryuapp admin users to interact with support tickets.
+    Reuses the core aryuapp StudentTicket, TicketReply, and TicketAttachment models.
+    - Resume users: isolated to their own tickets.
+    - Admin users (aryuapp.models.User): full ability to view, reply to, and close resume support tickets.
     """
     authentication_classes = [CustomJWTAuthentication]
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
+    def _get_admin_user(self, request):
+        if not request.user or not getattr(request.user, "is_authenticated", False):
+            return None
+        user_type = getattr(request.user, "user_type", None)
+        is_staff = getattr(request.user, "is_staff", False)
+        if user_type in ["admin", "super_admin"] or is_staff:
+            if isinstance(request.user, User):
+                return request.user if getattr(request.user, "is_active", True) else None
+            user_id = getattr(request.user, "id", None) or getattr(request.user, "user_id", None)
+            if user_id:
+                return User.objects.filter(id=user_id, is_active=True).first()
+        return None
+
     def _get_resume_user(self, request):
+        if not request.user or not getattr(request.user, "is_authenticated", False):
+            return None
+        user_id = getattr(request.user, "id", None) or getattr(request.user, "user_id", None)
+        if not user_id:
+            return None
         return ResumeRegistration.objects.filter(
-            id=request.user.id,
+            id=user_id,
             is_deleted=False
         ).first()
 
-    def _get_base_queryset(self, user):
-        return (
+    def _get_base_queryset(self, user=None):
+        qs = (
             StudentTicket.objects
-            .filter(resume_user=user)
-            .select_related("resume_user")
+            .select_related("resume_user", "handled_by_superadmin")
             .prefetch_related(
                 "attachments",
                 Prefetch(
@@ -4545,19 +4618,31 @@ class ResumeTicketViewSet(viewsets.ViewSet):
             )
             .order_by("-ticket_id")
         )
+        if user is not None:
+            qs = qs.filter(resume_user=user)
+        else:
+            qs = qs.filter(resume_user__isnull=False)
+        return qs
 
     # -------------------------------------------------------------------------
     # GET /api/resume/tickets/ - List user's tickets with status aggregations
     # -------------------------------------------------------------------------
     def list(self, request):
-        user = self._get_resume_user(request)
-        if not user:
+        admin_user = self._get_admin_user(request)
+        resume_user = self._get_resume_user(request) if not admin_user else None
+
+        if not admin_user and not resume_user:
             return Response(
                 {"success": False, "message": "User account not found or inactive."},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        queryset = self._get_base_queryset(user)
+        if admin_user:
+            queryset = self._get_base_queryset(user=None)
+            all_user_tickets = StudentTicket.objects.filter(resume_user__isnull=False)
+        else:
+            queryset = self._get_base_queryset(user=resume_user)
+            all_user_tickets = StudentTicket.objects.filter(resume_user=resume_user)
 
         # Optional filters
         status_filter = request.query_params.get("status")
@@ -4569,7 +4654,6 @@ class ResumeTicketViewSet(viewsets.ViewSet):
             queryset = queryset.filter(ticket_type__iexact=ticket_type_filter.strip())
 
         # Single SQL aggregate query for status counts
-        all_user_tickets = StudentTicket.objects.filter(resume_user=user)
         counts = all_user_tickets.aggregate(
             new=Count(Case(When(status__iexact="new", then=1), output_field=IntegerField())),
             in_progress=Count(Case(When(status__iexact="in_progress", then=1), output_field=IntegerField())),
@@ -4650,8 +4734,10 @@ class ResumeTicketViewSet(viewsets.ViewSet):
     # GET /api/resume/tickets/<pk>/ - Retrieve ticket details, replies, and attachments
     # -------------------------------------------------------------------------
     def retrieve(self, request, pk=None):
-        user = self._get_resume_user(request)
-        if not user:
+        admin_user = self._get_admin_user(request)
+        resume_user = self._get_resume_user(request) if not admin_user else None
+
+        if not admin_user and not resume_user:
             return Response(
                 {"success": False, "message": "User account not found or inactive."},
                 status=status.HTTP_401_UNAUTHORIZED
@@ -4665,7 +4751,11 @@ class ResumeTicketViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        ticket = self._get_base_queryset(user).filter(ticket_id=ticket_id).first()
+        if admin_user:
+            ticket = self._get_base_queryset(user=None).filter(ticket_id=ticket_id).first()
+        else:
+            ticket = self._get_base_queryset(user=resume_user).filter(ticket_id=ticket_id).first()
+
         if not ticket:
             return Response(
                 {"success": False, "message": "Ticket not found or access denied."},
@@ -4682,8 +4772,10 @@ class ResumeTicketViewSet(viewsets.ViewSet):
     # -------------------------------------------------------------------------
     @action(detail=True, methods=["post"], url_path="reply")
     def reply(self, request, pk=None):
-        user = self._get_resume_user(request)
-        if not user:
+        admin_user = self._get_admin_user(request)
+        resume_user = self._get_resume_user(request) if not admin_user else None
+
+        if not admin_user and not resume_user:
             return Response(
                 {"success": False, "message": "User account not found or inactive."},
                 status=status.HTTP_401_UNAUTHORIZED
@@ -4697,10 +4789,16 @@ class ResumeTicketViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        ticket = StudentTicket.objects.filter(
-            ticket_id=ticket_id,
-            resume_user=user
-        ).first()
+        if admin_user:
+            ticket = StudentTicket.objects.filter(
+                ticket_id=ticket_id,
+                resume_user__isnull=False
+            ).first()
+        else:
+            ticket = StudentTicket.objects.filter(
+                ticket_id=ticket_id,
+                resume_user=resume_user
+            ).first()
 
         if not ticket:
             return Response(
@@ -4720,15 +4818,22 @@ class ResumeTicketViewSet(viewsets.ViewSet):
         message = serializer.validated_data["message"]
 
         with transaction.atomic():
-            reply = TicketReply.objects.create(
-                ticket=ticket,
-                resume_user=user,
-                message=message
-            )
+            reply_kwargs = {
+                "ticket": ticket,
+                "message": message,
+            }
+            if admin_user:
+                reply_kwargs["super_admin"] = admin_user
+                ticket.handled_by_superadmin = admin_user
+                ticket.updated_by = admin_user
+            else:
+                reply_kwargs["resume_user"] = resume_user
+
+            reply = TicketReply.objects.create(**reply_kwargs)
 
             # Re-open or mark in progress
             ticket.status = "in_progress"
-            ticket.save(update_fields=["status", "updated_at"])
+            ticket.save()
 
             # Handle reply attachments if any
             uploaded_files = []
@@ -4751,8 +4856,10 @@ class ResumeTicketViewSet(viewsets.ViewSet):
     # -------------------------------------------------------------------------
     @action(detail=True, methods=["post"], url_path="close")
     def close(self, request, pk=None):
-        user = self._get_resume_user(request)
-        if not user:
+        admin_user = self._get_admin_user(request)
+        resume_user = self._get_resume_user(request) if not admin_user else None
+
+        if not admin_user and not resume_user:
             return Response(
                 {"success": False, "message": "User account not found or inactive."},
                 status=status.HTTP_401_UNAUTHORIZED
@@ -4766,10 +4873,16 @@ class ResumeTicketViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        ticket = StudentTicket.objects.filter(
-            ticket_id=ticket_id,
-            resume_user=user
-        ).first()
+        if admin_user:
+            ticket = StudentTicket.objects.filter(
+                ticket_id=ticket_id,
+                resume_user__isnull=False
+            ).first()
+        else:
+            ticket = StudentTicket.objects.filter(
+                ticket_id=ticket_id,
+                resume_user=resume_user
+            ).first()
 
         if not ticket:
             return Response(
@@ -4778,9 +4891,12 @@ class ResumeTicketViewSet(viewsets.ViewSet):
             )
 
         ticket.status = "closed"
-        ticket.save(update_fields=["status", "updated_at"])
+        if admin_user:
+            ticket.updated_by = admin_user
+        ticket.save()
 
         return Response({
             "success": True,
             "message": "Ticket closed successfully"
         }, status=status.HTTP_200_OK)
+

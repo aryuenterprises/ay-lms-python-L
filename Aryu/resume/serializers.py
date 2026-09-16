@@ -14,6 +14,9 @@ from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework.exceptions import AuthenticationFailed
 from django.utils.timezone import now
+import logging
+
+logger = logging.getLogger("resume")
 
 class ResumeRegistrationSerializers(serializers.ModelSerializer):
 
@@ -78,7 +81,7 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
         refresh_token_string = attrs.get("refresh") or attrs.get("refresh_token")
 
         if not refresh_token_string:
-            raise AuthenticationFailed("Refresh token is required.")
+            raise AuthenticationFailed("Refresh token is required.", code="missing_refresh_token")
 
         token_str = str(refresh_token_string).strip()
         token_hash = hashlib.sha256(token_str.encode("utf-8")).hexdigest()
@@ -88,67 +91,75 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
         # If parallel frontend requests fire simultaneously with the same valid refresh token,
         # return the freshly rotated tokens from the short-lived cache without erroring.
         cached_response = cache.get(cache_key)
-        if cached_response:
+        if cached_response and isinstance(cached_response, dict):
             return cached_response
 
+        # 2. Decode and validate refresh token structure/cryptography
         try:
-            # Decode and validate refresh token structure/cryptography
             refresh = RefreshToken(token_str)
-            user_id = refresh.get("user_id") or refresh.get("id")
+        except TokenError as exc:
+            err_msg = str(exc).lower()
+            if "blacklisted" in err_msg:
+                raise InvalidToken({"detail": "Refresh token is blacklisted.", "code": "token_blacklisted"})
+            elif "expired" in err_msg:
+                raise InvalidToken({"detail": "Refresh token is expired.", "code": "token_expired"})
+            elif "type" in err_msg:
+                raise InvalidToken({"detail": "Token is not a valid refresh token.", "code": "invalid_token_type"})
+            else:
+                raise InvalidToken({"detail": "Token is invalid or expired.", "code": "invalid_token"})
 
-            # Strictly ensure this is a refresh token and NOT an access token
-            token_type = refresh.get("token_type") or refresh.payload.get("token_type")
-            if token_type and token_type != "refresh":
-                raise InvalidToken({"detail": "Token is not a valid refresh token."})
+        # Strictly ensure this is a refresh token and NOT an access token
+        token_type = refresh.get("token_type") or getattr(refresh, "payload", {}).get("token_type")
+        if token_type and token_type != "refresh":
+            raise InvalidToken({"detail": "Token is not a valid refresh token.", "code": "invalid_token_type"})
 
-            user_id = refresh.get("user_id") or refresh.get("id")
-            if not user_id:
-                raise AuthenticationFailed("Invalid token payload: missing user ID.")
+        user_id = refresh.get("user_id") or refresh.get("id")
+        if not user_id:
+            raise AuthenticationFailed("Invalid token payload: missing user ID.", code="missing_user_id")
 
-            # Validate active, verified, non-deleted user
-            user = ResumeRegistration.objects.get(
-                id=user_id,
-                status=True,
-                is_deleted=False,
-                is_verified=True,
-            )
+        # 3. Granular user validation: distinguish non-existent, deleted, inactive, and unverified
+        logger.info("[RESUME REFRESH] User validation started")
+        user = ResumeRegistration.objects.filter(id=user_id).first()
+        if not user:
+            raise AuthenticationFailed("User does not exist, is inactive, unverified, or deleted.", code="user_not_found")
+        if getattr(user, "is_deleted", False):
+            raise AuthenticationFailed("User does not exist, is inactive, unverified, or deleted.", code="user_deleted")
+        if not getattr(user, "status", True):
+            raise AuthenticationFailed("User does not exist, is inactive, unverified, or deleted.", code="user_inactive")
+        if not getattr(user, "is_verified", False):
+            raise AuthenticationFailed("User does not exist, is inactive, unverified, or deleted.", code="user_unverified")
 
-            # ROTATE REFRESH TOKEN: Issue fresh refresh token with all claims
-            new_refresh = RefreshToken()
-            new_refresh["user_id"] = user.id
-            new_refresh["id"] = user.id
-            new_refresh["email"] = user.email
-            new_refresh["user_type"] = "resume_user"
-            new_refresh["first_name"] = user.first_name
-            new_refresh["last_name"] = user.last_name
+        # 4. ROTATE REFRESH TOKEN: Issue fresh refresh token with all claims
+        logger.info("[RESUME REFRESH] Token rotation started")
+        new_refresh = RefreshToken()
+        new_refresh["user_id"] = user.id
+        new_refresh["id"] = user.id
+        new_refresh["email"] = user.email
+        new_refresh["user_type"] = "resume_user"
+        new_refresh["first_name"] = user.first_name
+        new_refresh["last_name"] = user.last_name
 
-            new_access_token = str(new_refresh.access_token)
-            new_refresh_str = str(new_refresh)
-            access_token = str(new_refresh.access_token)
+        new_access_token = str(new_refresh.access_token)
+        new_refresh_str = str(new_refresh)
 
-            response_data = {
-                "access_token": new_access_token,
-                "access": new_access_token,
-                "refresh_token": new_refresh_str,
-                "refresh": new_refresh_str,
-                "refresh_token_obj": new_refresh,
-            }
+        # Pure serializable dict (no live Python RefreshToken objects stored in cache)
+        response_data = {
+            "access_token": new_access_token,
+            "access": new_access_token,
+            "refresh_token": new_refresh_str,
+            "refresh": new_refresh_str,
+        }
 
-            # Blacklist old refresh token safely if rotation/blacklisting is supported
-            try:
-                refresh.blacklist()
-            except Exception:
-                pass
+        # 5. Blacklist old refresh token safely if rotation/blacklisting is supported
+        try:
+            refresh.blacklist()
+        except Exception as blacklist_err:
+            logger.warning("[RESUME REFRESH] Old token blacklist note: %s", blacklist_err)
 
-            # Cache the response for 30 seconds for concurrent request tolerance
-            cache.set(cache_key, response_data, timeout=30)
+        # 6. Cache the response for 30 seconds for concurrent request tolerance
+        cache.set(cache_key, response_data, timeout=30)
 
-            return response_data
-
-        except ResumeRegistration.DoesNotExist:
-            raise AuthenticationFailed("User does not exist, is inactive, unverified, or deleted.")
-        except (TokenError, InvalidToken):
-            raise InvalidToken({"detail": "Token is invalid or expired."})
+        return response_data
 
 class SubscriptionSerializer(serializers.ModelSerializer):
 

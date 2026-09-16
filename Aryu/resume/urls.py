@@ -3,62 +3,87 @@ from rest_framework_simplejwt.views import (TokenRefreshView)
 from .views import *
 
 urlpatterns = [
-    #ResumeRegistrations urls
-    path('registraion',ResumeRegistrationViewset.as_view({'post':'create','get':'list'})),
-    path('registered-user/<int:pk>',ResumeRegistrationViewset.as_view({'patch':'partial_update','delete':'destroy'})),
+    # ResumeRegistrations urls
+    path('registraion', ResumeRegistrationViewset.as_view({'post':'create','get':'list'})),
+    path('registraion/', ResumeRegistrationViewset.as_view({'post':'create','get':'list'})),
+    path('registration', ResumeRegistrationViewset.as_view({'post':'create','get':'list'})),
+    path('registration/', ResumeRegistrationViewset.as_view({'post':'create','get':'list'})),
+    path('registered-user/<int:pk>', ResumeRegistrationViewset.as_view({'patch':'partial_update','delete':'destroy'})),
+    path('registered-user/<int:pk>/', ResumeRegistrationViewset.as_view({'patch':'partial_update','delete':'destroy'})),
     path('payments', ResumeTransactionViewSet.as_view({'get':'list'})),
+    path('payments/', ResumeTransactionViewSet.as_view({'get':'list'})),
 
-    path("auth/signup/",AuthViewSet.as_view({"post": "signup"}),name="signup"),
-    path("auth/login/",AuthViewSet.as_view({"post": "login"}),name="login"),
-    path("auth/logout/",AuthViewSet.as_view({"post": "logout"}),name="logout"),
-    path("token/refresh/",CustomTokenRefreshView.as_view(),name="token_refresh"),
+    path("auth/signup/", AuthViewSet.as_view({"post": "signup"}), name="signup"),
+    path("auth/signup", AuthViewSet.as_view({"post": "signup"}), name="signup_no_slash"),
+    path("auth/login/", AuthViewSet.as_view({"post": "login"}), name="login"),
+    path("auth/login", AuthViewSet.as_view({"post": "login"}), name="login_no_slash"),
+    path("auth/logout/", AuthViewSet.as_view({"post": "logout"}), name="logout"),
+    path("auth/logout", AuthViewSet.as_view({"post": "logout"}), name="logout_no_slash"),
+    path("token/refresh/", CustomTokenRefreshView.as_view(), name="token_refresh"),
+    path("token/refresh", CustomTokenRefreshView.as_view(), name="token_refresh_no_slash"),
     path("auth/verify-email/", verify_email, name="verify_email"),
-    path("auth/resend-verification-email/",AuthViewSet.as_view({"post": "resend_verification_email"}),name="resend_verification_email"),
-    path("auth/forgot-password/",AuthViewSet.as_view({"post": "forgot_password"}),name="forgot_password"),
-    path("auth/verify-reset-otp/",AuthViewSet.as_view({"post": "verify_reset_otp"}),name="verify_reset_otp"),
-    path("auth/reset-password/",AuthViewSet.as_view({"post": "reset_password"}),name="reset_password"),
+    path("auth/verify-email", verify_email, name="verify_email_no_slash"),
+    path("auth/resend-verification-email/", AuthViewSet.as_view({"post": "resend_verification_email"}), name="resend_verification_email"),
+    path("auth/resend-verification-email", AuthViewSet.as_view({"post": "resend_verification_email"}), name="resend_verification_email_no_slash"),
+    path("auth/forgot-password/", AuthViewSet.as_view({"post": "forgot_password"}), name="forgot_password"),
+    path("auth/forgot-password", AuthViewSet.as_view({"post": "forgot_password"}), name="forgot_password_no_slash"),
+    path("auth/verify-reset-otp/", AuthViewSet.as_view({"post": "verify_reset_otp"}), name="verify_reset_otp"),
+    path("auth/verify-reset-otp", AuthViewSet.as_view({"post": "verify_reset_otp"}), name="verify_reset_otp_no_slash"),
+    path("auth/reset-password/", AuthViewSet.as_view({"post": "reset_password"}), name="reset_password"),
+    path("auth/reset-password", AuthViewSet.as_view({"post": "reset_password"}), name="reset_password_no_slash"),
 
     path("auth/google-login/", AuthViewSet.as_view({"post": "google_login"}), name="google-login"),
+    path("auth/google-login", AuthViewSet.as_view({"post": "google_login"}), name="google-login-no-slash"),
 
-    #dashboard
+    # dashboard
     path('dashboard', UserDashboardView.as_view(), name='user-dashboard'),
+    path('dashboard/', UserDashboardView.as_view(), name='user-dashboard-slash'),
 
-    path('candidates/generate-pdf',GenerateResumePDFView.as_view(), name='generate_pdf'),
+    path('candidates/generate-pdf', GenerateResumePDFView.as_view(), name='generate_pdf'),
+    path('candidates/generate-pdf/', GenerateResumePDFView.as_view(), name='generate_pdf_slash'),
 
-    path("parse/",ResumeGateway.as_view(),name="resume-parse",),
+    path("parse/", ResumeGateway.as_view(), name="resume-parse"),
+    path("parse", ResumeGateway.as_view(), name="resume-parse-no-slash"),
 
-    path("ats/scan/",ATSGateway.as_view(),name="ats-scan",),
+    path("ats/scan/", ATSGateway.as_view(), name="ats-scan"),
+    path("ats/scan", ATSGateway.as_view(), name="ats-scan-no-slash"),
 
-    #templates
-
+    # templates
     path('templates', ResumeTemplateViewSet.as_view({'get': 'list', 'post': 'create'})),
+    path('templates/', ResumeTemplateViewSet.as_view({'get': 'list', 'post': 'create'})),
     path('templates/<int:pk>', ResumeTemplateViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'update_section', 'delete': 'destroy'})),
+    path('templates/<int:pk>/', ResumeTemplateViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'update_section', 'delete': 'destroy'})),
 
     # User Resumes Data Lifecycle URLs
     path('user-resumes', UserResumeViewSet.as_view({'post': 'create', 'get': 'list'})),
+    path('user-resumes/', UserResumeViewSet.as_view({'post': 'create', 'get': 'list'})),
     path('user-resumes/<int:pk>', UserResumeViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'update_section', 'delete': 'destroy'})),
+    path('user-resumes/<int:pk>/', UserResumeViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'update_section', 'delete': 'destroy'})),
     
-    #payments
-    path("payment/create-order/",ResumePaymentViewSet.as_view({"post": "create_order"}),name="resume-create-order"),
-    path("payment/verify-payment/",ResumePaymentViewSet.as_view({"post": "verify_payment"}),name="resume-verify-payment"),
-    path("payment/webhook/",resume_razorpay_webhook,name="resume-razorpay-webhook"),
+    # payments
+    path("payment/create-order/", ResumePaymentViewSet.as_view({"post": "create_order"}), name="resume-create-order"),
+    path("payment/verify-payment/", ResumePaymentViewSet.as_view({"post": "verify_payment"}), name="resume-verify-payment"),
+    path("payment/webhook/", resume_razorpay_webhook, name="resume-razorpay-webhook"),
 
-    #Contact urls
-    path('contact',ContactViewset.as_view({'get':'list','post':'create'})),
-    path('contact/<int:pk>',ContactViewset.as_view({'get': 'retrieve','put':'update','patch':'update','delete':'destroy'})),
+    # Contact urls
+    path('contact', ContactViewset.as_view({'get':'list','post':'create'})),
+    path('contact/', ContactViewset.as_view({'get':'list','post':'create'})),
+    path('contact/<int:pk>', ContactViewset.as_view({'get': 'retrieve','put':'update','patch':'update','delete':'destroy'})),
+    path('contact/<int:pk>/', ContactViewset.as_view({'get': 'retrieve','put':'update','patch':'update','delete':'destroy'})),
 
-    #Subscription Urls
-    path("plans/",SubscriptionViewSet.as_view({"get": "plans"}),name="subscription-plans"),
-    path("pricing-plans/",PublicSubscriptionPlansViewSet.as_view({"get":"list","post":"create"})),
-    path("pricing-plans/<int:pk>",PublicSubscriptionPlansViewSet.as_view({"patch":"update","delete":"destroy"})),
-    path("my-subscription/",SubscriptionViewSet.as_view({"get": "my_subscription"}),name="my-subscription"),
-    path("subscription-history/",SubscriptionViewSet.as_view({"get": "subscription_history"}),name="subscription-history"),
-    path("create-plan/",SubscriptionViewSet.as_view({"post": "create_plan"}),name="create-plan"),
-    path("update-plan/<int:plan_id>/",SubscriptionViewSet.as_view({"patch": "update_plan"}),name="update-plan"),
-    path("delete-plan/<int:plan_id>/",SubscriptionViewSet.as_view({"delete": "delete_plan"}),name="delete-plan"),
+    # Subscription Urls
+    path("plans/", SubscriptionViewSet.as_view({"get": "plans"}), name="subscription-plans"),
+    path("pricing-plans/", PublicSubscriptionPlansViewSet.as_view({"get":"list","post":"create"})),
+    path("pricing-plans/<int:pk>", PublicSubscriptionPlansViewSet.as_view({"patch":"update","delete":"destroy"})),
+    path("my-subscription/", SubscriptionViewSet.as_view({"get": "my_subscription"}), name="my-subscription"),
+    path("subscription-history/", SubscriptionViewSet.as_view({"get": "subscription_history"}), name="subscription-history"),
+    path("create-plan/", SubscriptionViewSet.as_view({"post": "create_plan"}), name="create-plan"),
+    path("update-plan/<int:plan_id>/", SubscriptionViewSet.as_view({"patch": "update_plan"}), name="update-plan"),
+    path("delete-plan/<int:plan_id>/", SubscriptionViewSet.as_view({"delete": "delete_plan"}), name="delete-plan"),
 
-    #PaymentHistoru Urls
-    path('paymenthistory',PaymentHistoryViewset.as_view({'get':'list'})),
+    # PaymentHistory Urls
+    path('paymenthistory', PaymentHistoryViewset.as_view({'get':'list'})),
+    path('paymenthistory/', PaymentHistoryViewset.as_view({'get':'list'})),
 
     # Ticket / Support URLs (reusing core ticket infrastructure)
     path('tickets', ResumeTicketViewSet.as_view({'get': 'list', 'post': 'create'}), name='resume-tickets'),
