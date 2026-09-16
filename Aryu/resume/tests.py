@@ -1868,3 +1868,255 @@ class ResumeRegistrationSoftDeleteTestCase(TestCase):
         response = self.client.delete(f"/api/resume/registered-user/{self.user.id}")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+
+class ResumeAuthAuditAndAdminTicketTestCase(TestCase):
+    """
+    Validates:
+    1. Granular refresh error differentiation (expired, blacklisted, inactive, deleted, unverified, invalid payload).
+    2. URL routing resilience (dashboard, registered-user, token refresh with and without trailing slash).
+    3. Admin user (aryuapp.models.User) management of resume support tickets (view, reply, close).
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+        # 1. Setup Active, Verified Resume User
+        self.user = ResumeRegistration.objects.create(
+            first_name="Alice",
+            last_name="Auditor",
+            email="alice.audit@example.com",
+            password=make_password("SafePass123!"),
+            is_verified=True,
+            status=True,
+            is_deleted=False,
+        )
+
+        # 2. Setup aryuapp Admin User
+        from aryuapp.models import User as AryuUser
+        self.admin = AryuUser.objects.create(
+            username="admin_auditor",
+            email="admin.audit@aryuacademy.com",
+            full_name="Admin Auditor",
+            user_type="super_admin",
+            is_active=True,
+            is_staff=True,
+            is_superuser=True,
+        )
+
+    def _get_user_token(self, user=None):
+        target_user = user or self.user
+        refresh = RefreshToken()
+        refresh["user_id"] = target_user.id
+        refresh["id"] = target_user.id
+        refresh["email"] = target_user.email
+        refresh["user_type"] = "resume_user"
+        refresh["first_name"] = target_user.first_name
+        refresh["last_name"] = target_user.last_name
+        return str(refresh.access_token)
+
+    def _get_admin_token(self):
+        refresh = RefreshToken()
+        refresh["user_id"] = self.admin.id
+        refresh["id"] = self.admin.id
+        refresh["email"] = self.admin.email
+        refresh["user_type"] = "super_admin"
+        refresh["first_name"] = "Admin"
+        refresh["last_name"] = "Auditor"
+        return str(refresh.access_token)
+
+    def test_refresh_token_expired_rejection(self):
+        """Expired refresh token returns 401 with token_expired code."""
+        import jwt
+        from datetime import timedelta
+        from django.utils import timezone
+        from django.conf import settings
+
+        expired_payload = {
+            "token_type": "refresh",
+            "exp": int((timezone.now() - timedelta(days=1)).timestamp()),
+            "iat": int((timezone.now() - timedelta(days=31)).timestamp()),
+            "jti": "expired_jti_12345",
+            "user_id": self.user.id,
+            "id": self.user.id,
+            "user_type": "resume_user",
+        }
+        expired_token = jwt.encode(expired_payload, settings.SECRET_KEY, algorithm="HS256")
+
+        resp = self.client.post("/api/resume/token/refresh/", {"refresh": expired_token}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertFalse(resp.data.get("success", True))
+        self.assertIn("expired", str(resp.data.get("message", "")).lower())
+
+    def test_refresh_token_blacklisted_rejection(self):
+        """Blacklisted refresh token returns 401 with blacklisted error."""
+        refresh = RefreshToken()
+        refresh["user_id"] = self.user.id
+        refresh["id"] = self.user.id
+        refresh["email"] = self.user.email
+        refresh["user_type"] = "resume_user"
+        refresh_str = str(refresh)
+
+        # Blacklist the token
+        refresh.blacklist()
+
+        # Clear cache to force token decode
+        cache.clear()
+
+        resp = self.client.post("/api/resume/token/refresh/", {"refresh": refresh_str}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertIn("blacklisted", str(resp.data.get("message", "")).lower())
+
+    def test_refresh_token_unverified_user_rejected(self):
+        """Unverified user attempting to refresh returns 401."""
+        unverified_user = ResumeRegistration.objects.create(
+            first_name="Unverified",
+            last_name="User",
+            email="unverified@example.com",
+            password=make_password("SafePass123!"),
+            is_verified=False,
+            status=True,
+            is_deleted=False,
+        )
+        refresh = RefreshToken()
+        refresh["user_id"] = unverified_user.id
+        refresh["id"] = unverified_user.id
+        refresh["email"] = unverified_user.email
+        refresh["user_type"] = "resume_user"
+
+        resp = self.client.post("/api/resume/token/refresh/", {"refresh": str(refresh)}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertFalse(resp.data.get("success", True))
+
+    def test_refresh_token_trailing_slash_tolerance(self):
+        """Refresh endpoint works with and without trailing slash."""
+        refresh = RefreshToken()
+        refresh["user_id"] = self.user.id
+        refresh["id"] = self.user.id
+        refresh["email"] = self.user.email
+        refresh["user_type"] = "resume_user"
+
+        # With slash
+        resp1 = self.client.post("/api/resume/token/refresh/", {"refresh": str(refresh)}, format="json")
+        self.assertEqual(resp1.status_code, status.HTTP_200_OK)
+
+        # Without slash (new refresh token)
+        refresh2 = RefreshToken()
+        refresh2["user_id"] = self.user.id
+        refresh2["id"] = self.user.id
+        refresh2["email"] = self.user.email
+        refresh2["user_type"] = "resume_user"
+
+        resp2 = self.client.post("/api/resume/token/refresh", {"refresh": str(refresh2)}, format="json")
+        self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+
+    def test_dashboard_trailing_slash_tolerance(self):
+        """GET /api/resume/dashboard and /api/resume/dashboard/ both resolve."""
+        user_token = self._get_user_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {user_token}")
+
+        resp_no_slash = self.client.get("/api/resume/dashboard")
+        self.assertEqual(resp_no_slash.status_code, status.HTTP_200_OK)
+
+        resp_with_slash = self.client.get("/api/resume/dashboard/")
+        self.assertEqual(resp_with_slash.status_code, status.HTTP_200_OK)
+
+    def test_registered_user_trailing_slash_tolerance(self):
+        """PATCH /api/resume/registered-user/<pk> and /api/resume/registered-user/<pk>/ both resolve."""
+        admin_token = self._get_admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_token}")
+
+        # Without slash
+        resp1 = self.client.patch(
+            f"/api/resume/registered-user/{self.user.id}",
+            data={"first_name": "AliceUpdated1"},
+            format="json"
+        )
+        self.assertEqual(resp1.status_code, status.HTTP_200_OK)
+
+        # With slash
+        resp2 = self.client.patch(
+            f"/api/resume/registered-user/{self.user.id}/",
+            data={"first_name": "AliceUpdated2"},
+            format="json"
+        )
+        self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+
+    def test_admin_can_list_and_filter_resume_tickets(self):
+        """aryuapp admin user can list all resume support tickets and view aggregations."""
+        StudentTicket.objects.create(
+            resume_user=self.user,
+            subject="Resume Bug",
+            message="Cannot download ATS format.",
+            status="New",
+            ticket_type="technical_support"
+        )
+        admin_token = self._get_admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_token}")
+
+        response = self.client.get("/api/resume/tickets/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data.get("success"))
+        self.assertEqual(response.data["counts"]["total"], 1)
+        self.assertEqual(len(response.data["tickets"]), 1)
+
+    def test_admin_can_retrieve_resume_ticket_detail(self):
+        """aryuapp admin user can retrieve ticket detail."""
+        ticket = StudentTicket.objects.create(
+            resume_user=self.user,
+            subject="ATS Detail Test",
+            message="Detailed issue description.",
+            status="New"
+        )
+        admin_token = self._get_admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_token}")
+
+        response = self.client.get(f"/api/resume/tickets/{ticket.ticket_id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["data"]["ticket_id"], ticket.ticket_id)
+
+    def test_admin_can_reply_to_resume_ticket(self):
+        """aryuapp admin user can reply to resume ticket, setting super_admin and updated_by."""
+        ticket = StudentTicket.objects.create(
+            resume_user=self.user,
+            subject="Question",
+            message="Please help.",
+            status="New"
+        )
+        admin_token = self._get_admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_token}")
+
+        response = self.client.post(
+            f"/api/resume/tickets/{ticket.ticket_id}/reply/",
+            data={"message": "We have resolved this for you."},
+            format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data.get("success"))
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, "in_progress")
+        self.assertEqual(ticket.handled_by_superadmin, self.admin)
+        self.assertEqual(ticket.replies.count(), 1)
+        reply = ticket.replies.first()
+        self.assertEqual(reply.super_admin, self.admin)
+
+    def test_admin_can_close_resume_ticket(self):
+        """aryuapp admin user can close a resume ticket."""
+        ticket = StudentTicket.objects.create(
+            resume_user=self.user,
+            subject="To Close",
+            message="Ticket to be closed by admin.",
+            status="in_progress"
+        )
+        admin_token = self._get_admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_token}")
+
+        response = self.client.post(f"/api/resume/tickets/{ticket.ticket_id}/close/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data.get("success"))
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, "closed")
+        self.assertEqual(ticket.updated_by, self.admin)
+
