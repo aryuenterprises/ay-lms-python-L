@@ -699,34 +699,43 @@ class ResumeTicketReplySerializer(serializers.ModelSerializer):
         return "User"
 
 
+def _get_ticket_user_info(obj):
+    resume_user = getattr(obj, "resume_user", None)
+    if resume_user:
+        first_name = getattr(resume_user, "first_name", "") or ""
+        last_name = getattr(resume_user, "last_name", "") or ""
+        full_name = f"{first_name} {last_name}".strip()
+        user_name = full_name or getattr(obj, "name", "") or ""
+        user_email = getattr(resume_user, "email", "") or getattr(obj, "email", "") or ""
+        user_phone = getattr(resume_user, "phone", None) if getattr(resume_user, "phone", None) is not None else getattr(obj, "phone", None)
+        user_id = getattr(resume_user, "id", None)
+    else:
+        user_name = getattr(obj, "name", "") or ""
+        user_email = getattr(obj, "email", "") or ""
+        user_phone = getattr(obj, "phone", None)
+        user_id = None
+
+    phone_val = str(user_phone).strip() if (user_phone is not None and str(user_phone).strip() != "") else None
+
+    return {
+        "id": user_id,
+        "name": user_name,
+        "email": user_email,
+        "mobile": phone_val,
+        "phone": phone_val,
+    }
+
+
 class ResumeTicketListSerializer(serializers.ModelSerializer):
     attachments = ResumeTicketAttachmentSerializer(many=True, read_only=True)
     replies_count = serializers.IntegerField(read_only=True, default=0)
     created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
     updated_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
-
-    class Meta:
-        model = StudentTicket
-        fields = [
-            "ticket_id",
-            "ticket_token",
-            "subject",
-            "message",
-            "ticket_type",
-            "status",
-            "priority",
-            "replies_count",
-            "attachments",
-            "created_at",
-            "updated_at",
-        ]
-
-
-class ResumeTicketDetailSerializer(serializers.ModelSerializer):
-    attachments = ResumeTicketAttachmentSerializer(many=True, read_only=True)
-    replies = ResumeTicketReplySerializer(many=True, read_only=True)
-    created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
-    updated_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
+    name = serializers.SerializerMethodField()
+    email = serializers.SerializerMethodField()
+    phone = serializers.SerializerMethodField()
+    mobile = serializers.SerializerMethodField()
+    raised_by = serializers.SerializerMethodField()
 
     class Meta:
         model = StudentTicket
@@ -741,11 +750,76 @@ class ResumeTicketDetailSerializer(serializers.ModelSerializer):
             "name",
             "email",
             "phone",
+            "mobile",
+            "raised_by",
+            "replies_count",
+            "attachments",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_raised_by(self, obj):
+        return _get_ticket_user_info(obj)
+
+    def get_name(self, obj):
+        return _get_ticket_user_info(obj)["name"]
+
+    def get_email(self, obj):
+        return _get_ticket_user_info(obj)["email"]
+
+    def get_phone(self, obj):
+        return _get_ticket_user_info(obj)["phone"]
+
+    def get_mobile(self, obj):
+        return _get_ticket_user_info(obj)["mobile"]
+
+
+class ResumeTicketDetailSerializer(serializers.ModelSerializer):
+    attachments = ResumeTicketAttachmentSerializer(many=True, read_only=True)
+    replies = ResumeTicketReplySerializer(many=True, read_only=True)
+    created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
+    updated_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
+    name = serializers.SerializerMethodField()
+    email = serializers.SerializerMethodField()
+    phone = serializers.SerializerMethodField()
+    mobile = serializers.SerializerMethodField()
+    raised_by = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StudentTicket
+        fields = [
+            "ticket_id",
+            "ticket_token",
+            "subject",
+            "message",
+            "ticket_type",
+            "status",
+            "priority",
+            "name",
+            "email",
+            "phone",
+            "mobile",
+            "raised_by",
             "attachments",
             "replies",
             "created_at",
             "updated_at",
         ]
+
+    def get_raised_by(self, obj):
+        return _get_ticket_user_info(obj)
+
+    def get_name(self, obj):
+        return _get_ticket_user_info(obj)["name"]
+
+    def get_email(self, obj):
+        return _get_ticket_user_info(obj)["email"]
+
+    def get_phone(self, obj):
+        return _get_ticket_user_info(obj)["phone"]
+
+    def get_mobile(self, obj):
+        return _get_ticket_user_info(obj)["mobile"]
 
 
 class ResumeTicketCreateSerializer(serializers.Serializer):

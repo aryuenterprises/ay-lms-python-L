@@ -1748,6 +1748,179 @@ class ResumeTicketIntegrationTestCase(TestCase):
         response = self.client.get(f"/api/resume/tickets/{student_ticket.ticket_id}")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_get_ticket_returns_creator_raised_by_details(self):
+        """Ticket GET/retrieve returns creator ID, name, email, and mobile number."""
+        ticket = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            name=f"{self.user_a.first_name} {self.user_a.last_name}",
+            email=self.user_a.email,
+            phone=self.user_a.phone,
+            subject="Bug report",
+            message="Bug report description",
+            status="New"
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.get(f"/api/resume/tickets/{ticket.ticket_id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data.get("data", {})
+
+        # Verify raised_by nested object
+        raised_by = data.get("raised_by")
+        self.assertIsNotNone(raised_by)
+        self.assertEqual(raised_by["id"], self.user_a.id)
+        self.assertEqual(raised_by["name"], "Alice Smith")
+        self.assertEqual(raised_by["email"], "alice@example.com")
+        self.assertEqual(raised_by["mobile"], "9876543210")
+        self.assertEqual(raised_by["phone"], "9876543210")
+
+        # Verify top-level user details
+        self.assertEqual(data.get("name"), "Alice Smith")
+        self.assertEqual(data.get("email"), "alice@example.com")
+        self.assertEqual(data.get("mobile"), "9876543210")
+        self.assertEqual(data.get("phone"), "9876543210")
+
+    def test_list_tickets_returns_creator_details_for_every_ticket(self):
+        """Ticket list GET returns creator information for every ticket in the list."""
+        t1 = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="T1",
+            message="M1",
+            status="New"
+        )
+        t2 = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            subject="T2",
+            message="M2",
+            status="in_progress"
+        )
+
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.get("/api/resume/tickets")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        tickets = response.data.get("tickets", [])
+        self.assertEqual(len(tickets), 2)
+
+        for ticket_data in tickets:
+            self.assertIn("raised_by", ticket_data)
+            raised_by = ticket_data["raised_by"]
+            self.assertEqual(raised_by["id"], self.user_a.id)
+            self.assertEqual(raised_by["name"], "Alice Smith")
+            self.assertEqual(raised_by["email"], "alice@example.com")
+            self.assertEqual(raised_by["mobile"], "9876543210")
+            self.assertEqual(ticket_data["name"], "Alice Smith")
+            self.assertEqual(ticket_data["email"], "alice@example.com")
+            self.assertEqual(ticket_data["mobile"], "9876543210")
+
+    def test_ticket_creator_with_null_and_empty_phone(self):
+        """Missing or NULL/blank mobile number does not cause GET API failure and returns null."""
+        user_no_phone = ResumeRegistration.objects.create(
+            first_name="NoPhone",
+            last_name="User",
+            email="nophone@example.com",
+            phone=None,
+            password=make_password("TestPass123!"),
+            is_verified=True,
+            status=True,
+        )
+        ticket = StudentTicket.objects.create(
+            resume_user=user_no_phone,
+            name="NoPhone User",
+            email="nophone@example.com",
+            phone=None,
+            subject="No phone test",
+            message="Testing null phone handling",
+            status="New"
+        )
+
+        token = self._get_token_for(user_no_phone)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        # Test GET detail
+        response = self.client.get(f"/api/resume/tickets/{ticket.ticket_id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data.get("data", {})
+        self.assertIsNone(data["raised_by"]["mobile"])
+        self.assertIsNone(data["raised_by"]["phone"])
+        self.assertIsNone(data["mobile"])
+        self.assertIsNone(data["phone"])
+        self.assertEqual(data["raised_by"]["name"], "NoPhone User")
+        self.assertEqual(data["raised_by"]["email"], "nophone@example.com")
+
+        # Test GET list
+        list_response = self.client.get("/api/resume/tickets")
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        list_tickets = list_response.data.get("tickets", [])
+        self.assertEqual(len(list_tickets), 1)
+        self.assertIsNone(list_tickets[0]["raised_by"]["mobile"])
+
+    def test_ticket_create_associates_authenticated_user_and_ignores_spoofed_fields(self):
+        """Ticket creation strictly associates authenticated user and ignores spoofed user IDs."""
+        token = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        # Attempt to spoof user_b
+        payload = {
+            "subject": "Spoof test ticket",
+            "message": "Trying to impersonate user B",
+            "resume_user": self.user_b.id,
+            "user_id": self.user_b.id,
+            "raised_by": self.user_b.id,
+            "name": "Spoofed Name",
+            "email": self.user_b.email,
+        }
+        response = self.client.post("/api/resume/tickets", data=payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        ticket_data = response.data.get("data", {})
+
+        # Verifies ticket was created for User A (not User B)
+        self.assertEqual(ticket_data["raised_by"]["id"], self.user_a.id)
+        self.assertEqual(ticket_data["raised_by"]["email"], self.user_a.email)
+        self.assertEqual(ticket_data["raised_by"]["name"], "Alice Smith")
+
+        ticket_obj = StudentTicket.objects.get(ticket_id=ticket_data["ticket_id"])
+        self.assertEqual(ticket_obj.resume_user, self.user_a)
+        self.assertEqual(ticket_obj.email, self.user_a.email)
+
+    def test_multi_user_creator_isolation(self):
+        """Multiple users' tickets correctly return their respective creator details."""
+        ticket_a = StudentTicket.objects.create(
+            resume_user=self.user_a,
+            name="Alice Smith",
+            email="alice@example.com",
+            phone="9876543210",
+            subject="Alice Ticket",
+            message="Msg A"
+        )
+        ticket_b = StudentTicket.objects.create(
+            resume_user=self.user_b,
+            name="Bob Jones",
+            email="bob@example.com",
+            phone="9876543211",
+            subject="Bob Ticket",
+            message="Msg B"
+        )
+
+        token_a = self._get_token_for(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token_a}")
+        res_a = self.client.get(f"/api/resume/tickets/{ticket_a.ticket_id}")
+        self.assertEqual(res_a.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_a.data["data"]["raised_by"]["name"], "Alice Smith")
+        self.assertEqual(res_a.data["data"]["raised_by"]["email"], "alice@example.com")
+        self.assertEqual(res_a.data["data"]["raised_by"]["mobile"], "9876543210")
+
+        token_b = self._get_token_for(self.user_b)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token_b}")
+        res_b = self.client.get(f"/api/resume/tickets/{ticket_b.ticket_id}")
+        self.assertEqual(res_b.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_b.data["data"]["raised_by"]["name"], "Bob Jones")
+        self.assertEqual(res_b.data["data"]["raised_by"]["email"], "bob@example.com")
+        self.assertEqual(res_b.data["data"]["raised_by"]["mobile"], "9876543211")
+
 
 class ResumeRegistrationSoftDeleteTestCase(TestCase):
     """
