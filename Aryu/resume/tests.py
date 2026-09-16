@@ -589,6 +589,52 @@ class ResumeHTMLAndAuthTestCase(TestCase):
         token = signing.dumps({"user_id": user.id, "email": user.email}, salt=SIGNING_SALT)
         self.assertIsNotNone(token)
 
+    def test_duplicate_signup_for_unverified_user_rejected_with_verification_pending(self):
+        """
+        Verify duplicate signup attempt for unverified user is rejected with verification_pending,
+        does NOT create a new user or delete/replace the existing record.
+        """
+        signup_payload = {
+            "first_name": "Pending",
+            "last_name": "User",
+            "email": "pending.verify@example.com",
+            "phone": "9876543299",
+            "password": "SecurePassword123!",
+            "city": "Austin",
+            "state": "TX",
+            "country": "USA",
+        }
+
+        # 1. First signup succeeds
+        resp1 = self.client.post("/api/resume/auth/signup/", data=signup_payload, format="json")
+        self.assertEqual(resp1.status_code, status.HTTP_201_CREATED)
+
+        existing_user = ResumeRegistration.objects.get(email="pending.verify@example.com")
+        initial_id = existing_user.id
+        initial_password = existing_user.password
+
+        # 2. Second signup attempt with exact same email
+        resp2 = self.client.post("/api/resume/auth/signup/", data=signup_payload, format="json")
+        self.assertEqual(resp2.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp2.data.get("error"), "verification_pending")
+        self.assertIn("verification is pending", resp2.data.get("message", "").lower())
+
+        # 3. Third signup attempt with mixed casing (Case Insensitive)
+        mixed_case_payload = dict(signup_payload)
+        mixed_case_payload["email"] = "Pending.Verify@EXAMPLE.com"
+        mixed_case_payload["password"] = "DifferentPassword999!"
+        resp3 = self.client.post("/api/resume/auth/signup/", data=mixed_case_payload, format="json")
+        self.assertEqual(resp3.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp3.data.get("error"), "verification_pending")
+
+        # 4. Verify database has exactly 1 record and original data/id is untouched
+        all_matches = ResumeRegistration.objects.filter(email__iexact="pending.verify@example.com")
+        self.assertEqual(all_matches.count(), 1)
+        user_in_db = all_matches.first()
+        self.assertEqual(user_in_db.id, initial_id)
+        self.assertEqual(user_in_db.password, initial_password)
+        self.assertFalse(user_in_db.is_verified)
+
     def test_valid_token_verifies_account_via_api(self):
         """
         Verify that a valid token marks user account is_verified=True and returns 200 OK.
