@@ -110,16 +110,19 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
 
         # Strictly ensure this is a refresh token and NOT an access token
         token_type = refresh.get("token_type") or getattr(refresh, "payload", {}).get("token_type")
+        logger.debug(f'token type: {token_type}')
         if token_type and token_type != "refresh":
             raise InvalidToken({"detail": "Token is not a valid refresh token.", "code": "invalid_token_type"})
 
         user_id = refresh.get("user_id") or refresh.get("id")
+        logger.debug(f'user id: {user_id}')
         if not user_id:
             raise AuthenticationFailed("Invalid token payload: missing user ID.", code="missing_user_id")
 
         # 3. Granular user validation: distinguish non-existent, deleted, inactive, and unverified
         logger.info("[RESUME REFRESH] User validation started")
         user = ResumeRegistration.objects.filter(id=user_id).first()
+        logger.debug(f'user: {user}')
         if not user:
             raise AuthenticationFailed("User does not exist, is inactive, unverified, or deleted.", code="user_not_found")
         if getattr(user, "is_deleted", False):
