@@ -6636,6 +6636,464 @@ class CertificateViewSet(viewsets.ModelViewSet):
             "message": "Certificates retrieved successfully",
             "data": serializer.data
         }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='student-status(?:/(?P<student_id>[^/.]+))?')
+    def student_certificate_status(self, request, student_id=None):
+        import os
+        from collections import defaultdict
+        lookup_id = student_id or request.query_params.get('student_id')
+
+        user = getattr(request, 'user', None)
+        user_type = getattr(user, 'user_type', None)
+
+        # ----------------------------------------------------
+        # 1. INDIVIDUAL STUDENT DATA (when student_id provided)
+        # ----------------------------------------------------
+        if lookup_id:
+            lookup_str = str(lookup_id).strip()
+            student = None
+            if lookup_str.isdigit():
+                student = Student.objects.filter(student_id=int(lookup_str), is_archived=False).first()
+            if not student:
+                student = Student.objects.filter(registration_id=lookup_str, is_archived=False).first()
+            if not student and lookup_str.isdigit():
+                student = Student.objects.filter(student_id=int(lookup_str)).first()
+            if not student:
+                student = Student.objects.filter(registration_id=lookup_str).first()
+
+            # Check role-based permission if student
+            if user_type == "student":
+                user_student_id = str(getattr(user, "student_id", "") or "")
+                user_reg_id = str(getattr(user, "registration_id", "") or "")
+                if student and str(student.student_id) != user_student_id and str(student.registration_id) != user_reg_id:
+                    return Response(
+                        {"success": False, "message": "You are not allowed to access this resource."},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+
+            if student:
+                student_name = f"{student.first_name or ''} {student.last_name or ''}".strip() or student.username
+                cert_qs = Certificate.objects.filter(student=student, is_archived=False).order_by('-issued_date', '-created_at')
+            else:
+                cert_qs = Certificate.objects.filter(
+                    Q(student__student_id=int(lookup_str) if lookup_str.isdigit() else -1) |
+                    Q(student__registration_id=lookup_str)
+                ).order_by('-issued_date', '-created_at')
+                if cert_qs.exists():
+                    first_c = cert_qs.first()
+                    student = first_c.student
+                    student_name = first_c.student_name
+                else:
+                    return Response({
+                        "success": False,
+                        "message": "Student not found"
+                    }, status=status.HTTP_404_NOT_FOUND)
+
+            # Check Google Review status
+            has_google_review = False
+            gr_obj = None
+            gr_date = None
+            gr_screenshot_path = None
+            gr_screenshot_url = None
+            gr_youtube_link = None
+            try:
+                from reports.models import GoogleReview
+                if student:
+                    gr_obj = GoogleReview.objects.filter(student=student, is_google_review=True).first()
+                    if not gr_obj:
+                        gr_obj = GoogleReview.objects.filter(student=student).first()
+                    if gr_obj:
+                        has_google_review = bool(gr_obj.is_google_review)
+                        gr_date = str(gr_obj.review_date) if gr_obj.review_date else None
+                        gr_youtube_link = gr_obj.youtube_testimonial_link or None
+                        if gr_obj.screenshot:
+                            try:
+                                if hasattr(gr_obj.screenshot, 'path') and os.path.exists(gr_obj.screenshot.path):
+                                    gr_screenshot_path = gr_obj.screenshot.path
+                                else:
+                                    gr_screenshot_path = gr_obj.screenshot.name
+                            except Exception:
+                                gr_screenshot_path = gr_obj.screenshot.name
+
+                            try:
+                                if hasattr(gr_obj.screenshot, 'url'):
+                                    gr_screenshot_url = request.build_absolute_uri(gr_obj.screenshot.url)
+                            except Exception:
+                                gr_screenshot_url = None
+            except Exception as e:
+                logger.warning("Error querying GoogleReview for student %s: %s", lookup_id, e)
+
+            # Process certificates
+            certs_list = []
+            primary_file_path = None
+            primary_file_url = None
+            has_certificate_sent = False
+
+            for cert in cert_qs:
+                file_path = None
+                file_url = None
+                is_sent = False
+                if cert.certificate_file:
+                    is_sent = True
+                    try:
+                        if hasattr(cert.certificate_file, 'path') and os.path.exists(cert.certificate_file.path):
+                            file_path = cert.certificate_file.path
+                        else:
+                            file_path = cert.certificate_file.name
+                    except Exception:
+                        file_path = cert.certificate_file.name
+
+                    try:
+                        if hasattr(cert.certificate_file, 'url'):
+                            file_url = request.build_absolute_uri(cert.certificate_file.url)
+                    except Exception:
+                        file_url = None
+
+                if is_sent and not primary_file_path:
+                    primary_file_path = file_path
+                    primary_file_url = file_url
+                    has_certificate_sent = True
+
+                certs_list.append({
+                    "certificate_id": cert.id,
+                    "certificate_number": cert.certificate_number,
+                    "course_name": cert.course_name,
+                    "course_duration": cert.course_duration,
+                    "issued_date": cert.issued_date,
+                    "certificate_sent": "yes" if is_sent else "no",
+                    "file_path": file_path,
+                    "file_url": file_url
+                })
+
+            # Extract Course, Course Duration & Batch Details
+            course_name = "Not Assigned"
+            course_duration = "Not Assigned"
+            batch_details = "Not Assigned"
+            if gr_obj:
+                if gr_obj.course:
+                    if getattr(gr_obj.course, 'course_name', None):
+                        course_name = gr_obj.course.course_name
+                    c_dur = f"{getattr(gr_obj.course, 'duration', '') or ''} {getattr(gr_obj.course, 'duration_type', '') or ''}".strip()
+                    if c_dur:
+                        course_duration = c_dur
+                if gr_obj.batch:
+                    batch_details = gr_obj.batch.title or getattr(gr_obj.batch, 'batch_name', None) or "Not Assigned"
+
+            if course_name == "Not Assigned" or batch_details == "Not Assigned" or course_duration == "Not Assigned":
+                if student:
+                    for sc in student.student_courses.all():
+                        if sc.course:
+                            if course_name == "Not Assigned" and sc.course.course_name:
+                                course_name = sc.course.course_name
+                            if course_duration == "Not Assigned":
+                                c_dur = f"{getattr(sc.course, 'duration', '') or ''} {getattr(sc.course, 'duration_type', '') or ''}".strip()
+                                if c_dur:
+                                    course_duration = c_dur
+                        if batch_details == "Not Assigned" and sc.batch:
+                            batch_details = sc.batch.title or getattr(sc.batch, 'batch_name', None) or "Not Assigned"
+                    for nb in student.new_batches.all():
+                        if nb.course:
+                            if course_name == "Not Assigned" and nb.course.course_name:
+                                course_name = nb.course.course_name
+                            if course_duration == "Not Assigned":
+                                c_dur = f"{getattr(nb.course, 'duration', '') or ''} {getattr(nb.course, 'duration_type', '') or ''}".strip()
+                                if c_dur:
+                                    course_duration = c_dur
+                        if batch_details == "Not Assigned":
+                            batch_details = nb.title or getattr(nb, 'batch_name', None) or "Not Assigned"
+
+            if certs_list:
+                if course_name == "Not Assigned":
+                    course_name = certs_list[0].get("course_name") or "Not Assigned"
+                if course_duration == "Not Assigned":
+                    course_duration = certs_list[0].get("course_duration") or "Not Assigned"
+
+            # Determine Review Links badge (e.g. "Google", or "-")
+            platforms = []
+            if gr_obj:
+                if gr_obj.is_google_review:
+                    platforms.append("Google")
+                if getattr(gr_obj, 'linkedin_review', False):
+                    platforms.append("LinkedIn")
+                if getattr(gr_obj, 'facebook_review', False):
+                    platforms.append("Facebook")
+                if getattr(gr_obj, 'trustpilot_review', False):
+                    platforms.append("Trustpilot")
+                if getattr(gr_obj, 'is_youtube_testimonial', False):
+                    platforms.append("YouTube")
+
+            review_links_display = platforms[0] if len(platforms) == 1 else (", ".join(platforms) if platforms else "-")
+            screenshot_display = gr_screenshot_url or gr_youtube_link or "-"
+
+            data = {
+                "s_no": 1,
+                "student_id": getattr(student, 'student_id', lookup_id),
+                "registration_id": getattr(student, 'registration_id', None),
+                "student_name": student_name,
+                "course": course_name,
+                "course_name": course_name,
+                "course_duration": course_duration,
+                "batch": batch_details,
+                "batch_name": batch_details,
+                "batch_details": batch_details,
+                "review_links": review_links_display,
+                "review_platforms": platforms,
+                "screenshot": screenshot_display,
+                "screenshot_url": gr_screenshot_url,
+                "screenshot_path": gr_screenshot_path,
+                "view_proofs": gr_screenshot_url or gr_youtube_link,
+                "google_review": "yes" if has_google_review else "no",
+                "is_google_review": has_google_review,
+                "has_google_review": has_google_review,
+                "google_review_date": gr_date,
+                "google_review_screenshot": gr_screenshot_url or gr_screenshot_path,
+                "google_review_screenshot_path": gr_screenshot_path,
+                "google_review_screenshot_url": gr_screenshot_url,
+                "certificate_sent": "yes" if has_certificate_sent else "no",
+                "has_certificate": has_certificate_sent,
+                "file_path": primary_file_path,
+                "file_url": primary_file_url,
+                "certificates": certs_list
+            }
+
+            return Response({
+                "success": True,
+                "message": "Student certificate details retrieved successfully",
+                "data": data
+            }, status=status.HTTP_200_OK)
+
+        # ----------------------------------------------------
+        # 2. ALL STUDENTS LIST (default when student_id not sent)
+        # ----------------------------------------------------
+        students_qs = Student.objects.filter(is_archived=False).order_by('-joining_date', '-student_id').prefetch_related(
+            'student_courses__course',
+            'student_courses__batch',
+            'new_batches__course',
+            'google_reviews__course',
+            'google_reviews__batch'
+        )
+
+        # Restrict if student user
+        if user_type == "student":
+            user_student_id = getattr(user, "student_id", None)
+            user_reg_id = getattr(user, "registration_id", None)
+            student_filter = Q()
+            if user_student_id and str(user_student_id).isdigit():
+                student_filter |= Q(student_id=int(user_student_id))
+            if user_reg_id:
+                student_filter |= Q(registration_id=str(user_reg_id))
+            students_qs = students_qs.filter(student_filter) if student_filter else Student.objects.none()
+
+        # Optional search filter
+        search_term = request.query_params.get('search')
+        if search_term:
+            search_term = search_term.strip()
+            students_qs = students_qs.filter(
+                Q(first_name__icontains=search_term) |
+                Q(last_name__icontains=search_term) |
+                Q(registration_id__icontains=search_term) |
+                Q(email__icontains=search_term) |
+                Q(contact_no__icontains=search_term)
+            )
+
+        # Bulk pre-fetch Google Reviews
+        reviews_by_student = {}
+        try:
+            from reports.models import GoogleReview
+            all_reviews = GoogleReview.objects.select_related('course', 'batch').all().order_by('-review_date', '-created_at')
+            for r in all_reviews:
+                if r.student_id and r.student_id not in reviews_by_student:
+                    reviews_by_student[r.student_id] = r
+                elif r.student_id and r.is_google_review:
+                    reviews_by_student[r.student_id] = r
+        except Exception as e:
+            logger.warning("Error querying bulk GoogleReview: %s", e)
+
+        # Bulk pre-fetch Certificates
+        certs_by_student = defaultdict(list)
+        all_certs = Certificate.objects.filter(is_archived=False).order_by('-issued_date', '-created_at')
+        for cert in all_certs:
+            if cert.student_id:
+                certs_by_student[cert.student_id].append(cert)
+
+        # Build response list
+        results = []
+        for idx, s in enumerate(students_qs, start=1):
+            gr_record = reviews_by_student.get(s.student_id)
+            has_gr = bool(gr_record and gr_record.is_google_review)
+            gr_date = None
+            gr_screenshot_path = None
+            gr_screenshot_url = None
+            gr_youtube_link = None
+            platforms = []
+
+            if gr_record:
+                gr_date = str(gr_record.review_date) if gr_record.review_date else None
+                gr_youtube_link = gr_record.youtube_testimonial_link or None
+                if gr_record.screenshot:
+                    try:
+                        if hasattr(gr_record.screenshot, 'path') and os.path.exists(gr_record.screenshot.path):
+                            gr_screenshot_path = gr_record.screenshot.path
+                        else:
+                            gr_screenshot_path = gr_record.screenshot.name
+                    except Exception:
+                        gr_screenshot_path = gr_record.screenshot.name
+
+                    try:
+                        if hasattr(gr_record.screenshot, 'url'):
+                            gr_screenshot_url = request.build_absolute_uri(gr_record.screenshot.url)
+                    except Exception:
+                        gr_screenshot_url = None
+
+                if gr_record.is_google_review:
+                    platforms.append("Google")
+                if getattr(gr_record, 'linkedin_review', False):
+                    platforms.append("LinkedIn")
+                if getattr(gr_record, 'facebook_review', False):
+                    platforms.append("Facebook")
+                if getattr(gr_record, 'trustpilot_review', False):
+                    platforms.append("Trustpilot")
+                if getattr(gr_record, 'is_youtube_testimonial', False):
+                    platforms.append("YouTube")
+
+            review_links_display = platforms[0] if len(platforms) == 1 else (", ".join(platforms) if platforms else "-")
+            screenshot_display = gr_screenshot_url or gr_youtube_link or "-"
+
+            student_certs = certs_by_student.get(s.student_id, [])
+
+            # Extract Course, Course Duration & Batch Details
+            course_name = "Not Assigned"
+            course_duration = "Not Assigned"
+            batch_details = "Not Assigned"
+            if gr_record:
+                if gr_record.course:
+                    if getattr(gr_record.course, 'course_name', None):
+                        course_name = gr_record.course.course_name
+                    c_dur = f"{getattr(gr_record.course, 'duration', '') or ''} {getattr(gr_record.course, 'duration_type', '') or ''}".strip()
+                    if c_dur:
+                        course_duration = c_dur
+                if gr_record.batch:
+                    batch_details = gr_record.batch.title or getattr(gr_record.batch, 'batch_name', None) or "Not Assigned"
+
+            if course_name == "Not Assigned" or batch_details == "Not Assigned" or course_duration == "Not Assigned":
+                for sc in s.student_courses.all():
+                    if sc.course:
+                        if course_name == "Not Assigned" and sc.course.course_name:
+                            course_name = sc.course.course_name
+                        if course_duration == "Not Assigned":
+                            c_dur = f"{getattr(sc.course, 'duration', '') or ''} {getattr(sc.course, 'duration_type', '') or ''}".strip()
+                            if c_dur:
+                                course_duration = c_dur
+                    if batch_details == "Not Assigned" and sc.batch:
+                        batch_details = sc.batch.title or getattr(sc.batch, 'batch_name', None) or "Not Assigned"
+                for nb in s.new_batches.all():
+                    if nb.course:
+                        if course_name == "Not Assigned" and nb.course.course_name:
+                            course_name = nb.course.course_name
+                        if course_duration == "Not Assigned":
+                            c_dur = f"{getattr(nb.course, 'duration', '') or ''} {getattr(nb.course, 'duration_type', '') or ''}".strip()
+                            if c_dur:
+                                course_duration = c_dur
+                    if batch_details == "Not Assigned":
+                        batch_details = nb.title or getattr(nb, 'batch_name', None) or "Not Assigned"
+
+            if student_certs:
+                if course_name == "Not Assigned":
+                    course_name = student_certs[0].course_name or "Not Assigned"
+                if course_duration == "Not Assigned":
+                    course_duration = student_certs[0].course_duration or "Not Assigned"
+
+            certs_list = []
+            primary_file_path = None
+            primary_file_url = None
+            has_certificate_sent = False
+
+            for cert in student_certs:
+                file_path = None
+                file_url = None
+                is_sent = False
+                if cert.certificate_file:
+                    is_sent = True
+                    try:
+                        if hasattr(cert.certificate_file, 'path') and os.path.exists(cert.certificate_file.path):
+                            file_path = cert.certificate_file.path
+                        else:
+                            file_path = cert.certificate_file.name
+                    except Exception:
+                        file_path = cert.certificate_file.name
+
+                    try:
+                        if hasattr(cert.certificate_file, 'url'):
+                            file_url = request.build_absolute_uri(cert.certificate_file.url)
+                    except Exception:
+                        file_url = None
+
+                if is_sent and not primary_file_path:
+                    primary_file_path = file_path
+                    primary_file_url = file_url
+                    has_certificate_sent = True
+
+                certs_list.append({
+                    "certificate_id": cert.id,
+                    "certificate_number": cert.certificate_number,
+                    "course_name": cert.course_name,
+                    "course_duration": cert.course_duration,
+                    "issued_date": cert.issued_date,
+                    "certificate_sent": "yes" if is_sent else "no",
+                    "file_path": file_path,
+                    "file_url": file_url
+                })
+
+            item = {
+                "s_no": idx,
+                "student_id": s.student_id,
+                "registration_id": s.registration_id,
+                "student_name": f"{s.first_name or ''} {s.last_name or ''}".strip() or s.username,
+                "course": course_name,
+                "course_name": course_name,
+                "course_duration": course_duration,
+                "batch": batch_details,
+                "batch_name": batch_details,
+                "batch_details": batch_details,
+                "review_links": review_links_display,
+                "review_platforms": platforms,
+                "screenshot": screenshot_display,
+                "screenshot_url": gr_screenshot_url,
+                "screenshot_path": gr_screenshot_path,
+                "view_proofs": gr_screenshot_url or gr_youtube_link,
+                "google_review": "yes" if has_gr else "no",
+                "is_google_review": has_gr,
+                "has_google_review": has_gr,
+                "google_review_date": gr_date,
+                "google_review_screenshot": gr_screenshot_url or gr_screenshot_path,
+                "google_review_screenshot_path": gr_screenshot_path,
+                "google_review_screenshot_url": gr_screenshot_url,
+                "certificate_sent": "yes" if has_certificate_sent else "no",
+                "has_certificate": has_certificate_sent,
+                "file_path": primary_file_path,
+                "file_url": primary_file_url,
+                "certificates": certs_list
+            }
+
+            # Optional filter by certificate_sent or google_review
+            cert_filter = request.query_params.get('certificate_sent')
+            if cert_filter and cert_filter.lower() in ['yes', 'no']:
+                if item["certificate_sent"] != cert_filter.lower():
+                    continue
+
+            gr_filter = request.query_params.get('google_review')
+            if gr_filter and gr_filter.lower() in ['yes', 'no']:
+                if item["google_review"] != gr_filter.lower():
+                    continue
+
+            results.append(item)
+
+        return Response({
+            "success": True,
+            "message": "Students certificate details retrieved successfully",
+            "count": len(results),
+            "data": results
+        }, status=status.HTTP_200_OK)
     
 def send_certificate_email(student_email, certificate):
     import os
