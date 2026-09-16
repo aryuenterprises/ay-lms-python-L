@@ -667,36 +667,46 @@ class ResumeTicketAttachmentSerializer(serializers.ModelSerializer):
 
 
 class ResumeTicketReplySerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(source="reply_id", read_only=True)
     sender_type = serializers.SerializerMethodField()
     sender_name = serializers.SerializerMethodField()
+    sender = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
 
     class Meta:
         model = TicketReply
-        fields = ["reply_id", "sender_type", "sender_name", "message", "created_at"]
+        fields = ["reply_id", "id", "sender_type", "sender_name", "sender", "message", "created_at"]
 
     def get_sender_type(self, obj):
         if getattr(obj, "resume_user", None):
             return "resume_user"
-        if obj.student:
-            return "student"
-        if obj.trainer:
-            return "admin"
-        if obj.super_admin:
-            return "super_admin"
-        return "user"
+        return "admin"
 
     def get_sender_name(self, obj):
         if getattr(obj, "resume_user", None):
             name = f"{getattr(obj.resume_user, 'first_name', '')} {getattr(obj.resume_user, 'last_name', '')}".strip()
             return name or getattr(obj.resume_user, 'email', 'Resume User')
-        if obj.student:
-            return f"{obj.student.first_name} {obj.student.last_name}".strip()
-        if obj.trainer:
-            return obj.trainer.full_name or obj.trainer.username
-        if obj.super_admin:
-            return "Support Team"
-        return "User"
+        if getattr(obj, "super_admin", None):
+            admin = obj.super_admin
+            name = f"{getattr(admin, 'first_name', '')} {getattr(admin, 'last_name', '')}".strip()
+            return name or getattr(admin, "full_name", None) or getattr(admin, "username", "Support Team")
+        return "Support Team"
+
+    def get_sender(self, obj):
+        sender_type = self.get_sender_type(obj)
+        sender_name = self.get_sender_name(obj)
+        email = None
+        if getattr(obj, "resume_user", None):
+            email = getattr(obj.resume_user, "email", None)
+        elif getattr(obj, "super_admin", None):
+            email = getattr(obj.super_admin, "email", None)
+
+        return {
+            "name": sender_name,
+            "email": email,
+            "type": sender_type,
+            "sender_type": sender_type,
+        }
 
 
 def _get_ticket_user_info(obj):
@@ -728,7 +738,8 @@ def _get_ticket_user_info(obj):
 
 class ResumeTicketListSerializer(serializers.ModelSerializer):
     attachments = ResumeTicketAttachmentSerializer(many=True, read_only=True)
-    replies_count = serializers.IntegerField(read_only=True, default=0)
+    replies = ResumeTicketReplySerializer(many=True, read_only=True)
+    reply_count = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
     updated_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
     name = serializers.SerializerMethodField()
@@ -752,11 +763,19 @@ class ResumeTicketListSerializer(serializers.ModelSerializer):
             "phone",
             "mobile",
             "raised_by",
-            "replies_count",
+            "reply_count",
+            "replies",
             "attachments",
             "created_at",
             "updated_at",
         ]
+
+    def get_reply_count(self, obj):
+        if hasattr(obj, "replies_count"):
+            return obj.replies_count
+        if hasattr(obj, "replies"):
+            return obj.replies.count()
+        return 0
 
     def get_raised_by(self, obj):
         return _get_ticket_user_info(obj)
@@ -777,6 +796,7 @@ class ResumeTicketListSerializer(serializers.ModelSerializer):
 class ResumeTicketDetailSerializer(serializers.ModelSerializer):
     attachments = ResumeTicketAttachmentSerializer(many=True, read_only=True)
     replies = ResumeTicketReplySerializer(many=True, read_only=True)
+    reply_count = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
     updated_at = serializers.DateTimeField(format='%Y-%m-%d %H:%M:%S', read_only=True)
     name = serializers.SerializerMethodField()
@@ -801,10 +821,18 @@ class ResumeTicketDetailSerializer(serializers.ModelSerializer):
             "mobile",
             "raised_by",
             "attachments",
+            "reply_count",
             "replies",
             "created_at",
             "updated_at",
         ]
+
+    def get_reply_count(self, obj):
+        if hasattr(obj, "replies_count"):
+            return obj.replies_count
+        if hasattr(obj, "replies"):
+            return obj.replies.count()
+        return 0
 
     def get_raised_by(self, obj):
         return _get_ticket_user_info(obj)

@@ -4594,6 +4594,8 @@ class ResumeTicketViewSet(viewsets.ViewSet):
             return None
         return ResumeRegistration.objects.filter(
             id=user_id,
+            status=True,
+            is_verified=True,
             is_deleted=False
         ).first()
 
@@ -4606,8 +4608,6 @@ class ResumeTicketViewSet(viewsets.ViewSet):
                 Prefetch(
                     "replies",
                     queryset=TicketReply.objects.select_related(
-                        "student",
-                        "trainer",
                         "super_admin",
                         "resume_user"
                     ).order_by("created_at")
