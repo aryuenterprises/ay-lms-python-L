@@ -217,3 +217,71 @@ class CertificateIntegrationTests(TestCase):
         self.assertIn("certificate_sent", first_item)
         self.assertIn("file_path", first_item)
         self.assertIn("certificates", first_item)
+        self.assertIn("review_platforms", first_item)
+        self.assertIn("reviews_links", first_item)
+        self.assertIn("pagination", response.data)
+
+    def test_student_certificate_status_pagination(self):
+        """Test GET /api/certificates/student-status?page=1&limit=50 pagination structure."""
+        response = self.client.get("/api/certificates/student-status?page=1&limit=50")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data.get("success"))
+        self.assertIn("pagination", response.data)
+        pagination = response.data["pagination"]
+        self.assertEqual(pagination["page"], 1)
+        self.assertEqual(pagination["limit"], 50)
+        self.assertIn("total_count", pagination)
+        self.assertIn("total_pages", pagination)
+        self.assertIsInstance(response.data["data"], list)
+
+    def test_student_certificate_status_all_reviews_links(self):
+        """Test that all review links (Google, Facebook, Trustpilot, YouTube, LinkedIn) are present."""
+        from reports.models import GoogleReview
+
+        # Create multi-platform review
+        GoogleReview.objects.create(
+            student=self.student,
+            is_google_review=True,
+            facebook_review=True,
+            trustpilot_review=True,
+            is_youtube_testimonial=True,
+            youtube_testimonial_link="https://www.youtube.com/watch?v=example123",
+            linkedin_review=True
+        )
+
+        # 1. Test single student status
+        single_resp = self.client.get(f"/api/certificates/student-status/{self.student.student_id}")
+        self.assertEqual(single_resp.status_code, status.HTTP_200_OK)
+        single_data = single_resp.data["data"]
+
+        self.assertTrue(single_data["is_google_review"])
+        self.assertTrue(single_data["facebook_review"])
+        self.assertTrue(single_data["trustpilot_review"])
+        self.assertTrue(single_data["is_youtube_testimonial"])
+        self.assertEqual(single_data["youtube_testimonial_link"], "https://www.youtube.com/watch?v=example123")
+        self.assertTrue(single_data["linkedin_review"])
+
+        self.assertIn("Google", single_data["review_platforms"])
+        self.assertIn("Facebook", single_data["review_platforms"])
+        self.assertIn("Trustpilot", single_data["review_platforms"])
+        self.assertIn("YouTube", single_data["review_platforms"])
+        self.assertIn("LinkedIn", single_data["review_platforms"])
+
+        self.assertIsInstance(single_data["reviews_links"], list)
+        platform_names = [r["platform"] for r in single_data["reviews_links"]]
+        self.assertEqual(platform_names, ["Google", "Facebook", "Trustpilot", "YouTube", "LinkedIn"])
+
+        # 2. Test list endpoint with page=1&limit=50
+        list_resp = self.client.get("/api/certificates/student-status?page=1&limit=50")
+        self.assertEqual(list_resp.status_code, status.HTTP_200_OK)
+        items = list_resp.data["data"]
+        matched = next((item for item in items if item["student_id"] == self.student.student_id), None)
+        self.assertIsNotNone(matched)
+        self.assertTrue(matched["is_google_review"])
+        self.assertTrue(matched["facebook_review"])
+        self.assertTrue(matched["trustpilot_review"])
+        self.assertTrue(matched["is_youtube_testimonial"])
+        self.assertEqual(matched["youtube_testimonial_link"], "https://www.youtube.com/watch?v=example123")
+        self.assertTrue(matched["linkedin_review"])
+        self.assertIn("Google", matched["review_platforms"])
+        self.assertEqual(len(matched["reviews_links"]), 5)
