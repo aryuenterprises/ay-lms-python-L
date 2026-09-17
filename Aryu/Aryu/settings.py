@@ -349,6 +349,7 @@ SOCIALACCOUNT_PROVIDERS = {
 }
 
 FASTAPI_URL="https://ai.aryuacademy.com"
+FASTAPI_SERVICE_KEY = os.environ.get("FASTAPI_SERVICE_KEY", "aryu_ai_internal_service_secret_key_2026")
 
 TELECRM_TOKEN="39843dff-b661-41c7-89fb-f15df2e8ff6b1788957320815:ba9c4edd-0f75-450f-8516-2f1d97a67a14"
 TELECRM_ID="6a13da730fbcb752673e080c"
