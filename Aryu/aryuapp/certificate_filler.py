@@ -62,7 +62,13 @@ def fit_font(draw, text, font_path, max_width, start_size):
 
 def generate_certificate_image_and_save(certificate):
     template_candidates = [
+        Path(settings.MEDIA_ROOT) / "certificates" / "course_completion_certificate_new.png",
+        Path(settings.MEDIA_ROOT) / "certificates" / "course_completion_certificate.png",
         Path(settings.MEDIA_ROOT) / "certificates" / "aryu-certificate.png",
+        Path(settings.MEDIA_ROOT) / "certificates" / "AK20.png",
+        Path(settings.MEDIA_ROOT) / "certificates" / "AK2.png",
+        Path(settings.MEDIA_ROOT) / "certificates" / "Ak2.png",
+        Path(settings.MEDIA_ROOT) / "certificates" / "4016369-ai.png",
     ]
 
     template_path = None
@@ -84,36 +90,70 @@ def generate_certificate_image_and_save(certificate):
 
     draw = ImageDraw.Draw(img)
     img_width, img_height = img.size
-    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-    name = (certificate.student_name or "").title()
-    course = certificate.course_name or ""
-    duration = certificate.course_duration or ""
-    issued_date_str = certificate.issued_date.strftime("%d-%m-%Y") if certificate.issued_date else ""
+    font_bold_candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
+    ]
+    font_regular_candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+    ]
 
-    name_font = fit_font(draw, name, font_path, img_width * 0.45, 54)
-    course_font = fit_font(draw, course, font_path, img_width * 0.45, 44)
-    small_font = _get_font(font_path, 30)
-    large_font = _get_font(font_path, 18)
+    font_bold_path = next((f for f in font_bold_candidates if os.path.exists(f)), None)
+    font_regular_path = next((f for f in font_regular_candidates if os.path.exists(f)), None)
 
-    # Certificate Number
-    draw.text((int(img_width * 0.184), int(img_height * 0.136)),
-              cert_num, fill="black", font=large_font)
+    scale_x = img_width / 1640.0
+    scale_y = img_height / 1160.0
 
-    # Student Name
-    name_y = int(img_height * 0.43)
-    draw.text((center_x(draw, name, name_font, img_width), name_y), name, fill="black", font=name_font)
+    name = (certificate.student_name or "").strip()
+    course = (certificate.course_name or "").strip()
+    if course and not (course.startswith("“") or course.startswith('"') or course.startswith("'")):
+        course = f"“{course}”"
 
-    # Course Name
-    course_y = name_y + 170
-    draw.text((center_x(draw, course, course_font, img_width), course_y),
-              course, fill="black", font=course_font)
+    if getattr(certificate, 'issued_date', None):
+        try:
+            issued_date_str = f"{certificate.issued_date.day} {certificate.issued_date.strftime('%B %Y')}"
+        except Exception:
+            issued_date_str = str(certificate.issued_date)
+    else:
+        issued_date_str = ""
 
-    # Duration / Date
-    date_y = 0.635
-    text_to_draw = duration or issued_date_str
-    draw.text((int(img_width * 0.570), int(img_height * date_y)),
-              text_to_draw, fill="black", font=small_font)
+    dark_color = (25, 25, 30)
+    purple_color = (85, 20, 150)
+
+    # 1. Certificate ID (e.g. AA/2026/00125)
+    id_font_size = max(14, int(18 * scale_y))
+    id_font = _get_font(font_bold_path, id_font_size)
+    draw.text((int(305 * scale_x), int(154 * scale_y)), cert_num, fill=dark_color, font=id_font)
+
+    # 2. Student Name (e.g. Aruna V) - centered above line at y=543, purple bold
+    name_font_size = max(30, int(54 * scale_y))
+    name_font = fit_font(draw, name, font_bold_path, img_width * 0.65, name_font_size)
+    try:
+        ascent, descent = name_font.getmetrics()
+        name_y = int(538 * scale_y) - (ascent + descent)
+    except Exception:
+        name_y = int(475 * scale_y)
+    draw.text((center_x(draw, name, name_font, img_width), name_y), name, fill=purple_color, font=name_font)
+
+    # 3. Course Name (e.g. “AI Frontend”) - centered between y=612 and y=711, purple bold
+    course_font_size = max(24, int(40 * scale_y))
+    course_font = fit_font(draw, course, font_bold_path, img_width * 0.65, course_font_size)
+    try:
+        c_bbox = draw.textbbox((0, 0), course, font=course_font)
+        c_h = c_bbox[3] - c_bbox[1]
+        course_y = int(661 * scale_y) - c_h // 2
+    except Exception:
+        course_y = int(640 * scale_y)
+    draw.text((center_x(draw, course, course_font, img_width), course_y), course, fill=purple_color, font=course_font)
+
+    # 4. Date of Completion (e.g. 17 September 2026)
+    date_font_size = max(14, int(20 * scale_y))
+    date_font = _get_font(font_regular_path, date_font_size)
+    draw.text((int(420 * scale_x), int(928 * scale_y)), issued_date_str, fill=dark_color, font=date_font)
 
     img.save(output_path)
     return output_path
