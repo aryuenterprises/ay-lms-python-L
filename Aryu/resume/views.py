@@ -2,9 +2,10 @@ from rest_framework import status, viewsets, permissions
 from rest_framework.response import Response
 from payments.models import PaymentTransaction, PaymentGateway
 from rest_framework.permissions import  AllowAny
-from .models import ResumeRegistration,Contact,Subscription,PaymentHistory, UserSubscription, UserResume, ResumeTemplate
+from .models import ResumeRegistration,Contact,Subscription,PaymentHistory, UserSubscription, UserResume, ResumeTemplate, AIUsageLog
 from rest_framework import permissions
 from .serializers import *
+from .services.ai_usage_service import AIUsageService
 from core.views import secure_throttle
 from django.contrib.auth.hashers import make_password, check_password
 from django.conf import settings
@@ -1366,6 +1367,10 @@ class AuthViewSet(viewsets.ViewSet):
         if not check_password(password, user.password):
             return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
 
+        # Check soft deletion and active status before issuing tokens
+        if user.is_deleted or not user.status:
+            return Response({"error": "Account is inactive or deleted"}, status=status.HTTP_403_FORBIDDEN)
+
         if not user.is_verified:
             return Response({"error": "Please verify your email first"}, status=status.HTTP_403_FORBIDDEN)
 
@@ -2431,7 +2436,13 @@ class ResumeRegistrationViewset(viewsets.ModelViewSet):
             )
 
         queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, many=True)
+        user_ids = [u.id for u in queryset]
+        usage_map = AIUsageService.get_users_token_usage_batch(user_ids)
+        serializer = self.get_serializer(
+            queryset,
+            many=True,
+            context={**self.get_serializer_context(), "ai_token_usage_map": usage_map}
+        )
 
         return Response(
             {
@@ -3740,6 +3751,15 @@ class ResumeGateway(APIView):
                 status=403
             )
 
+        if "file" not in request.FILES:
+            return Response(
+                {
+                    "success": False,
+                    "message": "File is required."
+                },
+                status=400
+            )
+
         file = request.FILES["file"]
 
         files = {
@@ -3756,16 +3776,57 @@ class ResumeGateway(APIView):
             if key != "file":
                 data[key] = value
 
-        response = requests.post(
-            f"{settings.FASTAPI_URL}/api/v1/resume/parse-resume",
-            files=files,
-            data=data,
-            timeout=120
-        )
-        print("response",response)
+        request_id = str(uuid.uuid4())
+        service_key = getattr(settings, "FASTAPI_SERVICE_KEY", "")
+        headers = {
+            "X-Internal-Service-Key": service_key,
+            "X-User-ID": str(request.user.id),
+            "X-Request-ID": request_id,
+            "X-Operation": "resume_parse",
+        }
+
+        try:
+            response = requests.post(
+                f"{settings.FASTAPI_URL}/api/v1/resume/parse-resume",
+                files=files,
+                data=data,
+                headers=headers,
+                timeout=120
+            )
+        except requests.Timeout:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Resume parsing service timeout."
+                },
+                status=status.HTTP_504_GATEWAY_TIMEOUT
+            )
+        except requests.RequestException:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Resume parsing service unavailable."
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
 
         if response.ok:
-            SubscriptionService.increment_parse(subscription)
+            SubscriptionService.increase_parse_count(subscription)
+
+            # Extract usage and persist to AIUsageLog immediately
+            try:
+                resp_json = response.json()
+                usage_data = resp_json.get("usage")
+                if usage_data and isinstance(usage_data, dict):
+                    AIUsageService.log_usage(
+                        user=request.user,
+                        operation="resume_parse",
+                        usage_data=usage_data,
+                        request_id=request_id,
+                        status="success",
+                    )
+            except Exception as exc:
+                logger.error(f"Error persisting AI usage in ResumeGateway: {exc}", exc_info=True)
 
         return HttpResponse(
             response.content,
@@ -3785,7 +3846,6 @@ class ATSGateway(APIView):
         allowed, subscription = SubscriptionService.can_run_ats(
             request.user
         )
-        print('allowed', allowed)
 
         if not allowed:
             return Response(
@@ -3821,26 +3881,45 @@ class ATSGateway(APIView):
             if key != "file":
                 data[key] = value
 
+        request_id = str(uuid.uuid4())
+        service_key = getattr(settings, "FASTAPI_SERVICE_KEY", "")
+        headers = {
+            "X-Internal-Service-Key": service_key,
+            "X-User-ID": str(request.user.id),
+            "X-Request-ID": request_id,
+            "X-Operation": "ats_scan",
+        }
+
         try:
-            logger.info(f'data: {data}')
-
             url = f"{settings.FASTAPI_URL}/api/v1/ats/scan-file"
-
-            logger.info(f'url: {url}')
 
             response = requests.post(
                 url,
                 files=files,
                 data=data,
+                headers=headers,
                 timeout=180,
             )
-            logger.info(response.status_code)
-            logger.info(response.text)
 
             if response.ok:
                 SubscriptionService.increase_ats_count(
                     subscription
                 )
+
+                # Persist usage only if AI was actually executed by FastAPI
+                try:
+                    resp_json = response.json()
+                    usage_data = resp_json.get("usage")
+                    if usage_data and isinstance(usage_data, dict):
+                        AIUsageService.log_usage(
+                            user=request.user,
+                            operation="ats_scan",
+                            usage_data=usage_data,
+                            request_id=request_id,
+                            status="success",
+                        )
+                except Exception as exc:
+                    logger.error(f"Error persisting AI usage in ATSGateway: {exc}", exc_info=True)
 
             return HttpResponse(
                 response.content,

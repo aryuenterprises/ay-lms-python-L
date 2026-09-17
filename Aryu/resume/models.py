@@ -285,4 +285,41 @@ class PaymentHistory(models.Model):
 
     def __str__(self):
         return f"{self.user.first_name} - {self.plan_name}"
-    
+
+
+class AIUsageLog(models.Model):
+    user = models.ForeignKey(
+        ResumeRegistration,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ai_usage_logs",
+        db_index=True,
+    )
+    operation = models.CharField(max_length=100, db_index=True)
+    provider = models.CharField(max_length=50, default="gemini")
+    model = models.CharField(max_length=150, db_index=True)
+    request_id = models.UUIDField(null=True, blank=True, db_index=True)
+    input_tokens = models.PositiveIntegerField(default=0)
+    output_tokens = models.PositiveIntegerField(default=0)
+    total_tokens = models.PositiveIntegerField(default=0)
+    cached_tokens = models.PositiveIntegerField(default=0)
+    latency_ms = models.PositiveIntegerField(null=True, blank=True)
+    status = models.CharField(max_length=30, default="success", db_index=True)
+    error_message = models.TextField(blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "created_at"]),
+            models.Index(fields=["operation", "created_at"]),
+            models.Index(fields=["provider", "model"]),
+            models.Index(fields=["request_id"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        user_str = self.user.email if self.user else "Anonymous"
+        return f"{self.operation} - {user_str} ({self.total_tokens} tokens) - {self.status}"

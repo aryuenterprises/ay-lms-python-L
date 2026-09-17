@@ -2513,3 +2513,452 @@ class ResumeAuthAuditAndAdminTicketTestCase(TestCase):
         self.assertEqual(list_tickets[0]["replies"][1]["message"], "Reply 2: Investigation complete.")
 
 
+class AITokenUsageTrackingTestCase(TestCase):
+    """
+    Test suite for Gemini AI Token Usage Tracking:
+    - AIUsageLog creation and field validation
+    - AIUsageService aggregation and batch prefetch
+    - ResumeGateway token persistence, headers, and backward compatibility
+    - ATSGateway token persistence and conditional AI tracking
+    - ResumeRegistrationSerializer & ResumeRegistrationViewset ai_token_usage integration
+    - Multi-user isolation and zero-token default fallback
+    - Security and resilience against database persistence failures
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+        self.sub_plan = Subscription.objects.create(
+            name="Pro Plan",
+            slug="pro-plan",
+            price=29.00,
+            billing_type="monthly",
+            resume_parse_limit=100,
+            ats_scan_limit=100,
+            is_active=True,
+        )
+
+        self.user_a = ResumeRegistration.objects.create(
+            first_name="Alice",
+            last_name="Smith",
+            email="alice.smith@example.com",
+            phone="1112223333",
+            password=make_password("Secret123!"),
+            is_verified=True,
+            status=True,
+        )
+        self.sub_a = UserSubscription.objects.create(
+            user=self.user_a,
+            subscription=self.sub_plan,
+            start_date="2026-01-01T00:00:00Z",
+            status="active",
+        )
+        self.user_a.current_subscription = self.sub_a
+        self.user_a.save()
+
+        self.user_b = ResumeRegistration.objects.create(
+            first_name="Bob",
+            last_name="Jones",
+            email="bob.jones@example.com",
+            phone="4445556666",
+            password=make_password("Secret123!"),
+            is_verified=True,
+            status=True,
+        )
+        self.sub_b = UserSubscription.objects.create(
+            user=self.user_b,
+            subscription=self.sub_plan,
+            start_date="2026-01-01T00:00:00Z",
+            status="active",
+        )
+        self.user_b.current_subscription = self.sub_b
+        self.user_b.save()
+
+    def _get_token(self, user):
+        refresh = RefreshToken()
+        refresh["user_id"] = user.id
+        refresh["id"] = user.id
+        refresh["email"] = user.email
+        refresh["user_type"] = "resume_user"
+        refresh["first_name"] = user.first_name
+        refresh["last_name"] = user.last_name
+        return str(refresh.access_token)
+
+    def _get_admin_token(self):
+        refresh = RefreshToken()
+        refresh["user_id"] = 9999
+        refresh["id"] = 9999
+        refresh["email"] = "admin@example.com"
+        refresh["user_type"] = "super_admin"
+        return str(refresh.access_token)
+
+    def test_ai_usage_service_log_usage_and_aggregation(self):
+        """Verify direct AIUsageService logging and aggregate queries."""
+        from .models import AIUsageLog
+        from .services.ai_usage_service import AIUsageService
+        import uuid
+
+        req_id = uuid.uuid4()
+        log1 = AIUsageService.log_usage(
+            user=self.user_a,
+            operation="resume_parse",
+            usage_data={
+                "provider": "gemini",
+                "model": "gemini-1.5-pro",
+                "input_tokens": 1000,
+                "output_tokens": 300,
+                "total_tokens": 1300,
+                "cached_tokens": 100,
+                "latency_ms": 1500,
+                "request_id": str(req_id),
+            },
+            status="success",
+        )
+        self.assertIsNotNone(log1)
+        self.assertEqual(log1.user, self.user_a)
+        self.assertEqual(log1.operation, "resume_parse")
+        self.assertEqual(log1.provider, "gemini")
+        self.assertEqual(log1.model, "gemini-1.5-pro")
+        self.assertEqual(log1.input_tokens, 1000)
+        self.assertEqual(log1.output_tokens, 300)
+        self.assertEqual(log1.total_tokens, 1300)
+        self.assertEqual(log1.cached_tokens, 100)
+        self.assertEqual(log1.latency_ms, 1500)
+        self.assertEqual(log1.request_id, req_id)
+
+        # Log a second record for user A
+        log2 = AIUsageService.log_usage(
+            user=self.user_a.id,
+            operation="ats_scan",
+            usage_data={
+                "provider": "gemini",
+                "model": "gemini-1.5-flash",
+                "input_tokens": 500,
+                "output_tokens": 200,
+                "total_tokens": 700,
+                "cached_tokens": 0,
+                "latency_ms": 800,
+            },
+            status="success",
+        )
+        self.assertIsNotNone(log2)
+
+        # Test single user aggregation
+        usage_a = AIUsageService.get_user_token_usage(self.user_a.id)
+        self.assertEqual(usage_a["input_tokens"], 1500)
+        self.assertEqual(usage_a["output_tokens"], 500)
+        self.assertEqual(usage_a["total_tokens"], 2000)
+        self.assertEqual(usage_a["cached_tokens"], 100)
+        self.assertEqual(usage_a["generations"], 2)
+
+        # Test zero usage for user B
+        usage_b = AIUsageService.get_user_token_usage(self.user_b.id)
+        self.assertEqual(usage_b["input_tokens"], 0)
+        self.assertEqual(usage_b["output_tokens"], 0)
+        self.assertEqual(usage_b["total_tokens"], 0)
+        self.assertEqual(usage_b["cached_tokens"], 0)
+        self.assertEqual(usage_b["generations"], 0)
+
+        # Test batch usage query
+        batch_map = AIUsageService.get_users_token_usage_batch([self.user_a.id, self.user_b.id])
+        self.assertEqual(batch_map[self.user_a.id]["total_tokens"], 2000)
+        self.assertEqual(batch_map[self.user_b.id]["total_tokens"], 0)
+
+        # Test analytics summary
+        summary = AIUsageService.get_analytics_summary()
+        self.assertEqual(summary["total_tokens"], 2000)
+        self.assertEqual(summary["generations"], 2)
+
+    @patch("requests.post")
+    def test_resume_gateway_ai_usage_tracking(self, mock_post):
+        """Verify ResumeGateway forwards internal headers and stores AIUsageLog on success."""
+        from .models import AIUsageLog
+        import json
+        from io import BytesIO
+
+        fastapi_response_data = {
+            "success": True,
+            "data": {"name": "Alice Smith", "skills": ["Python", "Django"]},
+            "usage": {
+                "provider": "gemini",
+                "model": "gemini-1.5-flash",
+                "input_tokens": 1200,
+                "output_tokens": 450,
+                "total_tokens": 1650,
+                "cached_tokens": 50,
+                "latency_ms": 1250,
+            }
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        mock_resp.content = json.dumps(fastapi_response_data).encode("utf-8")
+        mock_resp.json.return_value = fastapi_response_data
+        mock_resp.headers = {"Content-Type": "application/json"}
+        mock_post.return_value = mock_resp
+
+        token = self._get_token(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        dummy_file = BytesIO(b"%PDF-1.4 dummy resume content")
+        dummy_file.name = "resume.pdf"
+
+        resp = self.client.post(
+            "/api/resume/parse/",
+            data={"file": dummy_file, "extra_info": "sample"},
+            format="multipart",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        resp_data = json.loads(resp.content.decode("utf-8"))
+        self.assertTrue(resp_data["success"])
+        self.assertEqual(resp_data["data"]["name"], "Alice Smith")
+
+        # Verify internal headers sent to FastAPI
+        call_kwargs = mock_post.call_args[1]
+        sent_headers = call_kwargs.get("headers", {})
+        self.assertIn("X-Internal-Service-Key", sent_headers)
+        self.assertEqual(sent_headers["X-User-ID"], str(self.user_a.id))
+        self.assertEqual(sent_headers["X-Operation"], "resume_parse")
+        self.assertIn("X-Request-ID", sent_headers)
+
+        # Verify AIUsageLog persisted in DB
+        log = AIUsageLog.objects.filter(user=self.user_a, operation="resume_parse").first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.provider, "gemini")
+        self.assertEqual(log.model, "gemini-1.5-flash")
+        self.assertEqual(log.input_tokens, 1200)
+        self.assertEqual(log.output_tokens, 450)
+        self.assertEqual(log.total_tokens, 1650)
+        self.assertEqual(log.cached_tokens, 50)
+        self.assertEqual(log.latency_ms, 1250)
+        self.assertEqual(str(log.request_id), sent_headers["X-Request-ID"])
+
+        # Verify parse_used incremented
+        self.sub_a.refresh_from_db()
+        self.assertEqual(self.sub_a.parse_used, 1)
+
+    @patch("requests.post")
+    def test_ats_gateway_ai_usage_tracking(self, mock_post):
+        """Verify ATSGateway forwards headers and stores AIUsageLog only when AI executed."""
+        from .models import AIUsageLog
+        import json
+        from io import BytesIO
+
+        fastapi_response_data = {
+            "success": True,
+            "data": {"score": 85, "match_percentage": 90},
+            "usage": {
+                "provider": "gemini",
+                "model": "gemini-1.5-pro",
+                "input_tokens": 2000,
+                "output_tokens": 800,
+                "total_tokens": 2800,
+                "cached_tokens": 0,
+                "latency_ms": 2100,
+            }
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        mock_resp.content = json.dumps(fastapi_response_data).encode("utf-8")
+        mock_resp.json.return_value = fastapi_response_data
+        mock_resp.headers = {"Content-Type": "application/json"}
+        mock_post.return_value = mock_resp
+
+        token = self._get_token(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        dummy_file = BytesIO(b"%PDF-1.4 dummy resume content")
+        dummy_file.name = "resume.pdf"
+
+        resp = self.client.post(
+            "/api/resume/ats/scan/",
+            data={"file": dummy_file, "job_description": "Senior Python Developer"},
+            format="multipart",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+        # Verify internal headers
+        sent_headers = mock_post.call_args[1].get("headers", {})
+        self.assertEqual(sent_headers["X-Operation"], "ats_scan")
+        self.assertEqual(sent_headers["X-User-ID"], str(self.user_a.id))
+
+        # Verify AIUsageLog persisted
+        log = AIUsageLog.objects.filter(user=self.user_a, operation="ats_scan").first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.total_tokens, 2800)
+        self.assertEqual(log.input_tokens, 2000)
+        self.assertEqual(log.output_tokens, 800)
+
+        # Verify ats_used incremented
+        self.sub_a.refresh_from_db()
+        self.assertEqual(self.sub_a.ats_used, 1)
+
+    @patch("requests.post")
+    def test_ats_gateway_no_ai_usage_when_not_executed(self, mock_post):
+        """Verify no AIUsageLog is created when FastAPI returns no usage object (e.g. non-AI scan)."""
+        from .models import AIUsageLog
+        import json
+        from io import BytesIO
+
+        fastapi_response_data = {
+            "success": True,
+            "data": {"score": 70, "cached": True},
+            # No usage field
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        mock_resp.content = json.dumps(fastapi_response_data).encode("utf-8")
+        mock_resp.json.return_value = fastapi_response_data
+        mock_resp.headers = {"Content-Type": "application/json"}
+        mock_post.return_value = mock_resp
+
+        token = self._get_token(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        dummy_file = BytesIO(b"%PDF-1.4 dummy resume content")
+        dummy_file.name = "resume.pdf"
+
+        initial_count = AIUsageLog.objects.count()
+
+        resp = self.client.post(
+            "/api/resume/ats/scan/",
+            data={"file": dummy_file},
+            format="multipart",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(AIUsageLog.objects.count(), initial_count)
+
+    def test_resumeregistration_serializer_and_viewset_token_usage(self):
+        """Verify ResumeRegistrationSerializers and ResumeRegistrationViewset expose ai_token_usage."""
+        from .models import AIUsageLog
+        from .serializers import ResumeRegistrationSerializers
+
+        # Create usage logs for user A
+        AIUsageLog.objects.create(
+            user=self.user_a,
+            operation="resume_parse",
+            provider="gemini",
+            model="gemini-1.5-pro",
+            input_tokens=1000,
+            output_tokens=400,
+            total_tokens=1400,
+            cached_tokens=50,
+            status="success",
+        )
+        AIUsageLog.objects.create(
+            user=self.user_a,
+            operation="ats_scan",
+            provider="gemini",
+            model="gemini-1.5-pro",
+            input_tokens=2000,
+            output_tokens=600,
+            total_tokens=2600,
+            cached_tokens=10,
+            status="success",
+        )
+
+        # Single user serialization
+        serializer_a = ResumeRegistrationSerializers(self.user_a)
+        data_a = serializer_a.data
+        self.assertIn("ai_token_usage", data_a)
+        self.assertEqual(data_a["ai_token_usage"]["input_tokens"], 3000)
+        self.assertEqual(data_a["ai_token_usage"]["output_tokens"], 1000)
+        self.assertEqual(data_a["ai_token_usage"]["total_tokens"], 4000)
+        self.assertEqual(data_a["ai_token_usage"]["cached_tokens"], 60)
+        self.assertEqual(data_a["ai_token_usage"]["generations"], 2)
+
+        # Single user serialization for user B (zero tokens)
+        serializer_b = ResumeRegistrationSerializers(self.user_b)
+        data_b = serializer_b.data
+        self.assertIn("ai_token_usage", data_b)
+        self.assertEqual(data_b["ai_token_usage"]["input_tokens"], 0)
+        self.assertEqual(data_b["ai_token_usage"]["output_tokens"], 0)
+        self.assertEqual(data_b["ai_token_usage"]["total_tokens"], 0)
+        self.assertEqual(data_b["ai_token_usage"]["cached_tokens"], 0)
+        self.assertEqual(data_b["ai_token_usage"]["generations"], 0)
+
+        # Admin ViewSet listing (multiple users)
+        admin_token = self._get_admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_token}")
+
+        list_resp = self.client.get("/api/resume/registration/")
+        self.assertEqual(list_resp.status_code, status.HTTP_200_OK)
+        user_list = list_resp.data["data"]
+
+        user_a_entry = next((u for u in user_list if u["id"] == self.user_a.id), None)
+        user_b_entry = next((u for u in user_list if u["id"] == self.user_b.id), None)
+
+        self.assertIsNotNone(user_a_entry)
+        self.assertIsNotNone(user_b_entry)
+
+        # Ensure user A receives only user A's usage
+        self.assertEqual(user_a_entry["ai_token_usage"]["total_tokens"], 4000)
+        self.assertEqual(user_a_entry["ai_token_usage"]["input_tokens"], 3000)
+
+        # Ensure user B receives 0 tokens, NOT user A's tokens
+        self.assertEqual(user_b_entry["ai_token_usage"]["total_tokens"], 0)
+        self.assertEqual(user_b_entry["ai_token_usage"]["input_tokens"], 0)
+
+        # Verify all existing fields remain present
+        for u in [user_a_entry, user_b_entry]:
+            self.assertIn("id", u)
+            self.assertIn("first_name", u)
+            self.assertIn("last_name", u)
+            self.assertIn("email", u)
+            self.assertIn("is_verified", u)
+            self.assertIn("status", u)
+
+    @patch("requests.post")
+    @patch("resume.models.AIUsageLog.objects.create")
+    def test_ai_usage_database_failure_does_not_break_gateway(self, mock_create, mock_post):
+        """Verify an AI usage database failure does not convert a successful AI response into a failure."""
+        import json
+        from io import BytesIO
+
+        mock_create.side_effect = Exception("Database connection error")
+
+        fastapi_response_data = {
+            "success": True,
+            "data": {"name": "Alice Smith"},
+            "usage": {
+                "provider": "gemini",
+                "model": "gemini-1.5-flash",
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "total_tokens": 1200,
+            }
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        mock_resp.content = json.dumps(fastapi_response_data).encode("utf-8")
+        mock_resp.json.return_value = fastapi_response_data
+        mock_resp.headers = {"Content-Type": "application/json"}
+        mock_post.return_value = mock_resp
+
+        token = self._get_token(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        dummy_file = BytesIO(b"%PDF-1.4 dummy resume content")
+        dummy_file.name = "resume.pdf"
+
+        # Request must succeed with 200 OK despite DB logging failure
+        resp = self.client.post(
+            "/api/resume/parse/",
+            data={"file": dummy_file},
+            format="multipart",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        resp_data = json.loads(resp.content.decode("utf-8"))
+        self.assertTrue(resp_data["success"])
+
+
