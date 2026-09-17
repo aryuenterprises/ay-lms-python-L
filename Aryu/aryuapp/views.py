@@ -3962,9 +3962,9 @@ class StudentListAPIView(APIView):
                 creator_id = getattr(user, "student_id", None) or getattr(user, "id", None)
 
             # -----------------------------------------------------------------
-            # 2. Base Queryset for Non-Archived Students (Both True and False Status)
+            # 2. Base Queryset for Students (Both Archived and Non-Archived, True and False Status)
             # -----------------------------------------------------------------
-            students_qs = Student.objects.filter(is_archived=False)
+            students_qs = Student.objects.all()
 
             # Role Filter Logic (Inclusively allowing PUBLIC, CAMPAIGN, BOOTCAMP signups)
             if user_type == "super_admin":
@@ -3995,7 +3995,7 @@ class StudentListAPIView(APIView):
                 students_qs = Student.objects.none()
 
             # -----------------------------------------------------------------
-            # 3. Apply Optional Query Parameter Filters (Search / Source / Status)
+            # 3. Apply Optional Query Parameter Filters (Search / Source / Status / Archived)
             # -----------------------------------------------------------------
             source_type = request.query_params.get("source_type")
             if source_type and source_type.strip() and source_type.strip().lower() != "all":
@@ -4012,6 +4012,14 @@ class StudentListAPIView(APIView):
                     students_qs = students_qs.filter(status=True)
                 elif status_str in ("false", "0", "inactive"):
                     students_qs = students_qs.filter(status=False)
+
+            is_archived_param = request.query_params.get("is_archived")
+            if is_archived_param is not None and str(is_archived_param).strip() and str(is_archived_param).strip().lower() != "all":
+                archived_str = str(is_archived_param).strip().lower()
+                if archived_str in ("true", "1"):
+                    students_qs = students_qs.filter(is_archived=True)
+                elif archived_str in ("false", "0"):
+                    students_qs = students_qs.filter(is_archived=False)
 
             search = request.query_params.get("search")
             if search and search.strip():
@@ -4187,6 +4195,7 @@ class StudentListAPIView(APIView):
                     "student_sub_type": s.student_sub_type,
                     "country": s.country,
                     "status": s.status,
+                    "is_archived": s.is_archived,
                     "internship_required": s.internship_required,
                     "internship": s.internship,
                     "source_type": s.source_type,
