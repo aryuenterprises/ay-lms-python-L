@@ -8,7 +8,7 @@ import hashlib
 from django.core.cache import cache
 from payments.models import PaymentTransaction
 from aryuapp.models import StudentTicket, TicketReply, TicketAttachment
-from .models import ResumeRegistration,Contact,Subscription,PaymentHistory, UserSubscription, UserResume, ResumeTemplate
+from .models import ResumeRegistration,Contact,Subscription,PaymentHistory, UserSubscription, UserResume, ResumeTemplate, AIUsageLog
 from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
@@ -25,10 +25,18 @@ class ResumeRegistrationSerializers(serializers.ModelSerializer):
         required=False,
         allow_null=True
     )
+    ai_token_usage = serializers.SerializerMethodField()
 
     class Meta:
         model = ResumeRegistration
         fields = "__all__"
+
+    def get_ai_token_usage(self, obj):
+        ai_token_usage_map = self.context.get("ai_token_usage_map")
+        if ai_token_usage_map is not None and obj.id in ai_token_usage_map:
+            return ai_token_usage_map[obj.id]
+        from .services.ai_usage_service import AIUsageService
+        return AIUsageService.get_user_token_usage(obj.id)
 
 class GoogleLoginSerializer(serializers.Serializer):
     credential = serializers.CharField(
