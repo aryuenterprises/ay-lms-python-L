@@ -1358,7 +1358,7 @@ class AuthViewSet(viewsets.ViewSet):
                 "current_subscription"
             ).only(
                 "id", "email", "password", "is_verified", "first_name", "last_name", "current_subscription"
-            ).get(email=email)
+            ).get(email=email, is_deleted=False)
 
         except ResumeRegistration.DoesNotExist:
             check_password(password, make_password("dummy_password"))
