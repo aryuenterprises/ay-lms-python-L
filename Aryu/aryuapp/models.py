@@ -820,9 +820,21 @@ class Certificate(models.Model):
         now = get_ist_now()
         month_year = now.strftime("%m%y")
         like_pattern = f"{prefix}{month_year}"
-        existing = Certificate.objects.filter(certificate_number__startswith=like_pattern).count()
-        serial = existing + 1
-        return f"{prefix}{month_year}{serial:04d}"
+        last_cert = Certificate.objects.filter(
+            certificate_number__startswith=like_pattern
+        ).order_by('-certificate_number').first()
+
+        serial = 1
+        if last_cert and len(last_cert.certificate_number) >= len(like_pattern) + 4:
+            try:
+                serial = int(last_cert.certificate_number[len(like_pattern):]) + 1
+            except ValueError:
+                serial = Certificate.objects.filter(certificate_number__startswith=like_pattern).count() + 1
+
+        while Certificate.objects.filter(certificate_number=f"{like_pattern}{serial:04d}").exists():
+            serial += 1
+
+        return f"{like_pattern}{serial:04d}"
 
     def save(self, *args, **kwargs):
         if not self.certificate_number:

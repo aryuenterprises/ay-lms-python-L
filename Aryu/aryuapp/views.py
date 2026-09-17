@@ -6593,6 +6593,19 @@ class CertificateViewSet(viewsets.ModelViewSet):
 
         certificate = serializer.save()
 
+        # If issued_date was provided in request data, update it
+        req_issued_date = request.data.get("issued_date")
+        if req_issued_date:
+            try:
+                from datetime import datetime
+                if isinstance(req_issued_date, str):
+                    certificate.issued_date = datetime.strptime(req_issued_date, "%Y-%m-%d").date()
+                else:
+                    certificate.issued_date = req_issued_date
+                certificate.save(update_fields=["issued_date"])
+            except Exception as d_err:
+                logger.warning("Could not set custom issued_date: %s", d_err)
+
         # 1. Generate certificate PDF
         try:
             from .certificate_filler import generate_and_send_certificate_pdf
@@ -7251,7 +7264,7 @@ def send_certificate_email(student_email, certificate):
         )
         return False
 
-    subject = f"Your Certificate for {certificate.course_name}"
+    subject = f"Certificate of Course Completion - {certificate.course_name}"
     from_email = settings.ARYU_ACADEMY_FROM_EMAIL
 
     # Render a HTML template with certificate info
@@ -7261,7 +7274,7 @@ def send_certificate_email(student_email, certificate):
         'certificate_number': certificate.certificate_number,
         'issued_date': certificate.issued_date,
         'course_duration': certificate.course_duration,
-        'organization_name': certificate.organization_name,
+        'organization_name': certificate.organization_name or 'Aryu Academy Private Limited',
         'notes': certificate.notes,
     }
     
@@ -7269,13 +7282,13 @@ def send_certificate_email(student_email, certificate):
         html_message = render_to_string('emails/certificate_email.html', context)
     except Exception as t_err:
         logger.warning("Failed to render 'emails/certificate_email.html': %s", t_err)
-        html_message = f"<p>Dear {certificate.student_name},</p><p>Your certificate for {certificate.course_name} (Certificate No: {certificate.certificate_number}) is attached.</p>"
+        html_message = f"<p>Dear {certificate.student_name},</p><p>Your Certificate of Course Completion for {certificate.course_name} (Certificate No: {certificate.certificate_number}) is attached.</p>"
 
     text_content = (
         f"Dear {certificate.student_name},\n\n"
         f"Congratulations on completing {certificate.course_name}!\n"
-        f"Your certificate (Certificate No: {certificate.certificate_number}) is attached.\n\n"
-        f"Aryu Academy Team"
+        f"Your Certificate of Course Completion (Certificate No: {certificate.certificate_number}) is attached.\n\n"
+        f"Aryu Academy Private Limited"
     )
 
     email = EmailMultiAlternatives(

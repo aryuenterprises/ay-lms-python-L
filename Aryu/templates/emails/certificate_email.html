@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Certificate of Completion</title>
+    <title>Certificate of Course Completion</title>
     <style>
         body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f6f9; margin: 0; padding: 0; color: #333333; }
         .container { max-width: 600px; margin: 40px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.08); }
@@ -23,47 +23,45 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>Certificate of Completion</h1>
-            <p>Aryu Academy</p>
+            <h1>Certificate of Course Completion</h1>
+            <p>Aryu Academy Private Limited</p>
         </div>
         <div class="content">
-            <p>Dear <strong>{{ student_name }}</strong>,</p>
+            <p>Dear <strong style="color: #551496;">{{ student_name }}</strong>,</p>
             <p>Congratulations! We are pleased to award you this certificate in recognition of your successful completion of the course.</p>
             
             <div class="cert-badge">
-                <span>🎓 {{ course_name }}</span>
+                <span style="color: #551496; border-color: #d8b4fe; background-color: #faf5ff;">🎓 {{ course_name }}</span>
             </div>
 
             <div class="details-box">
                 <h3 style="margin-top: 0; color: #1e3c72; font-size: 16px;">Certificate Details</h3>
                 <p><strong>Certificate No:</strong> {{ certificate_number }}</p>
-                <p><strong>Course:</strong> {{ course_name }}</p>
+                <p><strong>Course:</strong> <span style="color: #551496; font-weight: 600;">{{ course_name }}</span></p>
                 {% if course_duration %}
                 <p><strong>Duration:</strong> {{ course_duration }}</p>
                 {% endif %}
                 {% if issued_date %}
-                <p><strong>Issued Date:</strong> {{ issued_date }}</p>
+                <p><strong>Date of Completion:</strong> {{ issued_date }}</p>
                 {% endif %}
-                {% if organization_name %}
-                <p><strong>Issued By:</strong> {{ organization_name }}</p>
-                {% endif %}
+                <p><strong>Issued By:</strong> {{ organization_name|default:"Aryu Academy Private Limited" }}</p>
                 {% if notes %}
                 <p><strong>Notes:</strong> {{ notes }}</p>
                 {% endif %}
             </div>
 
             <div class="attachment-note">
-                📄 <strong>Attached:</strong> Your official Certificate of Completion is attached to this email as a PDF document.
+                📄 <strong>Attached:</strong> Your official Certificate of Course Completion is attached to this email as a PDF document.
             </div>
 
             <p style="margin-top: 25px;">We wish you the very best in your future endeavors!</p>
 
             <p>Warm regards,<br>
-            <strong>Aryu Academy Team</strong><br>
+            <strong>Aryu Academy Private Limited</strong><br>
             <a href="https://portal.aryuacademy.com" style="color: #2a5298; text-decoration: none;">portal.aryuacademy.com</a></p>
         </div>
         <div class="footer">
-            <p>&copy; 2026 Aryu Academy. All rights reserved.</p>
+            <p>&copy; 2026 Aryu Academy Private Limited. All rights reserved.</p>
         </div>
     </div>
 </body>
