@@ -6648,11 +6648,186 @@ class CertificateViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='student-status(?:/(?P<student_id>[^/.]+))?')
     def student_certificate_status(self, request, student_id=None):
         import os
+        import math
         from collections import defaultdict
         lookup_id = student_id or request.query_params.get('student_id')
 
         user = getattr(request, 'user', None)
         user_type = getattr(user, 'user_type', None)
+
+        def _format_review_data(gr_record):
+            if not gr_record:
+                return {
+                    "review_id": None,
+                    "is_google_review": False,
+                    "google_review": "no",
+                    "has_google_review": False,
+                    "review_date": None,
+                    "google_review_date": None,
+                    "screenshot": "-",
+                    "screenshot_url": None,
+                    "screenshot_path": None,
+                    "google_review_screenshot": None,
+                    "google_review_screenshot_path": None,
+                    "google_review_screenshot_url": None,
+                    "linkedin_review": False,
+                    "has_linkedin_review": False,
+                    "linkedin_screenshot_url": None,
+                    "linkedin_screenshot": None,
+                    "linkedin_review_date": None,
+                    "facebook_review": False,
+                    "has_facebook_review": False,
+                    "facebook_screenshot_url": None,
+                    "facebook_screenshot": None,
+                    "facebook_review_date": None,
+                    "trustpilot_review": False,
+                    "has_trustpilot_review": False,
+                    "trustpilot_screenshot_url": None,
+                    "trustpilot_screenshot": None,
+                    "trustpilot_review_date": None,
+                    "is_youtube_testimonial": False,
+                    "has_youtube_testimonial": False,
+                    "youtube_testimonial_link": None,
+                    "youtube_testimonial_date": None,
+                    "view_proofs": None,
+                    "review_platforms": [],
+                    "review_links": "-",
+                    "reviews_links": []
+                }
+
+            from reports.serializers import GoogleReviewSerializer
+            gr_serialized = GoogleReviewSerializer(gr_record, context={"request": request}).data
+
+            is_gr = bool(gr_serialized.get("is_google_review"))
+            gr_date = gr_serialized.get("review_date")
+            gr_screenshot_url = gr_serialized.get("screenshot_url")
+
+            gr_screenshot_path = None
+            if getattr(gr_record, 'screenshot', None):
+                try:
+                    if hasattr(gr_record.screenshot, 'path') and os.path.exists(gr_record.screenshot.path):
+                        gr_screenshot_path = gr_record.screenshot.path
+                    else:
+                        gr_screenshot_path = gr_record.screenshot.name
+                except Exception:
+                    gr_screenshot_path = gr_record.screenshot.name
+
+            li_review = bool(gr_serialized.get("linkedin_review"))
+            li_url = gr_serialized.get("linkedin_screenshot_url")
+            li_date = gr_serialized.get("linkedin_review_date")
+
+            fb_review = bool(gr_serialized.get("facebook_review"))
+            fb_url = gr_serialized.get("facebook_screenshot_url")
+            fb_date = gr_serialized.get("facebook_review_date")
+
+            tp_review = bool(gr_serialized.get("trustpilot_review"))
+            tp_url = gr_serialized.get("trustpilot_screenshot_url")
+            tp_date = gr_serialized.get("trustpilot_review_date")
+
+            yt_review = bool(gr_serialized.get("is_youtube_testimonial"))
+            yt_link = gr_serialized.get("youtube_testimonial_link")
+            yt_date = gr_serialized.get("youtube_testimonial_date")
+
+            platforms = []
+            reviews_links = []
+
+            if is_gr:
+                platforms.append("Google")
+                reviews_links.append({
+                    "platform": "Google",
+                    "name": "Google",
+                    "type": "screenshot",
+                    "url": gr_screenshot_url,
+                    "screenshot_url": gr_screenshot_url,
+                    "date": gr_date,
+                    "is_active": True
+                })
+            if fb_review:
+                platforms.append("Facebook")
+                reviews_links.append({
+                    "platform": "Facebook",
+                    "name": "Facebook",
+                    "type": "screenshot",
+                    "url": fb_url,
+                    "screenshot_url": fb_url,
+                    "date": fb_date,
+                    "is_active": True
+                })
+            if tp_review:
+                platforms.append("Trustpilot")
+                reviews_links.append({
+                    "platform": "Trustpilot",
+                    "name": "Trustpilot",
+                    "type": "screenshot",
+                    "url": tp_url,
+                    "screenshot_url": tp_url,
+                    "date": tp_date,
+                    "is_active": True
+                })
+            if yt_review:
+                platforms.append("YouTube")
+                reviews_links.append({
+                    "platform": "YouTube",
+                    "name": "YouTube",
+                    "type": "video",
+                    "url": yt_link,
+                    "screenshot_url": None,
+                    "date": yt_date,
+                    "is_active": True
+                })
+            if li_review:
+                platforms.append("LinkedIn")
+                reviews_links.append({
+                    "platform": "LinkedIn",
+                    "name": "LinkedIn",
+                    "type": "screenshot",
+                    "url": li_url,
+                    "screenshot_url": li_url,
+                    "date": li_date,
+                    "is_active": True
+                })
+
+            review_links_display = platforms[0] if len(platforms) == 1 else (", ".join(platforms) if platforms else "-")
+            proof_url = gr_screenshot_url or yt_link or fb_url or tp_url or li_url
+            screenshot_display = proof_url or "-"
+
+            return {
+                "review_id": gr_serialized.get("review_id"),
+                "is_google_review": is_gr,
+                "google_review": "yes" if is_gr else "no",
+                "has_google_review": is_gr,
+                "review_date": gr_date,
+                "google_review_date": gr_date,
+                "screenshot": screenshot_display,
+                "screenshot_url": gr_screenshot_url,
+                "screenshot_path": gr_screenshot_path,
+                "google_review_screenshot": gr_screenshot_url or gr_screenshot_path,
+                "google_review_screenshot_path": gr_screenshot_path,
+                "google_review_screenshot_url": gr_screenshot_url,
+                "linkedin_review": li_review,
+                "has_linkedin_review": li_review,
+                "linkedin_screenshot_url": li_url,
+                "linkedin_screenshot": li_url,
+                "linkedin_review_date": li_date,
+                "facebook_review": fb_review,
+                "has_facebook_review": fb_review,
+                "facebook_screenshot_url": fb_url,
+                "facebook_screenshot": fb_url,
+                "facebook_review_date": fb_date,
+                "trustpilot_review": tp_review,
+                "has_trustpilot_review": tp_review,
+                "trustpilot_screenshot_url": tp_url,
+                "trustpilot_screenshot": tp_url,
+                "trustpilot_review_date": tp_date,
+                "is_youtube_testimonial": yt_review,
+                "has_youtube_testimonial": yt_review,
+                "youtube_testimonial_link": yt_link,
+                "youtube_testimonial_date": yt_date,
+                "view_proofs": proof_url,
+                "review_platforms": platforms,
+                "review_links": review_links_display,
+                "reviews_links": reviews_links
+            }
 
         # ----------------------------------------------------
         # 1. INDIVIDUAL STUDENT DATA (when student_id provided)
@@ -6698,38 +6873,17 @@ class CertificateViewSet(viewsets.ModelViewSet):
                     }, status=status.HTTP_404_NOT_FOUND)
 
             # Check Google Review status
-            has_google_review = False
             gr_obj = None
-            gr_date = None
-            gr_screenshot_path = None
-            gr_screenshot_url = None
-            gr_youtube_link = None
             try:
                 from reports.models import GoogleReview
                 if student:
                     gr_obj = GoogleReview.objects.filter(student=student, is_google_review=True).first()
                     if not gr_obj:
                         gr_obj = GoogleReview.objects.filter(student=student).first()
-                    if gr_obj:
-                        has_google_review = bool(gr_obj.is_google_review)
-                        gr_date = str(gr_obj.review_date) if gr_obj.review_date else None
-                        gr_youtube_link = gr_obj.youtube_testimonial_link or None
-                        if gr_obj.screenshot:
-                            try:
-                                if hasattr(gr_obj.screenshot, 'path') and os.path.exists(gr_obj.screenshot.path):
-                                    gr_screenshot_path = gr_obj.screenshot.path
-                                else:
-                                    gr_screenshot_path = gr_obj.screenshot.name
-                            except Exception:
-                                gr_screenshot_path = gr_obj.screenshot.name
-
-                            try:
-                                if hasattr(gr_obj.screenshot, 'url'):
-                                    gr_screenshot_url = request.build_absolute_uri(gr_obj.screenshot.url)
-                            except Exception:
-                                gr_screenshot_url = None
             except Exception as e:
                 logger.warning("Error querying GoogleReview for student %s: %s", lookup_id, e)
+
+            rev_dict = _format_review_data(gr_obj)
 
             # Process certificates
             certs_list = []
@@ -6816,23 +6970,6 @@ class CertificateViewSet(viewsets.ModelViewSet):
                 if course_duration == "Not Assigned":
                     course_duration = certs_list[0].get("course_duration") or "Not Assigned"
 
-            # Determine Review Links badge (e.g. "Google", or "-")
-            platforms = []
-            if gr_obj:
-                if gr_obj.is_google_review:
-                    platforms.append("Google")
-                if getattr(gr_obj, 'linkedin_review', False):
-                    platforms.append("LinkedIn")
-                if getattr(gr_obj, 'facebook_review', False):
-                    platforms.append("Facebook")
-                if getattr(gr_obj, 'trustpilot_review', False):
-                    platforms.append("Trustpilot")
-                if getattr(gr_obj, 'is_youtube_testimonial', False):
-                    platforms.append("YouTube")
-
-            review_links_display = platforms[0] if len(platforms) == 1 else (", ".join(platforms) if platforms else "-")
-            screenshot_display = gr_screenshot_url or gr_youtube_link or "-"
-
             data = {
                 "s_no": 1,
                 "student_id": getattr(student, 'student_id', lookup_id),
@@ -6844,19 +6981,7 @@ class CertificateViewSet(viewsets.ModelViewSet):
                 "batch": batch_details,
                 "batch_name": batch_details,
                 "batch_details": batch_details,
-                "review_links": review_links_display,
-                "review_platforms": platforms,
-                "screenshot": screenshot_display,
-                "screenshot_url": gr_screenshot_url,
-                "screenshot_path": gr_screenshot_path,
-                "view_proofs": gr_screenshot_url or gr_youtube_link,
-                "google_review": "yes" if has_google_review else "no",
-                "is_google_review": has_google_review,
-                "has_google_review": has_google_review,
-                "google_review_date": gr_date,
-                "google_review_screenshot": gr_screenshot_url or gr_screenshot_path,
-                "google_review_screenshot_path": gr_screenshot_path,
-                "google_review_screenshot_url": gr_screenshot_url,
+                **rev_dict,
                 "certificate_sent": "yes" if has_certificate_sent else "no",
                 "has_certificate": has_certificate_sent,
                 "file_path": primary_file_path,
@@ -6904,6 +7029,22 @@ class CertificateViewSet(viewsets.ModelViewSet):
                 Q(contact_no__icontains=search_term)
             )
 
+        course_id_param = request.query_params.get('course_id')
+        if course_id_param and str(course_id_param).strip():
+            cid = str(course_id_param).strip()
+            students_qs = students_qs.filter(
+                Q(student_courses__course_id=cid) |
+                Q(new_batches__course_id=cid)
+            )
+
+        batch_id_param = request.query_params.get('batch_id')
+        if batch_id_param and str(batch_id_param).strip():
+            bid = str(batch_id_param).strip()
+            students_qs = students_qs.filter(
+                Q(student_courses__batch_id=bid) |
+                Q(new_batches__batch_id=bid)
+            )
+
         # Bulk pre-fetch Google Reviews
         reviews_by_student = {}
         try:
@@ -6928,45 +7069,11 @@ class CertificateViewSet(viewsets.ModelViewSet):
         results = []
         for idx, s in enumerate(students_qs, start=1):
             gr_record = reviews_by_student.get(s.student_id)
-            has_gr = bool(gr_record and gr_record.is_google_review)
-            gr_date = None
-            gr_screenshot_path = None
-            gr_screenshot_url = None
-            gr_youtube_link = None
-            platforms = []
+            if not gr_record:
+                gr_list = list(s.google_reviews.all())
+                gr_record = next((r for r in gr_list if r.is_google_review), gr_list[0] if gr_list else None)
 
-            if gr_record:
-                gr_date = str(gr_record.review_date) if gr_record.review_date else None
-                gr_youtube_link = gr_record.youtube_testimonial_link or None
-                if gr_record.screenshot:
-                    try:
-                        if hasattr(gr_record.screenshot, 'path') and os.path.exists(gr_record.screenshot.path):
-                            gr_screenshot_path = gr_record.screenshot.path
-                        else:
-                            gr_screenshot_path = gr_record.screenshot.name
-                    except Exception:
-                        gr_screenshot_path = gr_record.screenshot.name
-
-                    try:
-                        if hasattr(gr_record.screenshot, 'url'):
-                            gr_screenshot_url = request.build_absolute_uri(gr_record.screenshot.url)
-                    except Exception:
-                        gr_screenshot_url = None
-
-                if gr_record.is_google_review:
-                    platforms.append("Google")
-                if getattr(gr_record, 'linkedin_review', False):
-                    platforms.append("LinkedIn")
-                if getattr(gr_record, 'facebook_review', False):
-                    platforms.append("Facebook")
-                if getattr(gr_record, 'trustpilot_review', False):
-                    platforms.append("Trustpilot")
-                if getattr(gr_record, 'is_youtube_testimonial', False):
-                    platforms.append("YouTube")
-
-            review_links_display = platforms[0] if len(platforms) == 1 else (", ".join(platforms) if platforms else "-")
-            screenshot_display = gr_screenshot_url or gr_youtube_link or "-"
-
+            rev_dict = _format_review_data(gr_record)
             student_certs = certs_by_student.get(s.student_id, [])
 
             # Extract Course, Course Duration & Batch Details
@@ -7063,19 +7170,7 @@ class CertificateViewSet(viewsets.ModelViewSet):
                 "batch": batch_details,
                 "batch_name": batch_details,
                 "batch_details": batch_details,
-                "review_links": review_links_display,
-                "review_platforms": platforms,
-                "screenshot": screenshot_display,
-                "screenshot_url": gr_screenshot_url,
-                "screenshot_path": gr_screenshot_path,
-                "view_proofs": gr_screenshot_url or gr_youtube_link,
-                "google_review": "yes" if has_gr else "no",
-                "is_google_review": has_gr,
-                "has_google_review": has_gr,
-                "google_review_date": gr_date,
-                "google_review_screenshot": gr_screenshot_url or gr_screenshot_path,
-                "google_review_screenshot_path": gr_screenshot_path,
-                "google_review_screenshot_url": gr_screenshot_url,
+                **rev_dict,
                 "certificate_sent": "yes" if has_certificate_sent else "no",
                 "has_certificate": has_certificate_sent,
                 "file_path": primary_file_path,
@@ -7089,18 +7184,57 @@ class CertificateViewSet(viewsets.ModelViewSet):
                 if item["certificate_sent"] != cert_filter.lower():
                     continue
 
-            gr_filter = request.query_params.get('google_review')
-            if gr_filter and gr_filter.lower() in ['yes', 'no']:
-                if item["google_review"] != gr_filter.lower():
+            gr_filter = request.query_params.get('google_review') or request.query_params.get('is_google_review')
+            if gr_filter and str(gr_filter).strip().lower() in ['yes', 'no', 'true', 'false', '1', '0']:
+                gr_filter_val = 'yes' if str(gr_filter).strip().lower() in ['yes', 'true', '1'] else 'no'
+                if item["google_review"] != gr_filter_val:
                     continue
 
             results.append(item)
 
+        page_param = request.query_params.get('page')
+        limit_param = request.query_params.get('limit')
+
+        total_count = len(results)
+
+        try:
+            page = int(page_param or 1)
+            if page < 1:
+                page = 1
+        except (ValueError, TypeError):
+            page = 1
+
+        try:
+            limit = int(limit_param or 50)
+            if limit < 1:
+                limit = 50
+            elif limit > 500:
+                limit = 500
+        except (ValueError, TypeError):
+            limit = 50
+
+        total_pages = math.ceil(total_count / limit) if (total_count > 0 and limit > 0) else 0
+
+        if page_param is not None or limit_param is not None:
+            offset = (page - 1) * limit
+            paginated_results = results[offset:offset + limit]
+            for i, itm in enumerate(paginated_results, start=offset + 1):
+                itm["s_no"] = i
+        else:
+            paginated_results = results
+
         return Response({
             "success": True,
             "message": "Students certificate details retrieved successfully",
-            "count": len(results),
-            "data": results
+            "count": total_count,
+            "total_count": total_count,
+            "pagination": {
+                "total_count": total_count,
+                "page": page if (page_param is not None or limit_param is not None) else 1,
+                "limit": limit if (page_param is not None or limit_param is not None) else total_count,
+                "total_pages": total_pages if (page_param is not None or limit_param is not None) else (1 if total_count > 0 else 0)
+            },
+            "data": paginated_results
         }, status=status.HTTP_200_OK)
     
 def send_certificate_email(student_email, certificate):
