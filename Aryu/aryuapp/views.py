@@ -3962,9 +3962,9 @@ class StudentListAPIView(APIView):
                 creator_id = getattr(user, "student_id", None) or getattr(user, "id", None)
 
             # -----------------------------------------------------------------
-            # 2. Base Queryset for Active/Non-Archived Students
+            # 2. Base Queryset for Non-Archived Students (Both True and False Status)
             # -----------------------------------------------------------------
-            students_qs = Student.objects.filter(is_archived=False, status=True)
+            students_qs = Student.objects.filter(is_archived=False)
 
             # Role Filter Logic (Inclusively allowing PUBLIC, CAMPAIGN, BOOTCAMP signups)
             if user_type == "super_admin":
@@ -3995,7 +3995,7 @@ class StudentListAPIView(APIView):
                 students_qs = Student.objects.none()
 
             # -----------------------------------------------------------------
-            # 3. Apply Optional Query Parameter Filters (Search / Source)
+            # 3. Apply Optional Query Parameter Filters (Search / Source / Status)
             # -----------------------------------------------------------------
             source_type = request.query_params.get("source_type")
             if source_type and source_type.strip() and source_type.strip().lower() != "all":
@@ -4004,6 +4004,14 @@ class StudentListAPIView(APIView):
             converter = request.query_params.get("converter")
             if converter and converter.strip() and converter.strip().lower() != "all":
                 students_qs = students_qs.filter(converter__iexact=converter.strip())
+
+            status_param = request.query_params.get("status")
+            if status_param is not None and str(status_param).strip() and str(status_param).strip().lower() != "all":
+                status_str = str(status_param).strip().lower()
+                if status_str in ("true", "1", "active"):
+                    students_qs = students_qs.filter(status=True)
+                elif status_str in ("false", "0", "inactive"):
+                    students_qs = students_qs.filter(status=False)
 
             search = request.query_params.get("search")
             if search and search.strip():
