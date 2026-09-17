@@ -238,7 +238,8 @@ class ClassScheduleSerializer(serializers.ModelSerializer):
         assignments = BatchCourseTrainer.objects.select_related('course', 'trainer', 'student').filter(
             batch_id=obj.batch_id,
             course_id=obj.course_id,
-            trainer_id=obj.trainer_id
+            trainer_id=obj.trainer_id,
+            student__is_archived=False
         )
 
         return [
@@ -552,7 +553,7 @@ class BatchSerializer(serializers.ModelSerializer):
                 "registration_id": bct.student.registration_id,
                 "name": f"{bct.student.first_name} {bct.student.last_name}".strip()
             }
-            for bct in BatchCourseTrainer.objects.filter(batch=instance)
+            for bct in BatchCourseTrainer.objects.filter(batch=instance, student__is_archived=False)
                 .select_related('course', 'trainer', 'student')
         ]
 
@@ -687,6 +688,12 @@ class NewBatchSerializer(serializers.ModelSerializer):
             'created_by', 'created_by_type', 'created_at', 'is_archived'
         ]
         read_only_fields = ['batch_id', 'created_by', 'created_by_type', 'created_at']
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if 'students' in data and hasattr(instance, 'students'):
+            data['students'] = list(instance.students.filter(is_archived=False).values_list('pk', flat=True))
+        return data
+
     def get_trainers(self, obj):
         from aryuapp.serializer import TrainerPreviewSerializer
 

@@ -107,14 +107,14 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
                 .prefetch_related(
                     Prefetch(
                         "batch__batchcoursetrainer",
-                        queryset=BatchCourseTrainer.objects.select_related(
+                        queryset=BatchCourseTrainer.objects.filter(student__is_archived=False).select_related(
                             "course", "trainer", "student"
                         ),
                         to_attr="old_assignments"
                     ),
                     Prefetch(
                         "new_batch__students",
-                        queryset=Student.objects.only("registration_id", "first_name"),
+                        queryset=Student.objects.filter(is_archived=False).only("registration_id", "first_name"),
                         to_attr="new_students"
                     )
                 )
@@ -162,31 +162,33 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
 
                 # OLD ASSIGNMENTS (prefetched)
                 for a in getattr(sched.batch, "old_assignments", []):
-                    assignments_list.append({
-                        "course_id": a.course.course_id,
-                        "course_name": a.course.course_name,
-                        "trainer_employee_id": a.trainer.employee_id,
-                        "trainer_name": a.trainer.full_name,
-                        "registration_id": a.student.registration_id,
-                        "student_name": f"{a.student.first_name}".strip(),
-                        "batch_type": "old",
-                    })
+                    if a.student and not a.student.is_archived:
+                        assignments_list.append({
+                            "course_id": a.course.course_id,
+                            "course_name": a.course.course_name,
+                            "trainer_employee_id": a.trainer.employee_id,
+                            "trainer_name": a.trainer.full_name,
+                            "registration_id": a.student.registration_id,
+                            "student_name": f"{a.student.first_name}".strip(),
+                            "batch_type": "old",
+                        })
 
                 # NEW BATCH ASSIGNMENTS (prefetched)
                 if sched.new_batch:
 
                     trainer = sched.new_batch.trainers.first()
 
-                    for ns in sched.new_batch.new_students:
-                        assignments_list.append({
-                            "course_id": sched.new_batch.course.course_id if sched.new_batch.course else None,
-                            "course_name": sched.new_batch.course.course_name if sched.new_batch.course else None,
-                            "trainer_employee_id": trainer.employee_id if trainer else None,
-                            "trainer_name": trainer.full_name if trainer else None,
-                            "registration_id": ns.registration_id,
-                            "student_name": f"{ns.first_name}".strip(),
-                            "batch_type": "new",
-                        })
+                    for ns in getattr(sched.new_batch, "new_students", []):
+                        if not getattr(ns, "is_archived", False):
+                            assignments_list.append({
+                                "course_id": sched.new_batch.course.course_id if sched.new_batch.course else None,
+                                "course_name": sched.new_batch.course.course_name if sched.new_batch.course else None,
+                                "trainer_employee_id": trainer.employee_id if trainer else None,
+                                "trainer_name": trainer.full_name if trainer else None,
+                                "registration_id": ns.registration_id,
+                                "student_name": f"{ns.first_name}".strip(),
+                                "batch_type": "new",
+                            })
 
                 schedule_data.append({
                     "schedule_id": sched.schedule_id,
@@ -532,23 +534,29 @@ class ClassScheduleView(LoggingMixin, viewsets.ModelViewSet, NotesMixin):
             if old_batch_ids:
                 bct_qs = BatchCourseTrainer.objects.filter(
                     batch__batch_id__in=old_batch_ids,
-                    trainer__employee_id=employee_id
+                    trainer__employee_id=employee_id,
+                    student__is_archived=False
                 ).select_related("course", "trainer", "student")
 
                 for bct in bct_qs:
-                    bid = getattr(bct.batch, "batch_id", None)
-                    bct_map[bid].append(bct)
+                    if bct.student and not bct.student.is_archived:
+                        bid = getattr(bct.batch, "batch_id", None)
+                        bct_map[bid].append(bct)
 
             # ------------------ PRELOAD NEW-BATCH STUDENTS ------------------
             new_batch_ids = list({sched.new_batch.batch_id for sched in schedules if getattr(sched, "new_batch", None)})
 
             newbatch_students_map = {}
             if new_batch_ids:
-                nb_qs = NewBatch.objects.filter(batch_id__in=new_batch_ids).prefetch_related("students")
+                nb_qs = NewBatch.objects.filter(batch_id__in=new_batch_ids).prefetch_related(
+                    Prefetch("students", queryset=Student.objects.filter(is_archived=False))
+                )
                 for nb in nb_qs:
-                    newbatch_students_map[nb.batch_id] = list(
-                        nb.students.all().values("registration_id", "first_name")
-                    )
+                    newbatch_students_map[nb.batch_id] = [
+                        {"registration_id": s.registration_id, "first_name": s.first_name}
+                        for s in nb.students.all()
+                        if not s.is_archived
+                    ]
 
             # ------------------ BUILD schedule_data ------------------
             schedule_data = []
@@ -1149,7 +1157,10 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
             new_batches = list(
                 NewBatch.objects.filter(is_archived=False)
                 .select_related("course__course_category")
-                .prefetch_related("students", "trainers")
+                .prefetch_related(
+                    Prefetch("students", queryset=Student.objects.filter(is_archived=False)),
+                    "trainers"
+                )
                 .order_by("-created_at")
             )
 
@@ -1159,7 +1170,8 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
             # -------- PREFETCH ASSIGNMENTS --------
 
             assignments = BatchCourseTrainer.objects.filter(
-                batch_id__in=old_batch_ids
+                batch_id__in=old_batch_ids,
+                student__is_archived=False
             ).select_related("course", "trainer", "student", "course__course_category")
 
             assignment_map = {}
@@ -1247,7 +1259,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                         }
 
                     for a in assigns:
-                        if a.student:
+                        if a.student and not a.student.is_archived:
                             students_data.append({
                                 "student_id": a.student.student_id,
                                 "full_name": f"{a.student.first_name}".strip(),
@@ -1298,6 +1310,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                         "registration_id": s.registration_id
                     }
                     for s in nb.students.all()
+                    if not s.is_archived
                 ]
 
                 notes_data = [
@@ -1444,12 +1457,12 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
             # ------------------- Process Old Batches -------------------
             for batch in old_batches:
                 # Get assignments for this batch
-                assignments = BatchCourseTrainer.objects.filter(batch=batch)
+                assignments = BatchCourseTrainer.objects.filter(batch=batch, student__is_archived=False)
                 
                 # Get students from assignments
                 students_data = []
                 for assignment in assignments:
-                    if assignment.student:
+                    if assignment.student and not assignment.student.is_archived:
                         students_data.append({
                             "student_id": assignment.student.student_id,
                             "registration_id": assignment.student.registration_id,
@@ -1541,6 +1554,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                         "full_name": student.first_name.strip()
                     }
                     for student in batch.students.all()
+                    if not student.is_archived
                 ]
                 all_students.extend(students_data)
 
@@ -1684,7 +1698,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
             ).order_by("-created_at")
 
             for b in old_batches:
-                assignments = BatchCourseTrainer.objects.filter(batch=b, student__student_id=student_id)
+                assignments = BatchCourseTrainer.objects.filter(batch=b, student__student_id=student_id, student__is_archived=False)
 
                 students_data = [
                     {
@@ -1695,6 +1709,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                         "course_id": a.course.course_id if a.course else None
                     }
                     for a in assignments
+                    if a.student and not a.student.is_archived
                 ]
 
                 # Notes
@@ -1758,6 +1773,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
                         "registration_id": s.registration_id,
                         "full_name": f"{s.first_name}".strip()
                     } for s in nb.students.all()
+                    if not s.is_archived
                 ]
 
                 # Notes
@@ -2050,7 +2066,7 @@ class NewBatchViewSet(LoggingMixin, viewsets.ViewSet, NotesMixin):
 
             # If students key is missing → keep existing students
             if student_ids is None:
-                student_ids = list(batch.students.values_list("pk", flat=True))
+                student_ids = list(batch.students.filter(is_archived=False).values_list("pk", flat=True))
 
             # Ensure list type
             if not isinstance(student_ids, list):

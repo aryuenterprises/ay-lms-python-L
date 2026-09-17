@@ -264,7 +264,7 @@ class NewBatch(models.Model):
         db_table = "aryuapp_newbatch"
 
     def available_slots(self):
-        return self.slots - self.students.count()
+        return self.slots - self.students.filter(is_archived=False).count()
     
     def deactivate_batch(self):
         """
