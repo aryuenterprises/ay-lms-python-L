@@ -62,6 +62,10 @@ def fit_font(draw, text, font_path, max_width, start_size):
 
 def generate_certificate_image_and_save(certificate):
     template_candidates = [
+        Path(settings.BASE_DIR) / "aryuapp" / "static" / "certificates" / "course_completion_certificate_new.png",
+        Path(settings.BASE_DIR) / "aryuapp" / "static" / "certificates" / "course_completion_certificate.png",
+        Path(getattr(settings, "STATIC_ROOT", "")) / "certificates" / "course_completion_certificate_new.png",
+        Path(getattr(settings, "STATIC_ROOT", "")) / "certificates" / "course_completion_certificate.png",
         Path(settings.MEDIA_ROOT) / "certificates" / "course_completion_certificate_new.png",
         Path(settings.MEDIA_ROOT) / "certificates" / "course_completion_certificate.png",
         Path(settings.MEDIA_ROOT) / "certificates" / "aryu-certificate.png",
