@@ -6940,48 +6940,97 @@ class CertificateViewSet(viewsets.ModelViewSet):
                     "file_url": file_url
                 })
 
-            # Extract Course, Course Duration & Batch Details
+            # Extract Course, Course Duration & Batch Details (Primary: actual enrollments)
             course_name = "Not Assigned"
             course_duration = "Not Assigned"
             batch_details = "Not Assigned"
-            if gr_obj:
-                if gr_obj.course:
-                    if getattr(gr_obj.course, 'course_name', None):
-                        course_name = gr_obj.course.course_name
-                    c_dur = f"{getattr(gr_obj.course, 'duration', '') or ''} {getattr(gr_obj.course, 'duration_type', '') or ''}".strip()
-                    if c_dur:
-                        course_duration = c_dur
-                if gr_obj.batch:
-                    batch_details = gr_obj.batch.title or getattr(gr_obj.batch, 'batch_name', None) or "Not Assigned"
 
-            if course_name == "Not Assigned" or batch_details == "Not Assigned" or course_duration == "Not Assigned":
-                if student:
+            courses_map = {}
+            batches_map = {}
+            durations_list = []
+
+            if student:
+                for sc in student.student_courses.all():
+                    if sc.course and not getattr(sc.course, 'is_archived', False) and sc.course.course_name:
+                        c_n = str(sc.course.course_name).strip()
+                        if c_n:
+                            courses_map[sc.course.course_id] = c_n
+                            c_dur = f"{getattr(sc.course, 'duration', '') or ''} {getattr(sc.course, 'duration_type', '') or ''}".strip()
+                            if c_dur:
+                                durations_list.append(c_dur)
+                    if sc.batch and not getattr(sc.batch, 'is_archived', False):
+                        b_name = sc.batch.title or getattr(sc.batch, 'batch_name', None)
+                        if b_name:
+                            batches_map[sc.batch.batch_id] = str(b_name).strip()
+
+                for nb in student.new_batches.all():
+                    if nb.course and not getattr(nb.course, 'is_archived', False) and nb.course.course_name:
+                        c_n = str(nb.course.course_name).strip()
+                        if c_n:
+                            courses_map[nb.course.course_id] = c_n
+                            c_dur = f"{getattr(nb.course, 'duration', '') or ''} {getattr(nb.course, 'duration_type', '') or ''}".strip()
+                            if c_dur:
+                                durations_list.append(c_dur)
+                    if nb.title and not getattr(nb, 'is_archived', False):
+                        batches_map[nb.batch_id] = str(nb.title).strip()
+
+                # Fallback to any assigned if empty
+                if not courses_map:
                     for sc in student.student_courses.all():
-                        if sc.course:
-                            if course_name == "Not Assigned" and sc.course.course_name:
-                                course_name = sc.course.course_name
-                            if course_duration == "Not Assigned":
+                        if sc.course and sc.course.course_name:
+                            c_n = str(sc.course.course_name).strip()
+                            if c_n:
+                                courses_map[sc.course.course_id] = c_n
                                 c_dur = f"{getattr(sc.course, 'duration', '') or ''} {getattr(sc.course, 'duration_type', '') or ''}".strip()
                                 if c_dur:
-                                    course_duration = c_dur
-                        if batch_details == "Not Assigned" and sc.batch:
-                            batch_details = sc.batch.title or getattr(sc.batch, 'batch_name', None) or "Not Assigned"
+                                    durations_list.append(c_dur)
                     for nb in student.new_batches.all():
-                        if nb.course:
-                            if course_name == "Not Assigned" and nb.course.course_name:
-                                course_name = nb.course.course_name
-                            if course_duration == "Not Assigned":
+                        if nb.course and nb.course.course_name:
+                            c_n = str(nb.course.course_name).strip()
+                            if c_n:
+                                courses_map[nb.course.course_id] = c_n
                                 c_dur = f"{getattr(nb.course, 'duration', '') or ''} {getattr(nb.course, 'duration_type', '') or ''}".strip()
                                 if c_dur:
-                                    course_duration = c_dur
-                        if batch_details == "Not Assigned":
-                            batch_details = nb.title or getattr(nb, 'batch_name', None) or "Not Assigned"
+                                    durations_list.append(c_dur)
 
+                if not batches_map:
+                    for sc in student.student_courses.all():
+                        if sc.batch:
+                            b_name = sc.batch.title or getattr(sc.batch, 'batch_name', None)
+                            if b_name:
+                                batches_map[sc.batch.batch_id] = str(b_name).strip()
+                    for nb in student.new_batches.all():
+                        if nb.title:
+                            batches_map[nb.batch_id] = str(nb.title).strip()
+
+            course_names = list(courses_map.values())
+            batch_names = list(batches_map.values())
+
+            if course_names:
+                course_name = ", ".join(course_names)
+            if batch_names:
+                batch_details = ", ".join(batch_names)
+            if durations_list:
+                course_duration = durations_list[0]
+
+            # Fallback to certificates if still Not Assigned
             if certs_list:
                 if course_name == "Not Assigned":
                     course_name = certs_list[0].get("course_name") or "Not Assigned"
                 if course_duration == "Not Assigned":
                     course_duration = certs_list[0].get("course_duration") or "Not Assigned"
+
+            # Fallback to Google Review if still Not Assigned
+            if course_name == "Not Assigned" or batch_details == "Not Assigned" or course_duration == "Not Assigned":
+                if gr_obj:
+                    if course_name == "Not Assigned" and gr_obj.course and getattr(gr_obj.course, 'course_name', None):
+                        course_name = str(gr_obj.course.course_name).strip()
+                    if course_duration == "Not Assigned" and gr_obj.course:
+                        c_dur = f"{getattr(gr_obj.course, 'duration', '') or ''} {getattr(gr_obj.course, 'duration_type', '') or ''}".strip()
+                        if c_dur:
+                            course_duration = c_dur
+                    if batch_details == "Not Assigned" and gr_obj.batch:
+                        batch_details = gr_obj.batch.title or getattr(gr_obj.batch, 'batch_name', None) or "Not Assigned"
 
             data = {
                 "s_no": 1,
@@ -7089,47 +7138,108 @@ class CertificateViewSet(viewsets.ModelViewSet):
             rev_dict = _format_review_data(gr_record)
             student_certs = certs_by_student.get(s.student_id, [])
 
-            # Extract Course, Course Duration & Batch Details
+            # Extract Course, Course Duration & Batch Details (Primary: actual enrollments)
             course_name = "Not Assigned"
             course_duration = "Not Assigned"
             batch_details = "Not Assigned"
-            if gr_record:
-                if gr_record.course:
-                    if getattr(gr_record.course, 'course_name', None):
-                        course_name = gr_record.course.course_name
-                    c_dur = f"{getattr(gr_record.course, 'duration', '') or ''} {getattr(gr_record.course, 'duration_type', '') or ''}".strip()
-                    if c_dur:
-                        course_duration = c_dur
-                if gr_record.batch:
-                    batch_details = gr_record.batch.title or getattr(gr_record.batch, 'batch_name', None) or "Not Assigned"
 
-            if course_name == "Not Assigned" or batch_details == "Not Assigned" or course_duration == "Not Assigned":
-                for sc in s.student_courses.all():
-                    if sc.course:
-                        if course_name == "Not Assigned" and sc.course.course_name:
-                            course_name = sc.course.course_name
-                        if course_duration == "Not Assigned":
+            courses_map = {}
+            batches_map = {}
+            durations_list = []
+
+            for sc in s.student_courses.all():
+                if sc.course and not getattr(sc.course, 'is_archived', False) and sc.course.course_name:
+                    if not course_id_param or str(sc.course.course_id) == str(course_id_param):
+                        c_n = str(sc.course.course_name).strip()
+                        if c_n:
+                            courses_map[sc.course.course_id] = c_n
                             c_dur = f"{getattr(sc.course, 'duration', '') or ''} {getattr(sc.course, 'duration_type', '') or ''}".strip()
                             if c_dur:
-                                course_duration = c_dur
-                    if batch_details == "Not Assigned" and sc.batch:
-                        batch_details = sc.batch.title or getattr(sc.batch, 'batch_name', None) or "Not Assigned"
-                for nb in s.new_batches.all():
-                    if nb.course:
-                        if course_name == "Not Assigned" and nb.course.course_name:
-                            course_name = nb.course.course_name
-                        if course_duration == "Not Assigned":
+                                durations_list.append(c_dur)
+                if sc.batch and not getattr(sc.batch, 'is_archived', False):
+                    if batch_id_param and str(sc.batch.batch_id) != str(batch_id_param):
+                        continue
+                    sc_cid = sc.course_id or getattr(sc.batch, "course_id", None)
+                    if course_id_param and str(sc_cid) != str(course_id_param):
+                        continue
+                    b_name = sc.batch.title or getattr(sc.batch, 'batch_name', None)
+                    if b_name:
+                        batches_map[sc.batch.batch_id] = str(b_name).strip()
+
+            for nb in s.new_batches.all():
+                if nb.course and not getattr(nb.course, 'is_archived', False) and nb.course.course_name:
+                    if not course_id_param or str(nb.course.course_id) == str(course_id_param):
+                        c_n = str(nb.course.course_name).strip()
+                        if c_n:
+                            courses_map[nb.course.course_id] = c_n
                             c_dur = f"{getattr(nb.course, 'duration', '') or ''} {getattr(nb.course, 'duration_type', '') or ''}".strip()
                             if c_dur:
-                                course_duration = c_dur
-                    if batch_details == "Not Assigned":
-                        batch_details = nb.title or getattr(nb, 'batch_name', None) or "Not Assigned"
+                                durations_list.append(c_dur)
+                if nb.title and not getattr(nb, 'is_archived', False):
+                    if batch_id_param and str(nb.batch_id) != str(batch_id_param):
+                        continue
+                    nb_cid = getattr(nb, "course_id", None) or (nb.course.course_id if getattr(nb, "course", None) else None)
+                    if course_id_param and str(nb_cid) != str(course_id_param):
+                        continue
+                    batches_map[nb.batch_id] = str(nb.title).strip()
 
+            # Fallback to any assigned if empty and no specific filter
+            if not courses_map and not course_id_param:
+                for sc in s.student_courses.all():
+                    if sc.course and sc.course.course_name:
+                        c_n = str(sc.course.course_name).strip()
+                        if c_n:
+                            courses_map[sc.course.course_id] = c_n
+                            c_dur = f"{getattr(sc.course, 'duration', '') or ''} {getattr(sc.course, 'duration_type', '') or ''}".strip()
+                            if c_dur:
+                                durations_list.append(c_dur)
+                for nb in s.new_batches.all():
+                    if nb.course and nb.course.course_name:
+                        c_n = str(nb.course.course_name).strip()
+                        if c_n:
+                            courses_map[nb.course.course_id] = c_n
+                            c_dur = f"{getattr(nb.course, 'duration', '') or ''} {getattr(nb.course, 'duration_type', '') or ''}".strip()
+                            if c_dur:
+                                durations_list.append(c_dur)
+
+            if not batches_map and not batch_id_param and not course_id_param:
+                for sc in s.student_courses.all():
+                    if sc.batch:
+                        b_name = sc.batch.title or getattr(sc.batch, 'batch_name', None)
+                        if b_name:
+                            batches_map[sc.batch.batch_id] = str(b_name).strip()
+                for nb in s.new_batches.all():
+                    if nb.title:
+                        batches_map[nb.batch_id] = str(nb.title).strip()
+
+            course_names = list(courses_map.values())
+            batch_names = list(batches_map.values())
+
+            if course_names:
+                course_name = ", ".join(course_names)
+            if batch_names:
+                batch_details = ", ".join(batch_names)
+            if durations_list:
+                course_duration = durations_list[0]
+
+            # Fallback to certificates if course/duration not assigned
             if student_certs:
                 if course_name == "Not Assigned":
                     course_name = student_certs[0].course_name or "Not Assigned"
                 if course_duration == "Not Assigned":
                     course_duration = student_certs[0].course_duration or "Not Assigned"
+
+            # Fallback to Google Review if still Not Assigned
+            if course_name == "Not Assigned" or batch_details == "Not Assigned" or course_duration == "Not Assigned":
+                if gr_record:
+                    if course_name == "Not Assigned" and gr_record.course and getattr(gr_record.course, 'course_name', None):
+                        course_name = str(gr_record.course.course_name).strip()
+                    if course_duration == "Not Assigned" and gr_record.course:
+                        c_dur = f"{getattr(gr_record.course, 'duration', '') or ''} {getattr(gr_record.course, 'duration_type', '') or ''}".strip()
+                        if c_dur:
+                            course_duration = c_dur
+                    if batch_details == "Not Assigned" and gr_record.batch:
+                        batch_details = gr_record.batch.title or getattr(gr_record.batch, 'batch_name', None) or "Not Assigned"
 
             certs_list = []
             primary_file_path = None
