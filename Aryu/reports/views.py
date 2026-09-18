@@ -19,7 +19,7 @@ from aryuapp.auth import CustomJWTAuthentication
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 import logging
 from aryuapp.models import Student, StudentCourse, Attendance, Trainer
-from batches.models import NewBatch, ClassSchedule, BatchCourseTrainer
+from batches.models import NewBatch, ClassSchedule, BatchCourseTrainer, Batch
 from payments.models import PaymentTransaction, TutorPayment
 from payments.services.invoice_service import InvoiceService
 from courses.models import Course, CourseCategory
@@ -530,10 +530,14 @@ class StudentEnrollmentReportView(APIView):
                             if not course_id or str(c_obj.course_id) == str(course_id):
                                 courses_map[c_obj.course_id] = c_name
                     if sc.batch and not getattr(sc.batch, "is_archived", False):
-                        if not batch_id or str(sc.batch.batch_id) == str(batch_id):
-                            batch_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
-                            if batch_title:
-                                batches_map[sc.batch.batch_id] = batch_title
+                        if batch_id and str(sc.batch.batch_id) != str(batch_id):
+                            continue
+                        sc_cid = sc.course_id or getattr(sc.batch, "course_id", None)
+                        if course_id and str(sc_cid) != str(course_id):
+                            continue
+                        batch_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
+                        if batch_title:
+                            batches_map[sc.batch.batch_id] = batch_title
 
                 # B. Collect from NewBatch
                 for nb in s.new_batches.all():
@@ -544,10 +548,14 @@ class StudentEnrollmentReportView(APIView):
                             if not course_id or str(c_obj.course_id) == str(course_id):
                                 courses_map[c_obj.course_id] = c_name
                     if nb.title and not getattr(nb, "is_archived", False):
-                        if not batch_id or str(nb.batch_id) == str(batch_id):
-                            batches_map[nb.batch_id] = nb.title
+                        if batch_id and str(nb.batch_id) != str(batch_id):
+                            continue
+                        nb_cid = getattr(nb, "course_id", None) or (c_obj.course_id if c_obj else None)
+                        if course_id and str(nb_cid) != str(course_id):
+                            continue
+                        batches_map[nb.batch_id] = nb.title
 
-                # Fallback to all assigned if empty maps
+                # Fallback to all assigned if empty maps and no filter applied
                 if not courses_map and not course_id:
                     for sc in s.student_courses.all():
                         c_obj = sc.course
@@ -560,7 +568,7 @@ class StudentEnrollmentReportView(APIView):
                             if c_obj.course_name:
                                 courses_map[c_obj.course_id] = c_obj.course_name
 
-                if not batches_map and not batch_id:
+                if not batches_map and not batch_id and not course_id:
                     for sc in s.student_courses.all():
                         if sc.batch and not getattr(sc.batch, "is_archived", False):
                             b_name = sc.batch.title or getattr(sc.batch, "batch_name", None)
@@ -584,15 +592,40 @@ class StudentEnrollmentReportView(APIView):
                 primary_batch = None
                 primary_course = None
                 for sc in s.student_courses.all():
-                    if sc.batch:
+                    if sc.batch and not getattr(sc.batch, "is_archived", False):
+                        sc_cid = sc.course_id or getattr(sc.batch, "course_id", None)
+                        if course_id and str(sc_cid) != str(course_id):
+                            continue
+                        if batch_id and str(sc.batch.batch_id) != str(batch_id):
+                            continue
                         primary_batch = sc.batch
                         primary_course = sc.course
                         break
+
                 if not primary_batch:
                     for nb in s.new_batches.all():
-                        primary_batch = nb
-                        primary_course = nb.course
-                        break
+                        if not getattr(nb, "is_archived", False):
+                            nb_cid = getattr(nb, "course_id", None) or (nb.course.course_id if getattr(nb, "course", None) else None)
+                            if course_id and str(nb_cid) != str(course_id):
+                                continue
+                            if batch_id and str(nb.batch_id) != str(batch_id):
+                                continue
+                            primary_batch = nb
+                            primary_course = nb.course
+                            break
+
+                # Fallback if no batch matched the specific filter (only if not course_id/batch_id filtered)
+                if not primary_batch and not course_id and not batch_id:
+                    for sc in s.student_courses.all():
+                        if sc.batch:
+                            primary_batch = sc.batch
+                            primary_course = sc.course
+                            break
+                    if not primary_batch:
+                        for nb in s.new_batches.all():
+                            primary_batch = nb
+                            primary_course = nb.course
+                            break
 
                 schedule = extract_batch_schedule(primary_batch, primary_course)
 
@@ -2138,10 +2171,10 @@ class TutorPaymentReportView(APIView):
                 )
 
             # 2. Input Validation & Sanitization (OWASP)
-            raw_course_id = request.query_params.get("course_id")
-            raw_batch_id = request.query_params.get("batch_id")
-            raw_tutor_id = request.query_params.get("tutor_id")
-            raw_status = request.query_params.get("payment_status")
+            raw_course_id = request.query_params.get("course_id") or request.query_params.get("course")
+            raw_batch_id = request.query_params.get("batch_id") or request.query_params.get("batch")
+            raw_tutor_id = request.query_params.get("tutor_id") or request.query_params.get("trainer_id")
+            raw_status = request.query_params.get("payment_status") or request.query_params.get("status")
             raw_from_date = request.query_params.get("from_date")
             raw_to_date = request.query_params.get("to_date")
             search_term = request.query_params.get("search")
@@ -2226,19 +2259,24 @@ class TutorPaymentReportView(APIView):
             )
 
             all_tutors = list(
-                Trainer.objects.all()
+                Trainer.objects.filter(is_archived=False)
                 .values("trainer_id", "full_name")
                 .order_by("full_name")
             )
 
             # 4. Database Queryset Optimization (Avoid N+1 with select_related)
-            payments_qs = TutorPayment.objects.select_related("tutor", "course", "batch")
+            payments_qs = TutorPayment.objects.select_related("tutor", "course")
 
             if course_id:
                 payments_qs = payments_qs.filter(course_id=course_id)
 
             if batch_id:
-                payments_qs = payments_qs.filter(batch_id=batch_id)
+                payments_qs = payments_qs.filter(
+                    Q(batch=str(batch_id)) |
+                    Q(batch__startswith=f"{batch_id},") |
+                    Q(batch__endswith=f",{batch_id}") |
+                    Q(batch__contains=f",{batch_id},")
+                )
 
             if tutor_id:
                 payments_qs = payments_qs.filter(tutor_id=tutor_id)
@@ -2254,11 +2292,22 @@ class TutorPaymentReportView(APIView):
 
             if search_term and str(search_term).strip():
                 term = str(search_term).strip()
+                matching_nb_ids = list(
+                    NewBatch.objects.filter(title__icontains=term).values_list("batch_id", flat=True)
+                )
+                batch_search_q = Q(batch__icontains=term)
+                for bid in matching_nb_ids:
+                    batch_search_q |= (
+                        Q(batch=str(bid)) |
+                        Q(batch__startswith=f"{bid},") |
+                        Q(batch__endswith=f",{bid}") |
+                        Q(batch__contains=f",{bid},")
+                    )
                 payments_qs = payments_qs.filter(
                     Q(tutor__full_name__icontains=term) |
                     Q(tutor__username__icontains=term) |
                     Q(course__course_name__icontains=term) |
-                    Q(batch__title__icontains=term)
+                    batch_search_q
                 )
 
             # Indexed field sorting
@@ -2269,16 +2318,45 @@ class TutorPaymentReportView(APIView):
             page = paginator.paginate_queryset(payments_qs, request, view=self)
             target_qs = page if page is not None else payments_qs
 
+            # Resolve batch names from IDs stored in CharField
+            batch_ids_set = set()
+            for p in target_qs:
+                if p.batch:
+                    for bid_str in str(p.batch).split(","):
+                        cleaned = bid_str.replace("[", "").replace("]", "").strip()
+                        if cleaned.isdigit():
+                            batch_ids_set.add(int(cleaned))
+
+            batch_name_map = {}
+            if batch_ids_set:
+                for nb in NewBatch.objects.filter(batch_id__in=batch_ids_set).values("batch_id", "title"):
+                    batch_name_map[nb["batch_id"]] = nb["title"]
+                missing_ids = batch_ids_set - set(batch_name_map.keys())
+                if missing_ids:
+                    for ob in Batch.objects.filter(batch_id__in=missing_ids).values("batch_id", "title", "batch_name"):
+                        batch_name_map[ob["batch_id"]] = ob["title"] or ob["batch_name"] or f"Batch {ob['batch_id']}"
+
             results = []
             for p in target_qs:
                 tutor_name = p.tutor.full_name if p.tutor and p.tutor.full_name else (
                     getattr(p.tutor, "username", "") if p.tutor else "N/A"
                 )
                 course_name = p.course.course_name if p.course and p.course.course_name else "N/A"
-                batch_title = (
-                    p.batch.title if p.batch and getattr(p.batch, "title", None)
-                    else (getattr(p.batch, "batch_name", None) or f"Batch {p.batch_id}" if p.batch else "N/A")
-                )
+
+                batch_titles = []
+                raw_bids = []
+                if p.batch:
+                    for bid_str in str(p.batch).split(","):
+                        cleaned = bid_str.replace("[", "").replace("]", "").strip()
+                        if cleaned.isdigit():
+                            bid = int(cleaned)
+                            raw_bids.append(bid)
+                            batch_titles.append(batch_name_map.get(bid, f"Batch {bid}"))
+                        elif cleaned:
+                            batch_titles.append(cleaned)
+
+                batch_title = ", ".join(batch_titles) if batch_titles else (str(p.batch) if p.batch else "N/A")
+                batch_id_val = raw_bids[0] if len(raw_bids) == 1 else (p.batch or "")
 
                 results.append({
                     "id": p.id,
@@ -2286,7 +2364,8 @@ class TutorPaymentReportView(APIView):
                     "tutor_name": tutor_name,
                     "course_id": p.course_id,
                     "course_name": course_name,
-                    "batch_id": p.batch_id,
+                    "batch": batch_title,
+                    "batch_id": batch_id_val,
                     "batch_title": batch_title,
                     "payment_type": p.payment_type or "N/A",
                     "payment_date": str(p.payment_date) if p.payment_date else None,
@@ -2300,7 +2379,7 @@ class TutorPaymentReportView(APIView):
                 "success": True,
                 "courses": all_courses,
                 "batches": all_batches,
-                # "tutors": all_tutors,
+                "tutors": all_tutors,
                 "results": results
             }
 
