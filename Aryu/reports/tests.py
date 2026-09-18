@@ -395,6 +395,58 @@ class StudentEnrollmentReportTestCase(TestCase):
         # Should still return Ram Kumar (who is enrolled in course 1), rather than empty list from invalid batch filter
         self.assertGreaterEqual(len(response_mismatch.data["data"]), 1)
 
+    def test_course_id_filters_individual_batch_only(self):
+        # Create a second batch for course 2
+        batch2 = NewBatch.objects.create(
+            title="EVENING_DJANGO",
+            course=self.course2,
+            start_date=timezone.now().date(),
+            end_date=timezone.now().date(),
+            start_time="17:00:00",
+            end_time="19:00:00",
+            is_archived=False
+        )
+        # Enroll student1 into course2 and batch2 as well
+        StudentCourse.objects.create(
+            student=self.student1,
+            course=self.course2,
+            batch=batch2
+        )
+
+        # When filtering by course1, student1's record must ONLY show batch1 (MORNING), NOT batch2 (EVENING_DJANGO)
+        url = f"/api/reports/student-enrollments?course_id={self.course1.course_id}"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data["data"]
+
+        # Find student1
+        student1_data = next((s for s in data if s["registration_id"] == self.student1.registration_id), None)
+        self.assertIsNotNone(student1_data)
+        self.assertEqual(student1_data["course_id"], self.course1.course_id)
+        self.assertEqual(student1_data["batch_id"], self.batch1.batch_id)
+        self.assertEqual(student1_data["batch_ids"], [self.batch1.batch_id])
+        self.assertEqual(student1_data["batch"], "MORNING")
+        self.assertEqual(student1_data["batch_title"], ["MORNING"])
+        self.assertNotIn("EVENING_DJANGO", student1_data["batch"])
+        self.assertNotIn(batch2.batch_id, student1_data["batch_ids"])
+
+        # When filtering by course2, student1's record must ONLY show batch2, NOT batch1
+        url_c2 = f"/api/reports/student-enrollments?course_id={self.course2.course_id}"
+        response_c2 = self.client.get(url_c2)
+        self.assertEqual(response_c2.status_code, status.HTTP_200_OK)
+        data_c2 = response_c2.data["data"]
+
+        student1_data_c2 = next((s for s in data_c2 if s["registration_id"] == self.student1.registration_id), None)
+        self.assertIsNotNone(student1_data_c2)
+        self.assertEqual(student1_data_c2["course_id"], self.course2.course_id)
+        self.assertEqual(student1_data_c2["batch_id"], batch2.batch_id)
+        self.assertEqual(student1_data_c2["batch_ids"], [batch2.batch_id])
+        self.assertEqual(student1_data_c2["batch"], "EVENING_DJANGO")
+        self.assertEqual(student1_data_c2["batch_title"], ["EVENING_DJANGO"])
+        self.assertNotIn("MORNING", student1_data_c2["batch"])
+        self.assertNotIn(self.batch1.batch_id, student1_data_c2["batch_ids"])
+
+
 
 class GoogleReviewTestCase(TestCase):
     """

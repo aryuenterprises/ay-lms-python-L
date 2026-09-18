@@ -530,10 +530,14 @@ class StudentEnrollmentReportView(APIView):
                             if not course_id or str(c_obj.course_id) == str(course_id):
                                 courses_map[c_obj.course_id] = c_name
                     if sc.batch and not getattr(sc.batch, "is_archived", False):
-                        if not batch_id or str(sc.batch.batch_id) == str(batch_id):
-                            batch_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
-                            if batch_title:
-                                batches_map[sc.batch.batch_id] = batch_title
+                        if batch_id and str(sc.batch.batch_id) != str(batch_id):
+                            continue
+                        sc_cid = sc.course_id or getattr(sc.batch, "course_id", None)
+                        if course_id and str(sc_cid) != str(course_id):
+                            continue
+                        batch_title = sc.batch.title or getattr(sc.batch, "batch_name", None)
+                        if batch_title:
+                            batches_map[sc.batch.batch_id] = batch_title
 
                 # B. Collect from NewBatch
                 for nb in s.new_batches.all():
@@ -544,10 +548,14 @@ class StudentEnrollmentReportView(APIView):
                             if not course_id or str(c_obj.course_id) == str(course_id):
                                 courses_map[c_obj.course_id] = c_name
                     if nb.title and not getattr(nb, "is_archived", False):
-                        if not batch_id or str(nb.batch_id) == str(batch_id):
-                            batches_map[nb.batch_id] = nb.title
+                        if batch_id and str(nb.batch_id) != str(batch_id):
+                            continue
+                        nb_cid = getattr(nb, "course_id", None) or (c_obj.course_id if c_obj else None)
+                        if course_id and str(nb_cid) != str(course_id):
+                            continue
+                        batches_map[nb.batch_id] = nb.title
 
-                # Fallback to all assigned if empty maps
+                # Fallback to all assigned if empty maps and no filter applied
                 if not courses_map and not course_id:
                     for sc in s.student_courses.all():
                         c_obj = sc.course
@@ -560,7 +568,7 @@ class StudentEnrollmentReportView(APIView):
                             if c_obj.course_name:
                                 courses_map[c_obj.course_id] = c_obj.course_name
 
-                if not batches_map and not batch_id:
+                if not batches_map and not batch_id and not course_id:
                     for sc in s.student_courses.all():
                         if sc.batch and not getattr(sc.batch, "is_archived", False):
                             b_name = sc.batch.title or getattr(sc.batch, "batch_name", None)
@@ -584,15 +592,40 @@ class StudentEnrollmentReportView(APIView):
                 primary_batch = None
                 primary_course = None
                 for sc in s.student_courses.all():
-                    if sc.batch:
+                    if sc.batch and not getattr(sc.batch, "is_archived", False):
+                        sc_cid = sc.course_id or getattr(sc.batch, "course_id", None)
+                        if course_id and str(sc_cid) != str(course_id):
+                            continue
+                        if batch_id and str(sc.batch.batch_id) != str(batch_id):
+                            continue
                         primary_batch = sc.batch
                         primary_course = sc.course
                         break
+
                 if not primary_batch:
                     for nb in s.new_batches.all():
-                        primary_batch = nb
-                        primary_course = nb.course
-                        break
+                        if not getattr(nb, "is_archived", False):
+                            nb_cid = getattr(nb, "course_id", None) or (nb.course.course_id if getattr(nb, "course", None) else None)
+                            if course_id and str(nb_cid) != str(course_id):
+                                continue
+                            if batch_id and str(nb.batch_id) != str(batch_id):
+                                continue
+                            primary_batch = nb
+                            primary_course = nb.course
+                            break
+
+                # Fallback if no batch matched the specific filter (only if not course_id/batch_id filtered)
+                if not primary_batch and not course_id and not batch_id:
+                    for sc in s.student_courses.all():
+                        if sc.batch:
+                            primary_batch = sc.batch
+                            primary_course = sc.course
+                            break
+                    if not primary_batch:
+                        for nb in s.new_batches.all():
+                            primary_batch = nb
+                            primary_course = nb.course
+                            break
 
                 schedule = extract_batch_schedule(primary_batch, primary_course)
 
