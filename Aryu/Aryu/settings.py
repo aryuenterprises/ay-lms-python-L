@@ -476,9 +476,9 @@ CORS_ALLOWED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -489,9 +489,9 @@ CSRF_TRUSTED_ORIGINS = [
     "https://airesumebuilder.aryuacademy.com",
     "https://passats.aryuacademy.com",
     "https://aryuacademy.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
-    "https://aylms.aryuprojects.com",
+    "https://portal.aryuacademy.com",
 
 ]
 
@@ -623,7 +623,7 @@ TWILIO_AUTH_TOKEN = "44fbdfc9f0960b464c20a193b797c7f7"
 TWILIO_PHONE_NUMBER = "+15075854260"
 
 
-MEDIA_BASE_URL = "https://aylms.aryuprojects.com/api"
+MEDIA_BASE_URL = "https://portal.aryuacademy.com/api"
 
 # class DisableMigrations:
 #     def __getitem__(self, item):
@@ -715,21 +715,23 @@ if 'test' in sys.argv:
     }
     MIGRATION_MODULES = DisableMigrations()
 else:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': 'aylms_staging',
-            'USER': 'aryu_user',
-            'PASSWORD':'YUra@2025',
-            'HOST': '49.207.178.161',
-            'PORT': '5432',
-            'AUTOCOMMIT': True,
-            'CONN_MAX_AGE': 60,
-            'OPTIONS': {
-                'options': '-c search_path=livequiz,public'
-            }
-        },
-    }
+    # DATABASES = {
+    #     'default': {
+    #         'ENGINE': 'django.db.backends.postgresql',
+    #         'NAME': 'aylms_staging',
+    #         'USER': 'aryu_user',
+    #         'PASSWORD':'YUra@2025',
+    #         'HOST': '49.207.178.161',
+    #         'PORT': '5432',
+    #         'AUTOCOMMIT': True,
+    #         'CONN_MAX_AGE': 60,
+    #         'OPTIONS': {
+    #             'options': '-c search_path=livequiz,public'
+    #         }
+    #     },
+    # }
+
+    DATABASES = { 'default': { 'ENGINE': 'django.db.backends.postgresql', 'NAME': 'aylms_live', 'USER': 'aylms_live', 'PASSWORD':'KfdW543FDdfg', 'HOST': '127.0.0.1', 'PORT': '5432', 'AUTOCOMMIT': True, 'CONN_MAX_AGE': 60, 'OPTIONS': { 'options': '-c search_path=livequiz,public' } }, }
 
 # DATABASES = {
 #     'default': {
@@ -832,7 +834,7 @@ LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'Asia/Kolkata'
 
-FRONTEND_URL = 'https://aylms.aryuprojects.com'
+FRONTEND_URL = 'https://portal.aryuacademy.com'
 PORTAL_FRONTEND_URL = FRONTEND_URL
 SITE_URL = FRONTEND_URL
 
