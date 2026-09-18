@@ -285,3 +285,79 @@ class CertificateIntegrationTests(TestCase):
         self.assertTrue(matched["linkedin_review"])
         self.assertIn("Google", matched["review_platforms"])
         self.assertEqual(len(matched["reviews_links"]), 5)
+
+    def test_student_status_course_name_matches_enrollment_not_google_review(self):
+        """Test that course_name and batch come from StudentCourse/NewBatch enrollment, not GoogleReview."""
+        from courses.models import Course, CourseCategory
+        from batches.models import NewBatch
+        from reports.models import GoogleReview
+        from aryuapp.models import StudentCourse
+        from django.utils import timezone
+
+        cat = CourseCategory.objects.create(category_name="Design", is_archived=False)
+        enrolled_course = Course.objects.create(
+            course_name="UI/UX 30 Days (AUG)",
+            course_category=cat,
+            duration="30",
+            duration_type="Days",
+            is_archived=False
+        )
+        enrolled_batch = NewBatch.objects.create(
+            title="UI UX Internship",
+            course=enrolled_course,
+            start_date=timezone.now().date(),
+            end_date=timezone.now().date(),
+            start_time="10:00:00",
+            end_time="12:00:00",
+            is_archived=False
+        )
+        StudentCourse.objects.create(
+            student=self.student,
+            course=enrolled_course,
+            batch=enrolled_batch
+        )
+
+        other_course = Course.objects.create(
+            course_name="Manual Test plus",
+            course_category=cat,
+            duration="3",
+            duration_type="month",
+            is_archived=False
+        )
+        other_batch = NewBatch.objects.create(
+            title="Test Batch 1",
+            course=other_course,
+            start_date=timezone.now().date(),
+            end_date=timezone.now().date(),
+            start_time="14:00:00",
+            end_time="16:00:00",
+            is_archived=False
+        )
+        GoogleReview.objects.create(
+            student=self.student,
+            course=other_course,
+            batch=other_batch,
+            is_google_review=True
+        )
+
+        # 1. Single student status
+        single_resp = self.client.get(f"/api/certificates/student-status/{self.student.student_id}")
+        self.assertEqual(single_resp.status_code, status.HTTP_200_OK)
+        single_data = single_resp.data["data"]
+        self.assertEqual(single_data["course"], "UI/UX 30 Days (AUG)")
+        self.assertEqual(single_data["course_name"], "UI/UX 30 Days (AUG)")
+        self.assertEqual(single_data["batch"], "UI UX Internship")
+        self.assertEqual(single_data["batch_name"], "UI UX Internship")
+        self.assertEqual(single_data["course_duration"], "30 Days")
+        self.assertTrue(single_data["is_google_review"])
+
+        # 2. List endpoint
+        list_resp = self.client.get(f"/api/certificates/student-status?search={self.student.first_name}")
+        self.assertEqual(list_resp.status_code, status.HTTP_200_OK)
+        matched = next((item for item in list_resp.data["data"] if item["student_id"] == self.student.student_id), None)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["course"], "UI/UX 30 Days (AUG)")
+        self.assertEqual(matched["course_name"], "UI/UX 30 Days (AUG)")
+        self.assertEqual(matched["batch"], "UI UX Internship")
+        self.assertEqual(matched["course_duration"], "30 Days")
+        self.assertTrue(matched["is_google_review"])
