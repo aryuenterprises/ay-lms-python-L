@@ -58,6 +58,7 @@ urlpatterns = [
     path("api/",include("lead.urls")),
     path("api/",include("reports.urls")),
     path("api/code-assessment/", include("code_assessment.urls")),
+    path("api/", include("referral.urls")),
 
     # PUBLIC LOGO URL
     re_path(r'^api/media/logos/(?P<filename>[^/]+)$', serve_logo_plus),
