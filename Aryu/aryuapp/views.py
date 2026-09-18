@@ -6578,7 +6578,14 @@ class CertificateViewSet(viewsets.ModelViewSet):
                 is_archived=False
             ).first()
 
-        if existing_cert and existing_cert.certificate_file:
+        force_regenerate = (
+            request.data.get("force_regenerate") in [True, "true", "True", "1", 1]
+            or request.query_params.get("force_regenerate") in [True, "true", "True", "1", 1]
+            or request.data.get("regenerate") in [True, "true", "True", "1", 1]
+            or request.query_params.get("regenerate") in [True, "true", "True", "1", 1]
+        )
+
+        if existing_cert and existing_cert.certificate_file and not force_regenerate:
             logger.info(
                 "Certificate already exists for student %s and course %s (Certificate No: %s)",
                 getattr(existing_cert.student, "student_id", "N/A"),
@@ -6591,7 +6598,10 @@ class CertificateViewSet(viewsets.ModelViewSet):
                 "data": self.get_serializer(existing_cert).data
             }, status=status.HTTP_200_OK)
 
-        certificate = serializer.save()
+        if existing_cert and force_regenerate:
+            certificate = existing_cert
+        else:
+            certificate = serializer.save()
 
         # If issued_date was provided in request data, update it
         req_issued_date = request.data.get("issued_date")
@@ -6647,6 +6657,36 @@ class CertificateViewSet(viewsets.ModelViewSet):
             "message": "Certificate created and sent successfully",
             "data": self.get_serializer(certificate).data
         }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='regenerate')
+    def regenerate_certificate(self, request, pk=None):
+        certificate = self.get_object()
+        try:
+            from .certificate_filler import generate_and_send_certificate_pdf
+            generate_and_send_certificate_pdf(certificate)
+            certificate.refresh_from_db()
+        except Exception as gen_err:
+            return Response({
+                "success": False,
+                "message": f"Failed to regenerate certificate PDF: {gen_err}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        recipient_email = None
+        if certificate.student and getattr(certificate.student, "email", None):
+            recipient_email = certificate.student.email
+        elif certificate.webinar_registration and getattr(certificate.webinar_registration, "email", None):
+            recipient_email = certificate.webinar_registration.email
+        elif request.data.get("email"):
+            recipient_email = request.data.get("email")
+
+        if recipient_email:
+            send_certificate_email(recipient_email, certificate)
+
+        return Response({
+            "success": True,
+            "message": "Certificate regenerated and sent successfully",
+            "data": self.get_serializer(certificate).data
+        }, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], url_path='<student_id>' )
     def student_certificates(self, request, student_id=None):

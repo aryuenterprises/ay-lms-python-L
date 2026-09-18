@@ -61,25 +61,42 @@ def fit_font(draw, text, font_path, max_width, start_size):
 
 
 def generate_certificate_image_and_save(certificate):
+    explicit_template = Path("/home/barath-k/Documents/ay-lms-python-L/Aryu/media/certificates/course_completion_certificate_new.png")
+    media_template = Path(settings.MEDIA_ROOT) / "certificates" / "course_completion_certificate_new.png"
+    static_template = Path(settings.BASE_DIR) / "aryuapp" / "static" / "certificates" / "course_completion_certificate_new.png"
+    static_root_template = Path(getattr(settings, "STATIC_ROOT", "")) / "certificates" / "course_completion_certificate_new.png"
+
+    # Ensure media/certificates directory has the new template
+    if not media_template.exists():
+        try:
+            import shutil
+            media_template.parent.mkdir(parents=True, exist_ok=True)
+            if explicit_template.exists():
+                shutil.copy2(explicit_template, media_template)
+            elif static_template.exists():
+                shutil.copy2(static_template, media_template)
+            elif static_root_template.exists():
+                shutil.copy2(static_root_template, media_template)
+        except Exception as copy_err:
+            logger.warning("Could not auto-copy new certificate template to media: %s", copy_err)
+
     template_candidates = [
-        Path(settings.BASE_DIR) / "aryuapp" / "static" / "certificates" / "course_completion_certificate_new.png",
-        Path(settings.BASE_DIR) / "aryuapp" / "static" / "certificates" / "course_completion_certificate.png",
-        Path(getattr(settings, "STATIC_ROOT", "")) / "certificates" / "course_completion_certificate_new.png",
-        Path(getattr(settings, "STATIC_ROOT", "")) / "certificates" / "course_completion_certificate.png",
-        Path(settings.MEDIA_ROOT) / "certificates" / "course_completion_certificate_new.png",
+        explicit_template,
+        media_template,
+        Path(settings.BASE_DIR) / "media" / "certificates" / "course_completion_certificate_new.png",
+        static_template,
+        static_root_template,
         Path(settings.MEDIA_ROOT) / "certificates" / "course_completion_certificate.png",
-        Path(settings.MEDIA_ROOT) / "certificates" / "aryu-certificate.png",
-        Path(settings.MEDIA_ROOT) / "certificates" / "AK20.png",
-        Path(settings.MEDIA_ROOT) / "certificates" / "AK2.png",
-        Path(settings.MEDIA_ROOT) / "certificates" / "Ak2.png",
-        Path(settings.MEDIA_ROOT) / "certificates" / "4016369-ai.png",
+        Path(settings.BASE_DIR) / "aryuapp" / "static" / "certificates" / "course_completion_certificate.png",
     ]
 
     template_path = None
     for candidate in template_candidates:
-        if candidate.exists():
+        if candidate and candidate.exists():
             template_path = candidate
             break
+
+    logger.info("Using certificate template: %s for certificate %s", template_path, getattr(certificate, 'certificate_number', 'N/A'))
 
     output_dir = Path(settings.MEDIA_ROOT) / "certificates"
     output_dir.mkdir(parents=True, exist_ok=True)

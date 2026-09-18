@@ -24,9 +24,42 @@ def fit_font(draw, text, font_path, max_width, start_size):
 
 
 def generate_certificate_image_and_save(certificate):
+    explicit_template = Path("/home/barath-k/Documents/ay-lms-python-L/Aryu/media/certificates/course_completion_certificate_new.png")
+    media_template = Path(settings.MEDIA_ROOT) / "certificates" / "course_completion_certificate_new.png"
+    static_template = Path(settings.BASE_DIR) / "aryuapp" / "static" / "certificates" / "course_completion_certificate_new.png"
+    static_root_template = Path(getattr(settings, "STATIC_ROOT", "")) / "certificates" / "course_completion_certificate_new.png"
 
-    template_path = Path(settings.MEDIA_ROOT) / "certificates" / "AK20.png"
-    # template_path = Path(settings.MEDIA_ROOT) / "jp.png"
+    if not media_template.exists():
+        try:
+            import shutil
+            media_template.parent.mkdir(parents=True, exist_ok=True)
+            if explicit_template.exists():
+                shutil.copy2(explicit_template, media_template)
+            elif static_template.exists():
+                shutil.copy2(static_template, media_template)
+            elif static_root_template.exists():
+                shutil.copy2(static_root_template, media_template)
+        except Exception:
+            pass
+
+    template_candidates = [
+        explicit_template,
+        media_template,
+        Path(settings.BASE_DIR) / "media" / "certificates" / "course_completion_certificate_new.png",
+        static_template,
+        static_root_template,
+        Path(settings.MEDIA_ROOT) / "certificates" / "course_completion_certificate.png",
+        Path(settings.MEDIA_ROOT) / "certificates" / "AK20.png",
+        Path(settings.MEDIA_ROOT) / "certificates" / "AK2.png",
+    ]
+    template_path = None
+    for candidate in template_candidates:
+        if candidate and candidate.exists():
+            template_path = candidate
+            break
+
+    if not template_path:
+        template_path = Path(settings.MEDIA_ROOT) / "certificates" / "AK20.png"
     output_dir = Path(settings.MEDIA_ROOT) / "certificates"
 
     output_dir.mkdir(parents=True, exist_ok=True)
