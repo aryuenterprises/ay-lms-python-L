@@ -98,7 +98,7 @@ INSTALLED_APPS = [
     "reports",
     "lead.whatsapp",
     "code_assessment",
-    
+    "referral",
 ]
 
 ASGI_APPLICATION = "Aryu.asgi.application"
