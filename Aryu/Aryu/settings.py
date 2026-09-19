@@ -98,7 +98,7 @@ INSTALLED_APPS = [
     "reports",
     "lead.whatsapp",
     "code_assessment",
-    "referral",
+    
 ]
 
 ASGI_APPLICATION = "Aryu.asgi.application"
@@ -132,7 +132,7 @@ ZOOM_TOKEN="7oD_nvdHT3Cia3ChbahPLw"
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://:35l1VUx9@49.207.178.161:6379/0",
+        "LOCATION": "redis://127.0.0.1:6379/0",
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         }
@@ -143,7 +143,7 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": ["redis://:35l1VUx9@49.207.178.161:6379/1"],
+            "hosts": ["redis://127.0.0.1:6379/1"],
             "capacity": 1500,
             "expiry": 10,
         },
@@ -153,8 +153,8 @@ CHANNEL_LAYERS = {
 # CELERY_BROKER_URL = "redis://127.0.0.1:6379/2"
 # CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/4"
 
-CELERY_BROKER_URL = "redis://:35l1VUx9@49.207.178.161:6379/3"
-CELERY_RESULT_BACKEND = "redis://:35l1VUx9@49.207.178.161:6379/5"
+CELERY_BROKER_URL = "redis://127.0.0.1:6379/3"
+CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/5"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
@@ -359,7 +359,7 @@ TELECRM_API = "https://next-api.telecrm.in"
 
 # SERVER_ROOT = Path("/var/www/ay-lms-python-L") if Path("/var/www/ay-lms-python-L/logs").exists() else BASE_DIR.parent
 # SERVER_ROOT = Path("/home/aryu_user/Arun/ay-lms-python-L") if Path("/home/aryu_user/Arun/ay-lms-python-L/logs").exists() else BASE_DIR.parent
-SERVER_ROOT = Path("/home/oppilamani/Documents/GitHub/ay-lms-python-L/") if Path("/home/oppilamani/Documents/GitHub/ay-lms-python-L/logs").exists() else BASE_DIR.parent
+SERVER_ROOT = Path("/var/www/python-staging") if Path("/var/www/python-staging/logs").exists() else BASE_DIR.parent
 
 LOGGING = {
     "version": 1,
@@ -478,7 +478,6 @@ CORS_ALLOWED_ORIGINS = [
     "https://aryuacademy.com",
     "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -491,7 +490,6 @@ CSRF_TRUSTED_ORIGINS = [
     "https://aryuacademy.com",
     "https://portal.aryuacademy.com",
     "https://ayanew.aryuprojects.com",
-    "https://portal.aryuacademy.com",
 
 ]
 
@@ -546,17 +544,6 @@ CORS_ALLOW_METHODS = (
     "PUT",
 )
 
-# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-# DEFAULT_FROM_EMAIL = 'support@aryuacademy.com'
-# EMAIL_HOST = "smtp.hostinger.com"
-# EMAIL_PORT = 587
-# EMAIL_USE_TLS = True
-# EMAIL_HOST_USER = "support@aryuacademy.com"
-# EMAIL_HOST_PASSWORD = "A/cMu5nqYs16"
-# DEFAULT_FROM_EMAIL = "Aryu Academy <support@aryuacademy.com>"
-# settings.py
-
-# settings.py
 
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = "smtp.hostinger.com"
@@ -625,57 +612,6 @@ TWILIO_PHONE_NUMBER = "+15075854260"
 
 MEDIA_BASE_URL = "https://portal.aryuacademy.com/api"
 
-# class DisableMigrations:
-#     def __getitem__(self, item):
-#         return None
-#     def __contains__(self, item):
-#         return True
-
-# if 'test' in sys.argv:
-#     import django.contrib.postgres.fields
-#     import django.db.models
-#     from django.db.backends.sqlite3.schema import DatabaseSchemaEditor
-
-#     class DummyArrayField(django.db.models.JSONField):
-#         def __init__(self, *args, **kwargs):
-#             kwargs.pop('base_field', None)
-#             kwargs.pop('size', None)
-#             super().__init__(*args, **kwargs)
-
-#     django.contrib.postgres.fields.ArrayField = DummyArrayField
-
-#     orig_quote_name = DatabaseSchemaEditor.quote_name
-#     def safe_quote_name(self, name):
-#         if "." in name:
-#             name = name.split(".")[-1].strip('"')
-#         return orig_quote_name(self, name)
-#     DatabaseSchemaEditor.quote_name = safe_quote_name
-
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.sqlite3',
-#             'NAME': ':memory:',
-#         }
-#     }
-#     MIGRATION_MODULES = DisableMigrations()
-# else:
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.postgresql',
-#             'NAME': 'aylms_live',  
-#             'USER': 'aylms_live',
-#             'PASSWORD':'KfdW543FDdfg',
-#             'HOST': '187.127.178.144',   
-#             'PORT': '5432',  
-#             'AUTOCOMMIT': True,
-#             'CONN_MAX_AGE': 60,
-#             'OPTIONS': {
-#                 'options': '-c search_path=livequiz,public'
-#             }
-#         },
-#     }
-
-
 class DisableMigrations:
     def __getitem__(self, item):
         return None
@@ -715,23 +651,21 @@ if 'test' in sys.argv:
     }
     MIGRATION_MODULES = DisableMigrations()
 else:
-    # DATABASES = {
-    #     'default': {
-    #         'ENGINE': 'django.db.backends.postgresql',
-    #         'NAME': 'aylms_staging',
-    #         'USER': 'aryu_user',
-    #         'PASSWORD':'YUra@2025',
-    #         'HOST': '49.207.178.161',
-    #         'PORT': '5432',
-    #         'AUTOCOMMIT': True,
-    #         'CONN_MAX_AGE': 60,
-    #         'OPTIONS': {
-    #             'options': '-c search_path=livequiz,public'
-    #         }
-    #     },
-    # }
-
-    DATABASES = { 'default': { 'ENGINE': 'django.db.backends.postgresql', 'NAME': 'aylms_live', 'USER': 'aylms_live', 'PASSWORD':'KfdW543FDdfg', 'HOST': '127.0.0.1', 'PORT': '5432', 'AUTOCOMMIT': True, 'CONN_MAX_AGE': 60, 'OPTIONS': { 'options': '-c search_path=livequiz,public' } }, }
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': 'aylms_live',  
+            'USER': 'aylms_live',
+            'PASSWORD':'KfdW543FDdfg',
+            'HOST': '127.0.0.1',   
+            'PORT': '5432',  
+            'AUTOCOMMIT': True,
+            'CONN_MAX_AGE': 60,
+            'OPTIONS': {
+                'options': '-c search_path=livequiz,public'
+            }
+        },
+    }
 
 # DATABASES = {
 #     'default': {
@@ -834,7 +768,7 @@ LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'Asia/Kolkata'
 
-FRONTEND_URL = 'https://portal.aryuacademy.com'
+FRONTEND_URL = 'https://portal.aryuacademy.com/'
 PORTAL_FRONTEND_URL = FRONTEND_URL
 SITE_URL = FRONTEND_URL
 
