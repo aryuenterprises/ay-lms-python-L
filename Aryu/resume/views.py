@@ -3817,13 +3817,13 @@ class ResumeGateway(APIView):
             try:
                 resp_json = response.json()
                 usage_data = resp_json.get("usage")
-                if usage_data and isinstance(usage_data, dict):
-                    AIUsageService.log_usage(
+                if usage_data:
+                    AIUsageService.log_usages(
                         user=request.user,
-                        operation="resume_parse",
+                        default_operation="resume_parse",
                         usage_data=usage_data,
-                        request_id=request_id,
-                        status="success",
+                        default_request_id=request_id,
+                        default_status="success",
                     )
             except Exception as exc:
                 logger.error(f"Error persisting AI usage in ResumeGateway: {exc}", exc_info=True)
@@ -3910,13 +3910,13 @@ class ATSGateway(APIView):
                 try:
                     resp_json = response.json()
                     usage_data = resp_json.get("usage")
-                    if usage_data and isinstance(usage_data, dict):
-                        AIUsageService.log_usage(
+                    if usage_data:
+                        AIUsageService.log_usages(
                             user=request.user,
-                            operation="ats_scan",
+                            default_operation="ats_scan",
                             usage_data=usage_data,
-                            request_id=request_id,
-                            status="success",
+                            default_request_id=request_id,
+                            default_status="success",
                         )
                 except Exception as exc:
                     logger.error(f"Error persisting AI usage in ATSGateway: {exc}", exc_info=True)
