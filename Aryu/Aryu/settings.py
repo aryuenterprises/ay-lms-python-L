@@ -98,6 +98,7 @@ INSTALLED_APPS = [
     "reports",
     "lead.whatsapp",
     "code_assessment",
+    'referral',
     
 ]
 
