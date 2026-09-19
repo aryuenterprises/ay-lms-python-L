@@ -2516,11 +2516,12 @@ class ResumeAuthAuditAndAdminTicketTestCase(TestCase):
 class AITokenUsageTrackingTestCase(TestCase):
     """
     Test suite for Gemini AI Token Usage Tracking:
-    - AIUsageLog creation and field validation
-    - AIUsageService aggregation and batch prefetch
-    - ResumeGateway token persistence, headers, and backward compatibility
-    - ATSGateway token persistence and conditional AI tracking
-    - ResumeRegistrationSerializer & ResumeRegistrationViewset ai_token_usage integration
+    - AIUsageLog creation and field validation per individual Gemini generation
+    - AIUsageService aggregation and batch prefetch with generations list and totals
+    - ResumeGateway token persistence for multiple individual generations
+    - ATSGateway token persistence for multiple individual generations and conditional AI tracking
+    - ResumeRegistrationSerializer & ResumeRegistrationViewset ai_token_usage integration with generations list
+    - 5 Gemini generations in a single request producing 5 separate AIUsageLog records and appearing in viewset
     - Multi-user isolation and zero-token default fallback
     - Security and resilience against database persistence failures
     """
@@ -2594,7 +2595,7 @@ class AITokenUsageTrackingTestCase(TestCase):
         return str(refresh.access_token)
 
     def test_ai_usage_service_log_usage_and_aggregation(self):
-        """Verify direct AIUsageService logging and aggregate queries."""
+        """Verify direct AIUsageService logging and aggregate queries for individual generations."""
         from .models import AIUsageLog
         from .services.ai_usage_service import AIUsageService
         import uuid
@@ -2646,24 +2647,32 @@ class AITokenUsageTrackingTestCase(TestCase):
 
         # Test single user aggregation
         usage_a = AIUsageService.get_user_token_usage(self.user_a.id)
-        self.assertEqual(usage_a["input_tokens"], 1500)
-        self.assertEqual(usage_a["output_tokens"], 500)
+        self.assertEqual(usage_a["total_input_tokens"], 1500)
+        self.assertEqual(usage_a["total_output_tokens"], 500)
         self.assertEqual(usage_a["total_tokens"], 2000)
-        self.assertEqual(usage_a["cached_tokens"], 100)
-        self.assertEqual(usage_a["generations"], 2)
+        self.assertEqual(usage_a["total_cached_tokens"], 100)
+        self.assertEqual(usage_a["generation_count"], 2)
+        self.assertEqual(len(usage_a["generations"]), 2)
+        self.assertEqual(usage_a["generations"][0]["model"], "gemini-1.5-pro")
+        self.assertEqual(usage_a["generations"][1]["model"], "gemini-1.5-flash")
 
         # Test zero usage for user B
         usage_b = AIUsageService.get_user_token_usage(self.user_b.id)
-        self.assertEqual(usage_b["input_tokens"], 0)
-        self.assertEqual(usage_b["output_tokens"], 0)
+        self.assertEqual(usage_b["total_input_tokens"], 0)
+        self.assertEqual(usage_b["total_output_tokens"], 0)
         self.assertEqual(usage_b["total_tokens"], 0)
-        self.assertEqual(usage_b["cached_tokens"], 0)
-        self.assertEqual(usage_b["generations"], 0)
+        self.assertEqual(usage_b["total_cached_tokens"], 0)
+        self.assertEqual(usage_b["generation_count"], 0)
+        self.assertEqual(usage_b["generations"], [])
 
         # Test batch usage query
         batch_map = AIUsageService.get_users_token_usage_batch([self.user_a.id, self.user_b.id])
         self.assertEqual(batch_map[self.user_a.id]["total_tokens"], 2000)
+        self.assertEqual(batch_map[self.user_a.id]["generation_count"], 2)
+        self.assertEqual(len(batch_map[self.user_a.id]["generations"]), 2)
         self.assertEqual(batch_map[self.user_b.id]["total_tokens"], 0)
+        self.assertEqual(batch_map[self.user_b.id]["generation_count"], 0)
+        self.assertEqual(batch_map[self.user_b.id]["generations"], [])
 
         # Test analytics summary
         summary = AIUsageService.get_analytics_summary()
@@ -2671,8 +2680,8 @@ class AITokenUsageTrackingTestCase(TestCase):
         self.assertEqual(summary["generations"], 2)
 
     @patch("requests.post")
-    def test_resume_gateway_ai_usage_tracking(self, mock_post):
-        """Verify ResumeGateway forwards internal headers and stores AIUsageLog on success."""
+    def test_resume_gateway_multiple_generations(self, mock_post):
+        """Verify ResumeGateway handles list of usage objects and stores 1 AIUsageLog per generation."""
         from .models import AIUsageLog
         import json
         from io import BytesIO
@@ -2680,15 +2689,28 @@ class AITokenUsageTrackingTestCase(TestCase):
         fastapi_response_data = {
             "success": True,
             "data": {"name": "Alice Smith", "skills": ["Python", "Django"]},
-            "usage": {
-                "provider": "gemini",
-                "model": "gemini-1.5-flash",
-                "input_tokens": 1200,
-                "output_tokens": 450,
-                "total_tokens": 1650,
-                "cached_tokens": 50,
-                "latency_ms": 1250,
-            }
+            "usage": [
+                {
+                    "operation": "resume_parse",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-flash",
+                    "input_tokens": 1200,
+                    "output_tokens": 450,
+                    "total_tokens": 1650,
+                    "cached_tokens": 0,
+                    "latency_ms": 2300,
+                },
+                {
+                    "operation": "resume_parse",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-flash",
+                    "input_tokens": 800,
+                    "output_tokens": 300,
+                    "total_tokens": 1100,
+                    "cached_tokens": 0,
+                    "latency_ms": 1800,
+                },
+            ]
         }
 
         mock_resp = MagicMock()
@@ -2724,25 +2746,29 @@ class AITokenUsageTrackingTestCase(TestCase):
         self.assertEqual(sent_headers["X-Operation"], "resume_parse")
         self.assertIn("X-Request-ID", sent_headers)
 
-        # Verify AIUsageLog persisted in DB
-        log = AIUsageLog.objects.filter(user=self.user_a, operation="resume_parse").first()
-        self.assertIsNotNone(log)
-        self.assertEqual(log.provider, "gemini")
-        self.assertEqual(log.model, "gemini-1.5-flash")
-        self.assertEqual(log.input_tokens, 1200)
-        self.assertEqual(log.output_tokens, 450)
-        self.assertEqual(log.total_tokens, 1650)
-        self.assertEqual(log.cached_tokens, 50)
-        self.assertEqual(log.latency_ms, 1250)
-        self.assertEqual(str(log.request_id), sent_headers["X-Request-ID"])
+        # Verify 2 separate AIUsageLog records persisted in DB
+        logs = list(AIUsageLog.objects.filter(user=self.user_a, operation="resume_parse").order_by("id"))
+        self.assertEqual(len(logs), 2)
+        
+        self.assertEqual(logs[0].input_tokens, 1200)
+        self.assertEqual(logs[0].output_tokens, 450)
+        self.assertEqual(logs[0].total_tokens, 1650)
+        self.assertEqual(logs[0].latency_ms, 2300)
+        self.assertEqual(str(logs[0].request_id), sent_headers["X-Request-ID"])
+
+        self.assertEqual(logs[1].input_tokens, 800)
+        self.assertEqual(logs[1].output_tokens, 300)
+        self.assertEqual(logs[1].total_tokens, 1100)
+        self.assertEqual(logs[1].latency_ms, 1800)
+        self.assertEqual(str(logs[1].request_id), sent_headers["X-Request-ID"])
 
         # Verify parse_used incremented
         self.sub_a.refresh_from_db()
         self.assertEqual(self.sub_a.parse_used, 1)
 
     @patch("requests.post")
-    def test_ats_gateway_ai_usage_tracking(self, mock_post):
-        """Verify ATSGateway forwards headers and stores AIUsageLog only when AI executed."""
+    def test_ats_gateway_multiple_generations(self, mock_post):
+        """Verify ATSGateway forwards headers and stores 1 AIUsageLog per generation from usage list."""
         from .models import AIUsageLog
         import json
         from io import BytesIO
@@ -2750,15 +2776,28 @@ class AITokenUsageTrackingTestCase(TestCase):
         fastapi_response_data = {
             "success": True,
             "data": {"score": 85, "match_percentage": 90},
-            "usage": {
-                "provider": "gemini",
-                "model": "gemini-1.5-pro",
-                "input_tokens": 2000,
-                "output_tokens": 800,
-                "total_tokens": 2800,
-                "cached_tokens": 0,
-                "latency_ms": 2100,
-            }
+            "usage": [
+                {
+                    "operation": "ats_scan",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-pro",
+                    "input_tokens": 2000,
+                    "output_tokens": 800,
+                    "total_tokens": 2800,
+                    "cached_tokens": 0,
+                    "latency_ms": 2100,
+                },
+                {
+                    "operation": "ats_scan",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-flash",
+                    "input_tokens": 1000,
+                    "output_tokens": 300,
+                    "total_tokens": 1300,
+                    "cached_tokens": 50,
+                    "latency_ms": 900,
+                }
+            ]
         }
 
         mock_resp = MagicMock()
@@ -2788,12 +2827,19 @@ class AITokenUsageTrackingTestCase(TestCase):
         self.assertEqual(sent_headers["X-Operation"], "ats_scan")
         self.assertEqual(sent_headers["X-User-ID"], str(self.user_a.id))
 
-        # Verify AIUsageLog persisted
-        log = AIUsageLog.objects.filter(user=self.user_a, operation="ats_scan").first()
-        self.assertIsNotNone(log)
-        self.assertEqual(log.total_tokens, 2800)
-        self.assertEqual(log.input_tokens, 2000)
-        self.assertEqual(log.output_tokens, 800)
+        # Verify 2 separate AIUsageLog records persisted
+        logs = list(AIUsageLog.objects.filter(user=self.user_a, operation="ats_scan").order_by("id"))
+        self.assertEqual(len(logs), 2)
+        self.assertEqual(logs[0].total_tokens, 2800)
+        self.assertEqual(logs[0].input_tokens, 2000)
+        self.assertEqual(logs[0].output_tokens, 800)
+        self.assertEqual(logs[0].model, "gemini-1.5-pro")
+
+        self.assertEqual(logs[1].total_tokens, 1300)
+        self.assertEqual(logs[1].input_tokens, 1000)
+        self.assertEqual(logs[1].output_tokens, 300)
+        self.assertEqual(logs[1].cached_tokens, 50)
+        self.assertEqual(logs[1].model, "gemini-1.5-flash")
 
         # Verify ats_used incremented
         self.sub_a.refresh_from_db()
@@ -2837,9 +2883,13 @@ class AITokenUsageTrackingTestCase(TestCase):
         self.assertEqual(AIUsageLog.objects.count(), initial_count)
 
     def test_resumeregistration_serializer_and_viewset_token_usage(self):
-        """Verify ResumeRegistrationSerializers and ResumeRegistrationViewset expose ai_token_usage."""
+        """Verify ResumeRegistrationSerializers and ResumeRegistrationViewset expose full generations list and aggregates."""
         from .models import AIUsageLog
         from .serializers import ResumeRegistrationSerializers
+        import uuid
+
+        req1 = uuid.uuid4()
+        req2 = uuid.uuid4()
 
         # Create usage logs for user A
         AIUsageLog.objects.create(
@@ -2847,10 +2897,12 @@ class AITokenUsageTrackingTestCase(TestCase):
             operation="resume_parse",
             provider="gemini",
             model="gemini-1.5-pro",
+            request_id=req1,
             input_tokens=1000,
             output_tokens=400,
             total_tokens=1400,
             cached_tokens=50,
+            latency_ms=1200,
             status="success",
         )
         AIUsageLog.objects.create(
@@ -2858,10 +2910,12 @@ class AITokenUsageTrackingTestCase(TestCase):
             operation="ats_scan",
             provider="gemini",
             model="gemini-1.5-pro",
+            request_id=req2,
             input_tokens=2000,
             output_tokens=600,
             total_tokens=2600,
             cached_tokens=10,
+            latency_ms=1800,
             status="success",
         )
 
@@ -2869,21 +2923,36 @@ class AITokenUsageTrackingTestCase(TestCase):
         serializer_a = ResumeRegistrationSerializers(self.user_a)
         data_a = serializer_a.data
         self.assertIn("ai_token_usage", data_a)
-        self.assertEqual(data_a["ai_token_usage"]["input_tokens"], 3000)
-        self.assertEqual(data_a["ai_token_usage"]["output_tokens"], 1000)
-        self.assertEqual(data_a["ai_token_usage"]["total_tokens"], 4000)
-        self.assertEqual(data_a["ai_token_usage"]["cached_tokens"], 60)
-        self.assertEqual(data_a["ai_token_usage"]["generations"], 2)
+        usage_a = data_a["ai_token_usage"]
+        self.assertEqual(usage_a["total_input_tokens"], 3000)
+        self.assertEqual(usage_a["total_output_tokens"], 1000)
+        self.assertEqual(usage_a["total_tokens"], 4000)
+        self.assertEqual(usage_a["total_cached_tokens"], 60)
+        self.assertEqual(usage_a["generation_count"], 2)
+        self.assertEqual(len(usage_a["generations"]), 2)
+
+        gen1 = usage_a["generations"][0]
+        self.assertEqual(gen1["operation"], "resume_parse")
+        self.assertEqual(gen1["provider"], "gemini")
+        self.assertEqual(gen1["model"], "gemini-1.5-pro")
+        self.assertEqual(gen1["input_tokens"], 1000)
+        self.assertEqual(gen1["output_tokens"], 400)
+        self.assertEqual(gen1["total_tokens"], 1400)
+        self.assertEqual(gen1["cached_tokens"], 50)
+        self.assertEqual(gen1["latency_ms"], 1200)
+        self.assertEqual(gen1["request_id"], str(req1))
 
         # Single user serialization for user B (zero tokens)
         serializer_b = ResumeRegistrationSerializers(self.user_b)
         data_b = serializer_b.data
         self.assertIn("ai_token_usage", data_b)
-        self.assertEqual(data_b["ai_token_usage"]["input_tokens"], 0)
-        self.assertEqual(data_b["ai_token_usage"]["output_tokens"], 0)
-        self.assertEqual(data_b["ai_token_usage"]["total_tokens"], 0)
-        self.assertEqual(data_b["ai_token_usage"]["cached_tokens"], 0)
-        self.assertEqual(data_b["ai_token_usage"]["generations"], 0)
+        usage_b = data_b["ai_token_usage"]
+        self.assertEqual(usage_b["total_input_tokens"], 0)
+        self.assertEqual(usage_b["total_output_tokens"], 0)
+        self.assertEqual(usage_b["total_tokens"], 0)
+        self.assertEqual(usage_b["total_cached_tokens"], 0)
+        self.assertEqual(usage_b["generation_count"], 0)
+        self.assertEqual(usage_b["generations"], [])
 
         # Admin ViewSet listing (multiple users)
         admin_token = self._get_admin_token()
@@ -2901,11 +2970,15 @@ class AITokenUsageTrackingTestCase(TestCase):
 
         # Ensure user A receives only user A's usage
         self.assertEqual(user_a_entry["ai_token_usage"]["total_tokens"], 4000)
-        self.assertEqual(user_a_entry["ai_token_usage"]["input_tokens"], 3000)
+        self.assertEqual(user_a_entry["ai_token_usage"]["total_input_tokens"], 3000)
+        self.assertEqual(user_a_entry["ai_token_usage"]["generation_count"], 2)
+        self.assertEqual(len(user_a_entry["ai_token_usage"]["generations"]), 2)
 
         # Ensure user B receives 0 tokens, NOT user A's tokens
         self.assertEqual(user_b_entry["ai_token_usage"]["total_tokens"], 0)
-        self.assertEqual(user_b_entry["ai_token_usage"]["input_tokens"], 0)
+        self.assertEqual(user_b_entry["ai_token_usage"]["total_input_tokens"], 0)
+        self.assertEqual(user_b_entry["ai_token_usage"]["generation_count"], 0)
+        self.assertEqual(user_b_entry["ai_token_usage"]["generations"], [])
 
         # Verify all existing fields remain present
         for u in [user_a_entry, user_b_entry]:
@@ -2915,6 +2988,147 @@ class AITokenUsageTrackingTestCase(TestCase):
             self.assertIn("email", u)
             self.assertIn("is_verified", u)
             self.assertIn("status", u)
+
+    @patch("requests.post")
+    def test_single_request_5_gemini_generations_tracking_and_viewset(self, mock_post):
+        """
+        Verify that one request containing 5 Gemini calls produces 5 separate AIUsageLog
+        records and all 5 appear in ResumeRegistrationViewSet.
+        """
+        from .models import AIUsageLog
+        import json
+        from io import BytesIO
+
+        fastapi_response_data = {
+            "success": True,
+            "data": {"name": "Alice Multi", "skills": ["Python", "Gemini", "Django"]},
+            "usage": [
+                {
+                    "operation": "resume_parse",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-flash",
+                    "input_tokens": 1000,
+                    "output_tokens": 200,
+                    "total_tokens": 1200,
+                    "cached_tokens": 0,
+                    "latency_ms": 1100,
+                },
+                {
+                    "operation": "resume_parse",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-flash",
+                    "input_tokens": 800,
+                    "output_tokens": 150,
+                    "total_tokens": 950,
+                    "cached_tokens": 0,
+                    "latency_ms": 900,
+                },
+                {
+                    "operation": "resume_parse",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-pro",
+                    "input_tokens": 1500,
+                    "output_tokens": 500,
+                    "total_tokens": 2000,
+                    "cached_tokens": 100,
+                    "latency_ms": 2500,
+                },
+                {
+                    "operation": "resume_parse",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-flash",
+                    "input_tokens": 600,
+                    "output_tokens": 100,
+                    "total_tokens": 700,
+                    "cached_tokens": 0,
+                    "latency_ms": 750,
+                },
+                {
+                    "operation": "resume_parse",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-pro",
+                    "input_tokens": 2000,
+                    "output_tokens": 800,
+                    "total_tokens": 2800,
+                    "cached_tokens": 200,
+                    "latency_ms": 3200,
+                },
+            ]
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        mock_resp.content = json.dumps(fastapi_response_data).encode("utf-8")
+        mock_resp.json.return_value = fastapi_response_data
+        mock_resp.headers = {"Content-Type": "application/json"}
+        mock_post.return_value = mock_resp
+
+        token = self._get_token(self.user_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        dummy_file = BytesIO(b"%PDF-1.4 dummy multi-call resume")
+        dummy_file.name = "resume.pdf"
+
+        resp = self.client.post(
+            "/api/resume/parse/",
+            data={"file": dummy_file},
+            format="multipart",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+        # 1. Verify exactly 5 separate AIUsageLog database records are created
+        logs = list(AIUsageLog.objects.filter(user=self.user_a, operation="resume_parse").order_by("id"))
+        self.assertEqual(len(logs), 5)
+
+        expected_tokens = [1200, 950, 2000, 700, 2800]
+        expected_models = [
+            "gemini-1.5-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+        ]
+        expected_latencies = [1100, 900, 2500, 750, 3200]
+
+        for i, log in enumerate(logs):
+            self.assertEqual(log.total_tokens, expected_tokens[i])
+            self.assertEqual(log.model, expected_models[i])
+            self.assertEqual(log.latency_ms, expected_latencies[i])
+            self.assertEqual(log.user, self.user_a)
+            self.assertEqual(log.status, "success")
+
+        # 2. Verify all 5 generations appear in ResumeRegistrationViewSet
+        admin_token = self._get_admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_token}")
+
+        list_resp = self.client.get("/api/resume/registration/")
+        self.assertEqual(list_resp.status_code, status.HTTP_200_OK)
+        user_list = list_resp.data["data"]
+
+        user_a_entry = next((u for u in user_list if u["id"] == self.user_a.id), None)
+        self.assertIsNotNone(user_a_entry)
+
+        ai_usage = user_a_entry["ai_token_usage"]
+        self.assertEqual(ai_usage["generation_count"], 5)
+        self.assertEqual(len(ai_usage["generations"]), 5)
+
+        # Verify aggregate sums across all 5 generations
+        # input: 1000 + 800 + 1500 + 600 + 2000 = 5900
+        # output: 200 + 150 + 500 + 100 + 800 = 1750
+        # total: 1200 + 950 + 2000 + 700 + 2800 = 7650
+        # cached: 0 + 0 + 100 + 0 + 200 = 300
+        self.assertEqual(ai_usage["total_input_tokens"], 5900)
+        self.assertEqual(ai_usage["total_output_tokens"], 1750)
+        self.assertEqual(ai_usage["total_tokens"], 7650)
+        self.assertEqual(ai_usage["total_cached_tokens"], 300)
+
+        for idx, gen in enumerate(ai_usage["generations"]):
+            self.assertEqual(gen["total_tokens"], expected_tokens[idx])
+            self.assertEqual(gen["model"], expected_models[idx])
+            self.assertEqual(gen["latency_ms"], expected_latencies[idx])
+            self.assertEqual(gen["provider"], "gemini")
+            self.assertEqual(gen["operation"], "resume_parse")
 
     @patch("requests.post")
     @patch("resume.models.AIUsageLog.objects.create")
@@ -2928,13 +3142,15 @@ class AITokenUsageTrackingTestCase(TestCase):
         fastapi_response_data = {
             "success": True,
             "data": {"name": "Alice Smith"},
-            "usage": {
-                "provider": "gemini",
-                "model": "gemini-1.5-flash",
-                "input_tokens": 1000,
-                "output_tokens": 200,
-                "total_tokens": 1200,
-            }
+            "usage": [
+                {
+                    "provider": "gemini",
+                    "model": "gemini-1.5-flash",
+                    "input_tokens": 1000,
+                    "output_tokens": 200,
+                    "total_tokens": 1200,
+                }
+            ]
         }
 
         mock_resp = MagicMock()
